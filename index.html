@@ -73,9 +73,26 @@ const SK = { tiles: "oph_tiles", grid: "oph_grid", colors: "oph_colors", userTil
 const ACCEPTED = "image/png,image/jpeg,image/gif,image/webp,image/svg+xml,image/bmp";
 const MAX_HISTORY = 60;
 
-// Default tiles from Resources/ folder — IDs start at 1, NOT deletable
-// Filenames are resolved at runtime; the count is not hardcoded anywhere else.
-const DEFAULT_TILE_SRCS = Array.from({ length: 15 }, (_, i) => `Resources/${i + 1}.png`);
+// Default tiles from Resources/ folder — IDs start at 1, NOT deletable.
+// To add more default tiles, simply append filenames to this array.
+const DEFAULT_TILE_FILES = [
+  "MSLM-barrel1.png",
+  "MSLM-barrel2.png",
+  "MSLM-barrel3.png",
+  "MSLM-bg1.png",
+  "MSLM-bg2.png",
+  "MSLM-bush1.png",
+  "MSLM-bush2.png",
+  "MSLM-cactus.png",
+  "MSLM-crate.png",
+  "MSLM-fence1.png",
+  "MSLM-fence2.png",
+  "MSLM-fence3A.png",
+  "MSLM-fence3B.png",
+  "MSLM-wall1.png",
+  "MSLM-wall2.png",
+];
+const DEFAULT_TILE_SRCS = DEFAULT_TILE_FILES.map(f => `Resources/${f}`);
 
 const load = (k, d) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } };
 const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
@@ -190,13 +207,14 @@ function makePlaceholderSrc(id) {
 // ── Tiny helpers ───────────────────────────────────────────────────────
 const Sep = () => <div style={{ width: 1, height: 22, background: C.border, flexShrink: 0, alignSelf: "center" }} />;
 
-function SectionHeader({ label, open, onToggle, right }) {
+function SectionHeader({ label, open, onToggle, left, right }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 12px", background: C.panelDeep, borderBottom: open ? `1px solid ${C.border}` : "none" }}>
       <button onClick={onToggle} style={{ display: "flex", alignItems: "center", gap: 5, background: "none", border: "none", cursor: "pointer", padding: 0 }}>
-        <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1.4, color: C.accent, textTransform: "uppercase", fontFamily: "'Inter', sans-serif" }}>{label}</span>
+        <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1.4, color: C.accent, textTransform: "uppercase", fontFamily: "'Lilita One', cursive" }}>{label}</span>
         <span style={{ fontSize: 9, color: C.muted, display: "inline-block", transition: "transform 0.15s", transform: open ? "rotate(0deg)" : "rotate(-90deg)" }}>▼</span>
       </button>
+      {left}
       <div style={{ flex: 1 }} />
       {right}
     </div>
@@ -209,7 +227,12 @@ function App() {
 
   // Default tiles built once (not from localStorage — they come from Resources/)
   const [defaultTiles] = useState(() =>
-    DEFAULT_TILE_SRCS.map((src, i) => ({ id: i + 1, name: `Tile ${i + 1}`, src, isDefault: true }))
+    DEFAULT_TILE_SRCS.map((src, i) => ({
+      id: i + 1,
+      name: DEFAULT_TILE_FILES[i].replace(/\.[^.]+$/, ""),
+      src,
+      isDefault: true,
+    }))
   );
 
   // User-uploaded tiles persisted in localStorage, IDs start after defaults
@@ -558,6 +581,7 @@ function App() {
   const btn = (active, color = C.accent, dim = C.accentDim) => ({
     padding: "5px 11px", borderRadius: 7, fontSize: 12, fontWeight: 600,
     cursor: "pointer", touchAction: "manipulation", userSelect: "none",
+    fontFamily: "'Lilita One', cursive",
     background: active ? dim : "rgba(255,255,255,0.04)",
     color:      active ? color : C.muted,
     border:    `1px solid ${active ? color : "rgba(255,255,255,0.1)"}`,
@@ -579,7 +603,7 @@ function App() {
       <div className="modal-backdrop" onClick={() => setInfoTile(null)}>
         <div className="modal-box" onClick={e => e.stopPropagation()}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Tile #{t.id}</span>
+            <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright, fontFamily: "'Lilita One', cursive" }}>Tile #{t.id}</span>
             <button onClick={() => setInfoTile(null)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
           </div>
           <div style={{ background: "#040e1a", borderRadius: 8, padding: 12, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 120 }}>
@@ -602,16 +626,16 @@ function App() {
             </div>
           ) : (
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ flex: 1, fontSize: 13, color: C.text }}>{t.name}</span>
-              <button style={btn(false)} onClick={() => { setRenamingId(t.id); setRenameVal(t.name); }}>✎ Rename</button>
+              <span style={{ flex: 1, fontSize: 13, color: C.text, fontFamily: "'Lilita One', cursive" }}>{t.name}</span>
+              <button style={btn(false)} onClick={() => { setRenamingId(t.id); setRenameVal(t.name); }}>Rename</button>
             </div>
           )}
           {!t.isDefault && (
             <button style={{ ...btn(false, C.danger, "rgba(248,113,113,0.14)"), width: "100%", justifyContent: "center" }}
-              onClick={() => deleteTile(t.id)}>✕ Delete tile</button>
+              onClick={() => deleteTile(t.id)}>Delete tile</button>
           )}
           {t.isDefault && (
-            <p style={{ fontSize: 11, color: C.muted, textAlign: "center" }}>Default tile — cannot be deleted.</p>
+            <p style={{ fontSize: 11, color: C.muted, textAlign: "center", fontFamily: "'Lilita One', cursive" }}>Default tile — cannot be deleted.</p>
           )}
         </div>
       </div>
@@ -623,7 +647,7 @@ function App() {
     if (!replaceOpen) return null;
     const TilePicker = ({ value, onChange, label }) => (
       <div style={{ flex: 1 }}>
-        <p style={{ fontSize: 10, color: C.muted, marginBottom: 4, textTransform: "uppercase", letterSpacing: 1 }}>{label}</p>
+        <p style={{ fontSize: 10, color: C.muted, marginBottom: 4, textTransform: "uppercase", letterSpacing: 1, fontFamily: "'Lilita One', cursive" }}>{label}</p>
         <div style={{ overflowY: "auto", maxHeight: 180, display: "flex", flexWrap: "wrap", gap: 5, background: "rgba(0,0,0,0.2)", borderRadius: 7, padding: 6 }}>
           {tiles.map(t => (
             <div key={t.id} onClick={() => onChange(t.id)} style={{
@@ -631,7 +655,7 @@ function App() {
               border: `2px solid ${value === t.id ? C.accentBright : C.border}`,
               background: value === t.id ? C.accentDim : "transparent",
             }}>
-              <div style={{ fontSize: 8, textAlign: "center", color: value === t.id ? C.accent : C.muted, paddingTop: 2 }}>#{t.id}</div>
+              <div style={{ fontSize: 8, textAlign: "center", color: value === t.id ? C.accent : C.muted, paddingTop: 2, fontFamily: "monospace" }}>#{t.id}</div>
               <img src={t.src} alt="" style={{ width: "100%", height: 36, objectFit: "contain", imageRendering: "pixelated" }} />
             </div>
           ))}
@@ -642,7 +666,7 @@ function App() {
       <div className="modal-backdrop" onClick={() => setReplaceOpen(false)}>
         <div className="modal-box" style={{ maxWidth: 480 }} onClick={e => e.stopPropagation()}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Replace Tile</span>
+            <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright, fontFamily: "'Lilita One', cursive" }}>Replace Tile</span>
             <button onClick={() => setReplaceOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18 }}>×</button>
           </div>
           <div style={{ display: "flex", gap: 12 }}>
@@ -666,13 +690,13 @@ function App() {
       <div className="modal-backdrop" onClick={() => setSeedOpen(false)}>
         <div className="modal-box" style={{ maxWidth: 440 }} onClick={e => e.stopPropagation()}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Map Seed</span>
+            <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright, fontFamily: "'Lilita One', cursive" }}>Map Seed</span>
             <button onClick={() => setSeedOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18 }}>×</button>
           </div>
 
           {/* Generate */}
           <div>
-            <p style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>Generate a seed from the current map:</p>
+            <p style={{ fontSize: 11, color: C.muted, marginBottom: 6, fontFamily: "'Lilita One', cursive" }}>Generate a seed from the current map:</p>
             <button style={{ ...btn(false, C.soft, C.softDim), marginBottom: 8 }} onClick={generateSeed}>Generate seed</button>
             {seedVal && (
               <textarea className="seed-area" readOnly value={seedVal} onClick={e => e.target.select()} />
@@ -680,7 +704,7 @@ function App() {
           </div>
 
           <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 12 }}>
-            <p style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>Import a seed:</p>
+            <p style={{ fontSize: 11, color: C.muted, marginBottom: 6, fontFamily: "'Lilita One', cursive" }}>Import a seed:</p>
             <textarea className="seed-area" value={seedImport} onChange={e => { setSeedImport(e.target.value); setSeedErr(""); }}
               placeholder="Paste seed here…" />
             {seedErr && <p style={{ fontSize: 11, color: seedErr === "Imported!" ? "#4ade80" : C.danger, marginTop: 4 }}>{seedErr}</p>}
@@ -704,7 +728,7 @@ function App() {
     <div style={{
       display: "flex", flexDirection: "column", height: "100dvh",
       background: C.bg, color: C.text,
-      fontFamily: "'Inter', system-ui, -apple-system, sans-serif",
+      fontFamily: "'Lilita One', cursive",
       overflow: "hidden",
       paddingTop: "env(safe-area-inset-top)", paddingBottom: "env(safe-area-inset-bottom)",
       paddingLeft: "env(safe-area-inset-left)", paddingRight: "env(safe-area-inset-right)",
@@ -721,45 +745,23 @@ function App() {
         background: C.panel, borderBottom: `1px solid ${C.border}`,
         overflowX: "auto", overflowY: "hidden",
       }}>
+        <img src="favicon/favicon-32x32.png" alt="Ophelia" style={{ width: 28, height: 28, flexShrink: 0, imageRendering: "auto" }} />
         <span style={{
           fontFamily: "'Lilita One', cursive", fontWeight: 400, fontSize: 18,
           letterSpacing: 0.4, whiteSpace: "nowrap",
           background: "linear-gradient(90deg,#38bdf8,#93c5fd)",
           WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
           flexShrink: 0, marginRight: 4,
-        }}>Ophelia — Custom Theme Tester</span>
-
-        <div style={{ flex: 1 }} />
-
-        {/* Zoom controls */}
-        <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
-          <button style={{ ...btn(false), padding: "4px 9px", fontSize: 16, fontWeight: 700, lineHeight: 1 }}
-            onClick={() => changeZoom(-ZOOM_STEP)}>−</button>
-          {zoomEditing ? (
-            <input autoFocus value={zoomInput}
-              onChange={e => setZoomInput(e.target.value.replace(/\D/g, ""))}
-              onBlur={commitZoom}
-              onKeyDown={e => { if (e.key === "Enter") e.target.blur(); if (e.key === "Escape") setZoomEdit(false); }}
-              style={{ width: 52, textAlign: "center", outline: "none", background: C.accentDim, border: `1px solid ${C.accent}`, borderRadius: 7, color: C.text, fontFamily: "monospace", fontSize: 13, fontWeight: 700, padding: "3px 4px" }}
-            />
-          ) : (
-            <span onClick={() => { setZoomEdit(true); setZoomInput(String(Math.round(zoom * 100))); }}
-              style={{ minWidth: 52, textAlign: "center", display: "inline-block", fontSize: 13, fontFamily: "monospace", fontWeight: 700, color: C.text, background: "rgba(56,189,248,0.08)", borderRadius: 7, padding: "3px 6px", border: `1px solid ${C.border}`, cursor: "text", userSelect: "none" }}>
-              {Math.round(zoom * 100)}%
-            </span>
-          )}
-          <button style={{ ...btn(false), padding: "4px 9px", fontSize: 16, fontWeight: 700, lineHeight: 1 }}
-            onClick={() => changeZoom(ZOOM_STEP)}>+</button>
-        </div>
+        }}>Ophelia - Custom Theme Tester</span>
       </div>
 
       {/* ══ TILES PANEL ══════════════════════════════════════════════ */}
       <div style={{ background: C.panelDeep, borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
         <SectionHeader label={`Tiles ${tiles.length}`} open={tilesOpen} onToggle={() => setTilesOpen(o => !o)}
-          right={
-            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          left={
+            <div style={{ display: "flex", gap: 6, alignItems: "center", marginLeft: 8 }}>
               <button style={{ ...btn(eraser, C.danger, "rgba(248,113,113,0.16)"), fontSize: 11, padding: "4px 10px" }}
-                onClick={() => setEraser(v => !v)}>✕ Erase</button>
+                onClick={() => setEraser(v => !v)}>Erase</button>
               <button onClick={() => fileRef.current.click()}
                 style={{ ...btn(false, C.accentBright, C.accentDim), fontSize: 11, padding: "4px 10px" }}>
                 + Upload
@@ -823,18 +825,37 @@ function App() {
             <Sep />
 
             {/* Undo / Redo */}
-            <button style={{ ...btn(histIdx > 0, C.accent, C.accentDim) }} onClick={undo} disabled={histIdx <= 0} title="Undo (Ctrl+Z)">↩ Undo</button>
-            <button style={{ ...btn(histIdx < history.length - 1, C.accent, C.accentDim) }} onClick={redo} disabled={histIdx >= history.length - 1} title="Redo (Ctrl+Y)">↪ Redo</button>
+            <button style={{ ...btn(histIdx > 0, C.accent, C.accentDim) }} onClick={undo} disabled={histIdx <= 0} title="Undo (Ctrl+Z)">Undo</button>
+            <button style={{ ...btn(histIdx < history.length - 1, C.accent, C.accentDim) }} onClick={redo} disabled={histIdx >= history.length - 1} title="Redo (Ctrl+Y)">Redo</button>
 
             <Sep />
 
             {/* Replace */}
-            <button style={btn(false, C.soft, C.softDim)} onClick={() => setReplaceOpen(true)}>⇄ Replace</button>
+            <button style={btn(false, C.soft, C.softDim)} onClick={() => setReplaceOpen(true)}>Replace</button>
 
             <Sep />
 
-            {/* Seed */}
-            <button style={btn(false, C.soft, C.softDim)} onClick={() => setSeedOpen(true)}>⚿ Seed</button>
+            {/* Zoom controls */}
+            <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1 }}>Zoom</span>
+            <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+              <button style={{ ...btn(false), padding: "4px 9px", fontSize: 16, fontWeight: 700, lineHeight: 1 }}
+                onClick={() => changeZoom(-ZOOM_STEP)}>−</button>
+              {zoomEditing ? (
+                <input autoFocus value={zoomInput}
+                  onChange={e => setZoomInput(e.target.value.replace(/\D/g, ""))}
+                  onBlur={commitZoom}
+                  onKeyDown={e => { if (e.key === "Enter") e.target.blur(); if (e.key === "Escape") setZoomEdit(false); }}
+                  style={{ width: 52, textAlign: "center", outline: "none", background: C.accentDim, border: `1px solid ${C.accent}`, borderRadius: 7, color: C.text, fontFamily: "monospace", fontSize: 13, fontWeight: 700, padding: "3px 4px" }}
+                />
+              ) : (
+                <span onClick={() => { setZoomEdit(true); setZoomInput(String(Math.round(zoom * 100))); }}
+                  style={{ minWidth: 52, textAlign: "center", display: "inline-block", fontSize: 13, fontFamily: "monospace", fontWeight: 700, color: C.text, background: "rgba(56,189,248,0.08)", borderRadius: 7, padding: "3px 6px", border: `1px solid ${C.border}`, cursor: "text", userSelect: "none" }}>
+                  {Math.round(zoom * 100)}%
+                </span>
+              )}
+              <button style={{ ...btn(false), padding: "4px 9px", fontSize: 16, fontWeight: 700, lineHeight: 1 }}
+                onClick={() => changeZoom(ZOOM_STEP)}>+</button>
+            </div>
           </div>
         )}
       </div>
@@ -842,14 +863,14 @@ function App() {
       {/* ══ CANVAS ═══════════════════════════════════════════════════ */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
         <div ref={scrollRef}
-          style={{ flex: 1, overflow: "auto", background: "#040e1a", minHeight: 0, display: "flex", justifyContent: "center" }}
+          style={{ flex: 1, overflow: "auto", background: "#040e1a", minHeight: 0 }}
           onWheel={onWheel}
           onMouseUp={() => setPainting(false)}
           onMouseLeave={() => setPainting(false)}
         >
-          {/* Center wrapper: shrinks to content so the inner div can use inline-block */}
-          <div style={{ padding: 20, display: "flex", alignItems: "flex-start", justifyContent: "center", minWidth: "min-content" }}>
-            <div style={{ position: "relative", width: GRID_W * CELL * zoom, height: (GRID_H + 2) * CELL * zoom, flexShrink: 0 }}>
+          {/* Center wrapper */}
+          <div style={{ padding: 20, display: "flex", alignItems: "flex-start", justifyContent: "center", minWidth: "min-content", minHeight: "100%" }}>
+            <div style={{ position: "relative", width: GRID_W * CELL * zoom, height: (GRID_H + 2) * CELL * zoom, flexShrink: 0, margin: "0 auto" }}>
 
               {/* Checkerboard — offset by one CELL row for export padding */}
               {Array.from({ length: GRID_H }).map((_, r) =>
@@ -901,6 +922,7 @@ function App() {
           borderTop: `1px solid ${C.border}`, background: C.panel,
           flexShrink: 0, display: "flex", alignItems: "stretch",
           overflowX: "auto", overflowY: "hidden", gap: 4,
+          marginTop: 4,
         }}>
 
           {/* BG colour pickers */}
@@ -928,13 +950,14 @@ function App() {
           {/* Spacer */}
           <div style={{ flex: 1 }} />
 
-          {/* Actions */}
+          {/* Actions: Clear, Seed, Download — aligned right */}
           <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", flexShrink: 0 }}>
             <button style={btn(false, C.danger, "rgba(248,113,113,0.14)")}
               onClick={() => { if (confirm("Clear the whole grid?")) setGrid(Array.from({ length: GRID_H }, () => Array(GRID_W).fill(null))); }}>
               Clear
             </button>
-            <button style={btn(false, C.soft, C.softDim)} onClick={doExport}>↓ Export</button>
+            <button style={btn(false, C.soft, C.softDim)} onClick={() => setSeedOpen(true)}>Seed</button>
+            <button style={btn(false, C.soft, C.softDim)} onClick={doExport}>Download</button>
           </div>
         </div>
       </div>
