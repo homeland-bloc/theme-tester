@@ -7,18 +7,16 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Ophelia" />
   <meta name="mobile-web-app-capable" content="yes" />
-  <meta name="theme-color" content="#060f1a" />
+  <meta name="theme-color" content="#14100a" />
   <link rel="manifest" href="manifest.json" />
 
-  <!-- Favicon setup — browsers pick the best size automatically -->
   <link rel="icon"                    href="favicon/favicon.ico" sizes="any" />
-  <link rel="icon"    type="image/png" href="favicon/favicon-16x16.png"           sizes="16x16" />
-  <link rel="icon"    type="image/png" href="favicon/favicon-32x32.png"           sizes="32x32" />
+  <link rel="icon"    type="image/png" href="favicon/favicon-16x16.png" sizes="16x16" />
+  <link rel="icon"    type="image/png" href="favicon/favicon-32x32.png" sizes="32x32" />
   <link rel="apple-touch-icon"        href="favicon/apple-touch-icon.png" />
 
   <title>Ophelia</title>
 
-  <!-- Lilita One (title only) + Inter (all UI) from Google Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Lilita+One&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
@@ -29,32 +27,41 @@
 
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { height: 100%; height: 100dvh; overflow: hidden; background: #060f1a; }
+    html, body { height: 100%; height: 100dvh; overflow: hidden; background: #14100a; }
     #root { height: 100%; height: 100dvh; display: flex; flex-direction: column; overscroll-behavior: none; }
     ::-webkit-scrollbar { width: 4px; height: 4px; }
     ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: rgba(56,189,248,0.3); border-radius: 2px; }
+    ::-webkit-scrollbar-thumb { background: rgba(210,120,20,0.45); border-radius: 2px; }
     * { -webkit-tap-highlight-color: transparent; }
 
-    /* Modal backdrop */
     .modal-backdrop {
-      position: fixed; inset: 0; background: rgba(0,0,0,0.72);
+      position: fixed; inset: 0; background: rgba(0,0,0,0.75);
       display: flex; align-items: center; justify-content: center;
       z-index: 1000; padding: 20px;
     }
     .modal-box {
-      background: #0a1e30; border: 1px solid rgba(56,189,248,0.28);
+      background: #1e1408; border: 1px solid rgba(205,120,30,0.38);
       border-radius: 14px; padding: 22px; max-width: 340px; width: 100%;
       display: flex; flex-direction: column; gap: 16px;
     }
-
-    /* Seed textarea */
     .seed-area {
-      width: 100%; background: rgba(56,189,248,0.06); border: 1px solid rgba(56,189,248,0.22);
-      border-radius: 7px; color: #e0f2fe; font-family: monospace; font-size: 11px;
+      width: 100%; background: rgba(210,120,20,0.08); border: 1px solid rgba(205,120,30,0.3);
+      border-radius: 7px; color: #f5deb8; font-family: monospace; font-size: 11px;
       padding: 8px; resize: vertical; min-height: 56px; outline: none;
     }
-    .seed-area:focus { border-color: #38bdf8; }
+    .seed-area:focus { border-color: #d97316; }
+
+    /* Sidebar toggle tab */
+    .sidebar-tab {
+      display: flex; align-items: center; justify-content: center;
+      width: 18px; flex-shrink: 0; cursor: pointer; user-select: none;
+      background: #1e1408; transition: background 0.12s;
+    }
+    .sidebar-tab:hover { background: #2a1c0c; }
+    .sidebar-tab-arrow {
+      font-size: 10px; writing-mode: vertical-rl;
+      color: #d97316; line-height: 1; letter-spacing: 2px;
+    }
   </style>
 </head>
 <body>
@@ -65,47 +72,50 @@ const { useState, useRef, useEffect, useCallback, useMemo } = React;
 // ── Constants ──────────────────────────────────────────────────────────
 const GRID_W = 21, GRID_H = 33, CELL = 32;
 const DEFAULT_BG1 = "#67717d", DEFAULT_BG2 = "#6e7986";
-const MIN_ZOOM = 0.25, MAX_ZOOM = 4;
-// Zoom buttons snap to nearest 10%
-const ZOOM_STEP = 0.1;
+const MIN_ZOOM = 0.25, MAX_ZOOM = 4, ZOOM_STEP = 0.1;
 const snapTo10 = z => Math.round(z * 10) / 10;
-const SK = { tiles: "oph_tiles", grid: "oph_grid", colors: "oph_colors", userTiles: "oph_user_tiles" };
+const SK = { grid: "oph_grid", colors: "oph_colors", userTiles: "oph_user_tiles" };
 const ACCEPTED = "image/png,image/jpeg,image/gif,image/webp,image/svg+xml,image/bmp";
 const MAX_HISTORY = 60;
-
-// Default tiles are loaded dynamically from Resources/manifest.json.
-// To add/remove tiles, update that JSON file (or run generate-manifest.sh).
 
 const load = (k, d) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } };
 const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
 const validHex = h => /^#[0-9A-Fa-f]{6}$/.test(h);
 const isMobileDevice = () => typeof window !== "undefined" && window.innerWidth < 768;
 
-// ── Colour palette ─────────────────────────────────────────────────────
+// ── Desert-orange colour palette ───────────────────────────────────────
 const C = {
-  bg: "#060f1a", panel: "#0a1e30", panelDeep: "#071627",
-  border: "rgba(56,189,248,0.18)", accent: "#38bdf8",
-  accentDim: "rgba(56,189,248,0.14)", accentBright: "#7dd3fc",
-  soft: "#93c5fd", softDim: "rgba(147,197,253,0.16)",
-  pale: "#bfdbfe", paleDim: "rgba(191,219,254,0.14)",
-  text: "#e0f2fe", muted: "rgba(224,242,254,0.45)", danger: "#f87171",
+  bg:          "#14100a",
+  panel:       "#1e1408",
+  panelDeep:   "#170f04",
+  border:      "rgba(205,120,30,0.25)",
+  accent:      "#d97316",
+  accentDim:   "rgba(217,115,22,0.2)",
+  accentBright:"#fb923c",
+  soft:        "#c2853a",
+  softDim:     "rgba(194,133,58,0.2)",
+  pale:        "#e8b84a",
+  paleDim:     "rgba(232,184,74,0.18)",
+  text:        "#f5deb8",
+  muted:       "rgba(245,222,184,0.48)",
+  danger:      "#f87171",
+  canvasBg:    "#0d0904",
 };
 
 // ── Seed codec ─────────────────────────────────────────────────────────
-// Format: [symmetry_prefix]:[rle_payload]
 const B62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 const toB62 = n => { if (n === 0) return "0"; let s = ""; while (n > 0) { s = B62[n % 62] + s; n = Math.floor(n / 62); } return s; };
 const fromB62 = s => s.split("").reduce((a, c) => a * 62 + B62.indexOf(c), 0);
 
 function encodeSeed(grid, mirrorV, mirrorH, mirrorD) {
   let sym = "a";
-  if (mirrorD && !mirrorH && !mirrorV) sym = "d";
+  if      (mirrorD && !mirrorH && !mirrorV) sym = "d";
   else if (mirrorH && !mirrorD && !mirrorV) sym = "h";
   else if (mirrorV && !mirrorD && !mirrorH) sym = "v";
-  else if (mirrorD && mirrorH && mirrorV) sym = "f";
-  else if (mirrorD && mirrorH) sym = "dh";
-  else if (mirrorD && mirrorV) sym = "dv";
-  else if (mirrorH && mirrorV) sym = "hv";
+  else if (mirrorD && mirrorH && mirrorV)   sym = "f";
+  else if (mirrorD && mirrorH)              sym = "dh";
+  else if (mirrorD && mirrorV)              sym = "dv";
+  else if (mirrorH && mirrorV)              sym = "hv";
 
   const flat = grid.flat().map(v => v ?? 0);
   const tokens = [];
@@ -118,8 +128,7 @@ function encodeSeed(grid, mirrorV, mirrorH, mirrorD) {
     if (val === 0) idStr = "_";
     else if (val <= 62) idStr = B62[val];
     else idStr = "~" + toB62(val);
-    const runStr = run > 1 ? "x" + toB62(run) : "";
-    tokens.push(idStr + runStr);
+    tokens.push(idStr + (run > 1 ? "x" + toB62(run) : ""));
     i += run;
   }
   return sym + ":" + tokens.join("");
@@ -128,9 +137,8 @@ function encodeSeed(grid, mirrorV, mirrorH, mirrorD) {
 function decodeSeed(seed) {
   const colonIdx = seed.indexOf(":");
   if (colonIdx === -1) return null;
-  const sym = seed.slice(0, colonIdx);
+  const sym     = seed.slice(0, colonIdx);
   const payload = seed.slice(colonIdx + 1);
-
   const mirrorD = sym.includes("d") || sym === "f";
   const mirrorH = sym.includes("h") || sym === "f";
   const mirrorV = sym.includes("v") || sym === "f";
@@ -143,64 +151,41 @@ function decodeSeed(seed) {
     else if (payload[i] === "~") {
       let j = i + 1;
       while (j < payload.length && payload[j] !== "x" && payload[j] !== "_" && payload[j] !== "~" && B62.indexOf(payload[j]) !== -1) j++;
-      val = fromB62(payload.slice(i + 1, j));
-      idLen = j - i;
-    } else {
-      val = B62.indexOf(payload[i]);
-      idLen = 1;
-    }
+      val = fromB62(payload.slice(i + 1, j)); idLen = j - i;
+    } else { val = B62.indexOf(payload[i]); idLen = 1; }
     i += idLen;
     let run = 1;
     if (i < payload.length && payload[i] === "x") {
       let j = i + 1;
       while (j < payload.length && B62.indexOf(payload[j]) !== -1 && payload[j] !== "_" && payload[j] !== "~") j++;
-      run = fromB62(payload.slice(i + 1, j));
-      i = j;
+      run = fromB62(payload.slice(i + 1, j)); i = j;
     }
     for (let k = 0; k < run; k++) flat.push(val === 0 ? null : val);
   }
 
-  const total = GRID_W * GRID_H;
   const padded = [...flat];
-  while (padded.length < total) padded.push(null);
+  while (padded.length < GRID_W * GRID_H) padded.push(null);
   const grid = Array.from({ length: GRID_H }, (_, r) => padded.slice(r * GRID_W, r * GRID_W + GRID_W));
   return { grid, mirrorD, mirrorH, mirrorV };
 }
 
-// ── Placeholder tile for unknown IDs on import ─────────────────────────
 function makePlaceholderSrc(id) {
-  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><rect width='32' height='32' fill='#1a1a2e'/><text x='16' y='22' font-size='12' fill='white' text-anchor='middle' font-family='monospace'>${id}</text></svg>`;
+  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><rect width='32' height='32' fill='#1a100a'/><text x='16' y='22' font-size='12' fill='#e8b84a' text-anchor='middle' font-family='monospace'>${id}</text></svg>`;
   return "data:image/svg+xml," + encodeURIComponent(svg);
 }
 
-// ── Tiny helpers ───────────────────────────────────────────────────────
-const Sep = () => <div style={{ width: 1, height: 22, background: C.border, flexShrink: 0, alignSelf: "center" }} />;
+// ── Tiny separator ────────────────────────────────────────────────────
+const HSep = () => <div style={{ height: 1, background: C.border, margin: "4px 0" }} />;
+const VSep = () => <div style={{ width: 1, height: 22, background: C.border, flexShrink: 0, alignSelf: "center" }} />;
 
-function SectionHeader({ label, open, onToggle, left, right }) {
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 12px", background: C.panelDeep, borderBottom: open ? `1px solid ${C.border}` : "none" }}>
-      <button onClick={onToggle} style={{ display: "flex", alignItems: "center", gap: 5, background: "none", border: "none", cursor: "pointer", padding: 0 }}>
-        <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1.2, color: C.accent, textTransform: "uppercase", fontFamily: "'Inter', sans-serif" }}>{label}</span>
-        <span style={{ fontSize: 9, color: C.muted, display: "inline-block", transition: "transform 0.15s", transform: open ? "rotate(0deg)" : "rotate(-90deg)" }}>▼</span>
-      </button>
-      {left}
-      <div style={{ flex: 1 }} />
-      {right}
-    </div>
-  );
-}
-
-// ── Main App ───────────────────────────────────────────────────────────
+// ── Main App ──────────────────────────────────────────────────────────
 function App() {
   const savedColors = load(SK.colors, { bg1: DEFAULT_BG1, bg2: DEFAULT_BG2 });
   const mobile = isMobileDevice();
 
-  // Default tiles loaded dynamically from Resources/manifest.json
-  const [defaultTiles, setDefaultTiles]   = useState([]);
-  const [tilesLoading, setTilesLoading]   = useState(true);
-
-  // User-uploaded tiles persisted in localStorage; IDs start after defaults
-  const [userTiles, setUserTiles] = useState(() => load(SK.userTiles, []));
+  const [defaultTiles, setDefaultTiles] = useState([]);
+  const [tilesLoading, setTilesLoading] = useState(true);
+  const [userTiles,    setUserTiles]    = useState(() => load(SK.userTiles, []));
   const tiles = useMemo(() => [...defaultTiles, ...userTiles], [defaultTiles, userTiles]);
 
   const [grid,        setGridRaw]   = useState(() => load(SK.grid, Array.from({ length: GRID_H }, () => Array(GRID_W).fill(null))));
@@ -218,78 +203,54 @@ function App() {
   const [zoomEditing, setZoomEdit]  = useState(false);
   const [zoomInput,   setZoomInput] = useState("");
   const [painting,    setPainting]  = useState(false);
-  // Panels: collapsed by default on mobile
   const [tilesOpen,   setTilesOpen] = useState(!mobile);
   const [toolsOpen,   setToolsOpen] = useState(!mobile);
-  const [bgOpen,      setBgOpen]    = useState(!mobile);
-  const [otherOpen,   setOtherOpen] = useState(!mobile);
   const [infoTile,    setInfoTile]  = useState(null);
-  // Replace A→B
   const [replaceOpen, setReplaceOpen] = useState(false);
   const [replaceA,    setReplaceA]  = useState(null);
   const [replaceB,    setReplaceB]  = useState(null);
-  // Seed
   const [seedOpen,    setSeedOpen]  = useState(false);
   const [seedVal,     setSeedVal]   = useState("");
   const [seedImport,  setSeedImport]= useState("");
   const [seedErr,     setSeedErr]   = useState("");
-  // Failed tile tracking
   const [failedTiles,   setFailedTiles]   = useState(new Set());
   const [failedWarning, setFailedWarning] = useState(false);
-  // Upload success flash
-  const [uploadFlash,   setUploadFlash]   = useState(0);  // count of newly uploaded tiles
+  const [uploadFlash,   setUploadFlash]   = useState(0);
   const uploadTimerRef = useRef(null);
-  // Responsive
-  const [isMobile,    setIsMobile]  = useState(mobile);
 
-  // History
-  const [history,  setHistory]  = useState([grid]);
-  const [histIdx,  setHistIdx]  = useState(0);
+  const [history, setHistory] = useState([grid]);
+  const [histIdx, setHistIdx] = useState(0);
 
   const fileRef   = useRef();
   const scrollRef = useRef();
-  // nextId is safe to start from user tiles max; updated after manifest loads
   const nextId    = useRef(userTiles.length ? Math.max(...userTiles.map(t => t.id)) + 1 : 1);
 
-  // Stable refs for touch/paint handlers
-  const selRef      = useRef(sel);
-  const eraserRef   = useRef(eraser);
-  const zoomRef     = useRef(zoom);
-  const paintRef    = useRef(null);
-  const absZoomRef  = useRef(null);
-  const pinchRef    = useRef(null);
+  const selRef    = useRef(sel);
+  const eraserRef = useRef(eraser);
+  const zoomRef   = useRef(zoom);
+  const paintRef  = useRef(null);
+  const absZoomRef= useRef(null);
+  const pinchRef  = useRef(null);
 
   useEffect(() => { selRef.current    = sel;    }, [sel]);
   useEffect(() => { eraserRef.current = eraser; }, [eraser]);
   useEffect(() => { zoomRef.current   = zoom;   }, [zoom]);
 
-  // Persist
   useEffect(() => { save(SK.userTiles, userTiles); }, [userTiles]);
-  useEffect(() => { save(SK.grid,      grid);       }, [grid]);
+  useEffect(() => { save(SK.grid, grid);            }, [grid]);
 
-  // Load default tiles dynamically from Resources/manifest.json
+  // Load default tiles from Resources/manifest.json
   useEffect(() => {
     fetch("Resources/manifest.json")
       .then(r => r.ok ? r.json() : { tiles: [] })
       .then(({ tiles: files }) => {
         const arr = Array.isArray(files) ? files : [];
-        const loaded = arr.map((f, i) => ({
-          id: i + 1,
-          src: `Resources/${f}`,
-          isDefault: true,
-        }));
+        const loaded = arr.map((f, i) => ({ id: i + 1, src: `Resources/${f}`, isDefault: true }));
         setDefaultTiles(loaded);
         nextId.current = Math.max(nextId.current, loaded.length + 1);
       })
       .catch(() => {})
       .finally(() => setTilesLoading(false));
-  }, []);
-
-  // Responsive resize listener
-  useEffect(() => {
-    const onResize = () => setIsMobile(window.innerWidth < 768);
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
   }, []);
 
   const saveColors = (b1, b2) => save(SK.colors, { bg1: b1, bg2: b2 });
@@ -298,7 +259,7 @@ function App() {
 
   const markFailed = id => setFailedTiles(prev => new Set([...prev, id]));
 
-  // Grid with history
+  // Grid + history
   const setGrid = useCallback((updater, skipHistory = false) => {
     setGridRaw(prev => {
       const next = typeof updater === "function" ? updater(prev) : updater;
@@ -316,31 +277,25 @@ function App() {
 
   const undo = useCallback(() => {
     if (histIdx <= 0) return;
-    const newIdx = histIdx - 1;
-    setHistIdx(newIdx);
-    setGridRaw(history[newIdx]);
+    const ni = histIdx - 1; setHistIdx(ni); setGridRaw(history[ni]);
   }, [history, histIdx]);
 
   const redo = useCallback(() => {
     if (histIdx >= history.length - 1) return;
-    const newIdx = histIdx + 1;
-    setHistIdx(newIdx);
-    setGridRaw(history[newIdx]);
+    const ni = histIdx + 1; setHistIdx(ni); setGridRaw(history[ni]);
   }, [history, histIdx]);
 
   const loadFiles = files => {
-    const imageFiles = [...files].filter(f => f.type.startsWith("image/"));
-    if (!imageFiles.length) return;
-    let loaded = 0;
-    imageFiles.forEach(f => {
+    const imgs = [...files].filter(f => f.type.startsWith("image/"));
+    if (!imgs.length) return;
+    let done = 0;
+    imgs.forEach(f => {
       const r = new FileReader();
       r.onload = e => {
         const id = nextId.current++;
         setUserTiles(prev => [...prev, { id, src: e.target.result }]);
-        loaded++;
-        if (loaded === imageFiles.length) {
-          // Flash notification
-          setUploadFlash(imageFiles.length);
+        if (++done === imgs.length) {
+          setUploadFlash(imgs.length);
           if (uploadTimerRef.current) clearTimeout(uploadTimerRef.current);
           uploadTimerRef.current = setTimeout(() => setUploadFlash(0), 2500);
         }
@@ -391,7 +346,7 @@ function App() {
 
   const getTile = id => tiles.find(t => t.id === id);
 
-  // ── Zoom ──────────────────────────────────────────────────────────
+  // ── Zoom ─────────────────────────────────────────────────────────
   const applyZoom = useCallback((newZ, focal = null) => {
     setZoom(prev => {
       const z = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, +newZ.toFixed(2)));
@@ -407,7 +362,6 @@ function App() {
     });
   }, []);
 
-  // +/- buttons: snap to nearest 10%
   const changeZoom = useCallback((delta, focal = null) => {
     setZoom(prev => {
       const z = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, snapTo10(prev + delta)));
@@ -437,10 +391,9 @@ function App() {
     changeZoom(e.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP, focal);
   }, [changeZoom]);
 
-  // ── Touch events ─────────────────────────────────────────────────
+  // ── Touch ────────────────────────────────────────────────────────
   useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
+    const el = scrollRef.current; if (!el) return;
     const cellAt = touch => {
       const rect = el.getBoundingClientRect();
       const x = touch.clientX - rect.left + el.scrollLeft - 20;
@@ -464,11 +417,8 @@ function App() {
         e.preventDefault(); return;
       }
       if (e.touches.length !== 1 || (!selRef.current && !eraserRef.current)) return;
-      const cell = cellAt(e.touches[0]);
-      if (!cell) return;
-      e.preventDefault();
-      isTouchPainting = true;
-      paintRef.current(cell[0], cell[1]);
+      const cell = cellAt(e.touches[0]); if (!cell) return;
+      e.preventDefault(); isTouchPainting = true; paintRef.current(cell[0], cell[1]);
     };
     const onTouchMove = e => {
       if (e.touches.length === 2 && pinchRef.current) {
@@ -482,22 +432,21 @@ function App() {
       }
       if (!isTouchPainting || e.touches.length !== 1) return;
       e.preventDefault();
-      const cell = cellAt(e.touches[0]);
-      if (cell) paintRef.current(cell[0], cell[1]);
+      const cell = cellAt(e.touches[0]); if (cell) paintRef.current(cell[0], cell[1]);
     };
     const onTouchEnd = e => {
       if (e.touches.length < 2) pinchRef.current = null;
       if (e.touches.length === 0) isTouchPainting = false;
     };
-    el.addEventListener('touchstart',  onTouchStart, { passive: false });
-    el.addEventListener('touchmove',   onTouchMove,  { passive: false });
-    el.addEventListener('touchend',    onTouchEnd);
-    el.addEventListener('touchcancel', onTouchEnd);
+    el.addEventListener("touchstart",  onTouchStart, { passive: false });
+    el.addEventListener("touchmove",   onTouchMove,  { passive: false });
+    el.addEventListener("touchend",    onTouchEnd);
+    el.addEventListener("touchcancel", onTouchEnd);
     return () => {
-      el.removeEventListener('touchstart',  onTouchStart);
-      el.removeEventListener('touchmove',   onTouchMove);
-      el.removeEventListener('touchend',    onTouchEnd);
-      el.removeEventListener('touchcancel', onTouchEnd);
+      el.removeEventListener("touchstart",  onTouchStart);
+      el.removeEventListener("touchmove",   onTouchMove);
+      el.removeEventListener("touchend",    onTouchEnd);
+      el.removeEventListener("touchcancel", onTouchEnd);
     };
   }, []);
 
@@ -511,18 +460,17 @@ function App() {
     return () => window.removeEventListener("keydown", h);
   }, [undo, redo]);
 
-  // ── Replace A → B ─────────────────────────────────────────────────
+  // ── Replace ───────────────────────────────────────────────────────
   const doReplace = () => {
     if (replaceA == null || replaceB == null) return;
     setGrid(prev => prev.map(row => row.map(id => id === replaceA ? replaceB : id)));
     setReplaceOpen(false); setReplaceA(null); setReplaceB(null);
   };
 
-  // ── Seed helpers ──────────────────────────────────────────────────
+  // ── Seed ──────────────────────────────────────────────────────────
   const generateSeed = () => {
     const s = encodeSeed(grid, mirrorV, mirrorH, mirrorD);
-    setSeedVal(s);
-    setSeedImport(s);
+    setSeedVal(s); setSeedImport(s);
   };
 
   const importSeed = () => {
@@ -533,10 +481,8 @@ function App() {
     const allIds = new Set(tiles.map(t => t.id));
     const placeholders = [];
     newGrid.forEach(row => row.forEach(id => {
-      if (id && !allIds.has(id)) {
-        if (!placeholders.find(p => p.id === id))
-          placeholders.push({ id, name: `Unknown #${id}`, src: makePlaceholderSrc(id), isPlaceholder: true });
-      }
+      if (id && !allIds.has(id) && !placeholders.find(p => p.id === id))
+        placeholders.push({ id, src: makePlaceholderSrc(id), isPlaceholder: true });
     }));
     if (placeholders.length > 0) {
       setUserTiles(prev => {
@@ -553,8 +499,7 @@ function App() {
   const doExport = () => {
     const padding = CELL;
     const cv = document.createElement("canvas");
-    cv.width  = GRID_W * CELL;
-    cv.height = GRID_H * CELL + padding * 2;
+    cv.width = GRID_W * CELL; cv.height = GRID_H * CELL + padding * 2;
     const ctx = cv.getContext("2d");
     for (let r = 0; r < GRID_H; r++) for (let c = 0; c < GRID_W; c++) {
       ctx.fillStyle = (r + c) % 2 === 0 ? bg1 : bg2;
@@ -582,32 +527,22 @@ function App() {
 
   const commitZoom = () => {
     const v = parseInt(zoomInput, 10);
-    if (!isNaN(v) && v > 0) {
-      // Snap to nearest 10%
-      const snapped = Math.round(v / 10) * 10;
-      setZoom(Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, snapped / 100)));
-    }
+    if (!isNaN(v) && v > 0) setZoom(Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.round(v / 10) * 10 / 100)));
     setZoomEdit(false);
   };
 
-  // ── Shared styles ─────────────────────────────────────────────────
+  // ── Shared button style ───────────────────────────────────────────
   const btn = (active, color = C.accent, dim = C.accentDim) => ({
     padding: "5px 11px", borderRadius: 7, fontSize: 12, fontWeight: 600,
     cursor: "pointer", touchAction: "manipulation", userSelect: "none",
     fontFamily: "'Inter', sans-serif",
     background: active ? dim : "rgba(255,255,255,0.04)",
     color:      active ? color : C.muted,
-    border:    `1px solid ${active ? color : "rgba(255,255,255,0.1)"}`,
+    border:     `1px solid ${active ? color : "rgba(255,255,255,0.1)"}`,
     transition: "all 0.12s", flexShrink: 0,
   });
 
-  const inputStyle = {
-    background: "rgba(56,189,248,0.07)", border: `1px solid ${C.border}`,
-    borderRadius: 5, color: C.text, fontFamily: "'Inter', monospace", fontSize: 11,
-    padding: "4px 8px", outline: "none", width: "100%",
-  };
-
-  // ── Tile info modal ───────────────────────────────────────────────
+  // ── Modals ────────────────────────────────────────────────────────
   const InfoModal = () => {
     if (!infoTile) return null;
     const t = getTile(infoTile);
@@ -619,7 +554,7 @@ function App() {
             <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Tile #{t.id}</span>
             <button onClick={() => setInfoTile(null)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
           </div>
-          <div style={{ background: "#040e1a", borderRadius: 8, padding: 12, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 120 }}>
+          <div style={{ background: C.canvasBg, borderRadius: 8, padding: 12, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 120 }}>
             <img src={t.src} alt="" style={{ maxWidth: "100%", maxHeight: 180, objectFit: "contain", imageRendering: "pixelated" }} />
           </div>
           {!t.isDefault && (
@@ -634,13 +569,12 @@ function App() {
     );
   };
 
-  // ── Replace modal ─────────────────────────────────────────────────
   const ReplaceModal = () => {
     if (!replaceOpen) return null;
     const TilePicker = ({ value, onChange, label }) => (
       <div style={{ flex: 1 }}>
         <p style={{ fontSize: 10, color: C.muted, marginBottom: 4, textTransform: "uppercase", letterSpacing: 1 }}>{label}</p>
-        <div style={{ overflowY: "auto", maxHeight: 180, display: "flex", flexWrap: "wrap", gap: 5, background: "rgba(0,0,0,0.2)", borderRadius: 7, padding: 6 }}>
+        <div style={{ overflowY: "auto", maxHeight: 180, display: "flex", flexWrap: "wrap", gap: 5, background: "rgba(0,0,0,0.25)", borderRadius: 7, padding: 6 }}>
           {tiles.map(t => (
             <div key={t.id} onClick={() => onChange(t.id)} style={{
               width: 44, cursor: "pointer", borderRadius: 6, overflow: "hidden",
@@ -675,7 +609,6 @@ function App() {
     );
   };
 
-  // ── Seed modal ────────────────────────────────────────────────────
   const SeedModal = () => {
     if (!seedOpen) return null;
     return (
@@ -685,28 +618,24 @@ function App() {
             <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Map Seed</span>
             <button onClick={() => setSeedOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18 }}>×</button>
           </div>
-
           <div>
-            <p style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>Generate a seed from the current map:</p>
+            <p style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>Generate a compact text code of the current map layout:</p>
             <button style={{ ...btn(false, C.soft, C.softDim), marginBottom: 8 }} onClick={generateSeed}>Generate seed</button>
-            {seedVal && (
-              <textarea className="seed-area" readOnly value={seedVal} onClick={e => e.target.select()} />
-            )}
+            {seedVal && <textarea className="seed-area" readOnly value={seedVal} onClick={e => e.target.select()} />}
           </div>
-
           <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 12 }}>
-            <p style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>Import a seed:</p>
-            <textarea className="seed-area" value={seedImport} onChange={e => { setSeedImport(e.target.value); setSeedErr(""); }}
+            <p style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>Paste a seed to restore a map:</p>
+            <textarea className="seed-area" value={seedImport}
+              onChange={e => { setSeedImport(e.target.value); setSeedErr(""); }}
               placeholder="Paste seed here…" />
-            {seedErr && <p style={{ fontSize: 11, color: seedErr === "Imported!" ? "#4ade80" : C.danger, marginTop: 4 }}>{seedErr}</p>}
+            {seedErr && <p style={{ fontSize: 11, color: seedErr === "Imported!" ? "#86efac" : C.danger, marginTop: 4 }}>{seedErr}</p>}
             <button style={{ ...btn(false, C.accent, C.accentDim), marginTop: 8 }} onClick={importSeed}>Import seed</button>
           </div>
-
-          <div style={{ background: "rgba(56,189,248,0.06)", borderRadius: 7, padding: 8 }}>
+          <div style={{ background: "rgba(210,120,20,0.08)", borderRadius: 7, padding: 8 }}>
             <p style={{ fontSize: 10, color: C.muted, lineHeight: 1.6 }}>
               Seed format: <code style={{ color: C.accentBright }}>[symmetry]:[rle]</code><br />
-              Symmetry: <code style={{ color: C.pale }}>d</code> diagonal · <code style={{ color: C.pale }}>h</code> horizontal · <code style={{ color: C.pale }}>v</code> vertical · <code style={{ color: C.pale }}>a</code> asymmetric<br />
-              Unknown tile IDs on import show as placeholder squares.
+              Symmetry codes: <code style={{ color: C.pale }}>d</code> diagonal · <code style={{ color: C.pale }}>h</code> horiz · <code style={{ color: C.pale }}>v</code> vert · <code style={{ color: C.pale }}>a</code> none<br />
+              Unknown tile IDs on import appear as placeholder squares.
             </p>
           </div>
         </div>
@@ -714,21 +643,20 @@ function App() {
     );
   };
 
-  // ── Failed tile warning modal ─────────────────────────────────────
   const FailedTileModal = () => {
     if (!failedWarning) return null;
     return (
       <div className="modal-backdrop" onClick={() => setFailedWarning(false)}>
         <div className="modal-box" onClick={e => e.stopPropagation()}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <span style={{ fontSize: 13, fontWeight: 700, color: C.danger }}>Tile unavailable</span>
+            <span style={{ fontSize: 13, fontWeight: 700, color: "#fbbf24" }}>⚠️ Tile unavailable</span>
             <button onClick={() => setFailedWarning(false)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
           </div>
           <p style={{ fontSize: 13, color: C.text, lineHeight: 1.6 }}>
             This tile's image could not be loaded. The file may be missing from the <code style={{ color: C.accentBright }}>Resources/</code> folder.
           </p>
           <p style={{ fontSize: 11, color: C.muted }}>
-            To fix this, restore the missing image file to the Resources folder and refresh the page. You can also update <code style={{ color: C.accentBright }}>Resources/manifest.json</code> to remove deleted entries.
+            Restore the file and refresh, or remove it from <code style={{ color: C.accentBright }}>Resources/manifest.json</code>.
           </p>
           <button style={{ ...btn(false, C.accent, C.accentDim) }} onClick={() => setFailedWarning(false)}>OK</button>
         </div>
@@ -736,19 +664,57 @@ function App() {
     );
   };
 
+  // ── Tile card (used in left sidebar strip) ────────────────────────
+  const CARD = 64;
+  const TileCard = ({ t }) => {
+    const active = sel === t.id && !eraser;
+    const failed = failedTiles.has(t.id);
+    return (
+      <div
+        onClick={() => { if (failed) { setFailedWarning(true); return; } setSel(t.id); setEraser(false); }}
+        style={{
+          width: CARD, height: CARD, borderRadius: 8, flexShrink: 0,
+          cursor: failed ? "not-allowed" : "pointer",
+          border: `2px solid ${failed ? "#f59e0b" : active ? C.accentBright : C.border}`,
+          background: failed ? "rgba(245,158,11,0.1)" : active ? C.accentDim : "rgba(255,255,255,0.03)",
+          opacity: failed ? 0.6 : 1,
+          transition: "border 0.12s, background 0.12s",
+          overflow: "hidden", position: "relative",
+        }}>
+        <div style={{ width: "100%", height: "100%", background: C.canvasBg, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          {failed ? (
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 1 }}>
+              <span style={{ fontSize: 22 }}>⚠️</span>
+              <span style={{ fontSize: 7, color: "#fbbf24", fontWeight: 700, letterSpacing: 0.5, textTransform: "uppercase" }}>missing</span>
+            </div>
+          ) : (
+            <img src={t.src} alt="" onError={() => markFailed(t.id)}
+              style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated" }} />
+          )}
+        </div>
+        <span onClick={e => { e.stopPropagation(); setInfoTile(t.id); }}
+          style={{ position: "absolute", top: 2, right: 3, fontSize: 11, cursor: "pointer", color: active ? C.accentBright : C.muted, lineHeight: 1, opacity: 0.75 }}
+          title="Tile info">ⓘ</span>
+      </div>
+    );
+  };
+
   // ─────────────────────────────────────────────────────────────────
-  // Grid size in pixels (at current zoom)
+  // Layout sizes
+  const SIDEBAR_W = CARD + 12;  // 76 px — one tile + padding
+  const TOOLS_W   = 152;
   const gW = GRID_W * CELL * zoom;
   const gH = GRID_H * CELL * zoom;
 
   return (
     <div style={{
       display: "flex", flexDirection: "column", height: "100dvh",
-      background: C.bg, color: C.text,
-      fontFamily: "'Inter', sans-serif",
+      background: C.bg, color: C.text, fontFamily: "'Inter', sans-serif",
       overflow: "hidden",
-      paddingTop: "env(safe-area-inset-top)", paddingBottom: "env(safe-area-inset-bottom)",
-      paddingLeft: "env(safe-area-inset-left)", paddingRight: "env(safe-area-inset-right)",
+      paddingTop:    "env(safe-area-inset-top)",
+      paddingBottom: "env(safe-area-inset-bottom)",
+      paddingLeft:   "env(safe-area-inset-left)",
+      paddingRight:  "env(safe-area-inset-right)",
     }}>
 
       <InfoModal />
@@ -758,260 +724,97 @@ function App() {
 
       {/* ══ TOP BAR ══════════════════════════════════════════════════ */}
       <div style={{
-        display: "flex", alignItems: "center", gap: 8, padding: "0 14px",
+        display: "flex", alignItems: "center", gap: 10, padding: "0 14px",
         height: 50, flexShrink: 0,
         background: C.panel, borderBottom: `1px solid ${C.border}`,
       }}>
-        {/* Logo + title */}
-        <img src="favicon/favicon-32x32.png" alt="Ophelia" style={{ width: 28, height: 28, flexShrink: 0, imageRendering: "auto" }} />
-        {!isMobile && (
-          <span style={{
-            fontFamily: "'Lilita One', cursive", fontWeight: 400, fontSize: 18,
-            letterSpacing: 0.4, whiteSpace: "nowrap",
-            background: "linear-gradient(90deg,#38bdf8,#93c5fd)",
-            WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
-            flexShrink: 0,
-          }}>Ophelia - Custom Theme Tester</span>
-        )}
-
-        <div style={{ flex: 1 }} />
-
-        {/* Zoom controls — centred in top bar */}
-        <div style={{ display: "flex", alignItems: "center", gap: 5, flexShrink: 0 }}>
-          <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1, userSelect: "none" }}>Zoom</span>
-          <button style={{ ...btn(false), padding: "4px 9px", fontSize: 15, fontWeight: 700, lineHeight: 1 }}
-            onClick={() => changeZoom(-ZOOM_STEP)}>−</button>
-          {zoomEditing ? (
-            <input autoFocus value={zoomInput}
-              onChange={e => setZoomInput(e.target.value.replace(/\D/g, ""))}
-              onBlur={commitZoom}
-              onKeyDown={e => { if (e.key === "Enter") e.target.blur(); if (e.key === "Escape") setZoomEdit(false); }}
-              style={{ width: 52, textAlign: "center", outline: "none", background: C.accentDim, border: `1px solid ${C.accent}`, borderRadius: 7, color: C.text, fontFamily: "monospace", fontSize: 13, fontWeight: 700, padding: "3px 4px" }}
-            />
-          ) : (
-            <span onClick={() => { setZoomEdit(true); setZoomInput(String(Math.round(zoom * 100))); }}
-              style={{ minWidth: 52, textAlign: "center", display: "inline-block", fontSize: 13, fontFamily: "monospace", fontWeight: 700, color: C.text, background: "rgba(56,189,248,0.08)", borderRadius: 7, padding: "3px 6px", border: `1px solid ${C.border}`, cursor: "text", userSelect: "none" }}>
-              {Math.round(zoom * 100)}%
-            </span>
-          )}
-          <button style={{ ...btn(false), padding: "4px 9px", fontSize: 15, fontWeight: 700, lineHeight: 1 }}
-            onClick={() => changeZoom(ZOOM_STEP)}>+</button>
-        </div>
-
-        <div style={{ flex: 1 }} />
+        <img src="favicon/favicon-32x32.png" alt="Ophelia" style={{ width: 28, height: 28, flexShrink: 0 }} />
+        <span style={{
+          fontFamily: "'Lilita One', cursive", fontSize: 18, letterSpacing: 0.4, whiteSpace: "nowrap",
+          background: "linear-gradient(90deg,#d97316,#f4a030)",
+          WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", flexShrink: 0,
+        }}>Ophelia — Custom Theme Tester</span>
       </div>
 
-      {/* ══ 2×2 PANEL GRID ═══════════════════════════════════════════ */}
-      <div style={{
-        display: "grid",
-        gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr",
-        flexShrink: 0,
-        borderBottom: `1px solid ${C.border}`,
-      }}>
+      {/* ══ MIDDLE: sidebars + canvas ════════════════════════════════ */}
+      <div style={{ flex: 1, display: "flex", overflow: "hidden", minHeight: 0 }}>
 
-        {/* ── TOP-LEFT: Tiles ─────────────────────────────────────── */}
-        <div style={{ background: C.panelDeep, borderRight: isMobile ? "none" : `1px solid ${C.border}`, borderBottom: `1px solid ${C.border}` }}>
-          <SectionHeader
-            label={`Tiles (${tiles.length})`}
-            open={tilesOpen}
-            onToggle={() => setTilesOpen(o => !o)}
-            left={
-              <div style={{ display: "flex", gap: 6, alignItems: "center", marginLeft: 8 }}>
-                <button onClick={() => fileRef.current.click()}
-                  style={{ ...btn(false, C.accentBright, C.accentDim), fontSize: 11, padding: "4px 10px" }}>
-                  + Upload
-                  <input ref={fileRef} type="file" accept={ACCEPTED} multiple style={{ display: "none" }}
-                    onChange={e => { loadFiles(e.target.files); e.target.value = ""; }} />
-                </button>
-                {uploadFlash > 0 && (
-                  <span style={{
-                    fontSize: 11, fontWeight: 600, color: "#4ade80",
-                    background: "rgba(74,222,128,0.14)", border: "1px solid rgba(74,222,128,0.4)",
-                    borderRadius: 6, padding: "3px 8px", animation: "none",
-                    transition: "opacity 0.3s",
-                  }}>
-                    ✓ {uploadFlash} tile{uploadFlash > 1 ? "s" : ""} added
-                  </span>
-                )}
-              </div>
-            }
-          />
-
-          {tilesOpen && (
-            tilesLoading ? (
-              <p style={{ padding: "6px 12px 10px", fontSize: 12, color: C.muted }}>Loading tiles…</p>
-            ) : (
-              <div style={{ overflowX: "auto", padding: "8px 12px 10px" }}>
-                <div style={{ display: "flex", gap: 6 }}>
-
-                  {/* ── Tile #0 — Eraser ── */}
-                  <div
-                    onClick={() => { setEraser(true); setSel(null); }}
-                    style={{
-                      flexShrink: 0, width: 64, borderRadius: 8, cursor: "pointer",
-                      border: `2px solid ${eraser ? C.danger : C.border}`,
-                      background: eraser ? "rgba(248,113,113,0.14)" : "rgba(255,255,255,0.03)",
-                      transition: "border 0.12s, background 0.12s", overflow: "hidden",
-                    }}>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: eraser ? "rgba(248,113,113,0.32)" : "rgba(248,113,113,0.14)", padding: "2px 4px" }}>
-                      <span style={{ fontSize: 10, fontWeight: 700, color: eraser ? C.danger : "rgba(248,113,113,0.7)" }}>Erase</span>
-                    </div>
-                    <div style={{ height: 52, background: "#040e1a", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                      <span style={{ fontSize: 22, color: eraser ? C.danger : "rgba(248,113,113,0.5)", lineHeight: 1 }}>✕</span>
-                    </div>
-                  </div>
-
-                  {/* ── Regular tiles ── */}
-                  {tiles.length === 0 ? (
-                    <p style={{ padding: "0 4px", fontSize: 12, color: C.muted, alignSelf: "center" }}>
-                      No tiles — upload images or add to Resources/.
-                    </p>
-                  ) : (
-                    tiles.map(t => {
-                      const active = sel === t.id && !eraser;
-                      const failed = failedTiles.has(t.id);
-                      return (
-                        <div key={t.id}
-                          onClick={() => {
-                            if (failed) { setFailedWarning(true); return; }
-                            setSel(t.id); setEraser(false);
-                          }}
-                          style={{
-                            flexShrink: 0, width: 60, height: 60, borderRadius: 8,
-                            cursor: failed ? "not-allowed" : "pointer",
-                            border: `2px solid ${failed ? C.danger : active ? C.accentBright : C.border}`,
-                            background: failed ? "rgba(248,113,113,0.08)" : active ? C.accentDim : "rgba(255,255,255,0.03)",
-                            transition: "border 0.12s, background 0.12s", overflow: "hidden",
-                            opacity: failed ? 0.55 : 1,
-                            position: "relative",
-                          }}>
-                          {/* Image area fills the whole card */}
-                          <div style={{ width: "100%", height: "100%", background: "#040e1a", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                            {failed ? (
-                              <span style={{ fontSize: 20, color: C.danger }}>✕</span>
-                            ) : (
-                              <img src={t.src} alt=""
-                                onError={() => markFailed(t.id)}
-                                style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated" }} />
-                            )}
-                          </div>
-                          {/* ⓘ info button — small overlay in top-right corner */}
-                          <span onClick={e => { e.stopPropagation(); setInfoTile(t.id); }}
-                            style={{ position: "absolute", top: 2, right: 3, fontSize: 11, cursor: "pointer", color: active ? C.accentBright : C.muted, lineHeight: 1, opacity: 0.7 }}
-                            title="Tile info">ⓘ</span>
-                          {/* Active highlight ring is handled by the border */}
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-              </div>
-            )
-          )}
+        {/* ── LEFT SIDEBAR: Tiles ─────────────────────────────────── */}
+        {/* Toggle tab always visible on left edge */}
+        <div className="sidebar-tab" style={{ borderRight: `1px solid ${C.border}` }}
+          onClick={() => setTilesOpen(v => !v)}
+          title={tilesOpen ? "Close tiles" : "Open tiles"}>
+          <span className="sidebar-tab-arrow">{tilesOpen ? "‹" : "›"}</span>
         </div>
 
-        {/* ── TOP-RIGHT: Tools ────────────────────────────────────── */}
-        <div style={{ background: C.panelDeep, borderBottom: `1px solid ${C.border}` }}>
-          <SectionHeader label="Tools" open={toolsOpen} onToggle={() => setToolsOpen(o => !o)} />
-
-          {toolsOpen && (
-            <div style={{ padding: "8px 12px 10px", display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-              {/* Mirror */}
-              <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1 }}>Mirror</span>
-              <button style={btn(mirrorV, C.pale, C.paleDim)}         onClick={() => setMirrorV(v => !v)}>Vertical</button>
-              <button style={btn(mirrorH, C.soft, C.softDim)}         onClick={() => setMirrorH(v => !v)}>Horizontal</button>
-              <button style={btn(mirrorD, C.accentBright, C.accentDim)} onClick={() => setMirrorD(v => !v)}>Diagonal</button>
-
-              <Sep />
-
-              {/* Show Guides toggle — only meaningful when a mirror is active */}
-              <button style={btn(showGuides, C.accent, C.accentDim)} onClick={() => setShowGuides(v => !v)}
-                title="Toggle mirror guide lines">
-                Guides
+        {/* Sliding panel */}
+        <div style={{
+          width: tilesOpen ? SIDEBAR_W : 0,
+          transition: "width 0.25s ease",
+          overflow: "hidden", flexShrink: 0,
+          background: C.panelDeep, borderRight: `1px solid ${C.border}`,
+        }}>
+          <div style={{ width: SIDEBAR_W, height: "100%", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+            {/* Upload button + flash */}
+            <div style={{ padding: "6px 6px 4px", flexShrink: 0 }}>
+              <button onClick={() => fileRef.current.click()} style={{
+                ...btn(false, C.accentBright, C.accentDim),
+                width: "100%", fontSize: 11, padding: "5px 4px", justifyContent: "center",
+              }}>
+                + Upload
+                <input ref={fileRef} type="file" accept={ACCEPTED} multiple style={{ display: "none" }}
+                  onChange={e => { loadFiles(e.target.files); e.target.value = ""; }} />
               </button>
-
-              <Sep />
-
-              {/* Undo / Redo */}
-              <button style={btn(histIdx > 0, C.accent, C.accentDim)} onClick={undo} disabled={histIdx <= 0} title="Undo (Ctrl+Z)">Undo</button>
-              <button style={btn(histIdx < history.length - 1, C.accent, C.accentDim)} onClick={redo} disabled={histIdx >= history.length - 1} title="Redo (Ctrl+Y)">Redo</button>
-
-              <Sep />
-
-              {/* Replace */}
-              <button style={btn(false, C.soft, C.softDim)} onClick={() => setReplaceOpen(true)}>Replace</button>
-            </div>
-          )}
-        </div>
-
-        {/* ── BOTTOM-LEFT: Background ──────────────────────────────── */}
-        <div style={{ background: C.panelDeep, borderRight: isMobile ? "none" : `1px solid ${C.border}` }}>
-          <SectionHeader label="Background" open={bgOpen} onToggle={() => setBgOpen(o => !o)} />
-
-          {bgOpen && (
-            <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 14px", flexWrap: "wrap" }}>
-              {[
-                { label: "A", bg: bg1, hex: hex1, setHex: setHex1, apply: applyBg1 },
-                { label: "B", bg: bg2, hex: hex2, setHex: setHex2, apply: applyBg2 },
-              ].map(({ label, bg, hex, setHex, apply }) => (
-                <div key={label} style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                  <span style={{ fontSize: 10, color: C.muted, fontWeight: 600 }}>{label}</span>
-                  <input type="color" value={bg} onChange={e => apply(e.target.value)}
-                    style={{ width: 26, height: 26, border: "none", borderRadius: 5, cursor: "pointer", padding: 2, background: "none", flexShrink: 0 }} />
-                  <input type="text" value={hex} maxLength={7}
-                    onChange={e => { const v = e.target.value; setHex(v); if (validHex(v)) apply(v); }}
-                    onBlur={() => { if (!validHex(hex)) setHex(bg); }}
-                    style={{ width: 68, background: "rgba(56,189,248,0.07)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 11, padding: "3px 6px", outline: "none" }}
-                    spellCheck={false} />
+              {uploadFlash > 0 && (
+                <div style={{ marginTop: 4, textAlign: "center", fontSize: 10, fontWeight: 600, color: "#86efac",
+                  background: "rgba(134,239,172,0.12)", border: "1px solid rgba(134,239,172,0.35)",
+                  borderRadius: 5, padding: "2px 4px" }}>
+                  ✓ {uploadFlash} added
                 </div>
-              ))}
-              <button style={{ ...btn(false), fontSize: 10, padding: "3px 9px" }}
-                onClick={() => { applyBg1(DEFAULT_BG1); applyBg2(DEFAULT_BG2); }}>↺ Reset</button>
+              )}
             </div>
-          )}
+
+            {/* Tile strip — vertical, scrollable */}
+            <div style={{ flex: 1, overflowY: "auto", padding: "0 6px 8px", display: "flex", flexDirection: "column", gap: 5 }}>
+              {/* Eraser — soap emoji, pink outline */}
+              <div onClick={() => { setEraser(true); setSel(null); }} style={{
+                width: CARD, height: CARD, borderRadius: 8, cursor: "pointer", flexShrink: 0,
+                border: `2px solid ${eraser ? "#e879c0" : "rgba(232,121,192,0.35)"}`,
+                background: eraser ? "rgba(232,121,192,0.16)" : "rgba(255,255,255,0.03)",
+                display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+                gap: 2, transition: "border 0.12s, background 0.12s",
+              }}>
+                <span style={{ fontSize: 28, lineHeight: 1 }}>🧼</span>
+                <span style={{ fontSize: 8, color: eraser ? "#e879c0" : "rgba(232,121,192,0.7)", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 }}>Erase</span>
+              </div>
+
+              {/* Tiles */}
+              {tilesLoading ? (
+                <span style={{ fontSize: 11, color: C.muted, padding: "4px 0" }}>Loading…</span>
+              ) : tiles.length === 0 ? (
+                <span style={{ fontSize: 11, color: C.muted, padding: "4px 0", lineHeight: 1.5 }}>No tiles — upload images or add to Resources/</span>
+              ) : (
+                tiles.map(t => <TileCard key={t.id} t={t} />)
+              )}
+            </div>
+          </div>
         </div>
 
-        {/* ── BOTTOM-RIGHT: Other ──────────────────────────────────── */}
-        <div style={{ background: C.panelDeep }}>
-          <SectionHeader label="Other" open={otherOpen} onToggle={() => setOtherOpen(o => !o)} />
-
-          {otherOpen && (
-            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 14px", flexWrap: "wrap" }}>
-              <button style={btn(false, C.danger, "rgba(248,113,113,0.14)")}
-                onClick={() => { if (confirm("Clear the whole grid?")) setGrid(Array.from({ length: GRID_H }, () => Array(GRID_W).fill(null))); }}>
-                Clear
-              </button>
-              <button style={btn(false, C.soft, C.softDim)} onClick={() => setSeedOpen(true)}>Seed</button>
-              <button style={btn(false, C.soft, C.softDim)} onClick={doExport}>Download</button>
-            </div>
-          )}
-        </div>
-
-      </div>
-
-      {/* ══ CANVAS ═══════════════════════════════════════════════════ */}
-      <div style={{ flex: 1, overflow: "hidden", minHeight: 0 }}>
+        {/* ── CANVAS ──────────────────────────────────────────────── */}
         <div ref={scrollRef}
-          style={{ width: "100%", height: "100%", overflow: "auto", background: "#040e1a" }}
+          style={{ flex: 1, overflow: "auto", background: C.canvasBg, minWidth: 0 }}
           onWheel={onWheel}
           onMouseUp={() => setPainting(false)}
           onMouseLeave={() => setPainting(false)}
         >
-          {/* Centre wrapper */}
           <div style={{ padding: 20, display: "flex", alignItems: "flex-start", justifyContent: "center", minWidth: "min-content", minHeight: "100%" }}>
             <div style={{ position: "relative", width: gW, height: (GRID_H + 2) * CELL * zoom, flexShrink: 0, margin: "0 auto" }}>
 
-              {/* Checkerboard — offset by one CELL row for export padding */}
+              {/* Checkerboard */}
               {Array.from({ length: GRID_H }).map((_, r) =>
                 Array.from({ length: GRID_W }).map((__, c) => (
-                  <div key={`${r}-${c}`}
-                    style={{
-                      position: "absolute",
-                      left: c * CELL * zoom,
-                      top: (r + 1) * CELL * zoom,
-                      width: CELL * zoom, height: CELL * zoom,
-                      background: (r + c) % 2 === 0 ? bg1 : bg2,
-                    }}
+                  <div key={`bg${r}-${c}`}
+                    style={{ position: "absolute", left: c * CELL * zoom, top: (r + 1) * CELL * zoom, width: CELL * zoom, height: CELL * zoom, background: (r + c) % 2 === 0 ? bg1 : bg2 }}
                     onMouseDown={e => onCell(r, c, e)}
                     onMouseMove={e => onCell(r, c, e)}
                   />
@@ -1019,73 +822,150 @@ function App() {
               )}
 
               {/* Tile images */}
-              {grid.map((row, r) =>
-                row.map((id, c) => {
-                  const t = id && getTile(id); if (!t) return null;
-                  return (
-                    <img key={`t${r}-${c}`} src={t.src} alt="" draggable={false}
-                      style={{
-                        position: "absolute",
-                        left: c * CELL * zoom,
-                        top: (r + 1 + 0.5) * CELL * zoom,
-                        width: CELL * zoom, height: "auto",
-                        transform: "translateY(-50%)",
-                        pointerEvents: "none", imageRendering: "pixelated",
-                        zIndex: r + 1,
-                      }}
-                    />
-                  );
-                })
-              )}
+              {grid.map((row, r) => row.map((id, c) => {
+                const t = id && getTile(id); if (!t) return null;
+                return (
+                  <img key={`t${r}-${c}`} src={t.src} alt="" draggable={false}
+                    style={{
+                      position: "absolute", pointerEvents: "none", imageRendering: "pixelated",
+                      left: c * CELL * zoom, top: (r + 1 + 0.5) * CELL * zoom,
+                      width: CELL * zoom, height: "auto", transform: "translateY(-50%)", zIndex: r + 1,
+                    }}
+                  />
+                );
+              }))}
 
-              {/* Mirror guide lines — SVG overlay positioned over the grid area */}
+              {/* Mirror guide lines (SVG) */}
               {showGuides && (mirrorV || mirrorH || mirrorD) && (
-                <svg
-                  style={{
-                    position: "absolute",
-                    left: 0,
-                    top: CELL * zoom,   // grid starts at row offset
-                    width: gW,
-                    height: gH,
-                    pointerEvents: "none",
-                    zIndex: 200,
-                    overflow: "visible",
-                  }}
-                >
-                  {/* Vertical mirror — line at horizontal centre */}
-                  {mirrorV && (
-                    <line
-                      x1={gW / 2} y1={0}
-                      x2={gW / 2} y2={gH}
-                      stroke={C.pale} strokeWidth="2" opacity="0.7"
-                      strokeDasharray="6 3"
-                    />
-                  )}
-                  {/* Horizontal mirror — line at vertical centre */}
-                  {mirrorH && (
-                    <line
-                      x1={0}  y1={gH / 2}
-                      x2={gW} y2={gH / 2}
-                      stroke={C.soft} strokeWidth="2" opacity="0.7"
-                      strokeDasharray="6 3"
-                    />
-                  )}
-                  {/* Diagonal (central) — line from bottom-left to top-right */}
-                  {mirrorD && (
-                    <line
-                      x1={0}  y1={gH}
-                      x2={gW} y2={0}
-                      stroke={C.accentBright} strokeWidth="2" opacity="0.6"
-                      strokeDasharray="8 4"
-                    />
-                  )}
+                <svg style={{ position: "absolute", left: 0, top: CELL * zoom, width: gW, height: gH, pointerEvents: "none", zIndex: 200, overflow: "visible" }}>
+                  {mirrorV && <line x1={gW / 2} y1={0} x2={gW / 2} y2={gH} stroke={C.pale} strokeWidth="2" opacity="0.7" strokeDasharray="6 3" />}
+                  {mirrorH && <line x1={0} y1={gH / 2} x2={gW} y2={gH / 2} stroke={C.soft} strokeWidth="2" opacity="0.7" strokeDasharray="6 3" />}
+                  {mirrorD && <line x1={0} y1={gH} x2={gW} y2={0} stroke={C.accentBright} strokeWidth="2" opacity="0.65" strokeDasharray="8 4" />}
                 </svg>
               )}
-
             </div>
           </div>
         </div>
+
+        {/* ── RIGHT SIDEBAR: Tools ────────────────────────────────── */}
+        {/* Sliding panel */}
+        <div style={{
+          width: toolsOpen ? TOOLS_W : 0,
+          transition: "width 0.25s ease",
+          overflow: "hidden", flexShrink: 0,
+          background: C.panelDeep, borderLeft: `1px solid ${C.border}`,
+        }}>
+          <div style={{ width: TOOLS_W, height: "100%", overflowY: "auto", padding: "10px 10px" }}>
+
+            <p style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1.2, marginBottom: 6, fontWeight: 700 }}>Mirror</p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+              <button style={{ ...btn(mirrorV, C.pale, C.paleDim), textAlign: "left" }}   onClick={() => setMirrorV(v => !v)}>Vertical</button>
+              <button style={{ ...btn(mirrorH, C.soft, C.softDim), textAlign: "left" }}   onClick={() => setMirrorH(v => !v)}>Horizontal</button>
+              <button style={{ ...btn(mirrorD, C.accentBright, C.accentDim), textAlign: "left" }} onClick={() => setMirrorD(v => !v)}>Diagonal</button>
+            </div>
+
+            <HSep />
+            <button style={{ ...btn(showGuides, C.accent, C.accentDim), width: "100%", textAlign: "left" }} onClick={() => setShowGuides(v => !v)}>
+              Guides
+            </button>
+
+            <HSep />
+            <p style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1.2, marginBottom: 6, fontWeight: 700, marginTop: 4 }}>History</p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+              <button style={{ ...btn(histIdx > 0, C.accent, C.accentDim), textAlign: "left" }}
+                onClick={undo} disabled={histIdx <= 0} title="Undo (Ctrl+Z)">Undo</button>
+              <button style={{ ...btn(histIdx < history.length - 1, C.accent, C.accentDim), textAlign: "left" }}
+                onClick={redo} disabled={histIdx >= history.length - 1} title="Redo (Ctrl+Y)">Redo</button>
+            </div>
+
+            <HSep />
+            <button style={{ ...btn(false, C.soft, C.softDim), width: "100%", textAlign: "left" }}
+              onClick={() => setReplaceOpen(true)}>Replace tiles</button>
+
+          </div>
+        </div>
+
+        {/* Toggle tab always visible on right edge */}
+        <div className="sidebar-tab" style={{ borderLeft: `1px solid ${C.border}` }}
+          onClick={() => setToolsOpen(v => !v)}
+          title={toolsOpen ? "Close tools" : "Open tools"}>
+          <span className="sidebar-tab-arrow">{toolsOpen ? "›" : "‹"}</span>
+        </div>
+
+      </div>{/* end MIDDLE */}
+
+      {/* ══ ZOOM BAR (below canvas) ═══════════════════════════════════ */}
+      <div style={{
+        flexShrink: 0, background: C.panel, borderTop: `1px solid ${C.border}`,
+        display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "6px 14px",
+      }}>
+        <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1, userSelect: "none" }}>Zoom</span>
+        <button style={{ ...btn(false), padding: "4px 10px", fontSize: 15, fontWeight: 700, lineHeight: 1 }}
+          onClick={() => changeZoom(-ZOOM_STEP)}>−</button>
+        {zoomEditing ? (
+          <input autoFocus value={zoomInput}
+            onChange={e => setZoomInput(e.target.value.replace(/\D/g, ""))}
+            onBlur={commitZoom}
+            onKeyDown={e => { if (e.key === "Enter") e.target.blur(); if (e.key === "Escape") setZoomEdit(false); }}
+            style={{ width: 56, textAlign: "center", outline: "none", background: C.accentDim, border: `1px solid ${C.accent}`, borderRadius: 7, color: C.text, fontFamily: "monospace", fontSize: 13, fontWeight: 700, padding: "3px 4px" }}
+          />
+        ) : (
+          <span onClick={() => { setZoomEdit(true); setZoomInput(String(Math.round(zoom * 100))); }}
+            style={{ minWidth: 56, textAlign: "center", display: "inline-block", fontSize: 13, fontFamily: "monospace", fontWeight: 700, color: C.text, background: "rgba(210,120,20,0.1)", borderRadius: 7, padding: "3px 6px", border: `1px solid ${C.border}`, cursor: "text", userSelect: "none" }}>
+            {Math.round(zoom * 100)}%
+          </span>
+        )}
+        <button style={{ ...btn(false), padding: "4px 10px", fontSize: 15, fontWeight: 700, lineHeight: 1 }}
+          onClick={() => changeZoom(ZOOM_STEP)}>+</button>
       </div>
+
+      {/* ══ BOTTOM BAR: Background + Actions (non-foldable) ══════════ */}
+      <div style={{
+        flexShrink: 0, background: C.panel, borderTop: `1px solid ${C.border}`,
+        display: "flex", alignItems: "center", gap: 10, padding: "8px 14px", flexWrap: "wrap",
+      }}>
+
+        {/* BG label */}
+        <span style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: 1.2, whiteSpace: "nowrap" }}>BG</span>
+
+        {/* Color pickers A and B */}
+        {[
+          { label: "A", bg: bg1, hex: hex1, setHex: setHex1, apply: applyBg1 },
+          { label: "B", bg: bg2, hex: hex2, setHex: setHex2, apply: applyBg2 },
+        ].map(({ label, bg, hex, setHex, apply }) => (
+          <div key={label} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <span style={{ fontSize: 10, color: C.muted, fontWeight: 600 }}>{label}</span>
+            <input type="color" value={bg} onChange={e => apply(e.target.value)}
+              style={{ width: 26, height: 26, border: "none", borderRadius: 5, cursor: "pointer", padding: 2, background: "none", flexShrink: 0 }} />
+            <input type="text" value={hex} maxLength={7}
+              onChange={e => { const v = e.target.value; setHex(v); if (validHex(v)) apply(v); }}
+              onBlur={() => { if (!validHex(hex)) setHex(bg); }}
+              style={{ width: 64, background: "rgba(210,120,20,0.08)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 11, padding: "3px 6px", outline: "none" }}
+              spellCheck={false} />
+          </div>
+        ))}
+
+        <button style={{ ...btn(false), fontSize: 10, padding: "3px 8px" }}
+          onClick={() => { applyBg1(DEFAULT_BG1); applyBg2(DEFAULT_BG2); }}>↺</button>
+
+        <VSep />
+
+        {/* Actions */}
+        <button style={btn(false, C.danger, "rgba(248,113,113,0.14)")}
+          onClick={() => { if (confirm("Clear the whole grid?")) setGrid(Array.from({ length: GRID_H }, () => Array(GRID_W).fill(null))); }}>
+          Clear
+        </button>
+
+        {/* Seed button with subtitle */}
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 1 }}>
+          <button style={btn(false, C.soft, C.softDim)} onClick={() => setSeedOpen(true)}>Seed</button>
+          <span style={{ fontSize: 9, color: C.muted, whiteSpace: "nowrap" }}>save / share map</span>
+        </div>
+
+        <button style={btn(false, C.soft, C.softDim)} onClick={doExport}>Download</button>
+
+      </div>
+
     </div>
   );
 }
