@@ -1,7 +1,7 @@
 {
   "name": "Ophelia",
   "short_name": "Ophelia",
-  "description": "Tile map editor",
+  "description": "Custom Theme Tester",
   "display": "standalone",
   "orientation": "any",
   "start_url": ".",
@@ -9,15 +9,15 @@
   "theme_color": "#060f1a",
   "icons": [
     {
-      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'%3E%3Crect width='192' height='192' rx='36' fill='%230a1e30'/%3E%3Ctext x='96' y='130' font-size='110' text-anchor='middle'%3E%F0%9F%92%8B%3C/text%3E%3C/svg%3E",
+      "src": "favicon/android-chrome-192x192.png",
       "sizes": "192x192",
-      "type": "image/svg+xml",
+      "type": "image/png",
       "purpose": "any maskable"
     },
     {
-      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='96' fill='%230a1e30'/%3E%3Ctext x='256' y='346' font-size='290' text-anchor='middle'%3E%F0%9F%92%8B%3C/text%3E%3C/svg%3E",
+      "src": "favicon/android-chrome-512x512.png",
       "sizes": "512x512",
-      "type": "image/svg+xml",
+      "type": "image/png",
       "purpose": "any maskable"
     }
   ]
