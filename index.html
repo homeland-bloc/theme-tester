@@ -18,10 +18,10 @@
 
   <title>Ophelia</title>
 
-  <!-- Lilita One from Google Fonts -->
+  <!-- Lilita One (title only) + Inter (all UI) from Google Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Lilita+One&family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Lilita+One&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
 
   <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
@@ -48,9 +48,6 @@
       display: flex; flex-direction: column; gap: 16px;
     }
 
-    /* Section collapse animation */
-    .collapsible { overflow: hidden; transition: max-height 0.2s ease; }
-
     /* Seed textarea */
     .seed-area {
       width: 100%; background: rgba(56,189,248,0.06); border: 1px solid rgba(56,189,248,0.22);
@@ -68,35 +65,21 @@ const { useState, useRef, useEffect, useCallback, useMemo } = React;
 // ── Constants ──────────────────────────────────────────────────────────
 const GRID_W = 21, GRID_H = 33, CELL = 32;
 const DEFAULT_BG1 = "#67717d", DEFAULT_BG2 = "#6e7986";
-const MIN_ZOOM = 0.25, MAX_ZOOM = 4, ZOOM_STEP = 0.25;
+const MIN_ZOOM = 0.25, MAX_ZOOM = 4;
+// Zoom buttons snap to nearest 10%
+const ZOOM_STEP = 0.1;
+const snapTo10 = z => Math.round(z * 10) / 10;
 const SK = { tiles: "oph_tiles", grid: "oph_grid", colors: "oph_colors", userTiles: "oph_user_tiles" };
 const ACCEPTED = "image/png,image/jpeg,image/gif,image/webp,image/svg+xml,image/bmp";
 const MAX_HISTORY = 60;
 
-// Default tiles from Resources/ folder — IDs start at 1, NOT deletable.
-// To add more default tiles, simply append filenames to this array.
-const DEFAULT_TILE_FILES = [
-  "MSLM-barrel1.png",
-  "MSLM-barrel2.png",
-  "MSLM-barrel3.png",
-  "MSLM-bg1.png",
-  "MSLM-bg2.png",
-  "MSLM-bush1.png",
-  "MSLM-bush2.png",
-  "MSLM-cactus.png",
-  "MSLM-crate.png",
-  "MSLM-fence1.png",
-  "MSLM-fence2.png",
-  "MSLM-fence3A.png",
-  "MSLM-fence3B.png",
-  "MSLM-wall1.png",
-  "MSLM-wall2.png",
-];
-const DEFAULT_TILE_SRCS = DEFAULT_TILE_FILES.map(f => `Resources/${f}`);
+// Default tiles are loaded dynamically from Resources/manifest.json.
+// To add/remove tiles, update that JSON file (or run generate-manifest.sh).
 
 const load = (k, d) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } };
 const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
 const validHex = h => /^#[0-9A-Fa-f]{6}$/.test(h);
+const isMobileDevice = () => typeof window !== "undefined" && window.innerWidth < 768;
 
 // ── Colour palette ─────────────────────────────────────────────────────
 const C = {
@@ -110,38 +93,27 @@ const C = {
 
 // ── Seed codec ─────────────────────────────────────────────────────────
 // Format: [symmetry_prefix]:[rle_payload]
-//   symmetry prefix: d (diagonal/central), h (horizontal), v (vertical), a (asymmetric)
-//   rle_payload: base-62 tile IDs + run-length for repeats.
-//     Each "token" is  [id][xN]  where id = base62 char (0=empty, 1..62=tile),
-//     and xN = optional "x" + base62 count when run > 1.
-//     Tiles with id > 62 use two chars prefixed with "~".
-// This gives compact seeds; a fully-empty 21×33 grid → "a:0x{base62(693)}"
-
 const B62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 const toB62 = n => { if (n === 0) return "0"; let s = ""; while (n > 0) { s = B62[n % 62] + s; n = Math.floor(n / 62); } return s; };
 const fromB62 = s => s.split("").reduce((a, c) => a * 62 + B62.indexOf(c), 0);
 
-// Encode: null→0, tileId→tileId (1-based)
 function encodeSeed(grid, mirrorV, mirrorH, mirrorD) {
-  // Determine symmetry code
   let sym = "a";
   if (mirrorD && !mirrorH && !mirrorV) sym = "d";
   else if (mirrorH && !mirrorD && !mirrorV) sym = "h";
   else if (mirrorV && !mirrorD && !mirrorH) sym = "v";
-  else if (mirrorD && mirrorH && mirrorV) sym = "f"; // full
+  else if (mirrorD && mirrorH && mirrorV) sym = "f";
   else if (mirrorD && mirrorH) sym = "dh";
   else if (mirrorD && mirrorV) sym = "dv";
   else if (mirrorH && mirrorV) sym = "hv";
 
   const flat = grid.flat().map(v => v ?? 0);
-  // RLE
   const tokens = [];
   let i = 0;
   while (i < flat.length) {
     const val = flat[i];
     let run = 1;
     while (i + run < flat.length && flat[i + run] === val) run++;
-    // encode id: 0→"_", 1..62→B62[id], >62→"~"+toB62(id)
     let idStr;
     if (val === 0) idStr = "_";
     else if (val <= 62) idStr = B62[val];
@@ -163,14 +135,12 @@ function decodeSeed(seed) {
   const mirrorH = sym.includes("h") || sym === "f";
   const mirrorV = sym.includes("v") || sym === "f";
 
-  // Parse RLE tokens
   const flat = [];
   let i = 0;
   while (i < payload.length) {
     let val, idLen;
     if (payload[i] === "_") { val = 0; idLen = 1; }
     else if (payload[i] === "~") {
-      // read base62 chars until 'x' or end or another id char
       let j = i + 1;
       while (j < payload.length && payload[j] !== "x" && payload[j] !== "_" && payload[j] !== "~" && B62.indexOf(payload[j]) !== -1) j++;
       val = fromB62(payload.slice(i + 1, j));
@@ -190,7 +160,6 @@ function decodeSeed(seed) {
     for (let k = 0; k < run; k++) flat.push(val === 0 ? null : val);
   }
 
-  // Rebuild grid
   const total = GRID_W * GRID_H;
   const padded = [...flat];
   while (padded.length < total) padded.push(null);
@@ -211,7 +180,7 @@ function SectionHeader({ label, open, onToggle, left, right }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 12px", background: C.panelDeep, borderBottom: open ? `1px solid ${C.border}` : "none" }}>
       <button onClick={onToggle} style={{ display: "flex", alignItems: "center", gap: 5, background: "none", border: "none", cursor: "pointer", padding: 0 }}>
-        <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1.4, color: C.accent, textTransform: "uppercase", fontFamily: "'Lilita One', cursive" }}>{label}</span>
+        <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1.2, color: C.accent, textTransform: "uppercase", fontFamily: "'Inter', sans-serif" }}>{label}</span>
         <span style={{ fontSize: 9, color: C.muted, display: "inline-block", transition: "transform 0.15s", transform: open ? "rotate(0deg)" : "rotate(-90deg)" }}>▼</span>
       </button>
       {left}
@@ -224,18 +193,13 @@ function SectionHeader({ label, open, onToggle, left, right }) {
 // ── Main App ───────────────────────────────────────────────────────────
 function App() {
   const savedColors = load(SK.colors, { bg1: DEFAULT_BG1, bg2: DEFAULT_BG2 });
+  const mobile = isMobileDevice();
 
-  // Default tiles built once (not from localStorage — they come from Resources/)
-  const [defaultTiles] = useState(() =>
-    DEFAULT_TILE_SRCS.map((src, i) => ({
-      id: i + 1,
-      name: DEFAULT_TILE_FILES[i].replace(/\.[^.]+$/, ""),
-      src,
-      isDefault: true,
-    }))
-  );
+  // Default tiles loaded dynamically from Resources/manifest.json
+  const [defaultTiles, setDefaultTiles]   = useState([]);
+  const [tilesLoading, setTilesLoading]   = useState(true);
 
-  // User-uploaded tiles persisted in localStorage, IDs start after defaults
+  // User-uploaded tiles persisted in localStorage; IDs start after defaults
   const [userTiles, setUserTiles] = useState(() => load(SK.userTiles, []));
   const tiles = useMemo(() => [...defaultTiles, ...userTiles], [defaultTiles, userTiles]);
 
@@ -249,15 +213,17 @@ function App() {
   const [mirrorV,     setMirrorV]   = useState(false);
   const [mirrorH,     setMirrorH]   = useState(false);
   const [mirrorD,     setMirrorD]   = useState(false);
+  const [showGuides,  setShowGuides]= useState(true);
   const [zoom,        setZoom]      = useState(1);
   const [zoomEditing, setZoomEdit]  = useState(false);
   const [zoomInput,   setZoomInput] = useState("");
   const [painting,    setPainting]  = useState(false);
-  const [tilesOpen,   setTilesOpen] = useState(true);
-  const [toolsOpen,   setToolsOpen] = useState(true);
-  const [infoTile,    setInfoTile]  = useState(null);  // tile shown in info modal
-  const [renamingId,  setRenamingId]= useState(null);
-  const [renameVal,   setRenameVal] = useState("");
+  // Panels: collapsed by default on mobile
+  const [tilesOpen,   setTilesOpen] = useState(!mobile);
+  const [toolsOpen,   setToolsOpen] = useState(!mobile);
+  const [bgOpen,      setBgOpen]    = useState(!mobile);
+  const [otherOpen,   setOtherOpen] = useState(!mobile);
+  const [infoTile,    setInfoTile]  = useState(null);
   // Replace A→B
   const [replaceOpen, setReplaceOpen] = useState(false);
   const [replaceA,    setReplaceA]  = useState(null);
@@ -267,6 +233,14 @@ function App() {
   const [seedVal,     setSeedVal]   = useState("");
   const [seedImport,  setSeedImport]= useState("");
   const [seedErr,     setSeedErr]   = useState("");
+  // Failed tile tracking
+  const [failedTiles,   setFailedTiles]   = useState(new Set());
+  const [failedWarning, setFailedWarning] = useState(false);
+  // Upload success flash
+  const [uploadFlash,   setUploadFlash]   = useState(0);  // count of newly uploaded tiles
+  const uploadTimerRef = useRef(null);
+  // Responsive
+  const [isMobile,    setIsMobile]  = useState(mobile);
 
   // History
   const [history,  setHistory]  = useState([grid]);
@@ -274,7 +248,8 @@ function App() {
 
   const fileRef   = useRef();
   const scrollRef = useRef();
-  const nextId    = useRef(userTiles.length ? Math.max(...userTiles.map(t => t.id), defaultTiles.length) + 1 : defaultTiles.length + 1);
+  // nextId is safe to start from user tiles max; updated after manifest loads
+  const nextId    = useRef(userTiles.length ? Math.max(...userTiles.map(t => t.id)) + 1 : 1);
 
   // Stable refs for touch/paint handlers
   const selRef      = useRef(sel);
@@ -292,9 +267,36 @@ function App() {
   useEffect(() => { save(SK.userTiles, userTiles); }, [userTiles]);
   useEffect(() => { save(SK.grid,      grid);       }, [grid]);
 
+  // Load default tiles dynamically from Resources/manifest.json
+  useEffect(() => {
+    fetch("Resources/manifest.json")
+      .then(r => r.ok ? r.json() : { tiles: [] })
+      .then(({ tiles: files }) => {
+        const arr = Array.isArray(files) ? files : [];
+        const loaded = arr.map((f, i) => ({
+          id: i + 1,
+          src: `Resources/${f}`,
+          isDefault: true,
+        }));
+        setDefaultTiles(loaded);
+        nextId.current = Math.max(nextId.current, loaded.length + 1);
+      })
+      .catch(() => {})
+      .finally(() => setTilesLoading(false));
+  }, []);
+
+  // Responsive resize listener
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
   const saveColors = (b1, b2) => save(SK.colors, { bg1: b1, bg2: b2 });
   const applyBg1   = v => { setBg1(v); setHex1(v); saveColors(v, bg2); };
   const applyBg2   = v => { setBg2(v); setHex2(v); saveColors(bg1, v); };
+
+  const markFailed = id => setFailedTiles(prev => new Set([...prev, id]));
 
   // Grid with history
   const setGrid = useCallback((updater, skipHistory = false) => {
@@ -327,12 +329,21 @@ function App() {
   }, [history, histIdx]);
 
   const loadFiles = files => {
-    [...files].forEach(f => {
-      if (!f.type.startsWith("image/")) return;
+    const imageFiles = [...files].filter(f => f.type.startsWith("image/"));
+    if (!imageFiles.length) return;
+    let loaded = 0;
+    imageFiles.forEach(f => {
       const r = new FileReader();
       r.onload = e => {
         const id = nextId.current++;
-        setUserTiles(prev => [...prev, { id, name: f.name.replace(/\.[^.]+$/, ""), src: e.target.result }]);
+        setUserTiles(prev => [...prev, { id, src: e.target.result }]);
+        loaded++;
+        if (loaded === imageFiles.length) {
+          // Flash notification
+          setUploadFlash(imageFiles.length);
+          if (uploadTimerRef.current) clearTimeout(uploadTimerRef.current);
+          uploadTimerRef.current = setTimeout(() => setUploadFlash(0), 2500);
+        }
       };
       r.readAsDataURL(f);
     });
@@ -396,9 +407,10 @@ function App() {
     });
   }, []);
 
+  // +/- buttons: snap to nearest 10%
   const changeZoom = useCallback((delta, focal = null) => {
     setZoom(prev => {
-      const z = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, +(prev + delta).toFixed(2)));
+      const z = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, snapTo10(prev + delta)));
       if (focal && scrollRef.current && z !== prev) {
         const scale = z / prev;
         requestAnimationFrame(() => {
@@ -432,7 +444,7 @@ function App() {
     const cellAt = touch => {
       const rect = el.getBoundingClientRect();
       const x = touch.clientX - rect.left + el.scrollLeft - 20;
-      const y = touch.clientY - rect.top  + el.scrollTop  - 20 - CELL * zoomRef.current; // account for top padding row
+      const y = touch.clientY - rect.top  + el.scrollTop  - 20 - CELL * zoomRef.current;
       const c = Math.floor(x / (CELL * zoomRef.current));
       const r = Math.floor(y / (CELL * zoomRef.current));
       return r >= 0 && r < GRID_H && c >= 0 && c < GRID_W ? [r, c] : null;
@@ -518,7 +530,6 @@ function App() {
     const result = decodeSeed(seedImport.trim());
     if (!result) { setSeedErr("Invalid seed format."); return; }
     const { grid: newGrid, mirrorD: nd, mirrorH: nh, mirrorV: nv } = result;
-    // Ensure all tile IDs referenced actually exist; patch with placeholder if not
     const allIds = new Set(tiles.map(t => t.id));
     const placeholders = [];
     newGrid.forEach(row => row.forEach(id => {
@@ -540,13 +551,11 @@ function App() {
 
   // ── Export ────────────────────────────────────────────────────────
   const doExport = () => {
-    const padding = CELL; // one tile tall above and below
+    const padding = CELL;
     const cv = document.createElement("canvas");
     cv.width  = GRID_W * CELL;
     cv.height = GRID_H * CELL + padding * 2;
     const ctx = cv.getContext("2d");
-    // Transparent by default (clearRect not needed — canvas is transparent)
-    // Draw checkerboard at offset
     for (let r = 0; r < GRID_H; r++) for (let c = 0; c < GRID_W; c++) {
       ctx.fillStyle = (r + c) % 2 === 0 ? bg1 : bg2;
       ctx.fillRect(c * CELL, r * CELL + padding, CELL, CELL);
@@ -573,7 +582,11 @@ function App() {
 
   const commitZoom = () => {
     const v = parseInt(zoomInput, 10);
-    if (!isNaN(v) && v > 0) setZoom(Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, v / 100)));
+    if (!isNaN(v) && v > 0) {
+      // Snap to nearest 10%
+      const snapped = Math.round(v / 10) * 10;
+      setZoom(Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, snapped / 100)));
+    }
     setZoomEdit(false);
   };
 
@@ -581,7 +594,7 @@ function App() {
   const btn = (active, color = C.accent, dim = C.accentDim) => ({
     padding: "5px 11px", borderRadius: 7, fontSize: 12, fontWeight: 600,
     cursor: "pointer", touchAction: "manipulation", userSelect: "none",
-    fontFamily: "'Lilita One', cursive",
+    fontFamily: "'Inter', sans-serif",
     background: active ? dim : "rgba(255,255,255,0.04)",
     color:      active ? color : C.muted,
     border:    `1px solid ${active ? color : "rgba(255,255,255,0.1)"}`,
@@ -603,39 +616,18 @@ function App() {
       <div className="modal-backdrop" onClick={() => setInfoTile(null)}>
         <div className="modal-box" onClick={e => e.stopPropagation()}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright, fontFamily: "'Lilita One', cursive" }}>Tile #{t.id}</span>
+            <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Tile #{t.id}</span>
             <button onClick={() => setInfoTile(null)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
           </div>
           <div style={{ background: "#040e1a", borderRadius: 8, padding: 12, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 120 }}>
-            <img src={t.src} alt={t.name} style={{ maxWidth: "100%", maxHeight: 180, objectFit: "contain", imageRendering: "pixelated" }} />
+            <img src={t.src} alt="" style={{ maxWidth: "100%", maxHeight: 180, objectFit: "contain", imageRendering: "pixelated" }} />
           </div>
-          {renamingId === t.id ? (
-            <div style={{ display: "flex", gap: 6 }}>
-              <input autoFocus value={renameVal} onChange={e => setRenameVal(e.target.value)}
-                style={{ ...inputStyle, flex: 1 }}
-                onKeyDown={e => e.key === "Enter" && e.target.blur()}
-                onBlur={() => {
-                  if (t.isDefault) {
-                    // default tiles can only rename in-session (not persisted separately)
-                  } else {
-                    setUserTiles(p => p.map(x => x.id === t.id ? { ...x, name: renameVal || x.name } : x));
-                  }
-                  setRenamingId(null);
-                }}
-              />
-            </div>
-          ) : (
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ flex: 1, fontSize: 13, color: C.text, fontFamily: "'Lilita One', cursive" }}>{t.name}</span>
-              <button style={btn(false)} onClick={() => { setRenamingId(t.id); setRenameVal(t.name); }}>Rename</button>
-            </div>
-          )}
           {!t.isDefault && (
             <button style={{ ...btn(false, C.danger, "rgba(248,113,113,0.14)"), width: "100%", justifyContent: "center" }}
               onClick={() => deleteTile(t.id)}>Delete tile</button>
           )}
           {t.isDefault && (
-            <p style={{ fontSize: 11, color: C.muted, textAlign: "center", fontFamily: "'Lilita One', cursive" }}>Default tile — cannot be deleted.</p>
+            <p style={{ fontSize: 11, color: C.muted, textAlign: "center" }}>Default tile — cannot be deleted.</p>
           )}
         </div>
       </div>
@@ -647,7 +639,7 @@ function App() {
     if (!replaceOpen) return null;
     const TilePicker = ({ value, onChange, label }) => (
       <div style={{ flex: 1 }}>
-        <p style={{ fontSize: 10, color: C.muted, marginBottom: 4, textTransform: "uppercase", letterSpacing: 1, fontFamily: "'Lilita One', cursive" }}>{label}</p>
+        <p style={{ fontSize: 10, color: C.muted, marginBottom: 4, textTransform: "uppercase", letterSpacing: 1 }}>{label}</p>
         <div style={{ overflowY: "auto", maxHeight: 180, display: "flex", flexWrap: "wrap", gap: 5, background: "rgba(0,0,0,0.2)", borderRadius: 7, padding: 6 }}>
           {tiles.map(t => (
             <div key={t.id} onClick={() => onChange(t.id)} style={{
@@ -666,7 +658,7 @@ function App() {
       <div className="modal-backdrop" onClick={() => setReplaceOpen(false)}>
         <div className="modal-box" style={{ maxWidth: 480 }} onClick={e => e.stopPropagation()}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright, fontFamily: "'Lilita One', cursive" }}>Replace Tile</span>
+            <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Replace Tile</span>
             <button onClick={() => setReplaceOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18 }}>×</button>
           </div>
           <div style={{ display: "flex", gap: 12 }}>
@@ -690,13 +682,12 @@ function App() {
       <div className="modal-backdrop" onClick={() => setSeedOpen(false)}>
         <div className="modal-box" style={{ maxWidth: 440 }} onClick={e => e.stopPropagation()}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright, fontFamily: "'Lilita One', cursive" }}>Map Seed</span>
+            <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Map Seed</span>
             <button onClick={() => setSeedOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18 }}>×</button>
           </div>
 
-          {/* Generate */}
           <div>
-            <p style={{ fontSize: 11, color: C.muted, marginBottom: 6, fontFamily: "'Lilita One', cursive" }}>Generate a seed from the current map:</p>
+            <p style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>Generate a seed from the current map:</p>
             <button style={{ ...btn(false, C.soft, C.softDim), marginBottom: 8 }} onClick={generateSeed}>Generate seed</button>
             {seedVal && (
               <textarea className="seed-area" readOnly value={seedVal} onClick={e => e.target.select()} />
@@ -704,7 +695,7 @@ function App() {
           </div>
 
           <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 12 }}>
-            <p style={{ fontSize: 11, color: C.muted, marginBottom: 6, fontFamily: "'Lilita One', cursive" }}>Import a seed:</p>
+            <p style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>Import a seed:</p>
             <textarea className="seed-area" value={seedImport} onChange={e => { setSeedImport(e.target.value); setSeedErr(""); }}
               placeholder="Paste seed here…" />
             {seedErr && <p style={{ fontSize: 11, color: seedErr === "Imported!" ? "#4ade80" : C.danger, marginTop: 4 }}>{seedErr}</p>}
@@ -723,12 +714,38 @@ function App() {
     );
   };
 
+  // ── Failed tile warning modal ─────────────────────────────────────
+  const FailedTileModal = () => {
+    if (!failedWarning) return null;
+    return (
+      <div className="modal-backdrop" onClick={() => setFailedWarning(false)}>
+        <div className="modal-box" onClick={e => e.stopPropagation()}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: C.danger }}>Tile unavailable</span>
+            <button onClick={() => setFailedWarning(false)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
+          </div>
+          <p style={{ fontSize: 13, color: C.text, lineHeight: 1.6 }}>
+            This tile's image could not be loaded. The file may be missing from the <code style={{ color: C.accentBright }}>Resources/</code> folder.
+          </p>
+          <p style={{ fontSize: 11, color: C.muted }}>
+            To fix this, restore the missing image file to the Resources folder and refresh the page. You can also update <code style={{ color: C.accentBright }}>Resources/manifest.json</code> to remove deleted entries.
+          </p>
+          <button style={{ ...btn(false, C.accent, C.accentDim) }} onClick={() => setFailedWarning(false)}>OK</button>
+        </div>
+      </div>
+    );
+  };
+
   // ─────────────────────────────────────────────────────────────────
+  // Grid size in pixels (at current zoom)
+  const gW = GRID_W * CELL * zoom;
+  const gH = GRID_H * CELL * zoom;
+
   return (
     <div style={{
       display: "flex", flexDirection: "column", height: "100dvh",
       background: C.bg, color: C.text,
-      fontFamily: "'Lilita One', cursive",
+      fontFamily: "'Inter', sans-serif",
       overflow: "hidden",
       paddingTop: "env(safe-area-inset-top)", paddingBottom: "env(safe-area-inset-bottom)",
       paddingLeft: "env(safe-area-inset-left)", paddingRight: "env(safe-area-inset-right)",
@@ -737,140 +754,252 @@ function App() {
       <InfoModal />
       <ReplaceModal />
       <SeedModal />
+      <FailedTileModal />
 
       {/* ══ TOP BAR ══════════════════════════════════════════════════ */}
       <div style={{
         display: "flex", alignItems: "center", gap: 8, padding: "0 14px",
         height: 50, flexShrink: 0,
         background: C.panel, borderBottom: `1px solid ${C.border}`,
-        overflowX: "auto", overflowY: "hidden",
       }}>
+        {/* Logo + title */}
         <img src="favicon/favicon-32x32.png" alt="Ophelia" style={{ width: 28, height: 28, flexShrink: 0, imageRendering: "auto" }} />
-        <span style={{
-          fontFamily: "'Lilita One', cursive", fontWeight: 400, fontSize: 18,
-          letterSpacing: 0.4, whiteSpace: "nowrap",
-          background: "linear-gradient(90deg,#38bdf8,#93c5fd)",
-          WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
-          flexShrink: 0, marginRight: 4,
-        }}>Ophelia - Custom Theme Tester</span>
-      </div>
+        {!isMobile && (
+          <span style={{
+            fontFamily: "'Lilita One', cursive", fontWeight: 400, fontSize: 18,
+            letterSpacing: 0.4, whiteSpace: "nowrap",
+            background: "linear-gradient(90deg,#38bdf8,#93c5fd)",
+            WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
+            flexShrink: 0,
+          }}>Ophelia - Custom Theme Tester</span>
+        )}
 
-      {/* ══ TILES PANEL ══════════════════════════════════════════════ */}
-      <div style={{ background: C.panelDeep, borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
-        <SectionHeader label={`Tiles ${tiles.length}`} open={tilesOpen} onToggle={() => setTilesOpen(o => !o)}
-          left={
-            <div style={{ display: "flex", gap: 6, alignItems: "center", marginLeft: 8 }}>
-              <button style={{ ...btn(eraser, C.danger, "rgba(248,113,113,0.16)"), fontSize: 11, padding: "4px 10px" }}
-                onClick={() => setEraser(v => !v)}>Erase</button>
-              <button onClick={() => fileRef.current.click()}
-                style={{ ...btn(false, C.accentBright, C.accentDim), fontSize: 11, padding: "4px 10px" }}>
-                + Upload
-                <input ref={fileRef} type="file" accept={ACCEPTED} multiple style={{ display: "none" }}
-                  onChange={e => loadFiles(e.target.files)} />
-              </button>
-            </div>
-          }
-        />
+        <div style={{ flex: 1 }} />
 
-        {tilesOpen && (
-          tiles.length === 0 ? (
-            <p style={{ padding: "6px 12px 10px", fontSize: 12, color: C.muted }}>No tiles — upload images or drag them here.</p>
+        {/* Zoom controls — centred in top bar */}
+        <div style={{ display: "flex", alignItems: "center", gap: 5, flexShrink: 0 }}>
+          <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1, userSelect: "none" }}>Zoom</span>
+          <button style={{ ...btn(false), padding: "4px 9px", fontSize: 15, fontWeight: 700, lineHeight: 1 }}
+            onClick={() => changeZoom(-ZOOM_STEP)}>−</button>
+          {zoomEditing ? (
+            <input autoFocus value={zoomInput}
+              onChange={e => setZoomInput(e.target.value.replace(/\D/g, ""))}
+              onBlur={commitZoom}
+              onKeyDown={e => { if (e.key === "Enter") e.target.blur(); if (e.key === "Escape") setZoomEdit(false); }}
+              style={{ width: 52, textAlign: "center", outline: "none", background: C.accentDim, border: `1px solid ${C.accent}`, borderRadius: 7, color: C.text, fontFamily: "monospace", fontSize: 13, fontWeight: 700, padding: "3px 4px" }}
+            />
           ) : (
-            <div style={{ overflowX: "auto", padding: "8px 12px 10px" }}>
-              <div style={{ display: "flex", gap: 6 }}>
-                {tiles.map(t => {
-                  const active = sel === t.id && !eraser;
-                  return (
-                    <div key={t.id} onClick={() => { setSel(t.id); setEraser(false); }}
-                      style={{
-                        flexShrink: 0, width: 64, borderRadius: 8, cursor: "pointer",
-                        border: `2px solid ${active ? C.accentBright : C.border}`,
-                        background: active ? C.accentDim : "rgba(255,255,255,0.03)",
-                        transition: "border 0.12s, background 0.12s", overflow: "hidden",
-                        position: "relative",
-                      }}>
-                      {/* Top bar: ID + info button */}
-                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: active ? C.accent : "rgba(56,189,248,0.22)", padding: "2px 4px" }}>
-                        <span style={{ fontSize: 10, fontWeight: 700, color: active ? "#001e38" : C.accentBright, fontFamily: "monospace" }}>#{t.id}</span>
-                        <span onClick={e => { e.stopPropagation(); setInfoTile(t.id); }}
-                          style={{ fontSize: 11, cursor: "pointer", color: active ? "#001e38" : C.muted, lineHeight: 1, padding: "0 2px" }}
-                          title="Tile info">ⓘ</span>
-                      </div>
-                      {/* Image */}
-                      <div style={{ height: 52, background: "#040e1a", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                        <img src={t.src} alt={t.name} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated" }} />
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )
-        )}
+            <span onClick={() => { setZoomEdit(true); setZoomInput(String(Math.round(zoom * 100))); }}
+              style={{ minWidth: 52, textAlign: "center", display: "inline-block", fontSize: 13, fontFamily: "monospace", fontWeight: 700, color: C.text, background: "rgba(56,189,248,0.08)", borderRadius: 7, padding: "3px 6px", border: `1px solid ${C.border}`, cursor: "text", userSelect: "none" }}>
+              {Math.round(zoom * 100)}%
+            </span>
+          )}
+          <button style={{ ...btn(false), padding: "4px 9px", fontSize: 15, fontWeight: 700, lineHeight: 1 }}
+            onClick={() => changeZoom(ZOOM_STEP)}>+</button>
+        </div>
+
+        <div style={{ flex: 1 }} />
       </div>
 
-      {/* ══ TOOLS PANEL ══════════════════════════════════════════════ */}
-      <div style={{ background: C.panelDeep, borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
-        <SectionHeader label="Tools" open={toolsOpen} onToggle={() => setToolsOpen(o => !o)} />
+      {/* ══ 2×2 PANEL GRID ═══════════════════════════════════════════ */}
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr",
+        flexShrink: 0,
+        borderBottom: `1px solid ${C.border}`,
+      }}>
 
-        {toolsOpen && (
-          <div style={{ padding: "8px 12px 10px", display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+        {/* ── TOP-LEFT: Tiles ─────────────────────────────────────── */}
+        <div style={{ background: C.panelDeep, borderRight: isMobile ? "none" : `1px solid ${C.border}`, borderBottom: `1px solid ${C.border}` }}>
+          <SectionHeader
+            label={`Tiles (${tiles.length})`}
+            open={tilesOpen}
+            onToggle={() => setTilesOpen(o => !o)}
+            left={
+              <div style={{ display: "flex", gap: 6, alignItems: "center", marginLeft: 8 }}>
+                <button onClick={() => fileRef.current.click()}
+                  style={{ ...btn(false, C.accentBright, C.accentDim), fontSize: 11, padding: "4px 10px" }}>
+                  + Upload
+                  <input ref={fileRef} type="file" accept={ACCEPTED} multiple style={{ display: "none" }}
+                    onChange={e => { loadFiles(e.target.files); e.target.value = ""; }} />
+                </button>
+                {uploadFlash > 0 && (
+                  <span style={{
+                    fontSize: 11, fontWeight: 600, color: "#4ade80",
+                    background: "rgba(74,222,128,0.14)", border: "1px solid rgba(74,222,128,0.4)",
+                    borderRadius: 6, padding: "3px 8px", animation: "none",
+                    transition: "opacity 0.3s",
+                  }}>
+                    ✓ {uploadFlash} tile{uploadFlash > 1 ? "s" : ""} added
+                  </span>
+                )}
+              </div>
+            }
+          />
 
-            {/* Mirror */}
-            <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1 }}>Mirror</span>
-            <button style={btn(mirrorV, C.pale, C.paleDim)}    onClick={() => setMirrorV(v => !v)}>Vertical</button>
-            <button style={btn(mirrorH, C.soft, C.softDim)}    onClick={() => setMirrorH(v => !v)}>Horizontal</button>
-            <button style={btn(mirrorD, C.accentBright, C.accentDim)} onClick={() => setMirrorD(v => !v)}>Diagonal</button>
+          {tilesOpen && (
+            tilesLoading ? (
+              <p style={{ padding: "6px 12px 10px", fontSize: 12, color: C.muted }}>Loading tiles…</p>
+            ) : (
+              <div style={{ overflowX: "auto", padding: "8px 12px 10px" }}>
+                <div style={{ display: "flex", gap: 6 }}>
 
-            <Sep />
+                  {/* ── Tile #0 — Eraser ── */}
+                  <div
+                    onClick={() => { setEraser(true); setSel(null); }}
+                    style={{
+                      flexShrink: 0, width: 64, borderRadius: 8, cursor: "pointer",
+                      border: `2px solid ${eraser ? C.danger : C.border}`,
+                      background: eraser ? "rgba(248,113,113,0.14)" : "rgba(255,255,255,0.03)",
+                      transition: "border 0.12s, background 0.12s", overflow: "hidden",
+                    }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: eraser ? "rgba(248,113,113,0.32)" : "rgba(248,113,113,0.14)", padding: "2px 4px" }}>
+                      <span style={{ fontSize: 10, fontWeight: 700, color: eraser ? C.danger : "rgba(248,113,113,0.7)" }}>Erase</span>
+                    </div>
+                    <div style={{ height: 52, background: "#040e1a", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      <span style={{ fontSize: 22, color: eraser ? C.danger : "rgba(248,113,113,0.5)", lineHeight: 1 }}>✕</span>
+                    </div>
+                  </div>
 
-            {/* Undo / Redo */}
-            <button style={{ ...btn(histIdx > 0, C.accent, C.accentDim) }} onClick={undo} disabled={histIdx <= 0} title="Undo (Ctrl+Z)">Undo</button>
-            <button style={{ ...btn(histIdx < history.length - 1, C.accent, C.accentDim) }} onClick={redo} disabled={histIdx >= history.length - 1} title="Redo (Ctrl+Y)">Redo</button>
+                  {/* ── Regular tiles ── */}
+                  {tiles.length === 0 ? (
+                    <p style={{ padding: "0 4px", fontSize: 12, color: C.muted, alignSelf: "center" }}>
+                      No tiles — upload images or add to Resources/.
+                    </p>
+                  ) : (
+                    tiles.map(t => {
+                      const active = sel === t.id && !eraser;
+                      const failed = failedTiles.has(t.id);
+                      return (
+                        <div key={t.id}
+                          onClick={() => {
+                            if (failed) { setFailedWarning(true); return; }
+                            setSel(t.id); setEraser(false);
+                          }}
+                          style={{
+                            flexShrink: 0, width: 60, height: 60, borderRadius: 8,
+                            cursor: failed ? "not-allowed" : "pointer",
+                            border: `2px solid ${failed ? C.danger : active ? C.accentBright : C.border}`,
+                            background: failed ? "rgba(248,113,113,0.08)" : active ? C.accentDim : "rgba(255,255,255,0.03)",
+                            transition: "border 0.12s, background 0.12s", overflow: "hidden",
+                            opacity: failed ? 0.55 : 1,
+                            position: "relative",
+                          }}>
+                          {/* Image area fills the whole card */}
+                          <div style={{ width: "100%", height: "100%", background: "#040e1a", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                            {failed ? (
+                              <span style={{ fontSize: 20, color: C.danger }}>✕</span>
+                            ) : (
+                              <img src={t.src} alt=""
+                                onError={() => markFailed(t.id)}
+                                style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated" }} />
+                            )}
+                          </div>
+                          {/* ⓘ info button — small overlay in top-right corner */}
+                          <span onClick={e => { e.stopPropagation(); setInfoTile(t.id); }}
+                            style={{ position: "absolute", top: 2, right: 3, fontSize: 11, cursor: "pointer", color: active ? C.accentBright : C.muted, lineHeight: 1, opacity: 0.7 }}
+                            title="Tile info">ⓘ</span>
+                          {/* Active highlight ring is handled by the border */}
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            )
+          )}
+        </div>
 
-            <Sep />
+        {/* ── TOP-RIGHT: Tools ────────────────────────────────────── */}
+        <div style={{ background: C.panelDeep, borderBottom: `1px solid ${C.border}` }}>
+          <SectionHeader label="Tools" open={toolsOpen} onToggle={() => setToolsOpen(o => !o)} />
 
-            {/* Replace */}
-            <button style={btn(false, C.soft, C.softDim)} onClick={() => setReplaceOpen(true)}>Replace</button>
+          {toolsOpen && (
+            <div style={{ padding: "8px 12px 10px", display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+              {/* Mirror */}
+              <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1 }}>Mirror</span>
+              <button style={btn(mirrorV, C.pale, C.paleDim)}         onClick={() => setMirrorV(v => !v)}>Vertical</button>
+              <button style={btn(mirrorH, C.soft, C.softDim)}         onClick={() => setMirrorH(v => !v)}>Horizontal</button>
+              <button style={btn(mirrorD, C.accentBright, C.accentDim)} onClick={() => setMirrorD(v => !v)}>Diagonal</button>
 
-            <Sep />
+              <Sep />
 
-            {/* Zoom controls */}
-            <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1 }}>Zoom</span>
-            <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
-              <button style={{ ...btn(false), padding: "4px 9px", fontSize: 16, fontWeight: 700, lineHeight: 1 }}
-                onClick={() => changeZoom(-ZOOM_STEP)}>−</button>
-              {zoomEditing ? (
-                <input autoFocus value={zoomInput}
-                  onChange={e => setZoomInput(e.target.value.replace(/\D/g, ""))}
-                  onBlur={commitZoom}
-                  onKeyDown={e => { if (e.key === "Enter") e.target.blur(); if (e.key === "Escape") setZoomEdit(false); }}
-                  style={{ width: 52, textAlign: "center", outline: "none", background: C.accentDim, border: `1px solid ${C.accent}`, borderRadius: 7, color: C.text, fontFamily: "monospace", fontSize: 13, fontWeight: 700, padding: "3px 4px" }}
-                />
-              ) : (
-                <span onClick={() => { setZoomEdit(true); setZoomInput(String(Math.round(zoom * 100))); }}
-                  style={{ minWidth: 52, textAlign: "center", display: "inline-block", fontSize: 13, fontFamily: "monospace", fontWeight: 700, color: C.text, background: "rgba(56,189,248,0.08)", borderRadius: 7, padding: "3px 6px", border: `1px solid ${C.border}`, cursor: "text", userSelect: "none" }}>
-                  {Math.round(zoom * 100)}%
-                </span>
-              )}
-              <button style={{ ...btn(false), padding: "4px 9px", fontSize: 16, fontWeight: 700, lineHeight: 1 }}
-                onClick={() => changeZoom(ZOOM_STEP)}>+</button>
+              {/* Show Guides toggle — only meaningful when a mirror is active */}
+              <button style={btn(showGuides, C.accent, C.accentDim)} onClick={() => setShowGuides(v => !v)}
+                title="Toggle mirror guide lines">
+                Guides
+              </button>
+
+              <Sep />
+
+              {/* Undo / Redo */}
+              <button style={btn(histIdx > 0, C.accent, C.accentDim)} onClick={undo} disabled={histIdx <= 0} title="Undo (Ctrl+Z)">Undo</button>
+              <button style={btn(histIdx < history.length - 1, C.accent, C.accentDim)} onClick={redo} disabled={histIdx >= history.length - 1} title="Redo (Ctrl+Y)">Redo</button>
+
+              <Sep />
+
+              {/* Replace */}
+              <button style={btn(false, C.soft, C.softDim)} onClick={() => setReplaceOpen(true)}>Replace</button>
             </div>
-          </div>
-        )}
+          )}
+        </div>
+
+        {/* ── BOTTOM-LEFT: Background ──────────────────────────────── */}
+        <div style={{ background: C.panelDeep, borderRight: isMobile ? "none" : `1px solid ${C.border}` }}>
+          <SectionHeader label="Background" open={bgOpen} onToggle={() => setBgOpen(o => !o)} />
+
+          {bgOpen && (
+            <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 14px", flexWrap: "wrap" }}>
+              {[
+                { label: "A", bg: bg1, hex: hex1, setHex: setHex1, apply: applyBg1 },
+                { label: "B", bg: bg2, hex: hex2, setHex: setHex2, apply: applyBg2 },
+              ].map(({ label, bg, hex, setHex, apply }) => (
+                <div key={label} style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                  <span style={{ fontSize: 10, color: C.muted, fontWeight: 600 }}>{label}</span>
+                  <input type="color" value={bg} onChange={e => apply(e.target.value)}
+                    style={{ width: 26, height: 26, border: "none", borderRadius: 5, cursor: "pointer", padding: 2, background: "none", flexShrink: 0 }} />
+                  <input type="text" value={hex} maxLength={7}
+                    onChange={e => { const v = e.target.value; setHex(v); if (validHex(v)) apply(v); }}
+                    onBlur={() => { if (!validHex(hex)) setHex(bg); }}
+                    style={{ width: 68, background: "rgba(56,189,248,0.07)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 11, padding: "3px 6px", outline: "none" }}
+                    spellCheck={false} />
+                </div>
+              ))}
+              <button style={{ ...btn(false), fontSize: 10, padding: "3px 9px" }}
+                onClick={() => { applyBg1(DEFAULT_BG1); applyBg2(DEFAULT_BG2); }}>↺ Reset</button>
+            </div>
+          )}
+        </div>
+
+        {/* ── BOTTOM-RIGHT: Other ──────────────────────────────────── */}
+        <div style={{ background: C.panelDeep }}>
+          <SectionHeader label="Other" open={otherOpen} onToggle={() => setOtherOpen(o => !o)} />
+
+          {otherOpen && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 14px", flexWrap: "wrap" }}>
+              <button style={btn(false, C.danger, "rgba(248,113,113,0.14)")}
+                onClick={() => { if (confirm("Clear the whole grid?")) setGrid(Array.from({ length: GRID_H }, () => Array(GRID_W).fill(null))); }}>
+                Clear
+              </button>
+              <button style={btn(false, C.soft, C.softDim)} onClick={() => setSeedOpen(true)}>Seed</button>
+              <button style={btn(false, C.soft, C.softDim)} onClick={doExport}>Download</button>
+            </div>
+          )}
+        </div>
+
       </div>
 
       {/* ══ CANVAS ═══════════════════════════════════════════════════ */}
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
+      <div style={{ flex: 1, overflow: "hidden", minHeight: 0 }}>
         <div ref={scrollRef}
-          style={{ flex: 1, overflow: "auto", background: "#040e1a", minHeight: 0 }}
+          style={{ width: "100%", height: "100%", overflow: "auto", background: "#040e1a" }}
           onWheel={onWheel}
           onMouseUp={() => setPainting(false)}
           onMouseLeave={() => setPainting(false)}
         >
-          {/* Center wrapper */}
+          {/* Centre wrapper */}
           <div style={{ padding: 20, display: "flex", alignItems: "flex-start", justifyContent: "center", minWidth: "min-content", minHeight: "100%" }}>
-            <div style={{ position: "relative", width: GRID_W * CELL * zoom, height: (GRID_H + 2) * CELL * zoom, flexShrink: 0, margin: "0 auto" }}>
+            <div style={{ position: "relative", width: gW, height: (GRID_H + 2) * CELL * zoom, flexShrink: 0, margin: "0 auto" }}>
 
               {/* Checkerboard — offset by one CELL row for export padding */}
               {Array.from({ length: GRID_H }).map((_, r) =>
@@ -879,7 +1008,7 @@ function App() {
                     style={{
                       position: "absolute",
                       left: c * CELL * zoom,
-                      top: (r + 1) * CELL * zoom,   // +1 row padding
+                      top: (r + 1) * CELL * zoom,
                       width: CELL * zoom, height: CELL * zoom,
                       background: (r + c) % 2 === 0 ? bg1 : bg2,
                     }}
@@ -909,55 +1038,51 @@ function App() {
                 })
               )}
 
-              {/* Mirror axis lines */}
-              {mirrorV && <div style={{ position: "absolute", left: (GRID_W / 2) * CELL * zoom - 1, top: CELL * zoom, width: 2, height: GRID_H * CELL * zoom, background: C.pale, opacity: 0.6, pointerEvents: "none", zIndex: 100 }} />}
-              {mirrorH && <div style={{ position: "absolute", top: (GRID_H / 2 + 1) * CELL * zoom - 1, left: 0, height: 2, width: GRID_W * CELL * zoom, background: C.soft, opacity: 0.6, pointerEvents: "none", zIndex: 100 }} />}
-              {mirrorD && <div style={{ position: "absolute", top: CELL * zoom, left: "50%", width: 2, height: GRID_H * CELL * zoom, background: C.accentBright, opacity: 0.28, pointerEvents: "none", zIndex: 100, transform: "rotate(45deg) scaleY(1.5)", transformOrigin: "top center" }} />}
+              {/* Mirror guide lines — SVG overlay positioned over the grid area */}
+              {showGuides && (mirrorV || mirrorH || mirrorD) && (
+                <svg
+                  style={{
+                    position: "absolute",
+                    left: 0,
+                    top: CELL * zoom,   // grid starts at row offset
+                    width: gW,
+                    height: gH,
+                    pointerEvents: "none",
+                    zIndex: 200,
+                    overflow: "visible",
+                  }}
+                >
+                  {/* Vertical mirror — line at horizontal centre */}
+                  {mirrorV && (
+                    <line
+                      x1={gW / 2} y1={0}
+                      x2={gW / 2} y2={gH}
+                      stroke={C.pale} strokeWidth="2" opacity="0.7"
+                      strokeDasharray="6 3"
+                    />
+                  )}
+                  {/* Horizontal mirror — line at vertical centre */}
+                  {mirrorH && (
+                    <line
+                      x1={0}  y1={gH / 2}
+                      x2={gW} y2={gH / 2}
+                      stroke={C.soft} strokeWidth="2" opacity="0.7"
+                      strokeDasharray="6 3"
+                    />
+                  )}
+                  {/* Diagonal (central) — line from bottom-left to top-right */}
+                  {mirrorD && (
+                    <line
+                      x1={0}  y1={gH}
+                      x2={gW} y2={0}
+                      stroke={C.accentBright} strokeWidth="2" opacity="0.6"
+                      strokeDasharray="8 4"
+                    />
+                  )}
+                </svg>
+              )}
+
             </div>
-          </div>
-        </div>
-
-        {/* ══ BOTTOM BAR ═══════════════════════════════════════════════ */}
-        <div style={{
-          borderTop: `1px solid ${C.border}`, background: C.panel,
-          flexShrink: 0, display: "flex", alignItems: "stretch",
-          overflowX: "auto", overflowY: "hidden", gap: 4,
-          marginTop: 4,
-        }}>
-
-          {/* BG colour pickers */}
-          <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 14px", borderRight: `1px solid ${C.border}`, flexShrink: 0 }}>
-            <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 1.4, color: C.accent, textTransform: "uppercase" }}>BG</span>
-            {[
-              { label: "A", bg: bg1, hex: hex1, setHex: setHex1, apply: applyBg1 },
-              { label: "B", bg: bg2, hex: hex2, setHex: setHex2, apply: applyBg2 },
-            ].map(({ label, bg, hex, setHex, apply }) => (
-              <div key={label} style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                <span style={{ fontSize: 10, color: C.muted }}>{label}</span>
-                <input type="color" value={bg} onChange={e => apply(e.target.value)}
-                  style={{ width: 26, height: 26, border: "none", borderRadius: 5, cursor: "pointer", padding: 2, background: "none", flexShrink: 0 }} />
-                <input type="text" value={hex} maxLength={7}
-                  onChange={e => { const v = e.target.value; setHex(v); if (validHex(v)) apply(v); }}
-                  onBlur={() => { if (!validHex(hex)) setHex(bg); }}
-                  style={{ width: 68, background: "rgba(56,189,248,0.07)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 11, padding: "3px 6px", outline: "none" }}
-                  spellCheck={false} />
-              </div>
-            ))}
-            <button style={{ ...btn(false), fontSize: 10, padding: "3px 9px" }}
-              onClick={() => { applyBg1(DEFAULT_BG1); applyBg2(DEFAULT_BG2); }}>↺</button>
-          </div>
-
-          {/* Spacer */}
-          <div style={{ flex: 1 }} />
-
-          {/* Actions: Clear, Seed, Download — aligned right */}
-          <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", flexShrink: 0 }}>
-            <button style={btn(false, C.danger, "rgba(248,113,113,0.14)")}
-              onClick={() => { if (confirm("Clear the whole grid?")) setGrid(Array.from({ length: GRID_H }, () => Array(GRID_W).fill(null))); }}>
-              Clear
-            </button>
-            <button style={btn(false, C.soft, C.softDim)} onClick={() => setSeedOpen(true)}>Seed</button>
-            <button style={btn(false, C.soft, C.softDim)} onClick={doExport}>Download</button>
           </div>
         </div>
       </div>
