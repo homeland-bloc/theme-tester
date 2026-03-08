@@ -430,8 +430,12 @@ function App() {
   // All three modes defer their grid write to this point.
   const commitSelectionOnMouseUp = useCallback(() => {
     const mode = selectionModeRef.current;
-    if (mode === 'single' || mode === 'line') {
-      // single: all cells the cursor visited; line: same accumulation logic
+    if (mode === 'single') {
+      // place tile at the end point (where the mouse was released)
+      if (selectionEndRef.current) {
+        commitMultipleCells([selectionEndRef.current]);
+      }
+    } else if (mode === 'line') {
       const cells = [...hoveredTilesRef.current].map(k => k.split(',').map(Number));
       commitMultipleCells(cells);
     } else if (mode === 'rect') {
