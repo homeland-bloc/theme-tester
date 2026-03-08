@@ -232,6 +232,9 @@ function App() {
   const [selectionMode, setSelectionMode] = useState('single'); // 'single' | 'line' | 'rect'
   const [rectPreview,   setRectPreview]   = useState(null);     // {r1,c1,r2,c2} during rect drag
   const [previewCells,  setPreviewCells]  = useState(null);     // [[r,c],...] during single/line drag
+  // Drag-to-move
+  const [dragTile, setDragTile] = useState(null);   // tile id being dragged, null when idle
+  const [dragPos,  setDragPos]  = useState({ x: 0, y: 0 }); // screen coords for ghost image
   // Panels: collapsed by default on mobile
   const [tilesOpen,   setTilesOpen] = useState(!mobile);
   const [toolsOpen,   setToolsOpen] = useState(!mobile);
@@ -280,11 +283,15 @@ function App() {
   const hoveredTilesRef   = useRef(new Set()); // accumulated "r,c" strings for line mode
   const commitOnUpRef     = useRef(null);     // commitSelectionOnMouseUp
   const pushHistRef       = useRef(null);     // pushHistorySnapshot
+  const dragTileRef       = useRef(null);     // mirrors dragTile for event-handler closures
+  const isDraggingRef     = useRef(false);    // true while a tile is being drag-moved
+  const gridRef           = useRef(null);     // up-to-date grid for touch-handler closure
 
   useEffect(() => { selRef.current          = sel;           }, [sel]);
   useEffect(() => { eraserRef.current       = eraser;        }, [eraser]);
   useEffect(() => { zoomRef.current         = zoom;          }, [zoom]);
   useEffect(() => { selectionModeRef.current = selectionMode; }, [selectionMode]);
+  useEffect(() => { gridRef.current = grid; }, [grid]);
 
   // Persist
   useEffect(() => { save(SK.userTiles, userTiles); }, [userTiles]);
@@ -432,6 +439,7 @@ function App() {
       const g = prev.map(row => [...row]);
       cells.forEach(([r, c]) => {
         getMirrorPositions(r, c).forEach(([pr, pc]) => {
+          if (!isEraser && g[pr][pc] !== null) return; // blocked: cell already occupied
           g[pr][pc] = isEraser ? null : (tileId ?? null);
         });
       });
@@ -470,37 +478,56 @@ function App() {
 
   useEffect(() => { commitOnUpRef.current = commitSelectionOnMouseUp; }, [commitSelectionOnMouseUp]);
 
+  // Convert screen (clientX, clientY) → grid [r, c], or null if outside the grid area
+  const cellFromEvent = (clientX, clientY) => {
+    const el = scrollRef.current;
+    if (!el) return null;
+    const rect = el.getBoundingClientRect();
+    const x = clientX - rect.left + el.scrollLeft - 20; // 20 = CSS padding
+    const y = clientY - rect.top  + el.scrollTop  - 20 - CELL * zoomRef.current; // subtract top-row offset
+    const c = Math.floor(x / (CELL * zoomRef.current));
+    const r = Math.floor(y / (CELL * zoomRef.current));
+    return r >= 0 && r < GRID_H && c >= 0 && c < GRID_W ? [r, c] : null;
+  };
+
   const onCell = (r, c, e) => {
     if (e.type === "mousedown") {
-      // Pick-up: if the cell has a tile and we're not in eraser mode, grab it
       const existingId = grid[r]?.[c];
+
       if (existingId && !eraserRef.current) {
-        setSel(existingId); setEraser(false);
-        selRef.current = existingId; eraserRef.current = false;
-      }
-      setPainting(true);
-      if (pushHistRef.current) pushHistRef.current(); // snapshot before-state once per drag
-      // Clear the picked-up tile's origin cell so we don't double-place
-      if (existingId && !eraserRef.current) {
+        // ── PICK-UP: grab existing tile, remove from origin, enter drag mode ──
+        if (pushHistRef.current) pushHistRef.current();
         setGridRaw(prev => { const g = prev.map(row => [...row]); g[r][c] = null; return g; });
+        setDragTile(existingId);
+        dragTileRef.current = existingId;
+        isDraggingRef.current = true;
+        setDragPos({ x: e.clientX, y: e.clientY });
+        return; // do NOT enter painting mode
       }
-      selectionStartRef.current = [r, c];
-      selectionEndRef.current   = [r, c];
-      hoveredTilesRef.current   = new Set([`${r},${c}`]);
-      const mode = selectionModeRef.current;
-      if (mode === 'single') {
-        setPreviewCells([[r, c]]);                        // single-cell cursor indicator
-      } else if (mode === 'line') {
-        setPreviewCells([[r, c]]);                        // start of trail
-      } else if (mode === 'rect') {
-        setRectPreview({ r1: r, c1: c, r2: r, c2: c }); // 1-cell bounding box
+
+      // ── NORMAL PAINT: only start on empty cells (eraser always allowed) ──
+      if (!existingId || eraserRef.current) {
+        setPainting(true);
+        if (pushHistRef.current) pushHistRef.current();
+        selectionStartRef.current = [r, c];
+        selectionEndRef.current   = [r, c];
+        hoveredTilesRef.current   = new Set([`${r},${c}`]);
+        const mode = selectionModeRef.current;
+        if (mode === 'single') setPreviewCells([[r, c]]);
+        else if (mode === 'line') setPreviewCells([[r, c]]);
+        else if (mode === 'rect') setRectPreview({ r1: r, c1: c, r2: r, c2: c });
       }
-      // no live writes to the grid in any mode
-    } else if (e.type === "mousemove" && painting) {
+
+    } else if (e.type === "mousemove") {
+      if (isDraggingRef.current) {
+        setDragPos({ x: e.clientX, y: e.clientY });
+        return;
+      }
+      if (!painting) return;
       selectionEndRef.current = [r, c];
       const mode = selectionModeRef.current;
       if (mode === 'single') {
-        setPreviewCells([[r, c]]);                        // single cell follows cursor
+        setPreviewCells([[r, c]]);
       } else if (mode === 'line') {
         hoveredTilesRef.current.add(`${r},${c}`);
         setPreviewCells([...hoveredTilesRef.current].map(k => k.split(',').map(Number)));
@@ -566,6 +593,7 @@ function App() {
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
+    // Converts a Touch to grid [r, c], or null if outside the grid
     const cellAt = touch => {
       const rect = el.getBoundingClientRect();
       const x = touch.clientX - rect.left + el.scrollLeft - 20;
@@ -575,7 +603,9 @@ function App() {
       return r >= 0 && r < GRID_H && c >= 0 && c < GRID_W ? [r, c] : null;
     };
     let isTouchPainting = false;
+
     const onTouchStart = e => {
+      // ── Two-finger pinch-to-zoom ──────────────────────────────────
       if (e.touches.length === 2) {
         const t0 = e.touches[0], t1 = e.touches[1];
         const mx = (t0.clientX + t1.clientX) / 2, my = (t0.clientY + t1.clientY) / 2;
@@ -588,27 +618,41 @@ function App() {
         };
         e.preventDefault(); return;
       }
-      if (e.touches.length !== 1 || (!selRef.current && !eraserRef.current)) return;
+      if (e.touches.length !== 1) return;
       const cell = cellAt(e.touches[0]);
       if (!cell) return;
       e.preventDefault();
-      isTouchPainting = true;
       const [r, c] = cell;
-      if (pushHistRef.current) pushHistRef.current(); // snapshot before-state once per drag
+
+      // ── Pick-up: tile already in cell → drag mode ─────────────────
+      const existingId = gridRef.current?.[r]?.[c];
+      if (existingId && !eraserRef.current) {
+        if (pushHistRef.current) pushHistRef.current();
+        setGridRaw(prev => { const g = prev.map(row => [...row]); g[r][c] = null; return g; });
+        setDragTile(existingId);
+        dragTileRef.current = existingId;
+        isDraggingRef.current = true;
+        setDragPos({ x: e.touches[0].clientX, y: e.touches[0].clientY });
+        isTouchPainting = false;
+        return;
+      }
+
+      // ── Normal paint: only on empty cells (or eraser) ────────────
+      if (!selRef.current && !eraserRef.current) return;
+      if (existingId && !eraserRef.current) return; // occupied: block
+      isTouchPainting = true;
+      if (pushHistRef.current) pushHistRef.current();
       selectionStartRef.current = [r, c];
       selectionEndRef.current   = [r, c];
       hoveredTilesRef.current   = new Set([`${r},${c}`]);
       const mode = selectionModeRef.current;
-      if (mode === 'single') {
-        setPreviewCells([[r, c]]);
-      } else if (mode === 'line') {
-        setPreviewCells([[r, c]]);
-      } else if (mode === 'rect') {
-        setRectPreview({ r1: r, c1: c, r2: r, c2: c });
-      }
-      // no live writes to the grid in any mode
+      if (mode === 'single')      setPreviewCells([[r, c]]);
+      else if (mode === 'line')   setPreviewCells([[r, c]]);
+      else if (mode === 'rect')   setRectPreview({ r1: r, c1: c, r2: r, c2: c });
     };
+
     const onTouchMove = e => {
+      // Pinch zoom
       if (e.touches.length === 2 && pinchRef.current) {
         e.preventDefault();
         const t0 = e.touches[0], t1 = e.touches[1];
@@ -618,8 +662,16 @@ function App() {
           ox: pinchRef.current.ox, oy: pinchRef.current.oy,
         }); return;
       }
-      if (!isTouchPainting || e.touches.length !== 1) return;
+      if (e.touches.length !== 1) return;
       e.preventDefault();
+
+      // Drag ghost follows finger
+      if (isDraggingRef.current) {
+        setDragPos({ x: e.touches[0].clientX, y: e.touches[0].clientY });
+        return;
+      }
+
+      if (!isTouchPainting) return;
       const cell = cellAt(e.touches[0]);
       if (!cell) return;
       const [r, c] = cell;
@@ -638,13 +690,30 @@ function App() {
         });
       }
     };
+
     const onTouchEnd = e => {
       if (e.touches.length < 2) pinchRef.current = null;
       if (e.touches.length === 0) {
+        // ── Drop the dragged tile ──────────────────────────────────
+        if (isDraggingRef.current) {
+          const touch = e.changedTouches[0];
+          const cell = cellAt(touch);
+          if (cell) {
+            const [r, c] = cell;
+            setGridRaw(prev => {
+              if (prev[r][c] !== null) return prev; // occupied: discard
+              const g = prev.map(row => [...row]); g[r][c] = dragTileRef.current; return g;
+            });
+          }
+          // outside grid or occupied → tile discarded (undo restores it)
+          setDragTile(null); dragTileRef.current = null; isDraggingRef.current = false;
+          return;
+        }
         if (isTouchPainting && commitOnUpRef.current) commitOnUpRef.current();
         isTouchPainting = false;
       }
     };
+
     el.addEventListener('touchstart',  onTouchStart, { passive: false });
     el.addEventListener('touchmove',   onTouchMove,  { passive: false });
     el.addEventListener('touchend',    onTouchEnd);
@@ -922,6 +991,23 @@ function App() {
       <SeedModal />
       <FailedTileModal />
 
+      {/* ── Drag ghost — follows cursor/finger while dragging a tile ── */}
+      {dragTile && (() => {
+        const t = getTile(dragTile);
+        return t ? (
+          <img src={t.src} alt="" draggable={false}
+            style={{
+              position: "fixed",
+              left: dragPos.x - (CELL * zoom) / 2,
+              top:  dragPos.y - (CELL * zoom) / 2,
+              width: CELL * zoom, height: CELL * zoom,
+              objectFit: "contain", imageRendering: "pixelated",
+              opacity: 0.65, pointerEvents: "none", zIndex: 9999,
+              filter: "drop-shadow(0 2px 8px rgba(0,0,0,0.6))",
+            }} />
+        ) : null;
+      })()}
+
       {/* ══ TOP BAR ══════════════════════════════════════════════════ */}
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 14px", height: 50, flexShrink: 0, background: C.panel, borderBottom: `1px solid ${C.border}` }}>
         <img src="favicon/favicon-32x32.png" alt="Ophelia" style={{ width: 28, height: 28, flexShrink: 0, imageRendering: "auto" }} />
@@ -1010,8 +1096,32 @@ function App() {
           <div ref={scrollRef}
             style={{ width: "100%", height: "100%", overflow: "auto", background: "#1a0c04" }}
             onWheel={onWheel}
-            onMouseUp={() => { if (painting && commitOnUpRef.current) commitOnUpRef.current(); setPainting(false); }}
-            onMouseLeave={() => { if (painting && commitOnUpRef.current) commitOnUpRef.current(); setPainting(false); }}
+            onMouseMove={e => { if (isDraggingRef.current) setDragPos({ x: e.clientX, y: e.clientY }); }}
+            onMouseUp={e => {
+              if (isDraggingRef.current) {
+                const cell = cellFromEvent(e.clientX, e.clientY);
+                if (cell) {
+                  const [r, c] = cell;
+                  setGridRaw(prev => {
+                    if (prev[r][c] !== null) return prev; // occupied: discard
+                    const g = prev.map(row => [...row]); g[r][c] = dragTileRef.current; return g;
+                  });
+                }
+                setDragTile(null); dragTileRef.current = null; isDraggingRef.current = false;
+                return;
+              }
+              if (painting && commitOnUpRef.current) commitOnUpRef.current();
+              setPainting(false);
+            }}
+            onMouseLeave={e => {
+              if (isDraggingRef.current) {
+                // Dragged outside canvas: discard (undo restores the tile)
+                setDragTile(null); dragTileRef.current = null; isDraggingRef.current = false;
+                return;
+              }
+              if (painting && commitOnUpRef.current) commitOnUpRef.current();
+              setPainting(false);
+            }}
           >
             <div style={{ padding: 20, display: "flex", alignItems: "flex-start", justifyContent: "center", minWidth: "min-content", minHeight: "100%" }}>
               <div style={{ position: "relative", width: gW, height: (GRID_H + 2) * CELL * zoom, flexShrink: 0, margin: "0 auto" }}>
