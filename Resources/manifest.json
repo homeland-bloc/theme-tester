@@ -1,17 +1,16 @@
 {
   "tiles": [
-    "MSLM-wall1.png",
-    "MSLM-wall2.png",
-    "MSLM-crate.png",
-    "MSLM-barrel1.png",
-    "MSLM-cactus.png",
-    "MSLM-bush1.png",
-    "MSLM-bush2.png",
-    "MSLM-barrel2.png",
-    "MSLM-barrel3.png",
+    "wall1.png",
+    "wall2.png",
+    "crate.png",
+    "barrel.png",
+    "cactus.png",
+    "bush1.png",
+    "bush2.png",
     "MSLM-fence1.png",
     "MSLM-fence2.png",
-    "MSLM-fence3A.png",
-    "MSLM-fence3B.png"
+    "MSLM-fence3B.png",
+    "Z-barrel1.png",
+    "Z-barrel2.png"
   ]
 }
