@@ -7,7 +7,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Ophelia" />
   <meta name="mobile-web-app-capable" content="yes" />
-  <meta name="theme-color" content="#060f1a" />
+  <meta name="theme-color" content="#1a0f06" />
   <link rel="manifest" href="manifest.json" />
 
   <!-- Favicon setup — browsers pick the best size automatically -->
@@ -29,11 +29,11 @@
 
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { height: 100%; height: 100dvh; overflow: hidden; background: #060f1a; }
+    html, body { height: 100%; height: 100dvh; overflow: hidden; background: #1a0f06; }
     #root { height: 100%; height: 100dvh; display: flex; flex-direction: column; overscroll-behavior: none; }
     ::-webkit-scrollbar { width: 4px; height: 4px; }
     ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: rgba(56,189,248,0.3); border-radius: 2px; }
+    ::-webkit-scrollbar-thumb { background: rgba(251,146,60,0.3); border-radius: 2px; }
     * { -webkit-tap-highlight-color: transparent; }
 
     /* Modal backdrop */
@@ -43,18 +43,18 @@
       z-index: 1000; padding: 20px;
     }
     .modal-box {
-      background: #0a1e30; border: 1px solid rgba(56,189,248,0.28);
+      background: #2b1a0a; border: 1px solid rgba(251,146,60,0.28);
       border-radius: 14px; padding: 22px; max-width: 340px; width: 100%;
       display: flex; flex-direction: column; gap: 16px;
     }
 
     /* Seed textarea */
     .seed-area {
-      width: 100%; background: rgba(56,189,248,0.06); border: 1px solid rgba(56,189,248,0.22);
-      border-radius: 7px; color: #e0f2fe; font-family: monospace; font-size: 11px;
+      width: 100%; background: rgba(251,146,60,0.06); border: 1px solid rgba(251,146,60,0.22);
+      border-radius: 7px; color: #fef3e2; font-family: monospace; font-size: 11px;
       padding: 8px; resize: vertical; min-height: 56px; outline: none;
     }
-    .seed-area:focus { border-color: #38bdf8; }
+    .seed-area:focus { border-color: #fb923c; }
   </style>
 </head>
 <body>
@@ -83,12 +83,12 @@ const isMobileDevice = () => typeof window !== "undefined" && window.innerWidth 
 
 // ── Colour palette ─────────────────────────────────────────────────────
 const C = {
-  bg: "#060f1a", panel: "#0a1e30", panelDeep: "#071627",
-  border: "rgba(56,189,248,0.18)", accent: "#38bdf8",
-  accentDim: "rgba(56,189,248,0.14)", accentBright: "#7dd3fc",
-  soft: "#93c5fd", softDim: "rgba(147,197,253,0.16)",
-  pale: "#bfdbfe", paleDim: "rgba(191,219,254,0.14)",
-  text: "#e0f2fe", muted: "rgba(224,242,254,0.45)", danger: "#f87171",
+  bg: "#1a0f06", panel: "#2b1a0a", panelDeep: "#1f1207",
+  border: "rgba(251,146,60,0.18)", accent: "#fb923c",
+  accentDim: "rgba(251,146,60,0.14)", accentBright: "#fdba74",
+  soft: "#fcd34d", softDim: "rgba(252,211,77,0.16)",
+  pale: "#fde68a", paleDim: "rgba(253,230,138,0.14)",
+  text: "#fef3e2", muted: "rgba(254,243,226,0.45)", danger: "#f87171",
 };
 
 // ── Seed codec ─────────────────────────────────────────────────────────
@@ -169,7 +169,7 @@ function decodeSeed(seed) {
 
 // ── Placeholder tile for unknown IDs on import ─────────────────────────
 function makePlaceholderSrc(id) {
-  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><rect width='32' height='32' fill='#1a1a2e'/><text x='16' y='22' font-size='12' fill='white' text-anchor='middle' font-family='monospace'>${id}</text></svg>`;
+  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><rect width='32' height='32' fill='#2b1a08'/><text x='16' y='22' font-size='12' fill='white' text-anchor='middle' font-family='monospace'>${id}</text></svg>`;
   return "data:image/svg+xml," + encodeURIComponent(svg);
 }
 
@@ -292,6 +292,8 @@ function App() {
         }));
         setDefaultTiles(loaded);
         nextId.current = Math.max(nextId.current, loaded.length + 1);
+        // Auto-select first tile if nothing is selected yet
+        if (loaded.length > 0) setSel(prev => prev ?? loaded[0].id);
       })
       .catch(() => {})
       .finally(() => setTilesLoading(false));
@@ -735,7 +737,7 @@ function App() {
   });
 
   const inputStyle = {
-    background: "rgba(56,189,248,0.07)", border: `1px solid ${C.border}`,
+    background: "rgba(251,146,60,0.07)", border: `1px solid ${C.border}`,
     borderRadius: 5, color: C.text, fontFamily: "'Inter', monospace", fontSize: 11,
     padding: "4px 8px", outline: "none", width: "100%",
   };
@@ -752,7 +754,7 @@ function App() {
             <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Tile #{t.id}</span>
             <button onClick={() => setInfoTile(null)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
           </div>
-          <div style={{ background: "#040e1a", borderRadius: 8, padding: 12, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 120 }}>
+          <div style={{ background: "#1a0c04", borderRadius: 8, padding: 12, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 120 }}>
             <img src={t.src} alt="" style={{ maxWidth: "100%", maxHeight: 180, objectFit: "contain", imageRendering: "pixelated" }} />
           </div>
           {!t.isDefault && (
@@ -835,7 +837,7 @@ function App() {
             <button style={{ ...btn(false, C.accent, C.accentDim), marginTop: 8 }} onClick={importSeed}>Import seed</button>
           </div>
 
-          <div style={{ background: "rgba(56,189,248,0.06)", borderRadius: 7, padding: 8 }}>
+          <div style={{ background: "rgba(251,146,60,0.06)", borderRadius: 7, padding: 8 }}>
             <p style={{ fontSize: 10, color: C.muted, lineHeight: 1.6 }}>
               Seed format: <code style={{ color: C.accentBright }}>[symmetry]:[rle]</code><br />
               Symmetry: <code style={{ color: C.pale }}>d</code> diagonal · <code style={{ color: C.pale }}>h</code> horizontal · <code style={{ color: C.pale }}>v</code> vertical · <code style={{ color: C.pale }}>a</code> asymmetric<br />
@@ -901,7 +903,7 @@ function App() {
           <span style={{
             fontFamily: "'Lilita One', cursive", fontWeight: 400, fontSize: 18,
             letterSpacing: 0.4, whiteSpace: "nowrap",
-            background: "linear-gradient(90deg,#38bdf8,#93c5fd)",
+            background: "linear-gradient(90deg,#fb923c,#fcd34d)",
             WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
             flexShrink: 0,
           }}>Ophelia - Custom Theme Tester</span>
@@ -923,7 +925,7 @@ function App() {
             />
           ) : (
             <span onClick={() => { setZoomEdit(true); setZoomInput(String(Math.round(zoom * 100))); }}
-              style={{ minWidth: 52, textAlign: "center", display: "inline-block", fontSize: 13, fontFamily: "monospace", fontWeight: 700, color: C.text, background: "rgba(56,189,248,0.08)", borderRadius: 7, padding: "3px 6px", border: `1px solid ${C.border}`, cursor: "text", userSelect: "none" }}>
+              style={{ minWidth: 52, textAlign: "center", display: "inline-block", fontSize: 13, fontFamily: "monospace", fontWeight: 700, color: C.text, background: "rgba(251,146,60,0.08)", borderRadius: 7, padding: "3px 6px", border: `1px solid ${C.border}`, cursor: "text", userSelect: "none" }}>
               {Math.round(zoom * 100)}%
             </span>
           )}
@@ -974,8 +976,8 @@ function App() {
             tilesLoading ? (
               <p style={{ padding: "6px 12px 10px", fontSize: 12, color: C.muted }}>Loading tiles…</p>
             ) : (
-              <div style={{ overflowX: "auto", padding: "8px 12px 10px" }}>
-                <div style={{ display: "flex", gap: 6 }}>
+              <div style={{ overflowY: "auto", maxHeight: 198, padding: "8px 12px 10px" }}>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
 
                   {/* ── Tile #0 — Eraser ── */}
                   <div
@@ -989,7 +991,7 @@ function App() {
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: eraser ? "rgba(248,113,113,0.32)" : "rgba(248,113,113,0.14)", padding: "2px 4px" }}>
                       <span style={{ fontSize: 10, fontWeight: 700, color: eraser ? C.danger : "rgba(248,113,113,0.7)" }}>Erase</span>
                     </div>
-                    <div style={{ height: 52, background: "#040e1a", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <div style={{ height: 52, background: "#1a0c04", display: "flex", alignItems: "center", justifyContent: "center" }}>
                       <span style={{ fontSize: 22, color: eraser ? C.danger : "rgba(248,113,113,0.5)", lineHeight: 1 }}>✕</span>
                     </div>
                   </div>
@@ -1019,7 +1021,7 @@ function App() {
                             position: "relative",
                           }}>
                           {/* Image area fills the whole card */}
-                          <div style={{ width: "100%", height: "100%", background: "#040e1a", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                          <div style={{ width: "100%", height: "100%", background: "#1a0c04", display: "flex", alignItems: "center", justifyContent: "center" }}>
                             {failed ? (
                               <span style={{ fontSize: 20, color: C.danger }}>✕</span>
                             ) : (
@@ -1048,12 +1050,13 @@ function App() {
           <SectionHeader label="Tools" open={toolsOpen} onToggle={() => setToolsOpen(o => !o)} />
 
           {toolsOpen && (
-            <div style={{ padding: "8px 12px 10px", display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            <div style={{ overflowX: "auto" }}>
+            <div style={{ padding: "8px 12px 10px", display: "flex", gap: 8, flexWrap: isMobile ? "nowrap" : "wrap", alignItems: "center", minWidth: "min-content" }}>
               {/* Selection mode */}
-              <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1 }}>Mode</span>
+              <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1 }}>Selection Mode</span>
               <button style={btn(selectionMode === 'single', C.accent, C.accentDim)} onClick={() => setSelectionMode('single')} title="Freehand: paint each cell as you drag">Single</button>
               <button style={btn(selectionMode === 'line',   C.accent, C.accentDim)} onClick={() => setSelectionMode('line')}   title="Line: collect all cells under the cursor, commit on release">Line</button>
-              <button style={btn(selectionMode === 'rect',   C.accent, C.accentDim)} onClick={() => setSelectionMode('rect')}   title="Rectangle: fill bounding box on release">Rect</button>
+              <button style={btn(selectionMode === 'rect',   C.accent, C.accentDim)} onClick={() => setSelectionMode('rect')}   title="Rectangle: fill bounding box on release">Rectangle</button>
 
               <Sep />
 
@@ -1082,6 +1085,7 @@ function App() {
               {/* Replace */}
               <button style={btn(false, C.soft, C.softDim)} onClick={() => setReplaceOpen(true)}>Replace</button>
             </div>
+            </div>
           )}
         </div>
 
@@ -1102,7 +1106,7 @@ function App() {
                   <input type="text" value={hex} maxLength={7}
                     onChange={e => { const v = e.target.value; setHex(v); if (validHex(v)) apply(v); }}
                     onBlur={() => { if (!validHex(hex)) setHex(bg); }}
-                    style={{ width: 68, background: "rgba(56,189,248,0.07)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 11, padding: "3px 6px", outline: "none" }}
+                    style={{ width: 68, background: "rgba(251,146,60,0.07)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 11, padding: "3px 6px", outline: "none" }}
                     spellCheck={false} />
                 </div>
               ))}
@@ -1133,7 +1137,7 @@ function App() {
       {/* ══ CANVAS ═══════════════════════════════════════════════════ */}
       <div style={{ flex: 1, overflow: "hidden", minHeight: 0 }}>
         <div ref={scrollRef}
-          style={{ width: "100%", height: "100%", overflow: "auto", background: "#040e1a" }}
+          style={{ width: "100%", height: "100%", overflow: "auto", background: "#1a0c04" }}
           onWheel={onWheel}
           onMouseUp={() => { if (painting && commitOnUpRef.current) commitOnUpRef.current(); setPainting(false); }}
           onMouseLeave={() => { if (painting && commitOnUpRef.current) commitOnUpRef.current(); setPainting(false); }}
