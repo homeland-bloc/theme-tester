@@ -7,7 +7,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Ophelia" />
   <meta name="mobile-web-app-capable" content="yes" />
-  <meta name="theme-color" content="#1a0f06" />
+  <meta name="theme-color" content="#1a0505" />
   <link rel="manifest" href="manifest.json" />
 
   <!-- Favicon setup — browsers pick the best size automatically -->
@@ -29,11 +29,11 @@
 
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { height: 100%; height: 100dvh; overflow: hidden; background: #1a0f06; }
+    html, body { height: 100%; height: 100dvh; overflow: hidden; background: #1a0505; }
     #root { height: 100%; height: 100dvh; display: flex; flex-direction: column; overscroll-behavior: none; }
     ::-webkit-scrollbar { width: 4px; height: 4px; }
     ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: rgba(251,146,60,0.3); border-radius: 2px; }
+    ::-webkit-scrollbar-thumb { background: rgba(200,40,40,0.4); border-radius: 2px; }
     * { -webkit-tap-highlight-color: transparent; }
 
     /* Modal backdrop */
@@ -43,18 +43,18 @@
       z-index: 1000; padding: 20px;
     }
     .modal-box {
-      background: #2b1a0a; border: 1px solid rgba(251,146,60,0.28);
+      background: #2a0808; border: 1px solid rgba(200,40,40,0.32);
       border-radius: 14px; padding: 22px; max-width: 340px; width: 100%;
       display: flex; flex-direction: column; gap: 16px;
     }
 
     /* Seed textarea */
     .seed-area {
-      width: 100%; background: rgba(251,146,60,0.06); border: 1px solid rgba(251,146,60,0.22);
+      width: 100%; background: rgba(180,40,40,0.08); border: 1px solid rgba(180,40,40,0.25);
       border-radius: 7px; color: #fef3e2; font-family: monospace; font-size: 11px;
       padding: 8px; resize: vertical; min-height: 56px; outline: none;
     }
-    .seed-area:focus { border-color: #fb923c; }
+    .seed-area:focus { border-color: #e05020; }
   </style>
 </head>
 <body>
@@ -83,12 +83,12 @@ const isMobileDevice = () => typeof window !== "undefined" && window.innerWidth 
 
 // ── Colour palette ─────────────────────────────────────────────────────
 const C = {
-  bg: "#1a0f06", panel: "#2b1a0a", panelDeep: "#1f1207",
-  border: "rgba(251,146,60,0.18)", accent: "#fb923c",
-  accentDim: "rgba(251,146,60,0.14)", accentBright: "#fdba74",
-  soft: "#fcd34d", softDim: "rgba(252,211,77,0.16)",
+  bg: "#1a0505", panel: "#2a0808", panelDeep: "#1f0606",
+  border: "rgba(200,40,40,0.22)", accent: "#e05020",
+  accentDim: "rgba(220,80,40,0.15)", accentBright: "#f07840",
+  soft: "#fbbf24", softDim: "rgba(251,191,36,0.16)",
   pale: "#fde68a", paleDim: "rgba(253,230,138,0.14)",
-  text: "#fef3e2", muted: "rgba(254,243,226,0.45)", danger: "#f87171",
+  text: "#fef3e2", muted: "rgba(254,243,226,0.45)", danger: "#ef4444",
 };
 
 // ── Seed codec ─────────────────────────────────────────────────────────
@@ -169,7 +169,7 @@ function decodeSeed(seed) {
 
 // ── Placeholder tile for unknown IDs on import ─────────────────────────
 function makePlaceholderSrc(id) {
-  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><rect width='32' height='32' fill='#2b1a08'/><text x='16' y='22' font-size='12' fill='white' text-anchor='middle' font-family='monospace'>${id}</text></svg>`;
+  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><rect width='32' height='32' fill='#2b0808'/><text x='16' y='22' font-size='12' fill='white' text-anchor='middle' font-family='monospace'>${id}</text></svg>`;
   return "data:image/svg+xml," + encodeURIComponent(svg);
 }
 
@@ -828,7 +828,7 @@ function App() {
   });
 
   const inputStyle = {
-    background: "rgba(251,146,60,0.07)", border: `1px solid ${C.border}`,
+    background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`,
     borderRadius: 5, color: C.text, fontFamily: "'Inter', monospace", fontSize: 11,
     padding: "4px 8px", outline: "none", width: "100%",
   };
@@ -845,7 +845,7 @@ function App() {
             <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Tile #{t.id}</span>
             <button onClick={() => setInfoTile(null)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
           </div>
-          <div style={{ background: "#1a0c04", borderRadius: 8, padding: 12, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 120 }}>
+          <div style={{ background: "#1a0404", borderRadius: 8, padding: 12, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 120 }}>
             <img src={t.src} alt="" style={{ maxWidth: "100%", maxHeight: 180, objectFit: "contain", imageRendering: "pixelated" }} />
           </div>
           {!t.isDefault && (
@@ -940,7 +940,7 @@ function App() {
             <button style={{ ...btn(false, C.accent, C.accentDim), marginTop: 8 }} onClick={importSeed}>Import</button>
           </div>
 
-          <div style={{ background: "rgba(251,146,60,0.06)", borderRadius: 7, padding: 8 }}>
+          <div style={{ background: "rgba(180,40,40,0.08)", borderRadius: 7, padding: 8 }}>
             <p style={{ fontSize: 10, color: C.muted, lineHeight: 1.6 }}>
               Format: <code style={{ color: C.accentBright }}>[sym]:[rle]</code> · Sym: <code style={{ color: C.pale }}>a</code> none · <code style={{ color: C.pale }}>d/h/v</code> diagonal/horiz/vert · <code style={{ color: C.pale }}>f</code> full
             </p>
@@ -1011,38 +1011,30 @@ function App() {
       {/* ══ TOP BAR ══════════════════════════════════════════════════ */}
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 14px", height: 50, flexShrink: 0, background: C.panel, borderBottom: `1px solid ${C.border}` }}>
         <img src="favicon/favicon-32x32.png" alt="Ophelia" style={{ width: 28, height: 28, flexShrink: 0, imageRendering: "auto" }} />
-        <span style={{ fontFamily: "'Lilita One', cursive", fontWeight: 400, fontSize: isMobile ? 15 : 18, letterSpacing: 0.4, whiteSpace: "nowrap", background: "linear-gradient(90deg,#fb923c,#fcd34d)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", flexShrink: 0 }}>
-          {isMobile ? "Ophelia" : "Ophelia — Custom Theme Tester"}
+        <span style={{ fontFamily: "'Lilita One', cursive", fontWeight: 400, fontSize: isMobile ? 15 : 18, letterSpacing: 0.4, whiteSpace: "nowrap", background: "linear-gradient(90deg,#e05020,#fbbf24)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", flexShrink: 0 }}>
+          Ophelia — Custom Theme Tester
         </span>
       </div>
 
-      {/* ══ MIDDLE ROW: left sidebar | canvas | right sidebar ════════ */}
-      <div style={{ flex: 1, display: "flex", overflow: "hidden", minHeight: 0 }}>
+      {/* ══ MIDDLE ROW: canvas with overlay sidebars ════════════════ */}
+      <div style={{ flex: 1, position: "relative", overflow: "hidden", minHeight: 0 }}>
 
-        {/* ── LEFT SIDEBAR: Tiles ─────────────────────────────────── */}
-        <div style={{ display: "flex", flexDirection: "row", flexShrink: 0 }}>
+        {/* ── LEFT SIDEBAR: Tiles (absolute overlay) ──────────────── */}
+        <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, display: "flex", flexDirection: "row", zIndex: 10 }}>
           {tilesOpen && (
             <div style={{ width: isMobile ? 160 : 200, background: C.panelDeep, borderRight: `1px solid ${C.border}`, display: "flex", flexDirection: "column", overflow: "hidden" }}>
               <SectionHeader
                 label={`Tiles (${tiles.length})`}
                 open={tilesOpen}
                 onToggle={() => setTilesOpen(o => !o)}
-                left={
-                  <div style={{ display: "flex", gap: 5, alignItems: "center", marginLeft: 6 }}>
-                    <button onClick={() => fileRef.current.click()}
-                      style={{ ...btn(false, C.accentBright, C.accentDim), fontSize: 10, padding: "3px 7px" }}>
-                      + Upload
-                      <input ref={fileRef} type="file" accept={ACCEPTED} multiple style={{ display: "none" }}
-                        onChange={e => { loadFiles(e.target.files); e.target.value = ""; }} />
-                    </button>
-                    {uploadFlash > 0 && (
-                      <span style={{ fontSize: 10, fontWeight: 600, color: "#4ade80", background: "rgba(74,222,128,0.14)", border: "1px solid rgba(74,222,128,0.4)", borderRadius: 6, padding: "2px 6px" }}>
-                        ✓ {uploadFlash}
-                      </span>
-                    )}
-                  </div>
-                }
+                right={uploadFlash > 0 ? (
+                  <span style={{ fontSize: 10, fontWeight: 600, color: "#4ade80", background: "rgba(74,222,128,0.14)", border: "1px solid rgba(74,222,128,0.4)", borderRadius: 6, padding: "2px 6px" }}>
+                    ✓ {uploadFlash}
+                  </span>
+                ) : null}
               />
+              <input ref={fileRef} type="file" accept={ACCEPTED} multiple style={{ display: "none" }}
+                onChange={e => { loadFiles(e.target.files); e.target.value = ""; }} />
               <div style={{ overflowY: "auto", flex: 1, padding: "8px 8px 10px" }}>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
                   {/* Eraser */}
@@ -1051,7 +1043,7 @@ function App() {
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: eraser ? "rgba(248,113,113,0.32)" : "rgba(248,113,113,0.14)", padding: "2px 4px" }}>
                       <span style={{ fontSize: 9, fontWeight: 700, color: eraser ? C.danger : "rgba(248,113,113,0.7)" }}>Erase</span>
                     </div>
-                    <div style={{ height: 44, background: "#1a0c04", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <div style={{ height: 44, background: "#1a0404", display: "flex", alignItems: "center", justifyContent: "center" }}>
                       <span style={{ fontSize: 20, color: eraser ? C.danger : "rgba(248,113,113,0.5)", lineHeight: 1 }}>✕</span>
                     </div>
                   </div>
@@ -1068,7 +1060,7 @@ function App() {
                         <div key={t.id}
                           onClick={() => { if (failed) { setFailedWarning(true); return; } setSel(t.id); setEraser(false); }}
                           style={{ flexShrink: 0, width: 56, height: 56, borderRadius: 8, cursor: failed ? "not-allowed" : "pointer", border: `2px solid ${failed ? C.danger : active ? C.accentBright : C.border}`, background: failed ? "rgba(248,113,113,0.08)" : active ? C.accentDim : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", overflow: "hidden", opacity: failed ? 0.55 : 1, position: "relative" }}>
-                          <div style={{ width: "100%", height: "100%", background: "#1a0c04", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                          <div style={{ width: "100%", height: "100%", background: "#1a0404", display: "flex", alignItems: "center", justifyContent: "center" }}>
                             {failed ? <span style={{ fontSize: 20, color: C.danger }}>✕</span>
                               : <img src={t.src} alt="" onError={() => markFailed(t.id)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated" }} />}
                           </div>
@@ -1079,6 +1071,13 @@ function App() {
                       );
                     })
                   )}
+                  {/* Upload tile card */}
+                  <div onClick={() => fileRef.current.click()}
+                    style={{ flexShrink: 0, width: 56, height: 56, borderRadius: 8, cursor: "pointer", border: `2px dashed ${C.border}`, background: "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", overflow: "hidden", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2 }}
+                    title="Upload tiles">
+                    <span style={{ fontSize: 22, color: C.muted, lineHeight: 1, fontWeight: 300 }}>+</span>
+                    <span style={{ fontSize: 9, color: C.muted, textTransform: "uppercase", letterSpacing: 0.8, lineHeight: 1 }}>Upload</span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1091,10 +1090,10 @@ function App() {
           </button>
         </div>
 
-        {/* ── CANVAS ──────────────────────────────────────────────── */}
-        <div style={{ flex: 1, overflow: "hidden", minWidth: 0 }}>
+        {/* ── CANVAS (full width, always centered) ────────────────── */}
+        <div style={{ position: "absolute", inset: 0, overflow: "hidden" }}>
           <div ref={scrollRef}
-            style={{ width: "100%", height: "100%", overflow: "auto", background: "#1a0c04" }}
+            style={{ width: "100%", height: "100%", overflow: "auto", background: "#1a0404" }}
             onWheel={onWheel}
             onMouseMove={e => { if (isDraggingRef.current) setDragPos({ x: e.clientX, y: e.clientY }); }}
             onMouseUp={e => {
@@ -1175,8 +1174,8 @@ function App() {
           </div>
         </div>
 
-        {/* ── RIGHT SIDEBAR: Tools ─────────────────────────────────── */}
-        <div style={{ display: "flex", flexDirection: "row", flexShrink: 0 }}>
+        {/* ── RIGHT SIDEBAR: Tools (absolute overlay) ─────────────── */}
+        <div style={{ position: "absolute", right: 0, top: 0, bottom: 0, display: "flex", flexDirection: "row", zIndex: 10 }}>
           {/* Right toggle strip */}
           <button onClick={() => setToolsOpen(o => !o)}
             style={{ width: 16, background: C.panelDeep, border: "none", borderLeft: `1px solid ${C.border}`, cursor: "pointer", color: C.muted, fontSize: 9, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, userSelect: "none" }}
@@ -1203,11 +1202,6 @@ function App() {
                 <Sep />
                 <button style={btn(showGuides, C.accent, C.accentDim)} onClick={() => setShowGuides(v => !v)} title="Toggle mirror guide lines">Guides</button>
                 <Sep />
-                <div style={{ display: "flex", gap: 5 }}>
-                  <button style={btn(histIdx > 0, C.accent, C.accentDim)} onClick={undo} disabled={histIdx <= 0} title="Undo (Ctrl+Z)">Undo</button>
-                  <button style={btn(histIdx < history.length - 1, C.accent, C.accentDim)} onClick={redo} disabled={histIdx >= history.length - 1} title="Redo (Ctrl+Y)">Redo</button>
-                </div>
-                <Sep />
                 <button style={btn(false, C.soft, C.softDim)} onClick={() => setReplaceOpen(true)}>Replace</button>
               </div>
             </div>
@@ -1218,9 +1212,42 @@ function App() {
 
       {/* ══ BOTTOM BAR ═══════════════════════════════════════════════ */}
       <div style={{ flexShrink: 0, background: C.panelDeep, borderTop: `1px solid ${C.border}` }}>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, padding: "6px 14px", alignItems: "center" }}>
-          {/* Background colours */}
-          <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1, userSelect: "none" }}>BG</span>
+
+        {/* Row 1: Undo | Zoom | Redo */}
+        <div style={{ display: "flex", alignItems: "center", padding: "5px 14px 3px" }}>
+          <button style={btn(histIdx > 0, C.accent, C.accentDim)} onClick={undo} disabled={histIdx <= 0} title="Undo (Ctrl+Z)">Undo</button>
+          <div style={{ flex: 1, display: "flex", justifyContent: "center", alignItems: "center", gap: 6 }}>
+            <button style={{ ...btn(false), padding: "4px 9px", fontSize: 15, fontWeight: 700, lineHeight: 1 }} onClick={() => changeZoom(-ZOOM_STEP)}>−</button>
+            {zoomEditing ? (
+              <input autoFocus value={zoomInput}
+                onChange={e => setZoomInput(e.target.value.replace(/\D/g, ""))}
+                onBlur={commitZoom}
+                onKeyDown={e => { if (e.key === "Enter") e.target.blur(); if (e.key === "Escape") setZoomEdit(false); }}
+                style={{ width: 52, textAlign: "center", outline: "none", background: C.accentDim, border: `1px solid ${C.accent}`, borderRadius: 7, color: C.text, fontFamily: "monospace", fontSize: 13, fontWeight: 700, padding: "3px 4px" }} />
+            ) : (
+              <span onClick={() => { setZoomEdit(true); setZoomInput(String(Math.round(zoom * 100))); }}
+                style={{ minWidth: 52, textAlign: "center", display: "inline-block", fontSize: 13, fontFamily: "monospace", fontWeight: 700, color: C.text, background: "rgba(180,40,40,0.10)", borderRadius: 7, padding: "3px 6px", border: `1px solid ${C.border}`, cursor: "text", userSelect: "none" }}>
+                {Math.round(zoom * 100)}%
+              </span>
+            )}
+            <button style={{ ...btn(false), padding: "4px 9px", fontSize: 15, fontWeight: 700, lineHeight: 1 }} onClick={() => changeZoom(ZOOM_STEP)}>+</button>
+          </div>
+          <button style={btn(histIdx < history.length - 1, C.accent, C.accentDim)} onClick={redo} disabled={histIdx >= history.length - 1} title="Redo (Ctrl+Y)">Redo</button>
+        </div>
+
+        {/* Row 2: Clear | Seed | Download */}
+        <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 8, padding: "3px 14px" }}>
+          <button style={btn(false, C.danger, "rgba(239,68,68,0.14)")}
+            onClick={() => { if (confirm("Clear the whole grid?")) setGrid(Array.from({ length: GRID_H }, () => Array(GRID_W).fill(null))); }}>
+            Clear
+          </button>
+          <button style={btn(false, C.soft, C.softDim)} onClick={() => setSeedOpen(true)}>Seed</button>
+          <button style={{ ...btn(false), color: "#7dd3fc", borderColor: "rgba(125,211,252,0.4)", background: "rgba(125,211,252,0.08)" }} onClick={doExport}>Download</button>
+        </div>
+
+        {/* Row 3: Background colour pickers */}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, padding: "3px 14px 5px", alignItems: "center" }}>
+          <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1, userSelect: "none" }}>Background</span>
           {[
             { label: "A", bg: bg1, hex: hex1, setHex: setHex1, apply: applyBg1 },
             { label: "B", bg: bg2, hex: hex2, setHex: setHex2, apply: applyBg2 },
@@ -1232,38 +1259,14 @@ function App() {
               <input type="text" value={hex} maxLength={7}
                 onChange={e => { const v = e.target.value; setHex(v); if (validHex(v)) apply(v); }}
                 onBlur={() => { if (!validHex(hex)) setHex(bg); }}
-                style={{ width: 62, background: "rgba(251,146,60,0.07)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 11, padding: "3px 6px", outline: "none" }}
+                style={{ width: 62, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 11, padding: "3px 6px", outline: "none" }}
                 spellCheck={false} />
             </div>
           ))}
           <button style={{ ...btn(false), fontSize: 10, padding: "3px 9px" }}
             onClick={() => { applyBg1(DEFAULT_BG1); applyBg2(DEFAULT_BG2); }}>↺ Reset</button>
-          <Sep />
-          {/* Actions */}
-          <button style={btn(false, C.danger, "rgba(248,113,113,0.14)")}
-            onClick={() => { if (confirm("Clear the whole grid?")) setGrid(Array.from({ length: GRID_H }, () => Array(GRID_W).fill(null))); }}>
-            Clear
-          </button>
-          <button style={btn(false, C.soft, C.softDim)} onClick={() => setSeedOpen(true)}>Seed</button>
-          <button style={btn(false, C.soft, C.softDim)} onClick={doExport}>Download</button>
-          <Sep />
-          {/* Zoom */}
-          <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1, userSelect: "none" }}>Zoom</span>
-          <button style={{ ...btn(false), padding: "4px 9px", fontSize: 15, fontWeight: 700, lineHeight: 1 }} onClick={() => changeZoom(-ZOOM_STEP)}>−</button>
-          {zoomEditing ? (
-            <input autoFocus value={zoomInput}
-              onChange={e => setZoomInput(e.target.value.replace(/\D/g, ""))}
-              onBlur={commitZoom}
-              onKeyDown={e => { if (e.key === "Enter") e.target.blur(); if (e.key === "Escape") setZoomEdit(false); }}
-              style={{ width: 52, textAlign: "center", outline: "none", background: C.accentDim, border: `1px solid ${C.accent}`, borderRadius: 7, color: C.text, fontFamily: "monospace", fontSize: 13, fontWeight: 700, padding: "3px 4px" }} />
-          ) : (
-            <span onClick={() => { setZoomEdit(true); setZoomInput(String(Math.round(zoom * 100))); }}
-              style={{ minWidth: 52, textAlign: "center", display: "inline-block", fontSize: 13, fontFamily: "monospace", fontWeight: 700, color: C.text, background: "rgba(251,146,60,0.08)", borderRadius: 7, padding: "3px 6px", border: `1px solid ${C.border}`, cursor: "text", userSelect: "none" }}>
-              {Math.round(zoom * 100)}%
-            </span>
-          )}
-          <button style={{ ...btn(false), padding: "4px 9px", fontSize: 15, fontWeight: 700, lineHeight: 1 }} onClick={() => changeZoom(ZOOM_STEP)}>+</button>
         </div>
+
       </div>
 
     </div>
