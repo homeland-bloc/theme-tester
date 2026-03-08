@@ -218,6 +218,9 @@ function App() {
   const [zoomEditing, setZoomEdit]  = useState(false);
   const [zoomInput,   setZoomInput] = useState("");
   const [painting,    setPainting]  = useState(false);
+  const [selectionMode, setSelectionMode] = useState('single'); // 'single' | 'line' | 'rect'
+  const [rectPreview,   setRectPreview]   = useState(null);     // {r1,c1,r2,c2} during rect drag
+  const [previewCells,  setPreviewCells]  = useState(null);     // [[r,c],...] during single/line drag
   // Panels: collapsed by default on mobile
   const [tilesOpen,   setTilesOpen] = useState(!mobile);
   const [toolsOpen,   setToolsOpen] = useState(!mobile);
@@ -259,9 +262,18 @@ function App() {
   const absZoomRef  = useRef(null);
   const pinchRef    = useRef(null);
 
-  useEffect(() => { selRef.current    = sel;    }, [sel]);
-  useEffect(() => { eraserRef.current = eraser; }, [eraser]);
-  useEffect(() => { zoomRef.current   = zoom;   }, [zoom]);
+  // Selection mode refs (stable across touch handler closures)
+  const selectionModeRef  = useRef('single');
+  const selectionStartRef = useRef(null);     // [r, c] of mousedown cell
+  const selectionEndRef   = useRef(null);     // [r, c] of latest mousemove cell
+  const hoveredTilesRef   = useRef(new Set()); // accumulated "r,c" strings for line mode
+  const commitOnUpRef     = useRef(null);     // commitSelectionOnMouseUp
+  const pushHistRef       = useRef(null);     // pushHistorySnapshot
+
+  useEffect(() => { selRef.current          = sel;           }, [sel]);
+  useEffect(() => { eraserRef.current       = eraser;        }, [eraser]);
+  useEffect(() => { zoomRef.current         = zoom;          }, [zoom]);
+  useEffect(() => { selectionModeRef.current = selectionMode; }, [selectionMode]);
 
   // Persist
   useEffect(() => { save(SK.userTiles, userTiles); }, [userTiles]);
@@ -328,6 +340,18 @@ function App() {
     setGridRaw(history[newIdx]);
   }, [history, histIdx]);
 
+  // Push the current grid as a history snapshot (called once on mousedown, before any paint).
+  // All cell writes during a drag use skipHistory=true, so the whole drag is one undo step.
+  const pushHistorySnapshot = useCallback(() => {
+    const snap = grid;
+    setHistory(h => {
+      const trimmed = h.slice(0, histIdx + 1);
+      const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
+      return [...capped, snap];
+    });
+    setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
+  }, [histIdx, grid]);
+
   const loadFiles = files => {
     const imageFiles = [...files].filter(f => f.type.startsWith("image/"));
     if (!imageFiles.length) return;
@@ -379,14 +403,88 @@ function App() {
       const g = prev.map(row => [...row]);
       cells.forEach(([pr, pc]) => { g[pr][pc] = eraser ? null : (sel ?? null); });
       return g;
-    });
+    }, true); // skipHistory — snapshot is saved once on mousedown via pushHistorySnapshot
   }, [eraser, sel, getMirrorPositions, setGrid]);
 
-  useEffect(() => { paintRef.current = paintCells; }, [paintCells]);
+  useEffect(() => { paintRef.current   = paintCells;           }, [paintCells]);
+  useEffect(() => { pushHistRef.current = pushHistorySnapshot;  }, [pushHistorySnapshot]);
+
+  // Commit an array of [r,c] cells to the grid at once (used by line and rect modes).
+  // Uses refs for sel/eraser so it reads the correct values at mouseup time.
+  const commitMultipleCells = useCallback((cells) => {
+    if (!cells.length) return;
+    const tileId   = selRef.current;
+    const isEraser = eraserRef.current;
+    setGrid(prev => {
+      const g = prev.map(row => [...row]);
+      cells.forEach(([r, c]) => {
+        getMirrorPositions(r, c).forEach(([pr, pc]) => {
+          g[pr][pc] = isEraser ? null : (tileId ?? null);
+        });
+      });
+      return g;
+    }, true); // skipHistory — snapshot was already saved on mousedown
+  }, [getMirrorPositions, setGrid]);
+
+  // Called on mouseup / touch-end to finalise the current selection.
+  // All three modes defer their grid write to this point.
+  const commitSelectionOnMouseUp = useCallback(() => {
+    const mode = selectionModeRef.current;
+    if (mode === 'single' || mode === 'line') {
+      // single: all cells the cursor visited; line: same accumulation logic
+      const cells = [...hoveredTilesRef.current].map(k => k.split(',').map(Number));
+      commitMultipleCells(cells);
+    } else if (mode === 'rect') {
+      if (!selectionStartRef.current) return;
+      const [sr, sc] = selectionStartRef.current;
+      const [er, ec] = selectionEndRef.current ?? [sr, sc];
+      const cells = [];
+      for (let r = Math.min(sr, er); r <= Math.max(sr, er); r++)
+        for (let c = Math.min(sc, ec); c <= Math.max(sc, ec); c++)
+          cells.push([r, c]);
+      commitMultipleCells(cells);
+    }
+    setRectPreview(null);
+    setPreviewCells(null);
+    selectionStartRef.current = null;
+    selectionEndRef.current   = null;
+    hoveredTilesRef.current   = new Set();
+  }, [commitMultipleCells]);
+
+  useEffect(() => { commitOnUpRef.current = commitSelectionOnMouseUp; }, [commitSelectionOnMouseUp]);
 
   const onCell = (r, c, e) => {
-    if (e.type === "mousedown") { setPainting(true); paintCells(r, c); }
-    else if (e.type === "mousemove" && painting) paintCells(r, c);
+    if (e.type === "mousedown") {
+      setPainting(true);
+      if (pushHistRef.current) pushHistRef.current(); // snapshot before-state once per drag
+      selectionStartRef.current = [r, c];
+      selectionEndRef.current   = [r, c];
+      hoveredTilesRef.current   = new Set([`${r},${c}`]);
+      const mode = selectionModeRef.current;
+      if (mode === 'single') {
+        setPreviewCells([[r, c]]);                        // single-cell cursor indicator
+      } else if (mode === 'line') {
+        setPreviewCells([[r, c]]);                        // start of trail
+      } else if (mode === 'rect') {
+        setRectPreview({ r1: r, c1: c, r2: r, c2: c }); // 1-cell bounding box
+      }
+      // no live writes to the grid in any mode
+    } else if (e.type === "mousemove" && painting) {
+      selectionEndRef.current = [r, c];
+      const mode = selectionModeRef.current;
+      if (mode === 'single') {
+        setPreviewCells([[r, c]]);                        // single cell follows cursor
+      } else if (mode === 'line') {
+        hoveredTilesRef.current.add(`${r},${c}`);
+        setPreviewCells([...hoveredTilesRef.current].map(k => k.split(',').map(Number)));
+      } else if (mode === 'rect') {
+        const [r1, c1] = selectionStartRef.current;
+        setRectPreview({
+          r1: Math.min(r1, r), c1: Math.min(c1, c),
+          r2: Math.max(r1, r), c2: Math.max(c1, c),
+        });
+      }
+    }
   };
 
   const getTile = id => tiles.find(t => t.id === id);
@@ -468,7 +566,20 @@ function App() {
       if (!cell) return;
       e.preventDefault();
       isTouchPainting = true;
-      paintRef.current(cell[0], cell[1]);
+      const [r, c] = cell;
+      if (pushHistRef.current) pushHistRef.current(); // snapshot before-state once per drag
+      selectionStartRef.current = [r, c];
+      selectionEndRef.current   = [r, c];
+      hoveredTilesRef.current   = new Set([`${r},${c}`]);
+      const mode = selectionModeRef.current;
+      if (mode === 'single') {
+        setPreviewCells([[r, c]]);
+      } else if (mode === 'line') {
+        setPreviewCells([[r, c]]);
+      } else if (mode === 'rect') {
+        setRectPreview({ r1: r, c1: c, r2: r, c2: c });
+      }
+      // no live writes to the grid in any mode
     };
     const onTouchMove = e => {
       if (e.touches.length === 2 && pinchRef.current) {
@@ -483,11 +594,29 @@ function App() {
       if (!isTouchPainting || e.touches.length !== 1) return;
       e.preventDefault();
       const cell = cellAt(e.touches[0]);
-      if (cell) paintRef.current(cell[0], cell[1]);
+      if (!cell) return;
+      const [r, c] = cell;
+      selectionEndRef.current = [r, c];
+      const mode = selectionModeRef.current;
+      if (mode === 'single') {
+        setPreviewCells([[r, c]]);
+      } else if (mode === 'line') {
+        hoveredTilesRef.current.add(`${r},${c}`);
+        setPreviewCells([...hoveredTilesRef.current].map(k => k.split(',').map(Number)));
+      } else if (mode === 'rect') {
+        const [r1, c1] = selectionStartRef.current;
+        setRectPreview({
+          r1: Math.min(r1, r), c1: Math.min(c1, c),
+          r2: Math.max(r1, r), c2: Math.max(c1, c),
+        });
+      }
     };
     const onTouchEnd = e => {
       if (e.touches.length < 2) pinchRef.current = null;
-      if (e.touches.length === 0) isTouchPainting = false;
+      if (e.touches.length === 0) {
+        if (isTouchPainting && commitOnUpRef.current) commitOnUpRef.current();
+        isTouchPainting = false;
+      }
     };
     el.addEventListener('touchstart',  onTouchStart, { passive: false });
     el.addEventListener('touchmove',   onTouchMove,  { passive: false });
@@ -916,6 +1045,14 @@ function App() {
 
           {toolsOpen && (
             <div style={{ padding: "8px 12px 10px", display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+              {/* Selection mode */}
+              <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1 }}>Mode</span>
+              <button style={btn(selectionMode === 'single', C.accent, C.accentDim)} onClick={() => setSelectionMode('single')} title="Freehand: paint each cell as you drag">Single</button>
+              <button style={btn(selectionMode === 'line',   C.accent, C.accentDim)} onClick={() => setSelectionMode('line')}   title="Line: collect all cells under the cursor, commit on release">Line</button>
+              <button style={btn(selectionMode === 'rect',   C.accent, C.accentDim)} onClick={() => setSelectionMode('rect')}   title="Rectangle: fill bounding box on release">Rect</button>
+
+              <Sep />
+
               {/* Mirror */}
               <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1 }}>Mirror</span>
               <button style={btn(mirrorV, C.pale, C.paleDim)}         onClick={() => setMirrorV(v => !v)}>Vertical</button>
@@ -994,8 +1131,8 @@ function App() {
         <div ref={scrollRef}
           style={{ width: "100%", height: "100%", overflow: "auto", background: "#040e1a" }}
           onWheel={onWheel}
-          onMouseUp={() => setPainting(false)}
-          onMouseLeave={() => setPainting(false)}
+          onMouseUp={() => { if (painting && commitOnUpRef.current) commitOnUpRef.current(); setPainting(false); }}
+          onMouseLeave={() => { if (painting && commitOnUpRef.current) commitOnUpRef.current(); setPainting(false); }}
         >
           {/* Centre wrapper */}
           <div style={{ padding: 20, display: "flex", alignItems: "flex-start", justifyContent: "center", minWidth: "min-content", minHeight: "100%" }}>
@@ -1036,6 +1173,49 @@ function App() {
                     />
                   );
                 })
+              )}
+
+              {/* Selection preview overlay — lightweight SVG, no real write to grid state */}
+              {(previewCells || rectPreview) && (
+                <svg
+                  style={{
+                    position: "absolute",
+                    left: 0,
+                    top: CELL * zoom,
+                    width: gW,
+                    height: gH,
+                    pointerEvents: "none",
+                    zIndex: 250,
+                    overflow: "visible",
+                  }}
+                >
+                  {/* Single / line mode: one rect per highlighted cell */}
+                  {previewCells && previewCells.map(([r, c]) => (
+                    <rect
+                      key={`${r},${c}`}
+                      x={c * CELL * zoom}
+                      y={r * CELL * zoom}
+                      width={CELL * zoom}
+                      height={CELL * zoom}
+                      fill="rgba(255,255,255,0.22)"
+                      stroke="rgba(255,255,255,0.55)"
+                      strokeWidth="1.5"
+                    />
+                  ))}
+                  {/* Rect mode: bounding-box highlight */}
+                  {rectPreview && (
+                    <rect
+                      x={rectPreview.c1 * CELL * zoom}
+                      y={rectPreview.r1 * CELL * zoom}
+                      width={(rectPreview.c2 - rectPreview.c1 + 1) * CELL * zoom}
+                      height={(rectPreview.r2 - rectPreview.r1 + 1) * CELL * zoom}
+                      fill="rgba(255,255,255,0.22)"
+                      stroke="rgba(255,255,255,0.55)"
+                      strokeWidth="1.5"
+                      rx="2"
+                    />
+                  )}
+                </svg>
               )}
 
               {/* Mirror guide lines — SVG overlay positioned over the grid area */}
