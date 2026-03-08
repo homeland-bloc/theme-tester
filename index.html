@@ -48,13 +48,6 @@
       display: flex; flex-direction: column; gap: 16px;
     }
 
-    /* Seed textarea */
-    .seed-area {
-      width: 100%; background: rgba(180,40,40,0.08); border: 1px solid rgba(180,40,40,0.25);
-      border-radius: 7px; color: #fef3e2; font-family: monospace; font-size: 11px;
-      padding: 8px; resize: vertical; min-height: 56px; outline: none;
-    }
-    .seed-area:focus { border-color: #e05020; }
   </style>
 </head>
 <body>
@@ -69,7 +62,7 @@ const MIN_ZOOM = 0.25, MAX_ZOOM = 4;
 // Zoom buttons snap to nearest 10%
 const ZOOM_STEP = 0.1;
 const snapTo10 = z => Math.round(z * 10) / 10;
-const SK = { tiles: "oph_tiles", grid: "oph_grid", colors: "oph_colors", userTiles: "oph_user_tiles" };
+const SK = { tiles: "oph_tiles", grid: "oph_grid", colors: "oph_colors", userTiles: "oph_user_tiles", multipliers: "oph_multipliers" };
 const ACCEPTED = "image/png,image/jpeg,image/gif,image/webp,image/svg+xml,image/bmp";
 const MAX_HISTORY = 60;
 
@@ -90,88 +83,6 @@ const C = {
   pale: "#fde68a", paleDim: "rgba(253,230,138,0.14)",
   text: "#fef3e2", muted: "rgba(254,243,226,0.45)", danger: "#ef4444",
 };
-
-// ── Seed codec ─────────────────────────────────────────────────────────
-// Format: [symmetry_prefix]:[rle_payload]
-const B62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-const toB62 = n => { if (n === 0) return "0"; let s = ""; while (n > 0) { s = B62[n % 62] + s; n = Math.floor(n / 62); } return s; };
-const fromB62 = s => s.split("").reduce((a, c) => a * 62 + B62.indexOf(c), 0);
-
-function encodeSeed(grid, mirrorV, mirrorH, mirrorD) {
-  let sym = "a";
-  if (mirrorD && !mirrorH && !mirrorV) sym = "d";
-  else if (mirrorH && !mirrorD && !mirrorV) sym = "h";
-  else if (mirrorV && !mirrorD && !mirrorH) sym = "v";
-  else if (mirrorD && mirrorH && mirrorV) sym = "f";
-  else if (mirrorD && mirrorH) sym = "dh";
-  else if (mirrorD && mirrorV) sym = "dv";
-  else if (mirrorH && mirrorV) sym = "hv";
-
-  const flat = grid.flat().map(v => v ?? 0);
-  const tokens = [];
-  let i = 0;
-  while (i < flat.length) {
-    const val = flat[i];
-    let run = 1;
-    while (i + run < flat.length && flat[i + run] === val) run++;
-    let idStr;
-    if (val === 0) idStr = "_";
-    else if (val <= 62) idStr = B62[val];
-    else idStr = "~" + toB62(val);
-    const runStr = run > 1 ? "x" + toB62(run) : "";
-    tokens.push(idStr + runStr);
-    i += run;
-  }
-  return sym + ":" + tokens.join("");
-}
-
-function decodeSeed(seed) {
-  const colonIdx = seed.indexOf(":");
-  if (colonIdx === -1) return null;
-  const sym = seed.slice(0, colonIdx);
-  const payload = seed.slice(colonIdx + 1);
-
-  const mirrorD = sym.includes("d") || sym === "f";
-  const mirrorH = sym.includes("h") || sym === "f";
-  const mirrorV = sym.includes("v") || sym === "f";
-
-  const flat = [];
-  let i = 0;
-  while (i < payload.length) {
-    let val, idLen;
-    if (payload[i] === "_") { val = 0; idLen = 1; }
-    else if (payload[i] === "~") {
-      let j = i + 1;
-      while (j < payload.length && payload[j] !== "x" && payload[j] !== "_" && payload[j] !== "~" && B62.indexOf(payload[j]) !== -1) j++;
-      val = fromB62(payload.slice(i + 1, j));
-      idLen = j - i;
-    } else {
-      val = B62.indexOf(payload[i]);
-      idLen = 1;
-    }
-    i += idLen;
-    let run = 1;
-    if (i < payload.length && payload[i] === "x") {
-      let j = i + 1;
-      while (j < payload.length && B62.indexOf(payload[j]) !== -1 && payload[j] !== "_" && payload[j] !== "~") j++;
-      run = fromB62(payload.slice(i + 1, j));
-      i = j;
-    }
-    for (let k = 0; k < run; k++) flat.push(val === 0 ? null : val);
-  }
-
-  const total = GRID_W * GRID_H;
-  const padded = [...flat];
-  while (padded.length < total) padded.push(null);
-  const grid = Array.from({ length: GRID_H }, (_, r) => padded.slice(r * GRID_W, r * GRID_W + GRID_W));
-  return { grid, mirrorD, mirrorH, mirrorV };
-}
-
-// ── Placeholder tile for unknown IDs on import ─────────────────────────
-function makePlaceholderSrc(id) {
-  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><rect width='32' height='32' fill='#2b0808'/><text x='16' y='22' font-size='12' fill='white' text-anchor='middle' font-family='monospace'>${id}</text></svg>`;
-  return "data:image/svg+xml," + encodeURIComponent(svg);
-}
 
 // ── Tiny helpers ───────────────────────────────────────────────────────
 const Sep = () => <div style={{ width: 1, height: 22, background: C.border, flexShrink: 0, alignSelf: "center" }} />;
@@ -245,11 +156,8 @@ function App() {
   const [replaceOpen, setReplaceOpen] = useState(false);
   const [replaceA,    setReplaceA]  = useState(null);
   const [replaceB,    setReplaceB]  = useState(null);
-  // Seed
-  const [seedOpen,    setSeedOpen]  = useState(false);
-  const [seedVal,     setSeedVal]   = useState("");
-  const [seedImport,  setSeedImport]= useState("");
-  const [seedErr,     setSeedErr]   = useState("");
+  // Tile size multipliers
+  const [tileMultipliers, setTileMultipliers] = useState(() => load(SK.multipliers, {}));
   // Failed tile tracking
   const [failedTiles,   setFailedTiles]   = useState(new Set());
   const [failedWarning, setFailedWarning] = useState(false);
@@ -294,8 +202,15 @@ function App() {
   useEffect(() => { gridRef.current = grid; }, [grid]);
 
   // Persist
-  useEffect(() => { save(SK.userTiles, userTiles); }, [userTiles]);
-  useEffect(() => { save(SK.grid,      grid);       }, [grid]);
+  useEffect(() => { save(SK.userTiles,    userTiles);       }, [userTiles]);
+  useEffect(() => { save(SK.grid,         grid);            }, [grid]);
+  useEffect(() => { save(SK.multipliers,  tileMultipliers); }, [tileMultipliers]);
+
+  const getTileMultiplier = t => {
+    if (tileMultipliers[t.id] !== undefined) return tileMultipliers[t.id];
+    if (t.src && (t.src.includes("spawnBlue") || t.src.includes("spawnRed"))) return 1.25;
+    return 1.0;
+  };
 
   // Load default tiles dynamically from Resources/manifest.json
   useEffect(() => {
@@ -743,38 +658,6 @@ function App() {
     setReplaceOpen(false); setReplaceA(null); setReplaceB(null);
   };
 
-  // ── Seed helpers ──────────────────────────────────────────────────
-  const generateSeed = () => {
-    const s = encodeSeed(grid, mirrorV, mirrorH, mirrorD);
-    setSeedVal(s);
-    // do NOT touch seedImport — generate and import are independent
-  };
-
-  const importSeed = () => {
-    setSeedErr("");
-    let result;
-    try { result = decodeSeed(seedImport.trim()); } catch { result = null; }
-    if (!result) { setSeedErr("Invalid seed format."); return; }
-    const { grid: newGrid, mirrorD: nd, mirrorH: nh, mirrorV: nv } = result;
-    const allIds = new Set(tiles.map(t => t.id));
-    const placeholders = [];
-    newGrid.forEach(row => row.forEach(id => {
-      if (id && !allIds.has(id)) {
-        if (!placeholders.find(p => p.id === id))
-          placeholders.push({ id, name: `Unknown #${id}`, src: makePlaceholderSrc(id), isPlaceholder: true });
-      }
-    }));
-    if (placeholders.length > 0) {
-      setUserTiles(prev => {
-        const existing = new Set(prev.map(t => t.id));
-        return [...prev, ...placeholders.filter(p => !existing.has(p.id))];
-      });
-    }
-    setGrid(newGrid);
-    setMirrorD(nd); setMirrorH(nh); setMirrorV(nv);
-    setSeedErr("Imported!");
-  };
-
   // ── Export ────────────────────────────────────────────────────────
   const doExport = () => {
     const padding = CELL;
@@ -838,6 +721,17 @@ function App() {
     if (!infoTile) return null;
     const t = getTile(infoTile);
     if (!t) { setInfoTile(null); return null; }
+    const defaultMult = t.src && (t.src.includes("spawnBlue") || t.src.includes("spawnRed")) ? 1.25 : 1.0;
+    const currentMult = getTileMultiplier(t);
+    const [multInput, setMultInput] = React.useState(String(currentMult));
+    const commitMult = () => {
+      const v = parseFloat(multInput);
+      if (!isNaN(v) && v > 0) {
+        setTileMultipliers(prev => ({ ...prev, [t.id]: Math.round(v * 100) / 100 }));
+      } else {
+        setMultInput(String(currentMult));
+      }
+    };
     return (
       <div className="modal-backdrop" onClick={() => setInfoTile(null)}>
         <div className="modal-box" onClick={e => e.stopPropagation()}>
@@ -847,6 +741,18 @@ function App() {
           </div>
           <div style={{ background: "#1a0404", borderRadius: 8, padding: 12, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 120 }}>
             <img src={t.src} alt="" style={{ maxWidth: "100%", maxHeight: 180, objectFit: "contain", imageRendering: "pixelated" }} />
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ fontSize: 11, color: C.muted, flexShrink: 0 }}>Size multiplier</span>
+            <input type="number" value={multInput} min="0.1" max="4" step="0.05"
+              onChange={e => setMultInput(e.target.value)}
+              onBlur={commitMult}
+              onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
+              style={{ width: 72, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none" }} />
+            <button style={{ ...btn(false), fontSize: 10, padding: "3px 7px" }}
+              onClick={() => { setTileMultipliers(prev => { const n = {...prev}; delete n[t.id]; return n; }); setMultInput(String(defaultMult)); }}>
+              Reset
+            </button>
           </div>
           {!t.isDefault && (
             <button style={{ ...btn(false, C.danger, "rgba(248,113,113,0.14)"), width: "100%", justifyContent: "center" }}
@@ -901,55 +807,6 @@ function App() {
     );
   };
 
-  // ── Seed modal ────────────────────────────────────────────────────
-  const SeedModal = () => {
-    if (!seedOpen) return null;
-    const [copied, setCopied] = React.useState(false);
-    const copyToClipboard = () => {
-      if (!seedVal) return;
-      navigator.clipboard.writeText(seedVal).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }).catch(() => {});
-    };
-    return (
-      <div className="modal-backdrop" onClick={() => setSeedOpen(false)}>
-        <div className="modal-box" style={{ maxWidth: 440 }} onClick={e => e.stopPropagation()}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Map Seed</span>
-            <button onClick={() => setSeedOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18 }}>×</button>
-          </div>
-
-          <div>
-            <p style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>Generate a seed from the current map:</p>
-            <div style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center" }}>
-              <button style={btn(false, C.soft, C.softDim)} onClick={generateSeed}>Generate</button>
-              {seedVal && (
-                <button style={btn(copied, C.accent, C.accentDim)} onClick={copyToClipboard}>
-                  {copied ? "Copied!" : "Copy"}
-                </button>
-              )}
-            </div>
-            {seedVal && (
-              <textarea className="seed-area" readOnly value={seedVal} onClick={e => e.target.select()} />
-            )}
-          </div>
-
-          <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 12 }}>
-            <p style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>Import a seed:</p>
-            <textarea className="seed-area" value={seedImport} onChange={e => { setSeedImport(e.target.value); setSeedErr(""); }}
-              placeholder="Paste seed here…" />
-            {seedErr && <p style={{ fontSize: 11, color: seedErr === "Imported!" ? "#4ade80" : C.danger, marginTop: 4 }}>{seedErr}</p>}
-            <button style={{ ...btn(false, C.accent, C.accentDim), marginTop: 8 }} onClick={importSeed}>Import</button>
-          </div>
-
-          <div style={{ background: "rgba(180,40,40,0.08)", borderRadius: 7, padding: 8 }}>
-            <p style={{ fontSize: 10, color: C.muted, lineHeight: 1.6 }}>
-              Format: <code style={{ color: C.accentBright }}>[sym]:[rle]</code> · Sym: <code style={{ color: C.pale }}>a</code> none · <code style={{ color: C.pale }}>d/h/v</code> diagonal/horiz/vert · <code style={{ color: C.pale }}>f</code> full
-            </p>
-          </div>
-        </div>
-      </div>
-    );
-  };
-
   // ── Failed tile warning modal ─────────────────────────────────────
   const FailedTileModal = () => {
     if (!failedWarning) return null;
@@ -988,7 +845,6 @@ function App() {
 
       <InfoModal />
       <ReplaceModal />
-      <SeedModal />
       <FailedTileModal />
 
       {/* ── Drag ghost — follows cursor/finger while dragging a tile ── */}
@@ -1140,9 +996,11 @@ function App() {
                 {grid.map((row, r) =>
                   row.map((id, c) => {
                     const t = id && getTile(id); if (!t) return null;
+                    const mult = getTileMultiplier(t);
+                    const cellPx = CELL * zoom;
                     return (
                       <img key={`t${r}-${c}`} src={t.src} alt="" draggable={false}
-                        style={{ position: "absolute", left: c * CELL * zoom, top: (r + 1 + 0.5) * CELL * zoom, width: CELL * zoom, height: "auto", transform: "translateY(-50%)", pointerEvents: "none", imageRendering: "pixelated", zIndex: r + 1 }}
+                        style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2, top: (r + 1 + 0.5) * cellPx, width: cellPx * mult, height: "auto", transform: "translateY(-50%)", pointerEvents: "none", imageRendering: "pixelated", zIndex: r + 1 }}
                       />
                     );
                   })
@@ -1160,12 +1018,21 @@ function App() {
                   </svg>
                 )}
 
-                {/* Mirror guide lines */}
-                {showGuides && (mirrorV || mirrorH || mirrorD) && (
+                {/* Mirror guide lines — always shown when Guides is on */}
+                {showGuides && (
                   <svg style={{ position: "absolute", left: 0, top: CELL * zoom, width: gW, height: gH, pointerEvents: "none", zIndex: 200, overflow: "visible" }}>
-                    {mirrorV && <line x1={gW / 2} y1={0} x2={gW / 2} y2={gH} stroke={C.pale} strokeWidth="2" opacity="0.7" strokeDasharray="6 3" />}
-                    {mirrorH && <line x1={0} y1={gH / 2} x2={gW} y2={gH / 2} stroke={C.soft} strokeWidth="2" opacity="0.7" strokeDasharray="6 3" />}
-                    {mirrorD && <line x1={0} y1={gH} x2={gW} y2={0} stroke={C.accentBright} strokeWidth="2" opacity="0.6" strokeDasharray="8 4" />}
+                    {/* Vertical */}
+                    <line x1={gW / 2} y1={0} x2={gW / 2} y2={gH}
+                      stroke={mirrorV ? C.pale : "rgba(255,255,255,0.10)"} strokeWidth="1.5" opacity={mirrorV ? 0.7 : 1} strokeDasharray="6 3" />
+                    {/* Horizontal */}
+                    <line x1={0} y1={gH / 2} x2={gW} y2={gH / 2}
+                      stroke={mirrorH ? C.soft : "rgba(255,255,255,0.10)"} strokeWidth="1.5" opacity={mirrorH ? 0.7 : 1} strokeDasharray="6 3" />
+                    {/* Diagonal: bottom-left → top-right */}
+                    <line x1={0} y1={gH} x2={gW} y2={0}
+                      stroke={mirrorD ? C.accentBright : "rgba(255,255,255,0.10)"} strokeWidth="1.5" opacity={mirrorD ? 0.6 : 1} strokeDasharray="8 4" />
+                    {/* Diagonal: top-left → bottom-right */}
+                    <line x1={0} y1={0} x2={gW} y2={gH}
+                      stroke={mirrorD ? C.accentBright : "rgba(255,255,255,0.10)"} strokeWidth="1.5" opacity={mirrorD ? 0.6 : 1} strokeDasharray="8 4" />
                   </svg>
                 )}
 
@@ -1235,14 +1102,13 @@ function App() {
           <button style={btn(histIdx < history.length - 1, C.accent, C.accentDim)} onClick={redo} disabled={histIdx >= history.length - 1} title="Redo (Ctrl+Y)">Redo</button>
         </div>
 
-        {/* Row 2: Clear | Seed | Download */}
+        {/* Row 2: Clear | Download */}
         <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 8, padding: "3px 14px" }}>
           <button style={btn(false, C.danger, "rgba(239,68,68,0.14)")}
             onClick={() => { if (confirm("Clear the whole grid?")) setGrid(Array.from({ length: GRID_H }, () => Array(GRID_W).fill(null))); }}>
             Clear
           </button>
-          <button style={btn(false, C.soft, C.softDim)} onClick={() => setSeedOpen(true)}>Seed</button>
-          <button style={{ ...btn(false), color: "#7dd3fc", borderColor: "rgba(125,211,252,0.4)", background: "rgba(125,211,252,0.08)" }} onClick={doExport}>Download</button>
+          <button style={btn(false, C.soft, C.softDim)} onClick={doExport}>Download</button>
         </div>
 
         {/* Row 3: Background colour pickers */}
