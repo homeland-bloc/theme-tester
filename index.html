@@ -59,9 +59,9 @@ const { useState, useRef, useEffect, useCallback, useMemo } = React;
 const GRID_W = 21, GRID_H = 33, CELL = 32;
 const DEFAULT_BG1 = "#67717d", DEFAULT_BG2 = "#6e7986";
 const MIN_ZOOM = 0.25, MAX_ZOOM = 4;
-// Zoom buttons snap to nearest 10%
-const ZOOM_STEP = 0.1;
-const snapTo10 = z => Math.round(z * 10) / 10;
+// Zoom buttons snap to nearest 5%
+const ZOOM_STEP = 0.05;
+const snapTo10 = z => Math.round(z * 20) / 20;
 const SK = { tiles: "oph_tiles", grid: "oph_grid", colors: "oph_colors", userTiles: "oph_user_tiles", multipliers: "oph_multipliers" };
 const ACCEPTED = "image/png,image/jpeg,image/gif,image/webp,image/svg+xml,image/bmp";
 const MAX_HISTORY = 60;
@@ -106,8 +106,13 @@ function SectionHeader({ label, open, onToggle, left, right }) {
 function calcFitZoom() {
   const w = window.innerWidth, h = window.innerHeight;
   const mobile = w < 768;
-  const sideW = mobile ? 0 : 460; // ~200 left + ~240 right + strips
-  const topH = 50, botH = 46, pad = 40;
+  // Mobile: only the 28px toggle strips are visible (sidebars collapsed)
+  // Desktop: left 200 + right 240 + 2×28 strips ≈ 496
+  const sideW = mobile ? 56 : 496;
+  const topH = 50;
+  // Bottom bar: 3 rows × ~30px each ≈ 92px
+  const botH = 92;
+  const pad = 24;
   const availW = Math.max(1, w - sideW - pad);
   const availH = Math.max(1, h - topH - botH - pad);
   return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, snapTo10(Math.min(availW / (GRID_W * CELL), availH / (GRID_H * CELL)))));
@@ -151,11 +156,15 @@ function App() {
   const [toolsOpen,   setToolsOpen] = useState(!mobile);
   const [bgOpen,      setBgOpen]    = useState(!mobile);
   const [otherOpen,   setOtherOpen] = useState(!mobile);
+  // Bottom section: extra rows collapsed by default on mobile
+  const [bottomOpen,  setBottomOpen] = useState(!mobile);
   const [infoTile,    setInfoTile]  = useState(null);
   // Replace A→B
   const [replaceOpen, setReplaceOpen] = useState(false);
   const [replaceA,    setReplaceA]  = useState(null);
   const [replaceB,    setReplaceB]  = useState(null);
+  // Map name for export filename
+  const [mapName, setMapName] = useState("");
   // Tile size multipliers
   const [tileMultipliers, setTileMultipliers] = useState(() => load(SK.multipliers, {}));
   // Failed tile tracking
@@ -194,6 +203,8 @@ function App() {
   const dragTileRef       = useRef(null);     // mirrors dragTile for event-handler closures
   const isDraggingRef     = useRef(false);    // true while a tile is being drag-moved
   const gridRef           = useRef(null);     // up-to-date grid for touch-handler closure
+  const dragTimerRef      = useRef(null);     // pending 150ms drag-start timer
+  const pendingDragRef    = useRef(null);     // { id, r, c } while timer is pending
 
   useEffect(() => { selRef.current          = sel;           }, [sel]);
   useEffect(() => { eraserRef.current       = eraser;        }, [eraser]);
@@ -208,7 +219,7 @@ function App() {
 
   const getTileMultiplier = t => {
     if (tileMultipliers[t.id] !== undefined) return tileMultipliers[t.id];
-    if (t.src && (t.src.includes("spawnBlue") || t.src.includes("spawnRed"))) return 1.5;
+    if (t.src && (t.src.includes("spawnBlue") || t.src.includes("spawnRed"))) return 1.65;
     return 1.0;
   };
 
@@ -338,7 +349,7 @@ function App() {
       const g = prev.map(row => [...row]);
       cells.forEach(([pr, pc]) => { g[pr][pc] = eraser ? null : (sel ?? null); });
       return g;
-    }, true); // skipHistory — snapshot is saved once on mousedown via pushHistorySnapshot
+    }, true);
   }, [eraser, sel, getMirrorPositions, setGrid]);
 
   useEffect(() => { paintRef.current   = paintCells;           }, [paintCells]);
@@ -354,12 +365,12 @@ function App() {
       const g = prev.map(row => [...row]);
       cells.forEach(([r, c]) => {
         getMirrorPositions(r, c).forEach(([pr, pc]) => {
-          if (!isEraser && g[pr][pc] !== null) return; // blocked: cell already occupied
+          if (!isEraser && g[pr][pc] !== null) return;
           g[pr][pc] = isEraser ? null : (tileId ?? null);
         });
       });
       return g;
-    }, true); // skipHistory — snapshot was already saved on mousedown
+    }, true);
   }, [getMirrorPositions, setGrid]);
 
   // Called on mouseup / touch-end to finalise the current selection.
@@ -410,13 +421,20 @@ function App() {
       const existingId = grid[r]?.[c];
 
       if (existingId && !eraserRef.current) {
-        // ── PICK-UP: grab existing tile, remove from origin, enter drag mode ──
-        if (pushHistRef.current) pushHistRef.current();
-        setGridRaw(prev => { const g = prev.map(row => [...row]); g[r][c] = null; return g; });
-        setDragTile(existingId);
-        dragTileRef.current = existingId;
-        isDraggingRef.current = true;
-        setDragPos({ x: e.clientX, y: e.clientY });
+        // ── PICK-UP: start 150ms timer; only enter drag if still held down ──
+        const capturedX = e.clientX, capturedY = e.clientY;
+        pendingDragRef.current = { id: existingId, r, c };
+        dragTimerRef.current = setTimeout(() => {
+          if (!pendingDragRef.current) return; // already cancelled (mouseup before timer)
+          const { id } = pendingDragRef.current;
+          pendingDragRef.current = null;
+          if (pushHistRef.current) pushHistRef.current();
+          setGridRaw(prev => { const g = prev.map(row => [...row]); g[r][c] = null; return g; });
+          setDragTile(id);
+          dragTileRef.current = id;
+          isDraggingRef.current = true;
+          setDragPos({ x: capturedX, y: capturedY });
+        }, 150);
         return; // do NOT enter painting mode
       }
 
@@ -474,16 +492,21 @@ function App() {
     });
   }, []);
 
-  // +/- buttons: snap to nearest 10%
+  // +/- buttons: snap to nearest 5%; default focal = viewport centre
   const changeZoom = useCallback((delta, focal = null) => {
     setZoom(prev => {
       const z = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, snapTo10(prev + delta)));
-      if (focal && scrollRef.current && z !== prev) {
+      const el = scrollRef.current;
+      if (el && z !== prev) {
+        const fp = focal ?? (() => {
+          const ox = el.clientWidth / 2, oy = el.clientHeight / 2;
+          return { cx: ox + el.scrollLeft, cy: oy + el.scrollTop, ox, oy };
+        })();
         const scale = z / prev;
         requestAnimationFrame(() => {
           if (!scrollRef.current) return;
-          scrollRef.current.scrollLeft = focal.cx * scale - focal.ox;
-          scrollRef.current.scrollTop  = focal.cy * scale - focal.oy;
+          scrollRef.current.scrollLeft = fp.cx * scale - fp.ox;
+          scrollRef.current.scrollTop  = fp.cy * scale - fp.oy;
         });
       }
       return z;
@@ -491,6 +514,19 @@ function App() {
   }, []);
 
   useEffect(() => { absZoomRef.current = applyZoom; }, [applyZoom]);
+
+  // Centre the grid in the scroll container on first render
+  useEffect(() => {
+    requestAnimationFrame(() => {
+      const el = scrollRef.current;
+      if (!el) return;
+      const z = zoomRef.current;
+      const totalW = GRID_W * CELL * z + 120; // grid + 2×60 padding
+      const totalH = (GRID_H + 2) * CELL * z + 120;
+      el.scrollLeft = Math.max(0, (totalW - el.clientWidth) / 2);
+      el.scrollTop  = Math.max(0, (totalH - el.clientHeight) / 2);
+    });
+  }, []); // mount only
 
   const onWheel = useCallback(e => {
     if (!(e.ctrlKey || e.metaKey)) return;
@@ -511,8 +547,8 @@ function App() {
     // Converts a Touch to grid [r, c], or null if outside the grid
     const cellAt = touch => {
       const rect = el.getBoundingClientRect();
-      const x = touch.clientX - rect.left + el.scrollLeft - 20;
-      const y = touch.clientY - rect.top  + el.scrollTop  - 20 - CELL * zoomRef.current;
+      const x = touch.clientX - rect.left + el.scrollLeft - 60; // 60 = CSS padding
+      const y = touch.clientY - rect.top  + el.scrollTop  - 60 - CELL * zoomRef.current;
       const c = Math.floor(x / (CELL * zoomRef.current));
       const r = Math.floor(y / (CELL * zoomRef.current));
       return r >= 0 && r < GRID_H && c >= 0 && c < GRID_W ? [r, c] : null;
@@ -539,15 +575,22 @@ function App() {
       e.preventDefault();
       const [r, c] = cell;
 
-      // ── Pick-up: tile already in cell → drag mode ─────────────────
+      // ── Pick-up: tile already in cell → start 150ms timer before drag ──
       const existingId = gridRef.current?.[r]?.[c];
       if (existingId && !eraserRef.current) {
-        if (pushHistRef.current) pushHistRef.current();
-        setGridRaw(prev => { const g = prev.map(row => [...row]); g[r][c] = null; return g; });
-        setDragTile(existingId);
-        dragTileRef.current = existingId;
-        isDraggingRef.current = true;
-        setDragPos({ x: e.touches[0].clientX, y: e.touches[0].clientY });
+        const capturedX = e.touches[0].clientX, capturedY = e.touches[0].clientY;
+        pendingDragRef.current = { id: existingId, r, c };
+        dragTimerRef.current = setTimeout(() => {
+          if (!pendingDragRef.current) return;
+          const { id } = pendingDragRef.current;
+          pendingDragRef.current = null;
+          if (pushHistRef.current) pushHistRef.current();
+          setGridRaw(prev => { const g = prev.map(row => [...row]); g[r][c] = null; return g; });
+          setDragTile(id);
+          dragTileRef.current = id;
+          isDraggingRef.current = true;
+          setDragPos({ x: capturedX, y: capturedY });
+        }, 150);
         isTouchPainting = false;
         return;
       }
@@ -609,6 +652,9 @@ function App() {
     const onTouchEnd = e => {
       if (e.touches.length < 2) pinchRef.current = null;
       if (e.touches.length === 0) {
+        // Cancel pending drag timer — finger lifted before 150ms means no drag, no delete
+        if (dragTimerRef.current) { clearTimeout(dragTimerRef.current); dragTimerRef.current = null; }
+        pendingDragRef.current = null;
         // ── Drop the dragged tile ──────────────────────────────────
         if (isDraggingRef.current) {
           const touch = e.changedTouches[0];
@@ -654,8 +700,15 @@ function App() {
   // ── Replace A → B ─────────────────────────────────────────────────
   const doReplace = () => {
     if (replaceA == null || replaceB == null) return;
-    setGrid(prev => prev.map(row => row.map(id => id === replaceA ? replaceB : id)));
-    setReplaceOpen(false); setReplaceA(null); setReplaceB(null);
+    let count = 0;
+    setGrid(prev => prev.map(row => row.map(id => { if (id === replaceA) { count++; return replaceB; } return id; })));
+    const msg = count > 0 ? `✓ Replaced ${count} tile${count !== 1 ? "s" : ""}` : "No matching tiles found";
+    setReplaceMsg(msg);
+    if (replaceMsgTimerRef.current) clearTimeout(replaceMsgTimerRef.current);
+    replaceMsgTimerRef.current = setTimeout(() => {
+      setReplaceMsg("");
+      setReplaceOpen(false); setReplaceA(null); setReplaceB(null);
+    }, 1500);
   };
 
   // ── Export ────────────────────────────────────────────────────────
@@ -671,19 +724,24 @@ function App() {
     }
     const draws = [];
     grid.forEach((row, r) => row.forEach((id, c) => {
-      const t = id && getTile(id); if (t) draws.push({ src: t.src, r, c });
+      const t = id && getTile(id);
+      if (t) draws.push({ src: t.src, r, c, mult: getTileMultiplier(t) });
     }));
+    const filename = (mapName.trim() || "ophelia-map") + ".png";
     const finish = () => cv.toBlob(b => {
       const a = document.createElement("a");
-      a.href = URL.createObjectURL(b); a.download = "ophelia-map.png"; a.click();
+      a.href = URL.createObjectURL(b); a.download = filename; a.click();
     });
     if (!draws.length) { finish(); return; }
     let pending = draws.length;
-    draws.forEach(({ src, r, c }) => {
+    draws.forEach(({ src, r, c, mult }) => {
       const img = new Image(); img.src = src;
       img.onload = () => {
-        const h = CELL * (img.naturalHeight / img.naturalWidth);
-        ctx.drawImage(img, c * CELL, r * CELL + padding + (CELL - h) / 2, CELL, h);
+        const drawW = CELL * mult;
+        const drawH = drawW * (img.naturalHeight / img.naturalWidth);
+        const cx = c * CELL + CELL / 2;
+        const cy = r * CELL + padding + CELL / 2;
+        ctx.drawImage(img, cx - drawW / 2, cy - drawH / 2, drawW, drawH);
         if (--pending === 0) finish();
       };
     });
@@ -692,8 +750,8 @@ function App() {
   const commitZoom = () => {
     const v = parseInt(zoomInput, 10);
     if (!isNaN(v) && v > 0) {
-      // Snap to nearest 10%
-      const snapped = Math.round(v / 10) * 10;
+      // Snap to nearest 5%
+      const snapped = Math.round(v / 5) * 5;
       setZoom(Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, snapped / 100)));
     }
     setZoomEdit(false);
@@ -721,7 +779,7 @@ function App() {
     if (!infoTile) return null;
     const t = getTile(infoTile);
     if (!t) { setInfoTile(null); return null; }
-    const defaultMult = t.src && (t.src.includes("spawnBlue") || t.src.includes("spawnRed")) ? 1.25 : 1.0;
+    const defaultMult = t.src && (t.src.includes("spawnBlue") || t.src.includes("spawnRed")) ? 1.65 : 1.0;
     const currentMult = getTileMultiplier(t);
     const [multInput, setMultInput] = React.useState(String(currentMult));
     const commitMult = () => {
@@ -767,41 +825,59 @@ function App() {
   };
 
   // ── Replace modal ─────────────────────────────────────────────────
+  const [replaceMsg, setReplaceMsg] = useState("");
+  const replaceMsgTimerRef = useRef(null);
+
   const ReplaceModal = () => {
     if (!replaceOpen) return null;
-    const TilePicker = ({ value, onChange, label }) => (
-      <div style={{ flex: 1 }}>
-        <p style={{ fontSize: 10, color: C.muted, marginBottom: 4, textTransform: "uppercase", letterSpacing: 1 }}>{label}</p>
-        <div style={{ overflowY: "auto", maxHeight: 180, display: "flex", flexWrap: "wrap", gap: 5, background: "rgba(0,0,0,0.2)", borderRadius: 7, padding: 6 }}>
-          {tiles.map(t => (
-            <div key={t.id} onClick={() => onChange(t.id)} style={{
-              width: 44, cursor: "pointer", borderRadius: 6, overflow: "hidden",
-              border: `2px solid ${value === t.id ? C.accentBright : C.border}`,
-              background: value === t.id ? C.accentDim : "transparent",
-            }}>
-              <div style={{ fontSize: 8, textAlign: "center", color: value === t.id ? C.accent : C.muted, paddingTop: 2, fontFamily: "monospace" }}>#{t.id}</div>
-              <img src={t.src} alt="" style={{ width: "100%", height: 36, objectFit: "contain", imageRendering: "pixelated" }} />
-            </div>
-          ))}
+    const TilePicker = ({ value, onChange, label }) => {
+      const listRef = React.useRef(null);
+      const handleClick = id => {
+        const el = listRef.current;
+        const scrollTop = el ? el.scrollTop : 0;
+        onChange(id);
+        requestAnimationFrame(() => { if (listRef.current) listRef.current.scrollTop = scrollTop; });
+      };
+      return (
+        <div style={{ flex: 1 }}>
+          <p style={{ fontSize: 10, color: C.muted, marginBottom: 4, textTransform: "uppercase", letterSpacing: 1 }}>{label}</p>
+          <div ref={listRef} style={{ overflowY: "auto", maxHeight: 180, display: "flex", flexWrap: "wrap", gap: 5, background: "rgba(0,0,0,0.2)", borderRadius: 7, padding: 6 }}>
+            {tiles.map(t => (
+              <div key={t.id} onClick={() => handleClick(t.id)} style={{
+                width: 44, cursor: "pointer", borderRadius: 6, overflow: "hidden",
+                border: `2px solid ${value === t.id ? C.accentBright : C.border}`,
+                background: value === t.id ? C.accentDim : "transparent",
+              }}>
+                <div style={{ fontSize: 8, textAlign: "center", color: value === t.id ? C.accent : C.muted, paddingTop: 2, fontFamily: "monospace" }}>#{t.id}</div>
+                <img src={t.src} alt="" style={{ width: "100%", height: 36, objectFit: "contain", imageRendering: "pixelated" }} />
+              </div>
+            ))}
+          </div>
         </div>
-      </div>
-    );
+      );
+    };
     return (
-      <div className="modal-backdrop" onClick={() => setReplaceOpen(false)}>
+      <div className="modal-backdrop" onClick={() => { setReplaceOpen(false); setReplaceMsg(""); }}>
         <div className="modal-box" style={{ maxWidth: 480 }} onClick={e => e.stopPropagation()}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Replace Tile</span>
-            <button onClick={() => setReplaceOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18 }}>×</button>
+            <button onClick={() => { setReplaceOpen(false); setReplaceMsg(""); }} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18 }}>×</button>
           </div>
           <div style={{ display: "flex", gap: 12 }}>
             <TilePicker value={replaceA} onChange={setReplaceA} label="Replace (A)" />
             <div style={{ display: "flex", alignItems: "center", color: C.muted, fontSize: 18, paddingTop: 24 }}>→</div>
             <TilePicker value={replaceB} onChange={setReplaceB} label="With (B)" />
           </div>
-          <button style={{ ...btn(replaceA != null && replaceB != null, C.accent, C.accentDim), width: "100%" }}
-            onClick={doReplace} disabled={replaceA == null || replaceB == null}>
-            Replace all instances
-          </button>
+          {replaceMsg ? (
+            <div style={{ textAlign: "center", fontSize: 12, fontWeight: 600, color: "#4ade80", background: "rgba(74,222,128,0.12)", border: "1px solid rgba(74,222,128,0.35)", borderRadius: 7, padding: "6px 12px" }}>
+              {replaceMsg}
+            </div>
+          ) : (
+            <button style={{ ...btn(replaceA != null && replaceB != null, C.accent, C.accentDim), width: "100%" }}
+              onClick={doReplace} disabled={replaceA == null || replaceB == null}>
+              Replace all instances
+            </button>
+          )}
         </div>
       </div>
     );
@@ -867,7 +943,7 @@ function App() {
       {/* ══ TOP BAR ══════════════════════════════════════════════════ */}
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 14px", height: 50, flexShrink: 0, background: C.panel, borderBottom: `1px solid ${C.border}` }}>
         <img src="favicon/favicon-32x32.png" alt="Ophelia" style={{ width: 28, height: 28, flexShrink: 0, imageRendering: "auto" }} />
-        <span style={{ fontFamily: "'Lilita One', cursive", fontWeight: 400, fontSize: isMobile ? 15 : 18, letterSpacing: 0.4, whiteSpace: "nowrap", background: "linear-gradient(90deg,#c00010,#fbbf24)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", flexShrink: 0 }}>
+        <span style={{ fontFamily: "'Lilita One', cursive", fontWeight: 400, fontSize: isMobile ? 15 : 18, letterSpacing: 0.4, whiteSpace: "nowrap", background: "linear-gradient(90deg,#c45c6a,#fbbf24)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", flexShrink: 0 }}>
           Ophelia — Custom Theme Tester
         </span>
       </div>
@@ -923,6 +999,11 @@ function App() {
                           <span onClick={e => { e.stopPropagation(); setInfoTile(t.id); }}
                             style={{ position: "absolute", top: 2, right: 3, fontSize: 11, cursor: "pointer", color: active ? C.accentBright : C.muted, lineHeight: 1, opacity: 0.7 }}
                             title="Tile info">ⓘ</span>
+                          {getTileMultiplier(t) !== 1.0 && (
+                            <span style={{ position: "absolute", bottom: 2, left: 3, fontSize: 8, fontWeight: 700, color: C.accentBright, background: "rgba(0,0,0,0.65)", borderRadius: 3, padding: "1px 3px", lineHeight: 1.3, pointerEvents: "none" }}>
+                              {getTileMultiplier(t)}×
+                            </span>
+                          )}
                         </div>
                       );
                     })
@@ -952,12 +1033,15 @@ function App() {
             onWheel={onWheel}
             onMouseMove={e => { if (isDraggingRef.current) setDragPos({ x: e.clientX, y: e.clientY }); }}
             onMouseUp={e => {
+              // Cancel pending drag timer — release before 150ms means no drag, no delete
+              if (dragTimerRef.current) { clearTimeout(dragTimerRef.current); dragTimerRef.current = null; }
+              pendingDragRef.current = null;
               if (isDraggingRef.current) {
                 const cell = cellFromEvent(e.clientX, e.clientY);
                 if (cell) {
                   const [r, c] = cell;
                   setGridRaw(prev => {
-                    if (prev[r][c] !== null) return prev; // occupied: discard
+                    if (prev[r][c] !== null) return prev;
                     const g = prev.map(row => [...row]); g[r][c] = dragTileRef.current; return g;
                   });
                 }
@@ -968,6 +1052,9 @@ function App() {
               setPainting(false);
             }}
             onMouseLeave={e => {
+              // Cancel pending drag timer on leave too
+              if (dragTimerRef.current) { clearTimeout(dragTimerRef.current); dragTimerRef.current = null; }
+              pendingDragRef.current = null;
               if (isDraggingRef.current) {
                 // Dragged outside canvas: discard (undo restores the tile)
                 setDragTile(null); dragTileRef.current = null; isDraggingRef.current = false;
@@ -1030,12 +1117,6 @@ function App() {
                     {/* Horizontal */}
                     <line x1={0} y1={gH / 2} x2={gW} y2={gH / 2}
                       stroke={mirrorH ? C.soft : "rgba(255,255,255,0.38)"} strokeWidth={mirrorH ? 2 : 1.5} opacity={1} strokeDasharray="6 3" />
-                    {/* Diagonal: bottom-left → top-right */}
-                    <line x1={0} y1={gH} x2={gW} y2={0}
-                      stroke={mirrorD ? C.accentBright : "rgba(255,255,255,0.38)"} strokeWidth={mirrorD ? 2 : 1.5} opacity={1} strokeDasharray="8 4" />
-                    {/* Diagonal: top-left → bottom-right */}
-                    <line x1={0} y1={0} x2={gW} y2={gH}
-                      stroke={mirrorD ? C.accentBright : "rgba(255,255,255,0.38)"} strokeWidth={mirrorD ? 2 : 1.5} opacity={1} strokeDasharray="8 4" />
                   </svg>
                 )}
 
@@ -1082,8 +1163,8 @@ function App() {
       {/* ══ BOTTOM BAR ═══════════════════════════════════════════════ */}
       <div style={{ flexShrink: 0, background: C.panelDeep, borderTop: `1px solid ${C.border}` }}>
 
-        {/* Row 1: Undo | Zoom | Redo */}
-        <div style={{ display: "flex", alignItems: "center", padding: "5px 14px 3px" }}>
+        {/* Row 1 (always visible): Undo | Zoom | Redo | fold toggle */}
+        <div style={{ display: "flex", alignItems: "center", padding: "5px 14px 3px", gap: 6 }}>
           <button style={btn(histIdx > 0, C.accent, C.accentDim)} onClick={undo} disabled={histIdx <= 0} title="Undo (Ctrl+Z)">Undo</button>
           <div style={{ flex: 1, display: "flex", justifyContent: "center", alignItems: "center", gap: 6 }}>
             <button style={{ ...btn(false), padding: "4px 9px", fontSize: 15, fontWeight: 700, lineHeight: 1 }} onClick={() => changeZoom(-ZOOM_STEP)}>−</button>
@@ -1102,38 +1183,50 @@ function App() {
             <button style={{ ...btn(false), padding: "4px 9px", fontSize: 15, fontWeight: 700, lineHeight: 1 }} onClick={() => changeZoom(ZOOM_STEP)}>+</button>
           </div>
           <button style={btn(histIdx < history.length - 1, C.accent, C.accentDim)} onClick={redo} disabled={histIdx >= history.length - 1} title="Redo (Ctrl+Y)">Redo</button>
-        </div>
-
-        {/* Row 2: Clear | Download */}
-        <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 8, padding: "3px 14px" }}>
-          <button style={btn(true, C.danger, "rgba(248,113,113,0.18)")}
-            onClick={() => { if (confirm("Clear the whole grid?")) setGrid(Array.from({ length: GRID_H }, () => Array(GRID_W).fill(null))); }}>
-            Clear
+          <button onClick={() => setBottomOpen(o => !o)}
+            style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 11, padding: "2px 4px", lineHeight: 1, flexShrink: 0 }}
+            title={bottomOpen ? "Collapse bottom" : "Expand bottom"}>
+            {bottomOpen ? "▼" : "▲"}
           </button>
-          <button style={btn(true, C.soft, C.softDim)} onClick={doExport}>Download</button>
         </div>
 
-        {/* Row 3: Background colour pickers */}
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, padding: "3px 14px 5px", alignItems: "center" }}>
-          <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1, userSelect: "none" }}>Background</span>
-          {[
-            { label: "A", bg: bg1, hex: hex1, setHex: setHex1, apply: applyBg1 },
-            { label: "B", bg: bg2, hex: hex2, setHex: setHex2, apply: applyBg2 },
-          ].map(({ label, bg, hex, setHex, apply }) => (
-            <div key={label} style={{ display: "flex", alignItems: "center", gap: 5 }}>
-              <span style={{ fontSize: 10, color: C.muted, fontWeight: 600 }}>{label}</span>
-              <input type="color" value={bg} onChange={e => apply(e.target.value)}
-                style={{ width: 26, height: 26, border: "none", borderRadius: 5, cursor: "pointer", padding: 2, background: "none", flexShrink: 0 }} />
-              <input type="text" value={hex} maxLength={7}
-                onChange={e => { const v = e.target.value; setHex(v); if (validHex(v)) apply(v); }}
-                onBlur={() => { if (!validHex(hex)) setHex(bg); }}
-                style={{ width: 62, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 11, padding: "3px 6px", outline: "none" }}
-                spellCheck={false} />
-            </div>
-          ))}
-          <button style={{ ...btn(false), fontSize: 10, padding: "3px 9px" }}
-            onClick={() => { applyBg1(DEFAULT_BG1); applyBg2(DEFAULT_BG2); }}>↺ Reset</button>
-        </div>
+        {/* Rows 2-3: foldable */}
+        {bottomOpen && (<>
+          {/* Row 2: Clear | Map name | Download */}
+          <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 8, padding: "3px 14px" }}>
+            <button style={btn(true, C.danger, "rgba(248,113,113,0.18)")}
+              onClick={() => { if (confirm("Clear the whole grid?")) setGrid(Array.from({ length: GRID_H }, () => Array(GRID_W).fill(null))); }}>
+              Clear
+            </button>
+            <input type="text" value={mapName} onChange={e => setMapName(e.target.value)}
+              placeholder="map name…"
+              style={{ width: 180, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 6, color: C.text, fontFamily: "'Inter', sans-serif", fontSize: 11, padding: "4px 8px", outline: "none" }}
+              spellCheck={false} />
+            <button style={btn(true, C.soft, C.softDim)} onClick={doExport}>Download</button>
+          </div>
+
+          {/* Row 3: Background colour pickers */}
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, padding: "3px 14px 5px", alignItems: "center" }}>
+            <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1, userSelect: "none" }}>Background</span>
+            {[
+              { label: "A", bg: bg1, hex: hex1, setHex: setHex1, apply: applyBg1 },
+              { label: "B", bg: bg2, hex: hex2, setHex: setHex2, apply: applyBg2 },
+            ].map(({ label, bg, hex, setHex, apply }) => (
+              <div key={label} style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                <span style={{ fontSize: 10, color: C.muted, fontWeight: 600 }}>{label}</span>
+                <input type="color" value={bg} onChange={e => apply(e.target.value)}
+                  style={{ width: 26, height: 26, border: "none", borderRadius: 5, cursor: "pointer", padding: 2, background: "none", flexShrink: 0 }} />
+                <input type="text" value={hex} maxLength={7}
+                  onChange={e => { const v = e.target.value; setHex(v); if (validHex(v)) apply(v); }}
+                  onBlur={() => { if (!validHex(hex)) setHex(bg); }}
+                  style={{ width: 62, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 11, padding: "3px 6px", outline: "none" }}
+                  spellCheck={false} />
+              </div>
+            ))}
+            <button style={{ ...btn(false), fontSize: 10, padding: "3px 9px" }}
+              onClick={() => { applyBg1(DEFAULT_BG1); applyBg2(DEFAULT_BG2); }}>↺ Reset</button>
+          </div>
+        </>)}
 
       </div>
 
