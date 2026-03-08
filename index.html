@@ -1007,16 +1007,20 @@ function App() {
                 )}
 
                 {/* Selection preview overlay */}
-                {(previewCells || rectPreview) && (
-                  <svg style={{ position: "absolute", left: 0, top: CELL * zoom, width: gW, height: gH, pointerEvents: "none", zIndex: 250, overflow: "visible" }}>
-                    {previewCells && previewCells.map(([r, c]) => (
-                      <rect key={`${r},${c}`} x={c * CELL * zoom} y={r * CELL * zoom} width={CELL * zoom} height={CELL * zoom} fill="rgba(255,255,255,0.22)" stroke="rgba(255,255,255,0.55)" strokeWidth="1.5" />
-                    ))}
-                    {rectPreview && (
-                      <rect x={rectPreview.c1 * CELL * zoom} y={rectPreview.r1 * CELL * zoom} width={(rectPreview.c2 - rectPreview.c1 + 1) * CELL * zoom} height={(rectPreview.r2 - rectPreview.r1 + 1) * CELL * zoom} fill="rgba(255,255,255,0.22)" stroke="rgba(255,255,255,0.55)" strokeWidth="1.5" rx="2" />
-                    )}
-                  </svg>
-                )}
+                {(previewCells || rectPreview) && (() => {
+                  const pFill   = eraser ? "rgba(239,68,68,0.22)"  : "rgba(255,255,255,0.22)";
+                  const pStroke = eraser ? "rgba(239,68,68,0.70)"  : "rgba(255,255,255,0.55)";
+                  return (
+                    <svg style={{ position: "absolute", left: 0, top: CELL * zoom, width: gW, height: gH, pointerEvents: "none", zIndex: 250, overflow: "visible" }}>
+                      {previewCells && previewCells.map(([r, c]) => (
+                        <rect key={`${r},${c}`} x={c * CELL * zoom} y={r * CELL * zoom} width={CELL * zoom} height={CELL * zoom} fill={pFill} stroke={pStroke} strokeWidth="1.5" />
+                      ))}
+                      {rectPreview && (
+                        <rect x={rectPreview.c1 * CELL * zoom} y={rectPreview.r1 * CELL * zoom} width={(rectPreview.c2 - rectPreview.c1 + 1) * CELL * zoom} height={(rectPreview.r2 - rectPreview.r1 + 1) * CELL * zoom} fill={pFill} stroke={pStroke} strokeWidth="1.5" rx="2" />
+                      )}
+                    </svg>
+                  );
+                })()}
 
                 {/* Mirror guide lines — always shown when Guides is on */}
                 {showGuides && (
