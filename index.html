@@ -940,7 +940,7 @@ function App() {
           )}
           {/* Left toggle strip */}
           <button onClick={() => setTilesOpen(o => !o)}
-            style={{ width: 16, background: C.panelDeep, border: "none", borderRight: `1px solid ${C.border}`, cursor: "pointer", color: C.muted, fontSize: 9, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, userSelect: "none" }}
+            style={{ width: 28, background: C.panelDeep, border: "none", borderRight: `1px solid ${C.border}`, cursor: "pointer", color: C.muted, fontSize: 10, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, userSelect: "none" }}
             title={tilesOpen ? "Collapse tiles" : "Expand tiles"}>
             {tilesOpen ? "◀" : "▶"}
           </button>
@@ -1045,7 +1045,7 @@ function App() {
         <div style={{ position: "absolute", right: 0, top: 0, bottom: 0, display: "flex", flexDirection: "row", zIndex: 10 }}>
           {/* Right toggle strip */}
           <button onClick={() => setToolsOpen(o => !o)}
-            style={{ width: 16, background: C.panelDeep, border: "none", borderLeft: `1px solid ${C.border}`, cursor: "pointer", color: C.muted, fontSize: 9, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, userSelect: "none" }}
+            style={{ width: 28, background: C.panelDeep, border: "none", borderLeft: `1px solid ${C.border}`, cursor: "pointer", color: C.muted, fontSize: 10, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, userSelect: "none" }}
             title={toolsOpen ? "Collapse tools" : "Expand tools"}>
             {toolsOpen ? "▶" : "◀"}
           </button>
