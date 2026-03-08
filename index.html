@@ -398,8 +398,8 @@ function App() {
     const el = scrollRef.current;
     if (!el) return null;
     const rect = el.getBoundingClientRect();
-    const x = clientX - rect.left + el.scrollLeft - 20; // 20 = CSS padding
-    const y = clientY - rect.top  + el.scrollTop  - 20 - CELL * zoomRef.current; // subtract top-row offset
+    const x = clientX - rect.left + el.scrollLeft - 60; // 60 = CSS padding
+    const y = clientY - rect.top  + el.scrollTop  - 60 - CELL * zoomRef.current; // subtract top-row offset
     const c = Math.floor(x / (CELL * zoomRef.current));
     const r = Math.floor(y / (CELL * zoomRef.current));
     return r >= 0 && r < GRID_H && c >= 0 && c < GRID_W ? [r, c] : null;
@@ -872,11 +872,11 @@ function App() {
         </span>
       </div>
 
-      {/* ══ MIDDLE ROW: canvas with overlay sidebars ════════════════ */}
-      <div style={{ flex: 1, position: "relative", overflow: "hidden", minHeight: 0 }}>
+      {/* ══ MIDDLE ROW: canvas with sidebars ════════════════════════ */}
+      <div style={{ flex: 1, display: "flex", flexDirection: "row", overflow: "hidden", minHeight: 0 }}>
 
-        {/* ── LEFT SIDEBAR: Tiles (absolute overlay) ──────────────── */}
-        <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, display: "flex", flexDirection: "row", zIndex: 10 }}>
+        {/* ── LEFT SIDEBAR: Tiles ──────────────────────────────────── */}
+        <div style={{ display: "flex", flexDirection: "row", flexShrink: 0 }}>
           {tilesOpen && (
             <div style={{ width: isMobile ? 160 : 200, background: C.panelDeep, borderRight: `1px solid ${C.border}`, display: "flex", flexDirection: "column", overflow: "hidden" }}>
               <SectionHeader
@@ -946,10 +946,9 @@ function App() {
           </button>
         </div>
 
-        {/* ── CANVAS (full width, always centered) ────────────────── */}
-        <div style={{ position: "absolute", inset: 0, overflow: "hidden" }}>
+        {/* ── CANVAS ───────────────────────────────────────────────── */}
           <div ref={scrollRef}
-            style={{ width: "100%", height: "100%", overflow: "auto", background: "#1a0f06" }}
+            style={{ flex: 1, minWidth: 0, height: "100%", overflow: "auto", background: "#1a0f06" }}
             onWheel={onWheel}
             onMouseMove={e => { if (isDraggingRef.current) setDragPos({ x: e.clientX, y: e.clientY }); }}
             onMouseUp={e => {
@@ -978,7 +977,7 @@ function App() {
               setPainting(false);
             }}
           >
-            <div style={{ padding: 20, display: "flex", alignItems: "flex-start", justifyContent: "center", minWidth: "min-content", minHeight: "100%" }}>
+            <div style={{ padding: 60, display: "flex", alignItems: "flex-start", justifyContent: "flex-start", minWidth: "min-content", minHeight: "min-content" }}>
               <div style={{ position: "relative", width: gW, height: (GRID_H + 2) * CELL * zoom, flexShrink: 0, margin: "0 auto" }}>
 
                 {/* Checkerboard */}
@@ -1027,26 +1026,25 @@ function App() {
                   <svg style={{ position: "absolute", left: 0, top: CELL * zoom, width: gW, height: gH, pointerEvents: "none", zIndex: 200, overflow: "visible" }}>
                     {/* Vertical */}
                     <line x1={gW / 2} y1={0} x2={gW / 2} y2={gH}
-                      stroke={mirrorV ? C.pale : "rgba(255,255,255,0.38)"} strokeWidth="1.5" opacity={mirrorV ? 0.7 : 1} strokeDasharray="6 3" />
+                      stroke={mirrorV ? C.pale : "rgba(255,255,255,0.38)"} strokeWidth={mirrorV ? 2 : 1.5} opacity={1} strokeDasharray="6 3" />
                     {/* Horizontal */}
                     <line x1={0} y1={gH / 2} x2={gW} y2={gH / 2}
-                      stroke={mirrorH ? C.soft : "rgba(255,255,255,0.38)"} strokeWidth="1.5" opacity={mirrorH ? 0.7 : 1} strokeDasharray="6 3" />
+                      stroke={mirrorH ? C.soft : "rgba(255,255,255,0.38)"} strokeWidth={mirrorH ? 2 : 1.5} opacity={1} strokeDasharray="6 3" />
                     {/* Diagonal: bottom-left → top-right */}
                     <line x1={0} y1={gH} x2={gW} y2={0}
-                      stroke={mirrorD ? C.accentBright : "rgba(255,255,255,0.38)"} strokeWidth="1.5" opacity={mirrorD ? 0.6 : 1} strokeDasharray="8 4" />
+                      stroke={mirrorD ? C.accentBright : "rgba(255,255,255,0.38)"} strokeWidth={mirrorD ? 2 : 1.5} opacity={1} strokeDasharray="8 4" />
                     {/* Diagonal: top-left → bottom-right */}
                     <line x1={0} y1={0} x2={gW} y2={gH}
-                      stroke={mirrorD ? C.accentBright : "rgba(255,255,255,0.38)"} strokeWidth="1.5" opacity={mirrorD ? 0.6 : 1} strokeDasharray="8 4" />
+                      stroke={mirrorD ? C.accentBright : "rgba(255,255,255,0.38)"} strokeWidth={mirrorD ? 2 : 1.5} opacity={1} strokeDasharray="8 4" />
                   </svg>
                 )}
 
               </div>
             </div>
           </div>
-        </div>
 
-        {/* ── RIGHT SIDEBAR: Tools (absolute overlay) ─────────────── */}
-        <div style={{ position: "absolute", right: 0, top: 0, bottom: 0, display: "flex", flexDirection: "row", zIndex: 10 }}>
+        {/* ── RIGHT SIDEBAR: Tools ─────────────────────────────────── */}
+        <div style={{ display: "flex", flexDirection: "row", flexShrink: 0 }}>
           {/* Right toggle strip */}
           <button onClick={() => setToolsOpen(o => !o)}
             style={{ width: 28, background: C.panelDeep, border: "none", borderLeft: `1px solid ${C.border}`, cursor: "pointer", color: C.muted, fontSize: 10, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, userSelect: "none" }}
