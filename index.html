@@ -7,7 +7,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Ophelia" />
   <meta name="mobile-web-app-capable" content="yes" />
-  <meta name="theme-color" content="#1a0505" />
+  <meta name="theme-color" content="#1a0f06" />
   <link rel="manifest" href="manifest.json" />
 
   <!-- Favicon setup — browsers pick the best size automatically -->
@@ -29,11 +29,11 @@
 
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { height: 100%; height: 100dvh; overflow: hidden; background: #1a0505; }
+    html, body { height: 100%; height: 100dvh; overflow: hidden; background: #1a0f06; }
     #root { height: 100%; height: 100dvh; display: flex; flex-direction: column; overscroll-behavior: none; }
     ::-webkit-scrollbar { width: 4px; height: 4px; }
     ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: rgba(200,40,40,0.4); border-radius: 2px; }
+    ::-webkit-scrollbar-thumb { background: rgba(251,146,60,0.4); border-radius: 2px; }
     * { -webkit-tap-highlight-color: transparent; }
 
     /* Modal backdrop */
@@ -43,7 +43,7 @@
       z-index: 1000; padding: 20px;
     }
     .modal-box {
-      background: #2a0808; border: 1px solid rgba(200,40,40,0.32);
+      background: #2b1a0a; border: 1px solid rgba(251,146,60,0.18);
       border-radius: 14px; padding: 22px; max-width: 340px; width: 100%;
       display: flex; flex-direction: column; gap: 16px;
     }
@@ -76,12 +76,12 @@ const isMobileDevice = () => typeof window !== "undefined" && window.innerWidth 
 
 // ── Colour palette ─────────────────────────────────────────────────────
 const C = {
-  bg: "#1a0505", panel: "#2a0808", panelDeep: "#1f0606",
-  border: "rgba(200,40,40,0.22)", accent: "#e05020",
-  accentDim: "rgba(220,80,40,0.15)", accentBright: "#f07840",
-  soft: "#fbbf24", softDim: "rgba(251,191,36,0.16)",
+  bg: "#1a0f06", panel: "#2b1a0a", panelDeep: "#1f1207",
+  border: "rgba(251,146,60,0.18)", accent: "#fb923c",
+  accentDim: "rgba(251,146,60,0.14)", accentBright: "#fdba74",
+  soft: "#fcd34d", softDim: "rgba(252,211,77,0.16)",
   pale: "#fde68a", paleDim: "rgba(253,230,138,0.14)",
-  text: "#fef3e2", muted: "rgba(254,243,226,0.45)", danger: "#ef4444",
+  text: "#fef3e2", muted: "rgba(254,243,226,0.45)", danger: "#f87171",
 };
 
 // ── Tiny helpers ───────────────────────────────────────────────────────
@@ -208,7 +208,7 @@ function App() {
 
   const getTileMultiplier = t => {
     if (tileMultipliers[t.id] !== undefined) return tileMultipliers[t.id];
-    if (t.src && (t.src.includes("spawnBlue") || t.src.includes("spawnRed"))) return 1.25;
+    if (t.src && (t.src.includes("spawnBlue") || t.src.includes("spawnRed"))) return 1.5;
     return 1.0;
   };
 
@@ -739,7 +739,7 @@ function App() {
             <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Tile #{t.id}</span>
             <button onClick={() => setInfoTile(null)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
           </div>
-          <div style={{ background: "#1a0404", borderRadius: 8, padding: 12, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 120 }}>
+          <div style={{ background: "#1a0f06", borderRadius: 8, padding: 12, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 120 }}>
             <img src={t.src} alt="" style={{ maxWidth: "100%", maxHeight: 180, objectFit: "contain", imageRendering: "pixelated" }} />
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -867,7 +867,7 @@ function App() {
       {/* ══ TOP BAR ══════════════════════════════════════════════════ */}
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 14px", height: 50, flexShrink: 0, background: C.panel, borderBottom: `1px solid ${C.border}` }}>
         <img src="favicon/favicon-32x32.png" alt="Ophelia" style={{ width: 28, height: 28, flexShrink: 0, imageRendering: "auto" }} />
-        <span style={{ fontFamily: "'Lilita One', cursive", fontWeight: 400, fontSize: isMobile ? 15 : 18, letterSpacing: 0.4, whiteSpace: "nowrap", background: "linear-gradient(90deg,#e05020,#fbbf24)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", flexShrink: 0 }}>
+        <span style={{ fontFamily: "'Lilita One', cursive", fontWeight: 400, fontSize: isMobile ? 15 : 18, letterSpacing: 0.4, whiteSpace: "nowrap", background: "linear-gradient(90deg,#c00010,#fbbf24)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", flexShrink: 0 }}>
           Ophelia — Custom Theme Tester
         </span>
       </div>
@@ -899,7 +899,7 @@ function App() {
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: eraser ? "rgba(248,113,113,0.32)" : "rgba(248,113,113,0.14)", padding: "2px 4px" }}>
                       <span style={{ fontSize: 9, fontWeight: 700, color: eraser ? C.danger : "rgba(248,113,113,0.7)" }}>Erase</span>
                     </div>
-                    <div style={{ height: 44, background: "#1a0404", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <div style={{ height: 44, background: "#1a0f06", display: "flex", alignItems: "center", justifyContent: "center" }}>
                       <span style={{ fontSize: 20, color: eraser ? C.danger : "rgba(248,113,113,0.5)", lineHeight: 1 }}>✕</span>
                     </div>
                   </div>
@@ -916,7 +916,7 @@ function App() {
                         <div key={t.id}
                           onClick={() => { if (failed) { setFailedWarning(true); return; } setSel(t.id); setEraser(false); }}
                           style={{ flexShrink: 0, width: 56, height: 56, borderRadius: 8, cursor: failed ? "not-allowed" : "pointer", border: `2px solid ${failed ? C.danger : active ? C.accentBright : C.border}`, background: failed ? "rgba(248,113,113,0.08)" : active ? C.accentDim : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", overflow: "hidden", opacity: failed ? 0.55 : 1, position: "relative" }}>
-                          <div style={{ width: "100%", height: "100%", background: "#1a0404", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                          <div style={{ width: "100%", height: "100%", background: "#1a0f06", display: "flex", alignItems: "center", justifyContent: "center" }}>
                             {failed ? <span style={{ fontSize: 20, color: C.danger }}>✕</span>
                               : <img src={t.src} alt="" onError={() => markFailed(t.id)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated" }} />}
                           </div>
@@ -949,7 +949,7 @@ function App() {
         {/* ── CANVAS (full width, always centered) ────────────────── */}
         <div style={{ position: "absolute", inset: 0, overflow: "hidden" }}>
           <div ref={scrollRef}
-            style={{ width: "100%", height: "100%", overflow: "auto", background: "#1a0404" }}
+            style={{ width: "100%", height: "100%", overflow: "auto", background: "#1a0f06" }}
             onWheel={onWheel}
             onMouseMove={e => { if (isDraggingRef.current) setDragPos({ x: e.clientX, y: e.clientY }); }}
             onMouseUp={e => {
@@ -1027,16 +1027,16 @@ function App() {
                   <svg style={{ position: "absolute", left: 0, top: CELL * zoom, width: gW, height: gH, pointerEvents: "none", zIndex: 200, overflow: "visible" }}>
                     {/* Vertical */}
                     <line x1={gW / 2} y1={0} x2={gW / 2} y2={gH}
-                      stroke={mirrorV ? C.pale : "rgba(255,255,255,0.10)"} strokeWidth="1.5" opacity={mirrorV ? 0.7 : 1} strokeDasharray="6 3" />
+                      stroke={mirrorV ? C.pale : "rgba(255,255,255,0.38)"} strokeWidth="1.5" opacity={mirrorV ? 0.7 : 1} strokeDasharray="6 3" />
                     {/* Horizontal */}
                     <line x1={0} y1={gH / 2} x2={gW} y2={gH / 2}
-                      stroke={mirrorH ? C.soft : "rgba(255,255,255,0.10)"} strokeWidth="1.5" opacity={mirrorH ? 0.7 : 1} strokeDasharray="6 3" />
+                      stroke={mirrorH ? C.soft : "rgba(255,255,255,0.38)"} strokeWidth="1.5" opacity={mirrorH ? 0.7 : 1} strokeDasharray="6 3" />
                     {/* Diagonal: bottom-left → top-right */}
                     <line x1={0} y1={gH} x2={gW} y2={0}
-                      stroke={mirrorD ? C.accentBright : "rgba(255,255,255,0.10)"} strokeWidth="1.5" opacity={mirrorD ? 0.6 : 1} strokeDasharray="8 4" />
+                      stroke={mirrorD ? C.accentBright : "rgba(255,255,255,0.38)"} strokeWidth="1.5" opacity={mirrorD ? 0.6 : 1} strokeDasharray="8 4" />
                     {/* Diagonal: top-left → bottom-right */}
                     <line x1={0} y1={0} x2={gW} y2={gH}
-                      stroke={mirrorD ? C.accentBright : "rgba(255,255,255,0.10)"} strokeWidth="1.5" opacity={mirrorD ? 0.6 : 1} strokeDasharray="8 4" />
+                      stroke={mirrorD ? C.accentBright : "rgba(255,255,255,0.38)"} strokeWidth="1.5" opacity={mirrorD ? 0.6 : 1} strokeDasharray="8 4" />
                   </svg>
                 )}
 
@@ -1108,11 +1108,11 @@ function App() {
 
         {/* Row 2: Clear | Download */}
         <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 8, padding: "3px 14px" }}>
-          <button style={btn(false, C.danger, "rgba(239,68,68,0.14)")}
+          <button style={btn(true, C.danger, "rgba(248,113,113,0.18)")}
             onClick={() => { if (confirm("Clear the whole grid?")) setGrid(Array.from({ length: GRID_H }, () => Array(GRID_W).fill(null))); }}>
             Clear
           </button>
-          <button style={btn(false, C.soft, C.softDim)} onClick={doExport}>Download</button>
+          <button style={btn(true, C.soft, C.softDim)} onClick={doExport}>Download</button>
         </div>
 
         {/* Row 3: Background colour pickers */}
