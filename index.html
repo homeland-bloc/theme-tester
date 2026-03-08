@@ -878,7 +878,7 @@ function App() {
         {/* ── LEFT SIDEBAR: Tiles ──────────────────────────────────── */}
         <div style={{ display: "flex", flexDirection: "row", flexShrink: 0 }}>
           {tilesOpen && (
-            <div style={{ width: isMobile ? 160 : 200, background: C.panelDeep, borderRight: `1px solid ${C.border}`, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+            <div style={{ width: isMobile ? 160 : 200, background: C.panelDeep, borderRight: `1px solid ${C.border}`, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
               <SectionHeader
                 label={`Tiles (${tiles.length})`}
                 open={tilesOpen}
@@ -1052,7 +1052,7 @@ function App() {
             {toolsOpen ? "▶" : "◀"}
           </button>
           {toolsOpen && (
-            <div style={{ width: isMobile ? 160 : 240, background: C.panelDeep, borderLeft: `1px solid ${C.border}`, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+            <div style={{ width: isMobile ? 160 : 240, background: C.panelDeep, borderLeft: `1px solid ${C.border}`, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
               <SectionHeader label="Tools" open={toolsOpen} onToggle={() => setToolsOpen(o => !o)} />
               <div style={{ overflowY: "auto", flex: 1, padding: "8px 12px 10px", display: "flex", flexDirection: "column", gap: 7 }}>
                 <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1 }}>Selection Mode</span>
