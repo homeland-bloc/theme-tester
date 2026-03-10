@@ -1071,7 +1071,7 @@ function App() {
                       {failed ? <span style={{ fontSize: 18, color: C.danger }}>✕</span>
                         : <img src={t.src} alt="" onError={() => markFailed(t.id)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated" }} />}
                       <span onClick={ev => { ev.stopPropagation(); setInfoTile(t.id); }}
-                        style={{ position: "absolute", top: 2, right: 3, fontSize: 11, cursor: "pointer", color: active ? C.accentBright : C.muted, lineHeight: 1, opacity: 0.7 }}
+                        style={{ position: "absolute", top: 1, right: 3, fontSize: 14, cursor: "pointer", color: "rgba(255,255,255,0.82)", lineHeight: 1 }}
                         title="Tile info">ⓘ</span>
                       {getTileMultiplier(t) !== 1.0 && (
                         <span style={{ position: "absolute", bottom: 2, left: 3, fontSize: 8, fontWeight: 700, color: C.accentBright, background: "rgba(0,0,0,0.65)", borderRadius: 3, padding: "1px 3px", lineHeight: 1.3, pointerEvents: "none" }}>
@@ -1167,38 +1167,13 @@ function App() {
                   ) : tileEntries.length === 0 && userTiles.length === 0 ? (
                     <p style={{ fontSize: 11, color: C.muted, alignSelf: "center" }}>No tiles — upload or add to Resources/.</p>
                   ) : (<>
-                    {/* Task 6: User-uploaded tiles appear at the top */}
-                    {userTiles.map(t => {
-                      const active = sel === t.id && !eraser;
-                      const failed = failedTiles.has(t.id);
-                      return (
-                        <div key={t.id}
-                          onClick={() => { if (failed) { setFailedWarning(true); return; } setSel(t.id); setEraser(false); }}
-                          style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: failed ? "not-allowed" : "pointer", border: `2px solid ${failed ? C.danger : active ? C.accentBright : C.border}`, background: failed ? "rgba(248,113,113,0.08)" : active ? C.accentDim : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", overflow: "hidden", opacity: failed ? 0.55 : 1, position: "relative" }}>
-                          <div style={{ width: "100%", height: "100%", background: "#1a0f06", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                            {failed ? <span style={{ fontSize: 20, color: C.danger }}>✕</span>
-                              : <img src={t.src} alt="" onError={() => markFailed(t.id)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated" }} />}
-                          </div>
-                          <span onClick={e => { e.stopPropagation(); setInfoTile(t.id); }}
-                            style={{ position: "absolute", top: 2, right: 3, fontSize: 11, cursor: "pointer", color: active ? C.accentBright : C.muted, lineHeight: 1, opacity: 0.7 }}
-                            title="Tile info">ⓘ</span>
-                          {getTileMultiplier(t) !== 1.0 && (
-                            <span style={{ position: "absolute", bottom: 2, left: 3, fontSize: 8, fontWeight: 700, color: C.accentBright, background: "rgba(0,0,0,0.65)", borderRadius: 3, padding: "1px 3px", lineHeight: 1.3, pointerEvents: "none" }}>
-                              {getTileMultiplier(t)}×
-                            </span>
-                          )}
-                        </div>
-                      );
-                    })}
-                    {/* Manifest tiles: active tileset, separator, then global tiles */}
-                    {tileEntries.map(entry => {
-                      if (entry.type === 'separator') {
-                        return (
-                          <div key="__sep__" style={{ width: "100%", flexBasis: "100%", height: 1, background: C.border, margin: "3px 0", flexShrink: 0 }} />
-                        );
-                      }
-                      if (entry.type === 'flat') {
-                        const t = entry.tile;
+                    {(() => {
+                      // Split tileEntries at the separator into tileset and global parts
+                      const sepIdx = tileEntries.findIndex(e => e.type === 'separator');
+                      const tilesetPart = sepIdx >= 0 ? tileEntries.slice(0, sepIdx) : tileEntries;
+                      const globalPart  = sepIdx >= 0 ? tileEntries.slice(sepIdx + 1) : [];
+
+                      const renderFlatCard = t => {
                         const active = sel === t.id && !eraser;
                         const failed = failedTiles.has(t.id);
                         return (
@@ -1210,7 +1185,7 @@ function App() {
                                 : <img src={t.src} alt="" onError={() => markFailed(t.id)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated" }} />}
                             </div>
                             <span onClick={e => { e.stopPropagation(); setInfoTile(t.id); }}
-                              style={{ position: "absolute", top: 2, right: 3, fontSize: 11, cursor: "pointer", color: active ? C.accentBright : C.muted, lineHeight: 1, opacity: 0.7 }}
+                              style={{ position: "absolute", top: 1, right: 3, fontSize: 14, cursor: "pointer", color: "rgba(255,255,255,0.82)", lineHeight: 1 }}
                               title="Tile info">ⓘ</span>
                             {getTileMultiplier(t) !== 1.0 && (
                               <span style={{ position: "absolute", bottom: 2, left: 3, fontSize: 8, fontWeight: 700, color: C.accentBright, background: "rgba(0,0,0,0.65)", borderRadius: 3, padding: "1px 3px", lineHeight: 1.3, pointerEvents: "none" }}>
@@ -1219,52 +1194,89 @@ function App() {
                             )}
                           </div>
                         );
-                      }
-                      // Task 3+4+5: Folder card — same dimensions as flat tile card
-                      const { key, label, tiles: fTiles } = entry;
-                      const isThisOpen = openFolderKey === key;
-                      const folderActive = !eraser && fTiles.some(t => t.id === sel);
-                      const selectedFolderTile = folderActive ? fTiles.find(t => t.id === sel) : null;
-                      const previewTiles = fTiles.slice(0, 4);
-                      return (
-                        <div key={key}
-                          onClick={e => toggleFolder(key, e)}
-                          style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: "pointer",
-                            border: `2px solid ${folderActive ? C.accentBright : isThisOpen ? C.accent : C.border}`,
-                            background: "#1a0f06", overflow: "hidden", position: "relative",
-                            transition: "border 0.12s" }}>
-                          {/* Label strip at top (Task 3) */}
-                          <div style={{ position: "absolute", top: 0, left: 0, right: 0, zIndex: 2,
-                            background: "rgba(0,0,0,0.55)", padding: "1px 3px",
-                            display: "flex", alignItems: "center", gap: 2, minHeight: 12 }}>
-                            <span style={{ fontSize: 8, fontWeight: 700, color: folderActive ? C.accent : C.muted,
-                              textTransform: "capitalize", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                              {label}
-                            </span>
-                            {/* Task 5: selected-tile thumbnail */}
-                            {selectedFolderTile && (
-                              <img src={selectedFolderTile.src} alt="" style={{ width: 12, height: 12, objectFit: "contain", imageRendering: "pixelated", flexShrink: 0 }} />
-                            )}
+                      };
+
+                      const renderFolderCard = entry => {
+                        const { key, label, tiles: fTiles } = entry;
+                        const isThisOpen = openFolderKey === key;
+                        const folderActive = !eraser && fTiles.some(t => t.id === sel);
+                        const selectedFolderTile = folderActive ? fTiles.find(t => t.id === sel) : null;
+                        const previewTiles = fTiles.slice(0, 4);
+                        return (
+                          <div key={key}
+                            onClick={e => toggleFolder(key, e)}
+                            style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: "pointer",
+                              border: `2px solid ${folderActive ? C.accentBright : isThisOpen ? C.accent : C.border}`,
+                              background: "#1a0f06", overflow: "hidden", position: "relative",
+                              transition: "border 0.12s" }}>
+                            {/* Label strip at top */}
+                            <div style={{ position: "absolute", top: 0, left: 0, right: 0, zIndex: 2,
+                              background: "rgba(0,0,0,0.55)", padding: "1px 3px",
+                              display: "flex", alignItems: "center", gap: 2, minHeight: 12 }}>
+                              <span style={{ fontSize: 8, fontWeight: 700, color: folderActive ? C.accent : C.muted,
+                                textTransform: "capitalize", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                {label}
+                              </span>
+                              {selectedFolderTile && (
+                                <img src={selectedFolderTile.src} alt="" style={{ width: 12, height: 12, objectFit: "contain", imageRendering: "pixelated", flexShrink: 0 }} />
+                              )}
+                            </div>
+                            {/* 2×2 preview grid */}
+                            <div style={{ position: "absolute", inset: 0, display: "grid", gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr", gap: 1 }}>
+                              {previewTiles.map(t => (
+                                <div key={t.id} style={{ background: "#1a0f06", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
+                                  <img src={t.src} alt="" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated", opacity: 0.55 }} />
+                                </div>
+                              ))}
+                              {Array.from({ length: Math.max(0, 4 - previewTiles.length) }).map((_, i) => (
+                                <div key={`e${i}`} style={{ background: "#1a0f06" }} />
+                              ))}
+                            </div>
+                            {/* Chevron centered in foreground, full opacity */}
+                            <div style={{ position: "absolute", inset: 0, zIndex: 3, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
+                              <span style={{ fontSize: 13, lineHeight: 1, color: folderActive ? C.accentBright : isThisOpen ? C.accent : C.muted,
+                                display: "inline-block", transform: isThisOpen ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.15s" }}>▼</span>
+                            </div>
                           </div>
-                          {/* 2×2 preview grid fills card body (Task 3) */}
-                          <div style={{ position: "absolute", inset: 0, display: "grid", gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr", gap: 1 }}>
-                            {previewTiles.map(t => (
-                              <div key={t.id} style={{ background: "#1a0f06", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
-                                <img src={t.src} alt="" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated", opacity: 0.55 }} />
+                        );
+                      };
+
+                      const renderEntry = entry => entry.type === 'flat' ? renderFlatCard(entry.tile) : renderFolderCard(entry);
+
+                      return (<>
+                        {/* 1. Active tileset tiles */}
+                        {tilesetPart.map(renderEntry)}
+                        {/* 2. User-uploaded tiles */}
+                        {userTiles.map(t => {
+                          const active = sel === t.id && !eraser;
+                          const failed = failedTiles.has(t.id);
+                          return (
+                            <div key={t.id}
+                              onClick={() => { if (failed) { setFailedWarning(true); return; } setSel(t.id); setEraser(false); }}
+                              style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: failed ? "not-allowed" : "pointer", border: `2px solid ${failed ? C.danger : active ? C.accentBright : C.border}`, background: failed ? "rgba(248,113,113,0.08)" : active ? C.accentDim : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", overflow: "hidden", opacity: failed ? 0.55 : 1, position: "relative" }}>
+                              <div style={{ width: "100%", height: "100%", background: "#1a0f06", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                                {failed ? <span style={{ fontSize: 20, color: C.danger }}>✕</span>
+                                  : <img src={t.src} alt="" onError={() => markFailed(t.id)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated" }} />}
                               </div>
-                            ))}
-                            {Array.from({ length: Math.max(0, 4 - previewTiles.length) }).map((_, i) => (
-                              <div key={`e${i}`} style={{ background: "#1a0f06" }} />
-                            ))}
-                          </div>
-                          {/* Chevron centered in foreground, full opacity (Task 3) */}
-                          <div style={{ position: "absolute", inset: 0, zIndex: 3, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
-                            <span style={{ fontSize: 13, lineHeight: 1, color: folderActive ? C.accentBright : isThisOpen ? C.accent : C.muted,
-                              display: "inline-block", transform: isThisOpen ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.15s" }}>▼</span>
-                          </div>
-                        </div>
-                      );
-                    })}
+                              <span onClick={e => { e.stopPropagation(); setInfoTile(t.id); }}
+                                style={{ position: "absolute", top: 1, right: 3, fontSize: 14, cursor: "pointer", color: "rgba(255,255,255,0.82)", lineHeight: 1 }}
+                                title="Tile info">ⓘ</span>
+                              {getTileMultiplier(t) !== 1.0 && (
+                                <span style={{ position: "absolute", bottom: 2, left: 3, fontSize: 8, fontWeight: 700, color: C.accentBright, background: "rgba(0,0,0,0.65)", borderRadius: 3, padding: "1px 3px", lineHeight: 1.3, pointerEvents: "none" }}>
+                                  {getTileMultiplier(t)}×
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })}
+                        {/* 3. Separator before global tiles */}
+                        {globalPart.length > 0 && (
+                          <div key="__sep__" style={{ width: "100%", flexBasis: "100%", height: 1, background: C.border, margin: "3px 0", flexShrink: 0 }} />
+                        )}
+                        {/* 4. Global tiles */}
+                        {globalPart.map(renderEntry)}
+                      </>);
+                    })()}
                   </>)}
                   {/* Upload tile card */}
                   <div onClick={() => fileRef.current.click()}
@@ -1387,16 +1399,30 @@ function App() {
                   ))
                 )}
 
-                {/* Tile images — hotzone tiles use z-index 999 to always render on top */}
+                {/* Pass 1: non-hotzone tile images (z-index = r + 1 for natural depth) */}
                 {grid.map((row, r) =>
                   row.map((id, c) => {
                     const t = id && getTile(id); if (!t) return null;
+                    if (/hotzone/i.test(t.src.split('/').pop() ?? '')) return null;
                     const mult = getTileMultiplier(t);
                     const cellPx = CELL * zoom;
-                    const isHotzone = /hotzone/i.test(t.src.split('/').pop() ?? '');
                     return (
                       <img key={`t${r}-${c}`} src={t.src} alt="" draggable={false}
-                        style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2, top: (r + 1 + 0.5) * cellPx, width: cellPx * mult, height: "auto", transform: "translateY(-50%)", pointerEvents: "none", imageRendering: "pixelated", zIndex: isHotzone ? 999 : r + 1 }}
+                        style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2, top: (r + 1 + 0.5) * cellPx, width: cellPx * mult, height: "auto", transform: "translateY(-50%)", pointerEvents: "none", imageRendering: "pixelated", zIndex: r + 1 }}
+                      />
+                    );
+                  })
+                )}
+                {/* Pass 2: hotzone tiles — rendered last in the DOM so they always appear above every other tile */}
+                {grid.map((row, r) =>
+                  row.map((id, c) => {
+                    const t = id && getTile(id); if (!t) return null;
+                    if (!/hotzone/i.test(t.src.split('/').pop() ?? '')) return null;
+                    const mult = getTileMultiplier(t);
+                    const cellPx = CELL * zoom;
+                    return (
+                      <img key={`hz${r}-${c}`} src={t.src} alt="" draggable={false}
+                        style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2, top: (r + 1 + 0.5) * cellPx, width: cellPx * mult, height: "auto", transform: "translateY(-50%)", pointerEvents: "none", imageRendering: "pixelated", zIndex: 9999 }}
                       />
                     );
                   })
