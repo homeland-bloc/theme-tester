@@ -149,8 +149,13 @@ function App() {
   const [rectPreview,   setRectPreview]   = useState(null);     // {r1,c1,r2,c2} during rect drag
   const [previewCells,  setPreviewCells]  = useState(null);     // [[r,c],...] during single/line drag
   // Drag-to-move
-  const [dragTile, setDragTile] = useState(null);   // tile id being dragged, null when idle
-  const [dragPos,  setDragPos]  = useState({ x: 0, y: 0 }); // screen coords for ghost image
+  const [dragTile,       setDragTile]       = useState(null);   // tile id being dragged, null when idle
+  const [dragPos,        setDragPos]        = useState({ x: 0, y: 0 }); // screen coords for ghost image
+  const [dragTargetCell, setDragTargetCell] = useState(null);   // [r,c] cell under cursor while dragging
+  // Folder panel (floating modal)
+  const [openFolderKey,    setOpenFolderKey]    = useState(null);
+  const [folderPanelAnchor, setFolderPanelAnchor] = useState({ x: 0, y: 0 });
+  const folderPanelRef = useRef(null);
   // Panels: collapsed by default on mobile
   const [tilesOpen,   setTilesOpen] = useState(!mobile);
   const [toolsOpen,   setToolsOpen] = useState(!mobile);
@@ -202,6 +207,7 @@ function App() {
   const pushHistRef       = useRef(null);     // pushHistorySnapshot
   const dragTileRef       = useRef(null);     // mirrors dragTile for event-handler closures
   const dragOriginRef     = useRef(null);     // [r,c] of the cell the drag started from
+  const pendingDragRef    = useRef(null);     // pending drag before 6px threshold: {r,c,id,startX,startY}
   const isDraggingRef     = useRef(false);    // true while a tile is being drag-moved
   const gridRef           = useRef(null);     // up-to-date grid for touch-handler closure
   const getMirrorRef      = useRef(null);     // always-current getMirrorPositions for touch handler
@@ -227,9 +233,33 @@ function App() {
   const [activeTileset, setActiveTileset] = useState(null);
   // Parsed manifest data
   const [manifest, setManifest] = useState(null);
-  // Folder open/closed state: key = folder key string (e.g. "fence"), value = bool
-  const [openFolders, setOpenFolders] = useState({});
-  const toggleFolder = key => setOpenFolders(prev => ({ ...prev, [key]: !prev[key] }));
+  // (openFolders state removed — now using openFolderKey floating panel)
+  const toggleFolder = (key, e) => {
+    if (openFolderKey === key) {
+      setOpenFolderKey(null);
+    } else {
+      setOpenFolderKey(key);
+      if (e?.currentTarget) {
+        const rect = e.currentTarget.getBoundingClientRect();
+        setFolderPanelAnchor({ x: rect.right + 6, y: rect.top });
+      }
+    }
+  };
+  // Close folder panel on outside click
+  useEffect(() => {
+    if (!openFolderKey) return;
+    const handler = ev => {
+      if (folderPanelRef.current && !folderPanelRef.current.contains(ev.target)) {
+        setOpenFolderKey(null);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    document.addEventListener('touchstart', handler);
+    return () => {
+      document.removeEventListener('mousedown', handler);
+      document.removeEventListener('touchstart', handler);
+    };
+  }, [openFolderKey]);
 
   // Build the flat defaultTiles list and the ordered panel entries from manifest + activeTileset
   // tileEntries: array of { type: 'flat', tile } | { type: 'folder', key, label, tiles[] }
@@ -486,13 +516,8 @@ function App() {
       const existingId = grid[r]?.[c];
 
       if (existingId && !eraserRef.current) {
-        // ── PICK-UP: occupied cell, no eraser → always drag, never paint ──
-        dragOriginRef.current = [r, c];
-        setGridRaw(prev => { const g = prev.map(row => [...row]); g[r][c] = null; return g; });
-        setDragTile(existingId);
-        dragTileRef.current = existingId;
-        isDraggingRef.current = true;
-        setDragPos({ x: e.clientX, y: e.clientY });
+        // ── PICK-UP: store pending drag — don't start until 6px threshold crossed ──
+        pendingDragRef.current = { r, c, id: existingId, startX: e.clientX, startY: e.clientY };
         return; // do NOT enter painting mode
       }
 
@@ -632,15 +657,10 @@ function App() {
       e.preventDefault();
       const [r, c] = cell;
 
-      // ── Pick-up: occupied cell, no eraser → immediately drag, never paint ──
+      // ── Pick-up: occupied cell, no eraser → store pending drag (6px threshold) ──
       const existingId = gridRef.current?.[r]?.[c];
       if (existingId && !eraserRef.current) {
-        dragOriginRef.current = [r, c];
-        setGridRaw(prev => { const g = prev.map(row => [...row]); g[r][c] = null; return g; });
-        setDragTile(existingId);
-        dragTileRef.current = existingId;
-        isDraggingRef.current = true;
-        setDragPos({ x: e.touches[0].clientX, y: e.touches[0].clientY });
+        pendingDragRef.current = { r, c, id: existingId, startX: e.touches[0].clientX, startY: e.touches[0].clientY };
         isTouchPainting = false;
         return;
       }
@@ -672,9 +692,25 @@ function App() {
       if (e.touches.length !== 1) return;
       e.preventDefault();
 
-      // Drag ghost follows finger
+      // Pending drag: check 6px threshold
+      if (pendingDragRef.current) {
+        const p = pendingDragRef.current;
+        const t0 = e.touches[0];
+        if (Math.hypot(t0.clientX - p.startX, t0.clientY - p.startY) >= 6) {
+          pendingDragRef.current = null;
+          dragOriginRef.current = [p.r, p.c];
+          setGridRaw(prev => { const g = prev.map(row => [...row]); g[p.r][p.c] = null; return g; });
+          setDragTile(p.id);
+          dragTileRef.current = p.id;
+          isDraggingRef.current = true;
+          setDragPos({ x: t0.clientX, y: t0.clientY });
+        }
+        return;
+      }
+      // Active drag: ghost follows finger + target cell highlight
       if (isDraggingRef.current) {
         setDragPos({ x: e.touches[0].clientX, y: e.touches[0].clientY });
+        setDragTargetCell(cellAt(e.touches[0]));
         return;
       }
 
@@ -701,8 +737,15 @@ function App() {
     const onTouchEnd = e => {
       if (e.touches.length < 2) pinchRef.current = null;
       if (e.touches.length === 0) {
+        // Pending drag: threshold never crossed → ignore tap on occupied cell
+        if (pendingDragRef.current) {
+          pendingDragRef.current = null;
+          isTouchPainting = false;
+          return;
+        }
         // ── DROP: if dragging, place at target + mirror positions (if empty) ──
         if (isDraggingRef.current) {
+          setDragTargetCell(null);
           const touch = e.changedTouches[0];
           const cell = cellAt(touch);
           const id = dragTileRef.current;
@@ -711,7 +754,6 @@ function App() {
             const positions = getMirrorRef.current ? getMirrorRef.current(r, c) : [[r, c]];
             const anyEmpty = positions.some(([pr, pc]) => gridRef.current?.[pr]?.[pc] === null);
             if (anyEmpty) {
-              // Successful drop: write to history as one atomic step
               setGrid(prev => {
                 const g = prev.map(row => [...row]);
                 positions.forEach(([pr, pc]) => { if (g[pr][pc] === null) g[pr][pc] = id; });
@@ -985,6 +1027,57 @@ function App() {
       <ReplaceModal />
       <FailedTileModal />
 
+      {/* ── Folder panel — floating modal anchored near card (Task 4) ── */}
+      {openFolderKey && (() => {
+        const entry = tileEntries.find(e => e.type === 'folder' && e.key === openFolderKey);
+        if (!entry) return null;
+        const cardSz = isMobile ? 46 : 56;
+        const panelW = cardSz * 3 + 5 * 2 + 12; // 3 cols + gaps + padding
+        const maxH = Math.min(320, window.innerHeight - 32);
+        const anchorX = Math.min(folderPanelAnchor.x, window.innerWidth - panelW - 8);
+        const anchorY = Math.min(folderPanelAnchor.y, window.innerHeight - maxH - 8);
+        return (
+          <div ref={folderPanelRef}
+            style={{ position: "fixed", left: anchorX, top: anchorY, width: panelW, maxHeight: maxH,
+              background: C.panel, border: `1px solid ${C.border}`, borderRadius: 10,
+              boxShadow: "0 8px 32px rgba(0,0,0,0.7)", zIndex: 2000, overflow: "hidden",
+              display: "flex", flexDirection: "column" }}>
+            <div style={{ padding: "5px 8px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 }}>
+              <span style={{ fontSize: 10, fontWeight: 700, color: C.accent, textTransform: "capitalize", letterSpacing: 0.5 }}>{entry.label}</span>
+              <button onClick={() => setOpenFolderKey(null)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 15, lineHeight: 1, padding: "0 2px" }}>×</button>
+            </div>
+            <div style={{ overflowY: "auto", padding: 6 }}>
+              <div style={{ display: "grid", gridTemplateColumns: `repeat(3, ${cardSz}px)`, gap: 5 }}>
+                {entry.tiles.map(t => {
+                  const active = sel === t.id && !eraser;
+                  const failed = failedTiles.has(t.id);
+                  return (
+                    <div key={t.id}
+                      onClick={() => { if (failed) { setFailedWarning(true); return; } setSel(t.id); setEraser(false); }}
+                      style={{ width: cardSz, height: cardSz, borderRadius: 8, cursor: failed ? "not-allowed" : "pointer",
+                        border: `2px solid ${failed ? C.danger : active ? C.accentBright : C.border}`,
+                        background: active ? C.accentDim : "#1a0f06", overflow: "hidden",
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        position: "relative", opacity: failed ? 0.55 : 1 }}>
+                      {failed ? <span style={{ fontSize: 18, color: C.danger }}>✕</span>
+                        : <img src={t.src} alt="" onError={() => markFailed(t.id)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated" }} />}
+                      <span onClick={ev => { ev.stopPropagation(); setInfoTile(t.id); }}
+                        style={{ position: "absolute", top: 2, right: 3, fontSize: 11, cursor: "pointer", color: active ? C.accentBright : C.muted, lineHeight: 1, opacity: 0.7 }}
+                        title="Tile info">ⓘ</span>
+                      {getTileMultiplier(t) !== 1.0 && (
+                        <span style={{ position: "absolute", bottom: 2, left: 3, fontSize: 8, fontWeight: 700, color: C.accentBright, background: "rgba(0,0,0,0.65)", borderRadius: 3, padding: "1px 3px", lineHeight: 1.3, pointerEvents: "none" }}>
+                          {getTileMultiplier(t)}×
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* ── Drag ghost — follows cursor/finger while dragging a tile ── */}
       {dragTile && (() => {
         const t = getTile(dragTile);
@@ -1059,12 +1152,36 @@ function App() {
                       <span style={{ fontSize: 20, color: eraser ? C.danger : "rgba(248,113,113,0.5)", lineHeight: 1 }}>✕</span>
                     </div>
                   </div>
-                  {/* Tile entries: flat tiles and folder cards */}
+                  {/* Tiles: user-uploaded first (Task 6), then manifest entries */}
                   {tilesLoading ? (
                     <p style={{ fontSize: 12, color: C.muted, alignSelf: "center" }}>Loading…</p>
                   ) : tileEntries.length === 0 && userTiles.length === 0 ? (
                     <p style={{ fontSize: 11, color: C.muted, alignSelf: "center" }}>No tiles — upload or add to Resources/.</p>
                   ) : (<>
+                    {/* Task 6: User-uploaded tiles appear at the top */}
+                    {userTiles.map(t => {
+                      const active = sel === t.id && !eraser;
+                      const failed = failedTiles.has(t.id);
+                      return (
+                        <div key={t.id}
+                          onClick={() => { if (failed) { setFailedWarning(true); return; } setSel(t.id); setEraser(false); }}
+                          style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: failed ? "not-allowed" : "pointer", border: `2px solid ${failed ? C.danger : active ? C.accentBright : C.border}`, background: failed ? "rgba(248,113,113,0.08)" : active ? C.accentDim : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", overflow: "hidden", opacity: failed ? 0.55 : 1, position: "relative" }}>
+                          <div style={{ width: "100%", height: "100%", background: "#1a0f06", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                            {failed ? <span style={{ fontSize: 20, color: C.danger }}>✕</span>
+                              : <img src={t.src} alt="" onError={() => markFailed(t.id)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated" }} />}
+                          </div>
+                          <span onClick={e => { e.stopPropagation(); setInfoTile(t.id); }}
+                            style={{ position: "absolute", top: 2, right: 3, fontSize: 11, cursor: "pointer", color: active ? C.accentBright : C.muted, lineHeight: 1, opacity: 0.7 }}
+                            title="Tile info">ⓘ</span>
+                          {getTileMultiplier(t) !== 1.0 && (
+                            <span style={{ position: "absolute", bottom: 2, left: 3, fontSize: 8, fontWeight: 700, color: C.accentBright, background: "rgba(0,0,0,0.65)", borderRadius: 3, padding: "1px 3px", lineHeight: 1.3, pointerEvents: "none" }}>
+                              {getTileMultiplier(t)}×
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })}
+                    {/* Manifest tiles: flat and folder cards (Tasks 3+4+5) */}
                     {tileEntries.map(entry => {
                       if (entry.type === 'flat') {
                         const t = entry.tile;
@@ -1089,84 +1206,48 @@ function App() {
                           </div>
                         );
                       }
-                      // Folder card
+                      // Task 3+4+5: Folder card — same dimensions as flat tile card
                       const { key, label, tiles: fTiles } = entry;
-                      const isOpen = !!openFolders[key];
+                      const isThisOpen = openFolderKey === key;
                       const folderActive = !eraser && fTiles.some(t => t.id === sel);
                       const selectedFolderTile = folderActive ? fTiles.find(t => t.id === sel) : null;
                       const previewTiles = fTiles.slice(0, 4);
-                      const panelWidth = isMobile ? 144 : 184; // sidebar inner width minus padding
                       return (
-                        <React.Fragment key={key}>
-                          {/* Folder card — full width */}
-                          <div style={{ width: "100%", borderRadius: 8, border: `2px solid ${folderActive ? C.accentBright : C.border}`, background: folderActive ? C.accentDim : "rgba(255,255,255,0.03)", overflow: "hidden", transition: "border 0.12s, background 0.12s" }}>
-                            {/* Header row */}
-                            <div style={{ display: "flex", alignItems: "center", padding: "3px 4px 3px 6px", background: folderActive ? "rgba(251,146,60,0.12)" : "rgba(255,255,255,0.04)", gap: 4 }}>
-                              <span style={{ fontSize: 9, fontWeight: 700, color: folderActive ? C.accent : C.muted, textTransform: "capitalize", letterSpacing: 0.5, flex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{label}</span>
-                              {selectedFolderTile && (
-                                <img src={selectedFolderTile.src} alt="" style={{ width: 18, height: 18, objectFit: "contain", imageRendering: "pixelated", flexShrink: 0 }} />
-                              )}
-                              <button onClick={() => toggleFolder(key)}
-                                style={{ background: "none", border: "none", cursor: "pointer", color: folderActive ? C.accent : C.muted, fontSize: 9, lineHeight: 1, padding: "1px 2px", flexShrink: 0, display: "inline-block", transform: isOpen ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.15s" }}>
-                                ▼
-                              </button>
-                            </div>
-                            {/* 2×2 preview grid */}
-                            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 1, background: "#1a0f06", padding: 2 }}>
-                              {previewTiles.map(t => (
-                                <div key={t.id} onClick={() => { setSel(t.id); setEraser(false); }}
-                                  style={{ aspectRatio: "1", background: "#1a0f06", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
-                                  <img src={t.src} alt="" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated" }} />
-                                </div>
-                              ))}
-                              {/* Fill remaining slots if < 4 tiles */}
-                              {Array.from({ length: Math.max(0, 4 - previewTiles.length) }).map((_, i) => (
-                                <div key={`empty-${i}`} style={{ aspectRatio: "1", background: "#1a0f06" }} />
-                              ))}
-                            </div>
-                          </div>
-                          {/* Expansion panel */}
-                          {isOpen && (
-                            <div style={{ width: "100%", background: "rgba(0,0,0,0.25)", border: `1px solid ${C.border}`, borderRadius: 6, padding: 5, marginTop: 2 }}>
-                              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 4 }}>
-                                {fTiles.map(t => {
-                                  const active = sel === t.id && !eraser;
-                                  const failed = failedTiles.has(t.id);
-                                  return (
-                                    <div key={t.id}
-                                      onClick={() => { if (failed) { setFailedWarning(true); return; } setSel(t.id); setEraser(false); }}
-                                      style={{ aspectRatio: "1", borderRadius: 6, cursor: failed ? "not-allowed" : "pointer", border: `2px solid ${failed ? C.danger : active ? C.accentBright : C.border}`, background: active ? C.accentDim : "#1a0f06", transition: "border 0.12s", overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", opacity: failed ? 0.55 : 1 }}>
-                                      {failed ? <span style={{ fontSize: 16, color: C.danger }}>✕</span>
-                                        : <img src={t.src} alt="" onError={() => markFailed(t.id)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated" }} />}
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            </div>
-                          )}
-                        </React.Fragment>
-                      );
-                    })}
-                    {/* User-uploaded tiles */}
-                    {userTiles.map(t => {
-                      const active = sel === t.id && !eraser;
-                      const failed = failedTiles.has(t.id);
-                      return (
-                        <div key={t.id}
-                          onClick={() => { if (failed) { setFailedWarning(true); return; } setSel(t.id); setEraser(false); }}
-                          style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: failed ? "not-allowed" : "pointer", border: `2px solid ${failed ? C.danger : active ? C.accentBright : C.border}`, background: failed ? "rgba(248,113,113,0.08)" : active ? C.accentDim : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", overflow: "hidden", opacity: failed ? 0.55 : 1, position: "relative" }}>
-                          <div style={{ width: "100%", height: "100%", background: "#1a0f06", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                            {failed ? <span style={{ fontSize: 20, color: C.danger }}>✕</span>
-                              : <img src={t.src} alt="" onError={() => markFailed(t.id)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated" }} />}
-                          </div>
-                          <span onClick={e => { e.stopPropagation(); setInfoTile(t.id); }}
-                            style={{ position: "absolute", top: 2, right: 3, fontSize: 11, cursor: "pointer", color: active ? C.accentBright : C.muted, lineHeight: 1, opacity: 0.7 }}
-                            title="Tile info">ⓘ</span>
-                          {getTileMultiplier(t) !== 1.0 && (
-                            <span style={{ position: "absolute", bottom: 2, left: 3, fontSize: 8, fontWeight: 700, color: C.accentBright, background: "rgba(0,0,0,0.65)", borderRadius: 3, padding: "1px 3px", lineHeight: 1.3, pointerEvents: "none" }}>
-                              {getTileMultiplier(t)}×
+                        <div key={key}
+                          onClick={e => toggleFolder(key, e)}
+                          style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: "pointer",
+                            border: `2px solid ${folderActive ? C.accentBright : isThisOpen ? C.accent : C.border}`,
+                            background: "#1a0f06", overflow: "hidden", position: "relative",
+                            transition: "border 0.12s" }}>
+                          {/* Label strip at top (Task 3) */}
+                          <div style={{ position: "absolute", top: 0, left: 0, right: 0, zIndex: 2,
+                            background: "rgba(0,0,0,0.55)", padding: "1px 3px",
+                            display: "flex", alignItems: "center", gap: 2, minHeight: 12 }}>
+                            <span style={{ fontSize: 8, fontWeight: 700, color: folderActive ? C.accent : C.muted,
+                              textTransform: "capitalize", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              {label}
                             </span>
-                          )}
+                            {/* Task 5: selected-tile thumbnail */}
+                            {selectedFolderTile && (
+                              <img src={selectedFolderTile.src} alt="" style={{ width: 12, height: 12, objectFit: "contain", imageRendering: "pixelated", flexShrink: 0 }} />
+                            )}
+                          </div>
+                          {/* 2×2 preview grid fills card body (Task 3) */}
+                          <div style={{ position: "absolute", inset: 0, display: "grid", gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr", gap: 1 }}>
+                            {previewTiles.map(t => (
+                              <div key={t.id} style={{ background: "#1a0f06", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
+                                <img src={t.src} alt="" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated", opacity: 0.55 }} />
+                              </div>
+                            ))}
+                            {Array.from({ length: Math.max(0, 4 - previewTiles.length) }).map((_, i) => (
+                              <div key={`e${i}`} style={{ background: "#1a0f06" }} />
+                            ))}
+                          </div>
+                          {/* Chevron centered in foreground, full opacity (Task 3) */}
+                          <div style={{ position: "absolute", inset: 0, zIndex: 3, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
+                            <span style={{ fontSize: 13, lineHeight: 1, color: folderActive ? C.accentBright : isThisOpen ? C.accent : C.muted,
+                              display: "inline-block", transform: isThisOpen ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.15s" }}>▼</span>
+                          </div>
                         </div>
                       );
                     })}
@@ -1197,11 +1278,34 @@ function App() {
             style={{ flex: 1, minWidth: 0, height: "100%", overflow: "auto", background: "#1a0f06" }}
             onWheel={onWheel}
             onMouseMove={e => {
-              // While dragging, only update ghost position — never paint
-              if (isDraggingRef.current) { setDragPos({ x: e.clientX, y: e.clientY }); }
+              // Pending drag: check 6px threshold
+              if (pendingDragRef.current) {
+                const p = pendingDragRef.current;
+                if (Math.hypot(e.clientX - p.startX, e.clientY - p.startY) >= 6) {
+                  pendingDragRef.current = null;
+                  dragOriginRef.current = [p.r, p.c];
+                  setGridRaw(prev => { const g = prev.map(row => [...row]); g[p.r][p.c] = null; return g; });
+                  setDragTile(p.id);
+                  dragTileRef.current = p.id;
+                  isDraggingRef.current = true;
+                  setDragPos({ x: e.clientX, y: e.clientY });
+                }
+                return;
+              }
+              // Active drag: update ghost + target cell highlight
+              if (isDraggingRef.current) {
+                setDragPos({ x: e.clientX, y: e.clientY });
+                setDragTargetCell(cellFromEvent(e.clientX, e.clientY));
+              }
             }}
             onMouseUp={e => {
+              // Pending drag: threshold never crossed → ignore click entirely
+              if (pendingDragRef.current) {
+                pendingDragRef.current = null;
+                return;
+              }
               if (isDraggingRef.current) {
+                setDragTargetCell(null);
                 // ── DROP: place at target cell + all mirror positions (if empty) ──
                 const cell = cellFromEvent(e.clientX, e.clientY);
                 const id = dragTileRef.current;
@@ -1210,7 +1314,6 @@ function App() {
                   const positions = getMirrorPositions(r, c);
                   const anyEmpty = positions.some(([pr, pc]) => grid[pr]?.[pc] === null);
                   if (anyEmpty) {
-                    // Successful drop: write to history as one atomic step
                     setGrid(prev => {
                       const g = prev.map(row => [...row]);
                       positions.forEach(([pr, pc]) => { if (g[pr][pc] === null) g[pr][pc] = id; });
@@ -1235,7 +1338,12 @@ function App() {
               setPainting(false);
             }}
             onMouseLeave={e => {
+              if (pendingDragRef.current) {
+                pendingDragRef.current = null;
+                return;
+              }
               if (isDraggingRef.current) {
+                setDragTargetCell(null);
                 // Dragged outside canvas → snap tile back to origin (no history entry)
                 const id = dragTileRef.current;
                 const origin = dragOriginRef.current;
@@ -1279,8 +1387,8 @@ function App() {
                   })
                 )}
 
-                {/* Selection preview overlay */}
-                {(previewCells || rectPreview) && (() => {
+                {/* Selection preview overlay + drag target cell highlight */}
+                {(previewCells || rectPreview || dragTargetCell) && (() => {
                   const pFill   = eraser ? "rgba(239,68,68,0.22)"  : "rgba(255,255,255,0.22)";
                   const pStroke = eraser ? "rgba(239,68,68,0.70)"  : "rgba(255,255,255,0.55)";
                   return (
@@ -1290,6 +1398,9 @@ function App() {
                       ))}
                       {rectPreview && (
                         <rect x={rectPreview.c1 * CELL * zoom} y={rectPreview.r1 * CELL * zoom} width={(rectPreview.c2 - rectPreview.c1 + 1) * CELL * zoom} height={(rectPreview.r2 - rectPreview.r1 + 1) * CELL * zoom} fill={pFill} stroke={pStroke} strokeWidth="1.5" rx="2" />
+                      )}
+                      {dragTargetCell && (
+                        <rect x={dragTargetCell[1] * CELL * zoom} y={dragTargetCell[0] * CELL * zoom} width={CELL * zoom} height={CELL * zoom} fill="rgba(255,255,255,0.22)" stroke="rgba(255,255,255,0.7)" strokeWidth="2" rx="2" />
                       )}
                     </svg>
                   );
