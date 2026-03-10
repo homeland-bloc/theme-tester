@@ -13,7 +13,7 @@
       },
       "folders": {
         "fence": ["MSLM-fence.png", "MSLM-fenceHORIZONTAL.png", "MSLM-fenceVERTICAL.png"],
-        "rope": ["MSLM-post.png"]
+        "rope": ["MSLM-post.png", "MSLM-post1.png", "MSLM-post2.png", "MSLM-post3.png", "MSLM-post4.png"]
       },
       "folderPaths": {
         "fence": "Mausoleum/Fence/",

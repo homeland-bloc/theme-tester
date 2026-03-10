@@ -36,11 +36,11 @@
     ::-webkit-scrollbar-thumb { background: rgba(251,146,60,0.4); border-radius: 2px; }
     * { -webkit-tap-highlight-color: transparent; }
 
-    /* Modal backdrop */
+    /* Modal backdrop — must sit above the folder floating panel (z-index 2000) */
     .modal-backdrop {
       position: fixed; inset: 0; background: rgba(0,0,0,0.72);
       display: flex; align-items: center; justify-content: center;
-      z-index: 1000; padding: 20px;
+      z-index: 3000; padding: 20px;
     }
     .modal-box {
       background: #2b1a0a; border: 1px solid rgba(251,146,60,0.18);
@@ -294,9 +294,10 @@ function App() {
       }
     }
 
-    // Global tiles appended after tileset tiles
+    // Separator between active tileset tiles and global tiles
     const gDef = manifest.global;
     if (gDef) {
+      entries.push({ type: 'separator' });
       for (const key of (gDef.order ?? [])) {
         const files = gDef.folders?.[key];
         if (!files || files.length === 0) continue;
@@ -837,17 +838,25 @@ function App() {
       a.href = URL.createObjectURL(b); a.download = filename; a.click();
     });
     if (!draws.length) { finish(); return; }
-    let pending = draws.length;
-    draws.forEach(({ src, r, c, mult }) => {
-      const img = new Image(); img.src = src;
-      img.onload = () => {
+    // Sort so hotzone tiles are drawn last → always on top in the exported image
+    const isHz = src => /hotzone/i.test(src.split('/').pop() ?? '');
+    draws.sort((a, b) => (isHz(a.src) ? 1 : 0) - (isHz(b.src) ? 1 : 0));
+    // Load all images then draw in sorted order (guarantees z-order)
+    Promise.all(draws.map(d => new Promise(resolve => {
+      const img = new Image(); img.src = d.src;
+      img.onload = () => resolve({ ...d, img });
+      img.onerror = () => resolve(null);
+    }))).then(loaded => {
+      loaded.forEach(item => {
+        if (!item) return;
+        const { img, r, c, mult } = item;
         const drawW = CELL * mult;
         const drawH = drawW * (img.naturalHeight / img.naturalWidth);
         const cx = c * CELL + CELL / 2;
         const cy = r * CELL + padding + CELL / 2;
         ctx.drawImage(img, cx - drawW / 2, cy - drawH / 2, drawW, drawH);
-        if (--pending === 0) finish();
-      };
+      });
+      finish();
     });
   };
 
@@ -1181,8 +1190,13 @@ function App() {
                         </div>
                       );
                     })}
-                    {/* Manifest tiles: flat and folder cards (Tasks 3+4+5) */}
+                    {/* Manifest tiles: active tileset, separator, then global tiles */}
                     {tileEntries.map(entry => {
+                      if (entry.type === 'separator') {
+                        return (
+                          <div key="__sep__" style={{ width: "100%", flexBasis: "100%", height: 1, background: C.border, margin: "3px 0", flexShrink: 0 }} />
+                        );
+                      }
                       if (entry.type === 'flat') {
                         const t = entry.tile;
                         const active = sel === t.id && !eraser;
@@ -1373,15 +1387,16 @@ function App() {
                   ))
                 )}
 
-                {/* Tile images */}
+                {/* Tile images — hotzone tiles use z-index 999 to always render on top */}
                 {grid.map((row, r) =>
                   row.map((id, c) => {
                     const t = id && getTile(id); if (!t) return null;
                     const mult = getTileMultiplier(t);
                     const cellPx = CELL * zoom;
+                    const isHotzone = /hotzone/i.test(t.src.split('/').pop() ?? '');
                     return (
                       <img key={`t${r}-${c}`} src={t.src} alt="" draggable={false}
-                        style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2, top: (r + 1 + 0.5) * cellPx, width: cellPx * mult, height: "auto", transform: "translateY(-50%)", pointerEvents: "none", imageRendering: "pixelated", zIndex: r + 1 }}
+                        style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2, top: (r + 1 + 0.5) * cellPx, width: cellPx * mult, height: "auto", transform: "translateY(-50%)", pointerEvents: "none", imageRendering: "pixelated", zIndex: isHotzone ? 999 : r + 1 }}
                       />
                     );
                   })
