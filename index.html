@@ -201,6 +201,7 @@ function App() {
   const commitOnUpRef     = useRef(null);     // commitSelectionOnMouseUp
   const pushHistRef       = useRef(null);     // pushHistorySnapshot
   const dragTileRef       = useRef(null);     // mirrors dragTile for event-handler closures
+  const dragOriginRef     = useRef(null);     // [r,c] of the cell the drag started from
   const isDraggingRef     = useRef(false);    // true while a tile is being drag-moved
   const gridRef           = useRef(null);     // up-to-date grid for touch-handler closure
   const getMirrorRef      = useRef(null);     // always-current getMirrorPositions for touch handler
@@ -433,7 +434,7 @@ function App() {
         });
       });
       return g;
-    }, true);
+    }); // skipHistory=false: this IS the history entry for the whole gesture
   }, [getMirrorPositions, setGrid]);
 
   // Called on mouseup / touch-end to finalise the current selection.
@@ -486,7 +487,7 @@ function App() {
 
       if (existingId && !eraserRef.current) {
         // ── PICK-UP: occupied cell, no eraser → always drag, never paint ──
-        if (pushHistRef.current) pushHistRef.current();
+        dragOriginRef.current = [r, c];
         setGridRaw(prev => { const g = prev.map(row => [...row]); g[r][c] = null; return g; });
         setDragTile(existingId);
         dragTileRef.current = existingId;
@@ -497,7 +498,6 @@ function App() {
 
       // ── NORMAL PAINT: only on empty cells (eraser always allowed) ──
       setPainting(true);
-      if (pushHistRef.current) pushHistRef.current();
       selectionStartRef.current = [r, c];
       selectionEndRef.current   = [r, c];
       hoveredTilesRef.current   = new Set([`${r},${c}`]);
@@ -635,7 +635,7 @@ function App() {
       // ── Pick-up: occupied cell, no eraser → immediately drag, never paint ──
       const existingId = gridRef.current?.[r]?.[c];
       if (existingId && !eraserRef.current) {
-        if (pushHistRef.current) pushHistRef.current();
+        dragOriginRef.current = [r, c];
         setGridRaw(prev => { const g = prev.map(row => [...row]); g[r][c] = null; return g; });
         setDragTile(existingId);
         dragTileRef.current = existingId;
@@ -649,7 +649,6 @@ function App() {
       if (!selRef.current && !eraserRef.current) return;
       if (existingId && !eraserRef.current) return; // occupied: block
       isTouchPainting = true;
-      if (pushHistRef.current) pushHistRef.current();
       selectionStartRef.current = [r, c];
       selectionEndRef.current   = [r, c];
       hoveredTilesRef.current   = new Set([`${r},${c}`]);
@@ -706,18 +705,31 @@ function App() {
         if (isDraggingRef.current) {
           const touch = e.changedTouches[0];
           const cell = cellAt(touch);
+          const id = dragTileRef.current;
           if (cell) {
             const [r, c] = cell;
-            const id = dragTileRef.current;
             const positions = getMirrorRef.current ? getMirrorRef.current(r, c) : [[r, c]];
-            setGridRaw(prev => {
-              const g = prev.map(row => [...row]);
-              positions.forEach(([pr, pc]) => { if (g[pr][pc] === null) g[pr][pc] = id; });
-              return g;
-            });
+            const anyEmpty = positions.some(([pr, pc]) => gridRef.current?.[pr]?.[pc] === null);
+            if (anyEmpty) {
+              // Successful drop: write to history as one atomic step
+              setGrid(prev => {
+                const g = prev.map(row => [...row]);
+                positions.forEach(([pr, pc]) => { if (g[pr][pc] === null) g[pr][pc] = id; });
+                return g;
+              });
+              setDragTile(null); dragTileRef.current = null; isDraggingRef.current = false;
+              dragOriginRef.current = null;
+              return;
+            }
           }
-          // Outside grid or all occupied → tile silently discarded (undo restores it)
+          // Outside grid or all occupied → snap tile back to origin
+          const origin = dragOriginRef.current;
+          if (origin) {
+            const [or, oc] = origin;
+            setGridRaw(prev => { const g = prev.map(row => [...row]); g[or][oc] = id; return g; });
+          }
           setDragTile(null); dragTileRef.current = null; isDraggingRef.current = false;
+          dragOriginRef.current = null;
           return;
         }
         if (isTouchPainting && commitOnUpRef.current) commitOnUpRef.current();
@@ -1192,18 +1204,31 @@ function App() {
               if (isDraggingRef.current) {
                 // ── DROP: place at target cell + all mirror positions (if empty) ──
                 const cell = cellFromEvent(e.clientX, e.clientY);
+                const id = dragTileRef.current;
                 if (cell) {
                   const [r, c] = cell;
-                  const id = dragTileRef.current;
                   const positions = getMirrorPositions(r, c);
-                  setGridRaw(prev => {
-                    const g = prev.map(row => [...row]);
-                    positions.forEach(([pr, pc]) => { if (g[pr][pc] === null) g[pr][pc] = id; });
-                    return g;
-                  });
+                  const anyEmpty = positions.some(([pr, pc]) => grid[pr]?.[pc] === null);
+                  if (anyEmpty) {
+                    // Successful drop: write to history as one atomic step
+                    setGrid(prev => {
+                      const g = prev.map(row => [...row]);
+                      positions.forEach(([pr, pc]) => { if (g[pr][pc] === null) g[pr][pc] = id; });
+                      return g;
+                    });
+                    setDragTile(null); dragTileRef.current = null; isDraggingRef.current = false;
+                    dragOriginRef.current = null;
+                    return;
+                  }
                 }
-                // Outside grid or all occupied → tile silently discarded (undo restores it)
+                // Outside grid or all occupied → snap tile back to origin
+                const origin = dragOriginRef.current;
+                if (origin) {
+                  const [or, oc] = origin;
+                  setGridRaw(prev => { const g = prev.map(row => [...row]); g[or][oc] = id; return g; });
+                }
                 setDragTile(null); dragTileRef.current = null; isDraggingRef.current = false;
+                dragOriginRef.current = null;
                 return;
               }
               if (painting && commitOnUpRef.current) commitOnUpRef.current();
@@ -1211,8 +1236,15 @@ function App() {
             }}
             onMouseLeave={e => {
               if (isDraggingRef.current) {
-                // Dragged outside canvas → discard (undo restores the tile)
+                // Dragged outside canvas → snap tile back to origin (no history entry)
+                const id = dragTileRef.current;
+                const origin = dragOriginRef.current;
+                if (origin) {
+                  const [or, oc] = origin;
+                  setGridRaw(prev => { const g = prev.map(row => [...row]); g[or][oc] = id; return g; });
+                }
                 setDragTile(null); dragTileRef.current = null; isDraggingRef.current = false;
+                dragOriginRef.current = null;
                 return;
               }
               if (painting && commitOnUpRef.current) commitOnUpRef.current();
