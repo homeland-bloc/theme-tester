@@ -62,7 +62,7 @@ const MIN_ZOOM = 0.25, MAX_ZOOM = 4;
 // Zoom buttons snap to nearest 5%
 const ZOOM_STEP = 0.05;
 const snapTo10 = z => Math.round(z * 20) / 20;
-const SK = { tiles: "oph_tiles", grid: "oph_grid", colors: "oph_colors", userTiles: "oph_user_tiles", multipliers: "oph_multipliers" };
+const SK = { tiles: "oph_tiles", grid: "oph_grid", colors: "oph_colors", userTiles: "oph_user_tiles", multipliers: "oph_multipliers", priority: "oph_priority" };
 const ACCEPTED = "image/png,image/jpeg,image/gif,image/webp,image/svg+xml,image/bmp";
 const MAX_HISTORY = 60;
 
@@ -107,8 +107,8 @@ function calcFitZoom() {
   const w = window.innerWidth, h = window.innerHeight;
   const mobile = w < 768;
   // Mobile: only the 28px toggle strips are visible (sidebars collapsed)
-  // Desktop: left 200 + right 240 + 2×28 strips ≈ 496
-  const sideW = mobile ? 56 : 496;
+  // Desktop: left 240 + right 260 + 2×28 strips = 556
+  const sideW = mobile ? 56 : 556;
   const topH = 50;
   // Bottom bar: 3 rows × ~30px each ≈ 92px
   const botH = 92;
@@ -155,7 +155,8 @@ function App() {
   // Folder panel (floating modal)
   const [openFolderKey,    setOpenFolderKey]    = useState(null);
   const [folderPanelAnchor, setFolderPanelAnchor] = useState({ x: 0, y: 0 });
-  const folderPanelRef = useRef(null);
+  const folderPanelRef    = useRef(null);
+  const openFolderKeyRef  = useRef(null); // always-current key for reliable toggle
   // Panels: collapsed by default on mobile
   const [tilesOpen,   setTilesOpen] = useState(!mobile);
   const [toolsOpen,   setToolsOpen] = useState(!mobile);
@@ -172,6 +173,8 @@ function App() {
   const [mapName, setMapName] = useState("");
   // Tile size multipliers
   const [tileMultipliers, setTileMultipliers] = useState(() => load(SK.multipliers, {}));
+  // Priority tiles: rendered in a second DOM pass at z-index 9999 (always on top)
+  const [priorityTiles, setPriorityTiles] = useState(() => load(SK.priority, {}));
   // Failed tile tracking
   const [failedTiles,   setFailedTiles]   = useState(new Set());
   const [failedWarning, setFailedWarning] = useState(false);
@@ -206,9 +209,8 @@ function App() {
   const commitOnUpRef     = useRef(null);     // commitSelectionOnMouseUp
   const pushHistRef       = useRef(null);     // pushHistorySnapshot
   const dragTileRef       = useRef(null);     // mirrors dragTile for event-handler closures
-  const dragOriginRef     = useRef(null);     // [r,c] of the cell the drag started from
-  const pendingDragRef    = useRef(null);     // pending drag before 6px threshold: {r,c,id,startX,startY}
   const isDraggingRef     = useRef(false);    // true while a tile is being drag-moved
+  const setGridStableRef  = useRef(null);     // always-current setGrid for touch handler closures
   const gridRef           = useRef(null);     // up-to-date grid for touch-handler closure
   const getMirrorRef      = useRef(null);     // always-current getMirrorPositions for touch handler
 
@@ -222,6 +224,7 @@ function App() {
   useEffect(() => { save(SK.userTiles,    userTiles);       }, [userTiles]);
   useEffect(() => { save(SK.grid,         grid);            }, [grid]);
   useEffect(() => { save(SK.multipliers,  tileMultipliers); }, [tileMultipliers]);
+  useEffect(() => { save(SK.priority,     priorityTiles);   }, [priorityTiles]);
 
   const getTileMultiplier = t => {
     if (tileMultipliers[t.id] !== undefined) return tileMultipliers[t.id];
@@ -233,9 +236,11 @@ function App() {
   const [activeTileset, setActiveTileset] = useState(null);
   // Parsed manifest data
   const [manifest, setManifest] = useState(null);
-  // (openFolders state removed — now using openFolderKey floating panel)
+  useEffect(() => { openFolderKeyRef.current = openFolderKey; }, [openFolderKey]);
+  // toggleFolder uses ref to read current value — avoids stale-closure reopening after
+  // the outside-click mousedown handler closes the panel in the same event cycle.
   const toggleFolder = (key, e) => {
-    if (openFolderKey === key) {
+    if (openFolderKeyRef.current === key) {
       setOpenFolderKey(null);
     } else {
       setOpenFolderKey(key);
@@ -261,67 +266,87 @@ function App() {
     };
   }, [openFolderKey]);
 
-  // Build the flat defaultTiles list and the ordered panel entries from manifest + activeTileset
-  // tileEntries: array of { type: 'flat', tile } | { type: 'folder', key, label, tiles[] }
-  const { tileEntries, flatDefaultTiles } = useMemo(() => {
-    if (!manifest) return { tileEntries: [], flatDefaultTiles: [] };
-    const entries = [];
+  // Build the flat defaultTiles list and the ordered panel entries from manifest + activeTileset.
+  // Returns: objectiveEntries, tilesetEntries, globalEntries, flatDefaultTiles, tilesetTileCount
+  const { objectiveEntries, tilesetEntries, globalEntries, flatDefaultTiles, tilesetTileCount } = useMemo(() => {
+    if (!manifest) return { objectiveEntries: [], tilesetEntries: [], globalEntries: [], flatDefaultTiles: [], tilesetTileCount: 0 };
     const flatTiles = [];
     let idCounter = 1;
-
-    // Helper: make a tile object
     const makeTile = (src) => ({ id: idCounter++, src: `Resources/${src}`, isDefault: true });
+    // Derive a human-readable display label from the folder path (e.g. "Global/Special Tiles/" → "Special Tiles")
+    const displayLabel = (key, folderPath) => {
+      if (folderPath) { const s = folderPath.replace(/\/$/, '').split('/').pop(); if (s) return s; }
+      return key;
+    };
 
-    // Active tileset tiles first
-    const tsDef = manifest.tilesets?.find(ts => ts.name === activeTileset) ?? manifest.tilesets?.[0];
-    if (tsDef) {
-      for (const key of (tsDef.order ?? [])) {
-        if (tsDef.folders?.[key]) {
-          const folderPath = tsDef.folderPaths?.[key] ?? `${tsDef.name}/${key}/`;
-          const folderTiles = tsDef.folders[key].map(fn => {
-            const t = makeTile(`${folderPath}${fn}`);
-            t.folderKey = key;
-            t.folderLabel = key;
-            return t;
-          });
-          flatTiles.push(...folderTiles);
-          entries.push({ type: 'folder', key, label: key, tiles: folderTiles });
-        } else if (tsDef.files?.[key]) {
-          const t = makeTile(tsDef.files[key]);
-          flatTiles.push(t);
-          entries.push({ type: 'flat', tile: t });
-        }
-      }
-    }
-
-    // Separator between active tileset tiles and global tiles
+    // ── Global: split objectives vs rest ──────────────────────────
     const gDef = manifest.global;
+    const objEntries = [];
+    const glbEntries = [];
     if (gDef) {
-      entries.push({ type: 'separator' });
       for (const key of (gDef.order ?? [])) {
         const files = gDef.folders?.[key];
         if (!files || files.length === 0) continue;
         const folderPath = gDef.folderPaths?.[key] ?? `Global/${key}/`;
+        const label = displayLabel(key, folderPath);
         const folderTiles = files.map(fn => {
           const t = makeTile(`${folderPath}${fn}`);
-          t.folderKey = `global_${key}`;
-          t.folderLabel = key;
+          t.folderKey = `global_${key}`; t.folderLabel = label;
           return t;
         });
         flatTiles.push(...folderTiles);
-        entries.push({ type: 'folder', key: `global_${key}`, label: key, tiles: folderTiles });
+        const entry = { type: 'folder', key: `global_${key}`, label, tiles: folderTiles };
+        if (/objectives/i.test(key)) objEntries.push(entry);
+        else glbEntries.push(entry);
       }
     }
 
-    return { tileEntries: entries, flatDefaultTiles: flatTiles };
+    // ── Active tileset tiles ───────────────────────────────────────
+    const tsDef = manifest.tilesets?.find(ts => ts.name === activeTileset) ?? manifest.tilesets?.[0];
+    const tsEntries = [];
+    let tsCount = 0;
+    if (tsDef) {
+      for (const key of (tsDef.order ?? [])) {
+        if (tsDef.folders?.[key]) {
+          const folderPath = tsDef.folderPaths?.[key] ?? `${tsDef.name}/${key}/`;
+          const label = displayLabel(key, folderPath);
+          const folderTiles = tsDef.folders[key].map(fn => {
+            const t = makeTile(`${folderPath}${fn}`);
+            t.folderKey = key; t.folderLabel = label;
+            return t;
+          });
+          flatTiles.push(...folderTiles);
+          tsEntries.push({ type: 'folder', key, label, tiles: folderTiles });
+          tsCount += folderTiles.length;
+        } else if (tsDef.files?.[key]) {
+          const t = makeTile(tsDef.files[key]);
+          flatTiles.push(t);
+          tsEntries.push({ type: 'flat', tile: t });
+          tsCount++;
+        }
+      }
+    }
+
+    return { objectiveEntries: objEntries, tilesetEntries: tsEntries, globalEntries: glbEntries, flatDefaultTiles: flatTiles, tilesetTileCount: tsCount };
   }, [manifest, activeTileset]);
 
   // Sync defaultTiles and nextId whenever flatDefaultTiles changes
+  // Also auto-flag any tile whose filename contains "hotzone" as priority
   useEffect(() => {
     setDefaultTiles(flatDefaultTiles);
     if (flatDefaultTiles.length > 0) {
       nextId.current = Math.max(nextId.current, flatDefaultTiles.length + 1);
       setSel(prev => prev ?? flatDefaultTiles[0].id);
+      setPriorityTiles(prev => {
+        const next = { ...prev };
+        let changed = false;
+        flatDefaultTiles.forEach(t => {
+          if (/hotzone/i.test(t.src.split('/').pop() ?? '') && !next[t.id]) {
+            next[t.id] = true; changed = true;
+          }
+        });
+        return changed ? next : prev;
+      });
     }
   }, [flatDefaultTiles]);
 
@@ -517,8 +542,14 @@ function App() {
       const existingId = grid[r]?.[c];
 
       if (existingId && !eraserRef.current) {
-        // ── PICK-UP: store pending drag — don't start until 6px threshold crossed ──
-        pendingDragRef.current = { r, c, id: existingId, startX: e.clientX, startY: e.clientY };
+        // ── IMMEDIATE PICK-UP: remove tile from cell, start drag ──
+        // History is written once at drop/discard time (mouseup), not here.
+        setGridRaw(prev => { const g = prev.map(row => [...row]); g[r][c] = null; return g; });
+        setDragTile(existingId);
+        dragTileRef.current = existingId;
+        isDraggingRef.current = true;
+        setDragPos({ x: e.clientX, y: e.clientY });
+        setDragTargetCell(null);
         return; // do NOT enter painting mode
       }
 
@@ -533,9 +564,10 @@ function App() {
       else if (mode === 'rect') setRectPreview({ r1: r, c1: c, r2: r, c2: c });
 
     } else if (e.type === "mousemove") {
-      // If dragging, move the ghost — never paint
+      // If dragging, update ghost + target cell — never paint
       if (isDraggingRef.current) {
         setDragPos({ x: e.clientX, y: e.clientY });
+        setDragTargetCell(cellFromEvent(e.clientX, e.clientY));
         return;
       }
       if (!painting) return;
@@ -595,8 +627,9 @@ function App() {
     });
   }, []);
 
-  useEffect(() => { absZoomRef.current  = applyZoom;           }, [applyZoom]);
-  useEffect(() => { getMirrorRef.current = getMirrorPositions; }, [getMirrorPositions]);
+  useEffect(() => { absZoomRef.current   = applyZoom;            }, [applyZoom]);
+  useEffect(() => { getMirrorRef.current  = getMirrorPositions;  }, [getMirrorPositions]);
+  useEffect(() => { setGridStableRef.current = setGrid;          }, [setGrid]);
 
   // Centre the grid in the scroll container on first render
   useEffect(() => {
@@ -658,17 +691,22 @@ function App() {
       e.preventDefault();
       const [r, c] = cell;
 
-      // ── Pick-up: occupied cell, no eraser → store pending drag (6px threshold) ──
+      // ── IMMEDIATE PICK-UP: occupied cell, no eraser → remove tile, start drag ──
+      // History written once at touchend (drop/discard), not here.
       const existingId = gridRef.current?.[r]?.[c];
       if (existingId && !eraserRef.current) {
-        pendingDragRef.current = { r, c, id: existingId, startX: e.touches[0].clientX, startY: e.touches[0].clientY };
+        setGridRaw(prev => { const g = prev.map(row => [...row]); g[r][c] = null; return g; });
+        setDragTile(existingId);
+        dragTileRef.current = existingId;
+        isDraggingRef.current = true;
+        setDragPos({ x: e.touches[0].clientX, y: e.touches[0].clientY });
+        setDragTargetCell(null);
         isTouchPainting = false;
         return;
       }
 
       // ── Normal paint: only on empty cells (or eraser) ────────────
       if (!selRef.current && !eraserRef.current) return;
-      if (existingId && !eraserRef.current) return; // occupied: block
       isTouchPainting = true;
       selectionStartRef.current = [r, c];
       selectionEndRef.current   = [r, c];
@@ -693,21 +731,6 @@ function App() {
       if (e.touches.length !== 1) return;
       e.preventDefault();
 
-      // Pending drag: check 6px threshold
-      if (pendingDragRef.current) {
-        const p = pendingDragRef.current;
-        const t0 = e.touches[0];
-        if (Math.hypot(t0.clientX - p.startX, t0.clientY - p.startY) >= 6) {
-          pendingDragRef.current = null;
-          dragOriginRef.current = [p.r, p.c];
-          setGridRaw(prev => { const g = prev.map(row => [...row]); g[p.r][p.c] = null; return g; });
-          setDragTile(p.id);
-          dragTileRef.current = p.id;
-          isDraggingRef.current = true;
-          setDragPos({ x: t0.clientX, y: t0.clientY });
-        }
-        return;
-      }
       // Active drag: ghost follows finger + target cell highlight
       if (isDraggingRef.current) {
         setDragPos({ x: e.touches[0].clientX, y: e.touches[0].clientY });
@@ -738,41 +761,31 @@ function App() {
     const onTouchEnd = e => {
       if (e.touches.length < 2) pinchRef.current = null;
       if (e.touches.length === 0) {
-        // Pending drag: threshold never crossed → ignore tap on occupied cell
-        if (pendingDragRef.current) {
-          pendingDragRef.current = null;
-          isTouchPainting = false;
-          return;
-        }
         // ── DROP: if dragging, place at target + mirror positions (if empty) ──
         if (isDraggingRef.current) {
           setDragTargetCell(null);
           const touch = e.changedTouches[0];
           const cell = cellAt(touch);
           const id = dragTileRef.current;
+          const commit = setGridStableRef.current; // latest setGrid (writes history)
           if (cell) {
             const [r, c] = cell;
             const positions = getMirrorRef.current ? getMirrorRef.current(r, c) : [[r, c]];
             const anyEmpty = positions.some(([pr, pc]) => gridRef.current?.[pr]?.[pc] === null);
             if (anyEmpty) {
-              setGrid(prev => {
+              // Success: one history entry for the whole drag
+              commit(prev => {
                 const g = prev.map(row => [...row]);
                 positions.forEach(([pr, pc]) => { if (g[pr][pc] === null) g[pr][pc] = id; });
                 return g;
               });
               setDragTile(null); dragTileRef.current = null; isDraggingRef.current = false;
-              dragOriginRef.current = null;
               return;
             }
           }
-          // Outside grid or all occupied → snap tile back to origin
-          const origin = dragOriginRef.current;
-          if (origin) {
-            const [or, oc] = origin;
-            setGridRaw(prev => { const g = prev.map(row => [...row]); g[or][oc] = id; return g; });
-          }
+          // Occupied or outside → discard; write tile-removed state as history entry
+          commit(g => g);
           setDragTile(null); dragTileRef.current = null; isDraggingRef.current = false;
-          dragOriginRef.current = null;
           return;
         }
         if (isTouchPainting && commitOnUpRef.current) commitOnUpRef.current();
@@ -830,7 +843,7 @@ function App() {
     const draws = [];
     grid.forEach((row, r) => row.forEach((id, c) => {
       const t = id && getTile(id);
-      if (t) draws.push({ src: t.src, r, c, mult: getTileMultiplier(t) });
+      if (t) draws.push({ id: t.id, src: t.src, r, c, mult: getTileMultiplier(t) });
     }));
     const filename = (mapName.trim() || "ophelia-map") + ".png";
     const finish = () => cv.toBlob(b => {
@@ -838,9 +851,8 @@ function App() {
       a.href = URL.createObjectURL(b); a.download = filename; a.click();
     });
     if (!draws.length) { finish(); return; }
-    // Sort so hotzone tiles are drawn last → always on top in the exported image
-    const isHz = src => /hotzone/i.test(src.split('/').pop() ?? '');
-    draws.sort((a, b) => (isHz(a.src) ? 1 : 0) - (isHz(b.src) ? 1 : 0));
+    // Sort so priority tiles are drawn last → always on top in the exported image
+    draws.sort((a, b) => (priorityTiles[a.id] ? 1 : 0) - (priorityTiles[b.id] ? 1 : 0));
     // Load all images then draw in sorted order (guarantees z-order)
     Promise.all(draws.map(d => new Promise(resolve => {
       const img = new Image(); img.src = d.src;
@@ -895,6 +907,7 @@ function App() {
     const defaultMult = t.src && (t.src.includes("spawnBlue") || t.src.includes("spawnRed")) ? 1.65 : 1.0;
     const currentMult = getTileMultiplier(t);
     const [multInput, setMultInput] = React.useState(String(currentMult));
+    const isPriority = !!priorityTiles[t.id];
     const commitMult = () => {
       const v = parseFloat(multInput);
       if (!isNaN(v) && v > 0) {
@@ -925,6 +938,12 @@ function App() {
               Reset
             </button>
           </div>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
+            <input type="checkbox" checked={isPriority}
+              onChange={ev => setPriorityTiles(prev => { const n = { ...prev }; if (ev.target.checked) n[t.id] = true; else delete n[t.id]; return n; })}
+              style={{ width: 14, height: 14, accentColor: C.accent, cursor: "pointer" }} />
+            <span style={{ fontSize: 11, color: C.text }}>Always render on top</span>
+          </label>
           {!t.isDefault && (
             <button style={{ ...btn(false, C.danger, "rgba(248,113,113,0.14)"), width: "100%", justifyContent: "center" }}
               onClick={() => deleteTile(t.id)}>Delete tile</button>
@@ -1038,11 +1057,14 @@ function App() {
 
       {/* ── Folder panel — floating modal anchored near card (Task 4) ── */}
       {openFolderKey && (() => {
-        const entry = tileEntries.find(e => e.type === 'folder' && e.key === openFolderKey);
+        // Search all three entry lists for the open folder key
+        const allEntries = [...objectiveEntries, ...tilesetEntries, ...globalEntries];
+        const entry = allEntries.find(e => e.type === 'folder' && e.key === openFolderKey);
         if (!entry) return null;
         const cardSz = isMobile ? 46 : 56;
-        const panelW = cardSz * 3 + 5 * 2 + 12; // 3 cols + gaps + padding
-        const maxH = Math.min(320, window.innerHeight - 32);
+        const cols = 4;
+        const panelW = cardSz * cols + 5 * (cols - 1) + 12; // 4 cols + gaps + padding
+        const maxH = Math.min(360, window.innerHeight - 32);
         const anchorX = Math.min(folderPanelAnchor.x, window.innerWidth - panelW - 8);
         const anchorY = Math.min(folderPanelAnchor.y, window.innerHeight - maxH - 8);
         return (
@@ -1052,11 +1074,11 @@ function App() {
               boxShadow: "0 8px 32px rgba(0,0,0,0.7)", zIndex: 2000, overflow: "hidden",
               display: "flex", flexDirection: "column" }}>
             <div style={{ padding: "5px 8px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 }}>
-              <span style={{ fontSize: 10, fontWeight: 700, color: C.accent, textTransform: "capitalize", letterSpacing: 0.5 }}>{entry.label}</span>
+              <span style={{ fontSize: 10, fontWeight: 700, color: C.accent, letterSpacing: 0.5 }}>{entry.label}</span>
               <button onClick={() => setOpenFolderKey(null)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 15, lineHeight: 1, padding: "0 2px" }}>×</button>
             </div>
             <div style={{ overflowY: "auto", padding: 6 }}>
-              <div style={{ display: "grid", gridTemplateColumns: `repeat(3, ${cardSz}px)`, gap: 5 }}>
+              <div style={{ display: "grid", gridTemplateColumns: `repeat(${cols}, ${cardSz}px)`, gap: 5 }}>
                 {entry.tiles.map(t => {
                   const active = sel === t.id && !eraser;
                   const failed = failedTiles.has(t.id);
@@ -1118,9 +1140,9 @@ function App() {
         {/* ── LEFT SIDEBAR: Tiles ──────────────────────────────────── */}
         <div style={{ display: "flex", flexDirection: "row", flexShrink: 0 }}>
           {tilesOpen && (
-            <div style={{ width: isMobile ? 160 : 200, background: C.panelDeep, borderRight: `1px solid ${C.border}`, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
+            <div style={{ width: isMobile ? 160 : 240, background: C.panelDeep, borderRight: `1px solid ${C.border}`, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
               <SectionHeader
-                label={`Tiles (${tiles.length})`}
+                label={`Tiles (${tilesetTileCount + userTiles.length})`}
                 open={tilesOpen}
                 onToggle={() => setTilesOpen(o => !o)}
                 right={uploadFlash > 0 ? (
@@ -1147,11 +1169,70 @@ function App() {
                 onChange={e => { loadFiles(e.target.files); e.target.value = ""; }} />
               <div style={{ overflowY: "auto", flex: 1, padding: "8px 8px 10px" }}>
                 {(() => {
-                  const cardSz = isMobile ? 46 : 56;
-                  const cardGap = isMobile ? 4 : 5;
+                  // Desktop: 64px cards, 5px gaps. Mobile: 56px cards, 5px gaps, 2 per row.
+                  const cardSz  = isMobile ? 56 : 64;
+                  const cardGap = 5;
+
+                  const renderFlatCard = t => {
+                    const active = sel === t.id && !eraser;
+                    const failed = failedTiles.has(t.id);
+                    return (
+                      <div key={t.id}
+                        onClick={() => { if (failed) { setFailedWarning(true); return; } setSel(t.id); setEraser(false); }}
+                        style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: failed ? "not-allowed" : "pointer", border: `2px solid ${failed ? C.danger : active ? C.accentBright : C.border}`, background: failed ? "rgba(248,113,113,0.08)" : active ? C.accentDim : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", overflow: "hidden", opacity: failed ? 0.55 : 1, position: "relative" }}>
+                        <div style={{ width: "100%", height: "100%", background: "#1a0f06", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                          {failed ? <span style={{ fontSize: 20, color: C.danger }}>✕</span>
+                            : <img src={t.src} alt="" onError={() => markFailed(t.id)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated" }} />}
+                        </div>
+                        <span onClick={e => { e.stopPropagation(); setInfoTile(t.id); }}
+                          style={{ position: "absolute", top: 1, right: 3, fontSize: 14, cursor: "pointer", color: "rgba(255,255,255,0.82)", lineHeight: 1 }}
+                          title="Tile info">ⓘ</span>
+                        {getTileMultiplier(t) !== 1.0 && (
+                          <span style={{ position: "absolute", bottom: 2, left: 3, fontSize: 8, fontWeight: 700, color: C.accentBright, background: "rgba(0,0,0,0.65)", borderRadius: 3, padding: "1px 3px", lineHeight: 1.3, pointerEvents: "none" }}>
+                            {getTileMultiplier(t)}×
+                          </span>
+                        )}
+                      </div>
+                    );
+                  };
+
+                  const renderFolderCard = entry => {
+                    const { key, label, tiles: fTiles } = entry;
+                    const isThisOpen = openFolderKey === key;
+                    const folderActive = !eraser && fTiles.some(t => t.id === sel);
+                    const previewTiles = fTiles.slice(0, 4);
+                    return (
+                      <div key={key}
+                        onClick={e => toggleFolder(key, e)}
+                        style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: "pointer",
+                          border: `2px solid ${folderActive ? C.accentBright : isThisOpen ? C.accent : C.border}`,
+                          background: "#1a0f06", overflow: "hidden", position: "relative",
+                          transition: "border 0.12s" }}>
+                        {/* 2×2 preview grid — fills full card, no label strip */}
+                        <div style={{ position: "absolute", inset: 0, display: "grid", gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr", gap: 1 }}>
+                          {previewTiles.map(t => (
+                            <div key={t.id} style={{ background: "#1a0f06", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
+                              <img src={t.src} alt="" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated", opacity: 0.55 }} />
+                            </div>
+                          ))}
+                          {Array.from({ length: Math.max(0, 4 - previewTiles.length) }).map((_, i) => (
+                            <div key={`e${i}`} style={{ background: "#1a0f06" }} />
+                          ))}
+                        </div>
+                        {/* Chevron — full white, no opacity reduction */}
+                        <div style={{ position: "absolute", inset: 0, zIndex: 3, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
+                          <span style={{ fontSize: 13, lineHeight: 1, color: C.text,
+                            display: "inline-block", transform: isThisOpen ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.15s" }}>▼</span>
+                        </div>
+                      </div>
+                    );
+                  };
+
+                  const renderEntry = entry => entry.type === 'flat' ? renderFlatCard(entry.tile) : renderFolderCard(entry);
+
                   return (
                   <div style={{ display: "flex", flexWrap: "wrap", gap: cardGap }}>
-                  {/* Eraser */}
+                  {/* 1. Eraser */}
                   <div onClick={() => { setEraser(true); setSel(null); }}
                     style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${eraser ? C.danger : C.border}`, background: eraser ? "rgba(248,113,113,0.14)" : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", overflow: "hidden" }}>
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: eraser ? "rgba(248,113,113,0.32)" : "rgba(248,113,113,0.14)", padding: "2px 4px" }}>
@@ -1161,130 +1242,49 @@ function App() {
                       <span style={{ fontSize: 20, color: eraser ? C.danger : "rgba(248,113,113,0.5)", lineHeight: 1 }}>✕</span>
                     </div>
                   </div>
-                  {/* Tiles: user-uploaded first (Task 6), then manifest entries */}
                   {tilesLoading ? (
                     <p style={{ fontSize: 12, color: C.muted, alignSelf: "center" }}>Loading…</p>
-                  ) : tileEntries.length === 0 && userTiles.length === 0 ? (
-                    <p style={{ fontSize: 11, color: C.muted, alignSelf: "center" }}>No tiles — upload or add to Resources/.</p>
                   ) : (<>
-                    {(() => {
-                      // Split tileEntries at the separator into tileset and global parts
-                      const sepIdx = tileEntries.findIndex(e => e.type === 'separator');
-                      const tilesetPart = sepIdx >= 0 ? tileEntries.slice(0, sepIdx) : tileEntries;
-                      const globalPart  = sepIdx >= 0 ? tileEntries.slice(sepIdx + 1) : [];
-
-                      const renderFlatCard = t => {
-                        const active = sel === t.id && !eraser;
-                        const failed = failedTiles.has(t.id);
-                        return (
-                          <div key={t.id}
-                            onClick={() => { if (failed) { setFailedWarning(true); return; } setSel(t.id); setEraser(false); }}
-                            style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: failed ? "not-allowed" : "pointer", border: `2px solid ${failed ? C.danger : active ? C.accentBright : C.border}`, background: failed ? "rgba(248,113,113,0.08)" : active ? C.accentDim : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", overflow: "hidden", opacity: failed ? 0.55 : 1, position: "relative" }}>
-                            <div style={{ width: "100%", height: "100%", background: "#1a0f06", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                              {failed ? <span style={{ fontSize: 20, color: C.danger }}>✕</span>
-                                : <img src={t.src} alt="" onError={() => markFailed(t.id)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated" }} />}
-                            </div>
-                            <span onClick={e => { e.stopPropagation(); setInfoTile(t.id); }}
-                              style={{ position: "absolute", top: 1, right: 3, fontSize: 14, cursor: "pointer", color: "rgba(255,255,255,0.82)", lineHeight: 1 }}
-                              title="Tile info">ⓘ</span>
-                            {getTileMultiplier(t) !== 1.0 && (
-                              <span style={{ position: "absolute", bottom: 2, left: 3, fontSize: 8, fontWeight: 700, color: C.accentBright, background: "rgba(0,0,0,0.65)", borderRadius: 3, padding: "1px 3px", lineHeight: 1.3, pointerEvents: "none" }}>
-                                {getTileMultiplier(t)}×
-                              </span>
-                            )}
+                    {/* 2. Objective tiles (global objectives folder) */}
+                    {objectiveEntries.map(renderEntry)}
+                    {/* 3. Active tileset tiles */}
+                    {tilesetEntries.map(renderEntry)}
+                    {/* 4. User-uploaded tiles */}
+                    {userTiles.map(t => {
+                      const active = sel === t.id && !eraser;
+                      const failed = failedTiles.has(t.id);
+                      return (
+                        <div key={t.id}
+                          onClick={() => { if (failed) { setFailedWarning(true); return; } setSel(t.id); setEraser(false); }}
+                          style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: failed ? "not-allowed" : "pointer", border: `2px solid ${failed ? C.danger : active ? C.accentBright : C.border}`, background: failed ? "rgba(248,113,113,0.08)" : active ? C.accentDim : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", overflow: "hidden", opacity: failed ? 0.55 : 1, position: "relative" }}>
+                          <div style={{ width: "100%", height: "100%", background: "#1a0f06", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                            {failed ? <span style={{ fontSize: 20, color: C.danger }}>✕</span>
+                              : <img src={t.src} alt="" onError={() => markFailed(t.id)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated" }} />}
                           </div>
-                        );
-                      };
-
-                      const renderFolderCard = entry => {
-                        const { key, label, tiles: fTiles } = entry;
-                        const isThisOpen = openFolderKey === key;
-                        const folderActive = !eraser && fTiles.some(t => t.id === sel);
-                        const selectedFolderTile = folderActive ? fTiles.find(t => t.id === sel) : null;
-                        const previewTiles = fTiles.slice(0, 4);
-                        return (
-                          <div key={key}
-                            onClick={e => toggleFolder(key, e)}
-                            style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: "pointer",
-                              border: `2px solid ${folderActive ? C.accentBright : isThisOpen ? C.accent : C.border}`,
-                              background: "#1a0f06", overflow: "hidden", position: "relative",
-                              transition: "border 0.12s" }}>
-                            {/* Label strip at top */}
-                            <div style={{ position: "absolute", top: 0, left: 0, right: 0, zIndex: 2,
-                              background: "rgba(0,0,0,0.55)", padding: "1px 3px",
-                              display: "flex", alignItems: "center", gap: 2, minHeight: 12 }}>
-                              <span style={{ fontSize: 8, fontWeight: 700, color: folderActive ? C.accent : C.muted,
-                                textTransform: "capitalize", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                {label}
-                              </span>
-                              {selectedFolderTile && (
-                                <img src={selectedFolderTile.src} alt="" style={{ width: 12, height: 12, objectFit: "contain", imageRendering: "pixelated", flexShrink: 0 }} />
-                              )}
-                            </div>
-                            {/* 2×2 preview grid */}
-                            <div style={{ position: "absolute", inset: 0, display: "grid", gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr", gap: 1 }}>
-                              {previewTiles.map(t => (
-                                <div key={t.id} style={{ background: "#1a0f06", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
-                                  <img src={t.src} alt="" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated", opacity: 0.55 }} />
-                                </div>
-                              ))}
-                              {Array.from({ length: Math.max(0, 4 - previewTiles.length) }).map((_, i) => (
-                                <div key={`e${i}`} style={{ background: "#1a0f06" }} />
-                              ))}
-                            </div>
-                            {/* Chevron centered in foreground, full opacity */}
-                            <div style={{ position: "absolute", inset: 0, zIndex: 3, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
-                              <span style={{ fontSize: 13, lineHeight: 1, color: folderActive ? C.accentBright : isThisOpen ? C.accent : C.muted,
-                                display: "inline-block", transform: isThisOpen ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.15s" }}>▼</span>
-                            </div>
-                          </div>
-                        );
-                      };
-
-                      const renderEntry = entry => entry.type === 'flat' ? renderFlatCard(entry.tile) : renderFolderCard(entry);
-
-                      return (<>
-                        {/* 1. Active tileset tiles */}
-                        {tilesetPart.map(renderEntry)}
-                        {/* 2. User-uploaded tiles */}
-                        {userTiles.map(t => {
-                          const active = sel === t.id && !eraser;
-                          const failed = failedTiles.has(t.id);
-                          return (
-                            <div key={t.id}
-                              onClick={() => { if (failed) { setFailedWarning(true); return; } setSel(t.id); setEraser(false); }}
-                              style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: failed ? "not-allowed" : "pointer", border: `2px solid ${failed ? C.danger : active ? C.accentBright : C.border}`, background: failed ? "rgba(248,113,113,0.08)" : active ? C.accentDim : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", overflow: "hidden", opacity: failed ? 0.55 : 1, position: "relative" }}>
-                              <div style={{ width: "100%", height: "100%", background: "#1a0f06", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                                {failed ? <span style={{ fontSize: 20, color: C.danger }}>✕</span>
-                                  : <img src={t.src} alt="" onError={() => markFailed(t.id)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated" }} />}
-                              </div>
-                              <span onClick={e => { e.stopPropagation(); setInfoTile(t.id); }}
-                                style={{ position: "absolute", top: 1, right: 3, fontSize: 14, cursor: "pointer", color: "rgba(255,255,255,0.82)", lineHeight: 1 }}
-                                title="Tile info">ⓘ</span>
-                              {getTileMultiplier(t) !== 1.0 && (
-                                <span style={{ position: "absolute", bottom: 2, left: 3, fontSize: 8, fontWeight: 700, color: C.accentBright, background: "rgba(0,0,0,0.65)", borderRadius: 3, padding: "1px 3px", lineHeight: 1.3, pointerEvents: "none" }}>
-                                  {getTileMultiplier(t)}×
-                                </span>
-                              )}
-                            </div>
-                          );
-                        })}
-                        {/* 3. Separator before global tiles */}
-                        {globalPart.length > 0 && (
-                          <div key="__sep__" style={{ width: "100%", flexBasis: "100%", height: 1, background: C.border, margin: "3px 0", flexShrink: 0 }} />
-                        )}
-                        {/* 4. Global tiles */}
-                        {globalPart.map(renderEntry)}
-                      </>);
-                    })()}
+                          <span onClick={e => { e.stopPropagation(); setInfoTile(t.id); }}
+                            style={{ position: "absolute", top: 1, right: 3, fontSize: 14, cursor: "pointer", color: "rgba(255,255,255,0.82)", lineHeight: 1 }}
+                            title="Tile info">ⓘ</span>
+                          {getTileMultiplier(t) !== 1.0 && (
+                            <span style={{ position: "absolute", bottom: 2, left: 3, fontSize: 8, fontWeight: 700, color: C.accentBright, background: "rgba(0,0,0,0.65)", borderRadius: 3, padding: "1px 3px", lineHeight: 1.3, pointerEvents: "none" }}>
+                              {getTileMultiplier(t)}×
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })}
+                    {/* 5. Upload card (before separator) */}
+                    <div onClick={() => fileRef.current.click()}
+                      style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: "pointer", border: `2px dashed ${C.border}`, background: "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", overflow: "hidden", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2 }}
+                      title="Upload tiles">
+                      <span style={{ fontSize: 22, color: C.muted, lineHeight: 1, fontWeight: 300 }}>+</span>
+                      <span style={{ fontSize: 9, color: C.muted, textTransform: "uppercase", letterSpacing: 0.8, lineHeight: 1 }}>Upload</span>
+                    </div>
+                    {/* 6. Separator + remaining global tiles */}
+                    {globalEntries.length > 0 && (<>
+                      <div style={{ width: "100%", flexBasis: "100%", height: 1, background: C.border, margin: "3px 0", flexShrink: 0 }} />
+                      {globalEntries.map(renderEntry)}
+                    </>)}
                   </>)}
-                  {/* Upload tile card */}
-                  <div onClick={() => fileRef.current.click()}
-                    style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: "pointer", border: `2px dashed ${C.border}`, background: "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", overflow: "hidden", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2 }}
-                    title="Upload tiles">
-                    <span style={{ fontSize: 22, color: C.muted, lineHeight: 1, fontWeight: 300 }}>+</span>
-                    <span style={{ fontSize: 9, color: C.muted, textTransform: "uppercase", letterSpacing: 0.8, lineHeight: 1 }}>Upload</span>
-                  </div>
                   </div>
                   );
                 })()}
@@ -1304,35 +1304,18 @@ function App() {
             style={{ flex: 1, minWidth: 0, height: "100%", overflow: "auto", background: "#1a0f06" }}
             onWheel={onWheel}
             onMouseMove={e => {
-              // Pending drag: check 6px threshold
-              if (pendingDragRef.current) {
-                const p = pendingDragRef.current;
-                if (Math.hypot(e.clientX - p.startX, e.clientY - p.startY) >= 6) {
-                  pendingDragRef.current = null;
-                  dragOriginRef.current = [p.r, p.c];
-                  setGridRaw(prev => { const g = prev.map(row => [...row]); g[p.r][p.c] = null; return g; });
-                  setDragTile(p.id);
-                  dragTileRef.current = p.id;
-                  isDraggingRef.current = true;
-                  setDragPos({ x: e.clientX, y: e.clientY });
-                }
-                return;
-              }
               // Active drag: update ghost + target cell highlight
               if (isDraggingRef.current) {
                 setDragPos({ x: e.clientX, y: e.clientY });
                 setDragTargetCell(cellFromEvent(e.clientX, e.clientY));
+                return;
               }
             }}
             onMouseUp={e => {
-              // Pending drag: threshold never crossed → ignore click entirely
-              if (pendingDragRef.current) {
-                pendingDragRef.current = null;
-                return;
-              }
               if (isDraggingRef.current) {
                 setDragTargetCell(null);
                 // ── DROP: place at target cell + all mirror positions (if empty) ──
+                // setGrid (skipHistory=false) writes exactly one history entry per drag.
                 const cell = cellFromEvent(e.clientX, e.clientY);
                 const id = dragTileRef.current;
                 if (cell) {
@@ -1340,45 +1323,30 @@ function App() {
                   const positions = getMirrorPositions(r, c);
                   const anyEmpty = positions.some(([pr, pc]) => grid[pr]?.[pc] === null);
                   if (anyEmpty) {
+                    // Success: write post-drop grid as history entry
                     setGrid(prev => {
                       const g = prev.map(row => [...row]);
                       positions.forEach(([pr, pc]) => { if (g[pr][pc] === null) g[pr][pc] = id; });
                       return g;
-                    });
+                    }); // skipHistory=false (default) → one undo entry for the whole drag
                     setDragTile(null); dragTileRef.current = null; isDraggingRef.current = false;
-                    dragOriginRef.current = null;
                     return;
                   }
                 }
-                // Outside grid or all occupied → snap tile back to origin
-                const origin = dragOriginRef.current;
-                if (origin) {
-                  const [or, oc] = origin;
-                  setGridRaw(prev => { const g = prev.map(row => [...row]); g[or][oc] = id; return g; });
-                }
+                // Occupied or outside grid → discard tile; write current grid (tile removed) as history
+                setGrid(g => g); // identity write → records tile-removed state as undo entry
                 setDragTile(null); dragTileRef.current = null; isDraggingRef.current = false;
-                dragOriginRef.current = null;
                 return;
               }
               if (painting && commitOnUpRef.current) commitOnUpRef.current();
               setPainting(false);
             }}
             onMouseLeave={e => {
-              if (pendingDragRef.current) {
-                pendingDragRef.current = null;
-                return;
-              }
               if (isDraggingRef.current) {
                 setDragTargetCell(null);
-                // Dragged outside canvas → snap tile back to origin (no history entry)
-                const id = dragTileRef.current;
-                const origin = dragOriginRef.current;
-                if (origin) {
-                  const [or, oc] = origin;
-                  setGridRaw(prev => { const g = prev.map(row => [...row]); g[or][oc] = id; return g; });
-                }
+                // Dragged outside canvas → discard; write tile-removed state as undo entry
+                setGrid(g => g);
                 setDragTile(null); dragTileRef.current = null; isDraggingRef.current = false;
-                dragOriginRef.current = null;
                 return;
               }
               if (painting && commitOnUpRef.current) commitOnUpRef.current();
@@ -1399,11 +1367,11 @@ function App() {
                   ))
                 )}
 
-                {/* Pass 1: non-hotzone tile images (z-index = r + 1 for natural depth) */}
+                {/* Pass 1: normal tiles (z-index = r + 1 for natural depth), skipping priority tiles */}
                 {grid.map((row, r) =>
                   row.map((id, c) => {
                     const t = id && getTile(id); if (!t) return null;
-                    if (/hotzone/i.test(t.src.split('/').pop() ?? '')) return null;
+                    if (priorityTiles[t.id]) return null;
                     const mult = getTileMultiplier(t);
                     const cellPx = CELL * zoom;
                     return (
@@ -1413,15 +1381,15 @@ function App() {
                     );
                   })
                 )}
-                {/* Pass 2: hotzone tiles — rendered last in the DOM so they always appear above every other tile */}
+                {/* Pass 2: priority tiles — rendered last in DOM, always above every other tile */}
                 {grid.map((row, r) =>
                   row.map((id, c) => {
                     const t = id && getTile(id); if (!t) return null;
-                    if (!/hotzone/i.test(t.src.split('/').pop() ?? '')) return null;
+                    if (!priorityTiles[t.id]) return null;
                     const mult = getTileMultiplier(t);
                     const cellPx = CELL * zoom;
                     return (
-                      <img key={`hz${r}-${c}`} src={t.src} alt="" draggable={false}
+                      <img key={`prio${r}-${c}`} src={t.src} alt="" draggable={false}
                         style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2, top: (r + 1 + 0.5) * cellPx, width: cellPx * mult, height: "auto", transform: "translateY(-50%)", pointerEvents: "none", imageRendering: "pixelated", zIndex: 9999 }}
                       />
                     );
@@ -1472,7 +1440,7 @@ function App() {
             {toolsOpen ? "▶" : "◀"}
           </button>
           {toolsOpen && (
-            <div style={{ width: isMobile ? 160 : 240, background: C.panelDeep, borderLeft: `1px solid ${C.border}`, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
+            <div style={{ width: isMobile ? 160 : 260, background: C.panelDeep, borderLeft: `1px solid ${C.border}`, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
               <SectionHeader label="Tools" open={toolsOpen} onToggle={() => setToolsOpen(o => !o)} />
               <div style={{ overflowY: "auto", flex: 1, padding: "8px 12px 10px", display: "flex", flexDirection: "column", gap: 7 }}>
                 <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1 }}>Selection Mode</span>
