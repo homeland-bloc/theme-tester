@@ -2,7 +2,7 @@
   "tilesets": [
     {
       "name": "Mausoleum",
-      "order": ["wall1", "wall2", "crate", "barrel", "cactus", "bush", "fence", "rope"],
+      "order": ["wall1", "wall2", "crate", "barrel", "cactus", "bush", "breakable", "fence", "rope"],
       "files": {
         "wall1": "Mausoleum/MSLM-wall.png",
         "wall2": "Mausoleum/MSLM-wall2.png",
@@ -10,6 +10,7 @@
         "barrel": "Mausoleum/MSLM-barrel.png",
         "cactus": "Mausoleum/MSLM-cactus.png",
         "bush": "Mausoleum/MSLM-bush.png"
+        "breakable": "Mausoleum/MSLM-break.png"
       },
       "folders": {
         "fence": ["MSLM-fence.png", "MSLM-fenceHORIZONTAL.png", "MSLM-fenceVERTICAL.png"],
