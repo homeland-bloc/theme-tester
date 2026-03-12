@@ -546,39 +546,42 @@ function App() {
 
   const onCell = (r, c, e) => {
     if (e.type === "mousedown") {
+      e.preventDefault(); // prevent native browser drag + text selection
       // Drag and paint are mutually exclusive — decide here, never switch mid-gesture
       const existingId = grid[r]?.[c];
+      const now = Date.now();
+      const prev = dblClickRef.current;
+      // isSecondClick: second mousedown on the same cell within 300ms
+      const isSecondClick = !!(prev && prev.r === r && prev.c === c && (now - prev.time) < 300);
+      // tileId: use existingId if available; fall back to prev.id in stale-state second-click scenario
+      const tileId = existingId ?? (isSecondClick ? prev.id : null);
 
-      if (existingId && !eraserRef.current) {
+      if (tileId && !eraserRef.current) {
         // ── OCCUPIED CELL (non-eraser): blink or drag ────────────────────────────
         // Double-click-and-hold detection:
         // • First click  → blink (tile removed; restored on mouseup)
         // • Second mousedown within 300ms on SAME cell → start drag
-        const now = Date.now();
-        const prev = dblClickRef.current;
-        if (prev && prev.r === r && prev.c === c && (now - prev.time) < 300) {
+        if (isSecondClick) {
           // ── DOUBLE-CLICK-AND-HOLD: initiate drag ─────────────────────────────
           // Cancel any pending blink (tile may already be removed from first click)
           blinkRef.current = null;
           dblClickRef.current = null;
-          // Use id from prev record in case React hasn't propagated restore yet
-          const dragId = existingId ?? prev.id;
-          // Remove tile + all mirror counterparts at origin
+          // Remove tile + all mirror counterparts at origin via functional updater (avoids stale closure)
           const mirrorPositions = getMirrorPositions(r, c);
           setGridRaw(prevGrid => {
             const g = prevGrid.map(row => [...row]);
             mirrorPositions.forEach(([pr, pc]) => { g[pr][pc] = null; });
             return g;
           });
-          setDragTile(dragId);
-          dragTileRef.current = dragId;
+          setDragTile(tileId);
+          dragTileRef.current = tileId;
           isDraggingRef.current = true;
           setDragPos({ x: e.clientX, y: e.clientY });
           setDragTargetCell(null);
         } else {
           // ── FIRST CLICK: blink (tile briefly removed, restored on mouseup) ────
-          dblClickRef.current = { r, c, time: now, id: existingId };
-          blinkRef.current = { r, c, id: existingId };
+          dblClickRef.current = { r, c, time: now, id: tileId };
+          blinkRef.current = { r, c, id: tileId };
           setGridRaw(prev => { const g = prev.map(row => [...row]); g[r][c] = null; return g; });
         }
         return; // do NOT enter painting mode
@@ -661,6 +664,44 @@ function App() {
   useEffect(() => { absZoomRef.current   = applyZoom;            }, [applyZoom]);
   useEffect(() => { getMirrorRef.current  = getMirrorPositions;  }, [getMirrorPositions]);
   useEffect(() => { setGridStableRef.current = setGrid;          }, [setGrid]);
+
+  // Global mousemove/mouseup: keep ghost following cursor even outside the canvas container,
+  // and correctly complete or discard the drag on mouseup anywhere on the page.
+  useEffect(() => {
+    const onMove = e => {
+      if (!isDraggingRef.current) return;
+      setDragPos({ x: e.clientX, y: e.clientY });
+      // Update target cell highlight if cursor is inside scroll container
+      setDragTargetCell(cellFromEvent(e.clientX, e.clientY));
+    };
+    const onUp = e => {
+      if (!isDraggingRef.current) return;
+      setDragTargetCell(null);
+      const cell = cellFromEvent(e.clientX, e.clientY);
+      const id = dragTileRef.current;
+      if (cell) {
+        const [r, c] = cell;
+        const positions = getMirrorRef.current ? getMirrorRef.current(r, c) : [[r, c]];
+        setGridStableRef.current(prev => {
+          const anyEmpty = positions.some(([pr, pc]) => prev[pr]?.[pc] === null);
+          if (!anyEmpty) return prev; // fully occupied → discard
+          const g = prev.map(row => [...row]);
+          positions.forEach(([pr, pc]) => { if (g[pr]?.[pc] === null) g[pr][pc] = id; });
+          return g;
+        });
+      } else {
+        // Outside grid: discard — record tile-removed state as undo entry
+        setGridStableRef.current(g => g);
+      }
+      setDragTile(null); dragTileRef.current = null; isDraggingRef.current = false;
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup',   onUp);
+    return () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup',   onUp);
+    };
+  }, []); // stable refs only — no deps needed
 
   // Centre the grid in the scroll container on first render
   useEffect(() => {
@@ -857,7 +898,7 @@ function App() {
     if (replaceA == null || replaceB == null) return;
     let count = 0;
     setGrid(prev => prev.map(row => row.map(id => { if (id === replaceA) { count++; return replaceB; } return id; })));
-    const msg = count > 0 ? `✓ Replaced ${count} tile${count !== 1 ? "s" : ""}` : "No matching tiles found";
+    const msg = count > 0 ? `✓ Replaced ${count} tile${count !== 1 ? "s" : ""}` : "Tile A not found in grid";
     setReplaceMsg(msg);
     if (replaceMsgTimerRef.current) clearTimeout(replaceMsgTimerRef.current);
     replaceMsgTimerRef.current = setTimeout(() => {
@@ -1001,26 +1042,41 @@ function App() {
     if (!replaceOpen) return null;
     const TilePicker = ({ value, onChange, label }) => {
       const listRef = React.useRef(null);
+      const [filter, setFilter] = React.useState("");
       const handleClick = id => {
         const el = listRef.current;
         const scrollTop = el ? el.scrollTop : 0;
         onChange(id);
         requestAnimationFrame(() => { if (listRef.current) listRef.current.scrollTop = scrollTop; });
       };
+      const q = filter.trim().toLowerCase();
+      const filtered = q
+        ? tiles.filter(t => String(t.id).includes(q) || (t.label || "").toLowerCase().includes(q) || t.src.toLowerCase().includes(q))
+        : tiles;
       return (
-        <div style={{ flex: 1 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
           <p style={{ fontSize: 10, color: C.muted, marginBottom: 4, textTransform: "uppercase", letterSpacing: 1 }}>{label}</p>
-          <div ref={listRef} style={{ overflowY: "auto", maxHeight: 180, display: "flex", flexWrap: "wrap", gap: 5, background: "rgba(0,0,0,0.2)", borderRadius: 7, padding: 6 }}>
-            {tiles.map(t => (
-              <div key={t.id} onClick={() => handleClick(t.id)} style={{
-                width: 44, cursor: "pointer", borderRadius: 6, overflow: "hidden",
-                border: `2px solid ${value === t.id ? C.accentBright : C.border}`,
-                background: value === t.id ? C.accentDim : "transparent",
-              }}>
-                <div style={{ fontSize: 8, textAlign: "center", color: value === t.id ? C.accent : C.muted, paddingTop: 2, fontFamily: "monospace" }}>#{t.id}</div>
-                <img src={t.src} alt="" style={{ width: "100%", height: 36, objectFit: "contain", imageRendering: "pixelated" }} />
+          <input
+            type="text" placeholder="filter…" value={filter} onChange={e => setFilter(e.target.value)}
+            style={{ width: "100%", boxSizing: "border-box", marginBottom: 4, background: "rgba(0,0,0,0.25)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "'Inter', sans-serif", fontSize: 10, padding: "3px 6px", outline: "none" }}
+          />
+          <div ref={listRef} style={{ overflowY: "auto", maxHeight: 160, background: "rgba(0,0,0,0.2)", borderRadius: 7, padding: 6 }}>
+            {filtered.length === 0 && q ? (
+              <div style={{ fontSize: 11, color: C.muted, textAlign: "center", padding: "12px 0" }}>No matching tiles found</div>
+            ) : (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(52px, 1fr))", gap: 5 }}>
+                {filtered.map(t => (
+                  <div key={t.id} onClick={() => handleClick(t.id)} style={{
+                    cursor: "pointer", borderRadius: 6, overflow: "hidden",
+                    border: `2px solid ${value === t.id ? C.accentBright : C.border}`,
+                    background: value === t.id ? C.accentDim : "transparent",
+                  }}>
+                    <div style={{ fontSize: 8, textAlign: "center", color: value === t.id ? C.accent : C.muted, paddingTop: 2, fontFamily: "monospace" }}>#{t.id}</div>
+                    <img src={t.src} alt="" style={{ width: "100%", height: 36, objectFit: "contain", imageRendering: "pixelated" }} />
+                  </div>
+                ))}
               </div>
-            ))}
+            )}
           </div>
         </div>
       );
@@ -1385,13 +1441,8 @@ function App() {
               setPainting(false);
             }}
             onMouseLeave={e => {
-              if (isDraggingRef.current) {
-                setDragTargetCell(null);
-                // Dragged outside canvas → discard; write tile-removed state as undo entry
-                setGrid(g => g);
-                setDragTile(null); dragTileRef.current = null; isDraggingRef.current = false;
-                return;
-              }
+              // Drag continues globally via document mousemove/mouseup — do not cancel here.
+              if (isDraggingRef.current) return;
               // ── BLINK RESTORE: mouse left canvas during single-click blink ─────────────
               if (blinkRef.current) {
                 const { r, c, id } = blinkRef.current;
@@ -1552,7 +1603,7 @@ function App() {
           <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 8, padding: "3px 14px" }}>
             <button style={btn(true, C.danger, "rgba(248,113,113,0.18)")}
               onClick={() => { if (confirm("Clear the whole grid?")) setGrid(Array.from({ length: GRID_H }, () => Array(GRID_W).fill(null))); }}>
-              Clear
+              Clear Map
             </button>
             <input type="text" value={mapName} onChange={e => setMapName(e.target.value)}
               placeholder="map name…"
