@@ -36,11 +36,11 @@
     ::-webkit-scrollbar-thumb { background: rgba(251,146,60,0.4); border-radius: 2px; }
     * { -webkit-tap-highlight-color: transparent; }
 
-    /* Modal backdrop — must sit above the folder floating panel (z-index 2000) */
+    /* Modal backdrop — must sit above priority tiles (z-index 9999) and folder panel (2000) */
     .modal-backdrop {
       position: fixed; inset: 0; background: rgba(0,0,0,0.72);
       display: flex; align-items: center; justify-content: center;
-      z-index: 3000; padding: 20px;
+      z-index: 10000; padding: 20px;
     }
     .modal-box {
       background: #2b1a0a; border: 1px solid rgba(251,146,60,0.18);
@@ -65,6 +65,11 @@ const snapTo10 = z => Math.round(z * 20) / 20;
 const SK = { tiles: "oph_tiles", grid: "oph_grid", colors: "oph_colors", userTiles: "oph_user_tiles", multipliers: "oph_multipliers", priority: "oph_priority" };
 const ACCEPTED = "image/png,image/jpeg,image/gif,image/webp,image/svg+xml,image/bmp";
 const MAX_HISTORY = 60;
+// Non-overlapping tile ID ranges — prevents collisions between sections regardless of reordering
+const TILESET_ID_START = 1;   // 001–099: active tileset tiles (Mausoleum wall1=1, etc.)
+const USER_ID_START    = 100; // 100–199: user-uploaded tiles
+const USER_ID_MAX      = 199;
+const GLOBAL_ID_START  = 200; // 200–299: global tiles (water, spawns, objectives, etc.)
 
 // Default tiles are loaded dynamically from Resources/manifest.json.
 // To add/remove tiles, update that JSON file (or run generate-manifest.sh).
@@ -190,8 +195,8 @@ function App() {
 
   const fileRef   = useRef();
   const scrollRef = useRef();
-  // nextId is safe to start from user tiles max; updated after manifest loads
-  const nextId    = useRef(userTiles.length ? Math.max(...userTiles.map(t => t.id)) + 1 : 1);
+  // nextId is for user-uploaded tiles only (range 100–199)
+  const nextId    = useRef(userTiles.length ? Math.max(USER_ID_START, Math.min(USER_ID_MAX, Math.max(...userTiles.map(t => t.id)) + 1)) : USER_ID_START);
 
   // Stable refs for touch/paint handlers
   const selRef      = useRef(sel);
@@ -211,6 +216,9 @@ function App() {
   const dragTileRef       = useRef(null);     // mirrors dragTile for event-handler closures
   const isDraggingRef     = useRef(false);    // true while a tile is being drag-moved
   const setGridStableRef  = useRef(null);     // always-current setGrid for touch handler closures
+  // Desktop double-click-and-hold drag detection
+  const dblClickRef       = useRef(null);     // { r, c, time, id } of last mousedown on occupied cell
+  const blinkRef          = useRef(null);     // { r, c, id } tile briefly removed for single-click blink
   const gridRef           = useRef(null);     // up-to-date grid for touch-handler closure
   const getMirrorRef      = useRef(null);     // always-current getMirrorPositions for touch handler
 
@@ -267,41 +275,21 @@ function App() {
   }, [openFolderKey]);
 
   // Build the flat defaultTiles list and the ordered panel entries from manifest + activeTileset.
-  // Returns: objectiveEntries, tilesetEntries, globalEntries, flatDefaultTiles, tilesetTileCount
-  const { objectiveEntries, tilesetEntries, globalEntries, flatDefaultTiles, tilesetTileCount } = useMemo(() => {
-    if (!manifest) return { objectiveEntries: [], tilesetEntries: [], globalEntries: [], flatDefaultTiles: [], tilesetTileCount: 0 };
+  // IDs are assigned in panel display order: tileset tiles first (wall1=ID#1), global tiles after.
+  // Returns: tilesetEntries, globalEntries, flatDefaultTiles, tilesetTileCount
+  const { tilesetEntries, globalEntries, flatDefaultTiles, tilesetTileCount } = useMemo(() => {
+    if (!manifest) return { tilesetEntries: [], globalEntries: [], flatDefaultTiles: [], tilesetTileCount: 0 };
     const flatTiles = [];
-    let idCounter = 1;
-    const makeTile = (src) => ({ id: idCounter++, src: `Resources/${src}`, isDefault: true });
+    // Tileset tiles start at TILESET_ID_START (1); global tiles start at GLOBAL_ID_START (200)
+    let idCounter = TILESET_ID_START;
+    const makeTile = src => ({ id: idCounter++, src: `Resources/${src}`, isDefault: true });
     // Derive a human-readable display label from the folder path (e.g. "Global/Special Tiles/" → "Special Tiles")
     const displayLabel = (key, folderPath) => {
       if (folderPath) { const s = folderPath.replace(/\/$/, '').split('/').pop(); if (s) return s; }
       return key;
     };
 
-    // ── Global: split objectives vs rest ──────────────────────────
-    const gDef = manifest.global;
-    const objEntries = [];
-    const glbEntries = [];
-    if (gDef) {
-      for (const key of (gDef.order ?? [])) {
-        const files = gDef.folders?.[key];
-        if (!files || files.length === 0) continue;
-        const folderPath = gDef.folderPaths?.[key] ?? `Global/${key}/`;
-        const label = displayLabel(key, folderPath);
-        const folderTiles = files.map(fn => {
-          const t = makeTile(`${folderPath}${fn}`);
-          t.folderKey = `global_${key}`; t.folderLabel = label;
-          return t;
-        });
-        flatTiles.push(...folderTiles);
-        const entry = { type: 'folder', key: `global_${key}`, label, tiles: folderTiles };
-        if (/objectives/i.test(key)) objEntries.push(entry);
-        else glbEntries.push(entry);
-      }
-    }
-
-    // ── Active tileset tiles ───────────────────────────────────────
+    // ── Active tileset tiles FIRST — these get IDs starting at TILESET_ID_START (1) ──
     const tsDef = manifest.tilesets?.find(ts => ts.name === activeTileset) ?? manifest.tilesets?.[0];
     const tsEntries = [];
     let tsCount = 0;
@@ -327,21 +315,40 @@ function App() {
       }
     }
 
-    return { objectiveEntries: objEntries, tilesetEntries: tsEntries, globalEntries: glbEntries, flatDefaultTiles: flatTiles, tilesetTileCount: tsCount };
+    // ── Global tiles (including objectives) — IDs start at GLOBAL_ID_START (200) ──
+    idCounter = GLOBAL_ID_START; // jump to 200 regardless of how many tileset tiles there were
+    const gDef = manifest.global;
+    const glbEntries = [];
+    if (gDef) {
+      for (const key of (gDef.order ?? [])) {
+        const files = gDef.folders?.[key];
+        if (!files || files.length === 0) continue;
+        const folderPath = gDef.folderPaths?.[key] ?? `Global/${key}/`;
+        const label = displayLabel(key, folderPath);
+        const folderTiles = files.map(fn => {
+          const t = makeTile(`${folderPath}${fn}`);
+          t.folderKey = `global_${key}`; t.folderLabel = label;
+          return t;
+        });
+        flatTiles.push(...folderTiles);
+        glbEntries.push({ type: 'folder', key: `global_${key}`, label, tiles: folderTiles });
+      }
+    }
+
+    return { tilesetEntries: tsEntries, globalEntries: glbEntries, flatDefaultTiles: flatTiles, tilesetTileCount: tsCount };
   }, [manifest, activeTileset]);
 
-  // Sync defaultTiles and nextId whenever flatDefaultTiles changes
-  // Also auto-flag any tile whose filename contains "hotzone" as priority
+  // Sync defaultTiles and nextId whenever flatDefaultTiles changes.
+  // Auto-flag any tile whose src path contains "/objectives/" as priority (case-insensitive).
   useEffect(() => {
     setDefaultTiles(flatDefaultTiles);
     if (flatDefaultTiles.length > 0) {
-      nextId.current = Math.max(nextId.current, flatDefaultTiles.length + 1);
       setSel(prev => prev ?? flatDefaultTiles[0].id);
       setPriorityTiles(prev => {
         const next = { ...prev };
         let changed = false;
         flatDefaultTiles.forEach(t => {
-          if (/hotzone/i.test(t.src.split('/').pop() ?? '') && !next[t.id]) {
+          if (/\/objectives\//i.test(t.src) && !next[t.id]) {
             next[t.id] = true; changed = true;
           }
         });
@@ -425,6 +432,7 @@ function App() {
     imageFiles.forEach(f => {
       const r = new FileReader();
       r.onload = e => {
+        if (nextId.current > USER_ID_MAX) { console.warn("User tile limit reached (IDs 100–199)"); return; }
         const id = nextId.current++;
         setUserTiles(prev => [...prev, { id, src: e.target.result }]);
         loaded++;
@@ -542,18 +550,41 @@ function App() {
       const existingId = grid[r]?.[c];
 
       if (existingId && !eraserRef.current) {
-        // ── IMMEDIATE PICK-UP: remove tile from cell, start drag ──
-        // History is written once at drop/discard time (mouseup), not here.
-        setGridRaw(prev => { const g = prev.map(row => [...row]); g[r][c] = null; return g; });
-        setDragTile(existingId);
-        dragTileRef.current = existingId;
-        isDraggingRef.current = true;
-        setDragPos({ x: e.clientX, y: e.clientY });
-        setDragTargetCell(null);
+        // ── OCCUPIED CELL (non-eraser): blink or drag ────────────────────────────
+        // Double-click-and-hold detection:
+        // • First click  → blink (tile removed; restored on mouseup)
+        // • Second mousedown within 300ms on SAME cell → start drag
+        const now = Date.now();
+        const prev = dblClickRef.current;
+        if (prev && prev.r === r && prev.c === c && (now - prev.time) < 300) {
+          // ── DOUBLE-CLICK-AND-HOLD: initiate drag ─────────────────────────────
+          // Cancel any pending blink (tile may already be removed from first click)
+          blinkRef.current = null;
+          dblClickRef.current = null;
+          // Use id from prev record in case React hasn't propagated restore yet
+          const dragId = existingId ?? prev.id;
+          // Remove tile + all mirror counterparts at origin
+          const mirrorPositions = getMirrorPositions(r, c);
+          setGridRaw(prevGrid => {
+            const g = prevGrid.map(row => [...row]);
+            mirrorPositions.forEach(([pr, pc]) => { g[pr][pc] = null; });
+            return g;
+          });
+          setDragTile(dragId);
+          dragTileRef.current = dragId;
+          isDraggingRef.current = true;
+          setDragPos({ x: e.clientX, y: e.clientY });
+          setDragTargetCell(null);
+        } else {
+          // ── FIRST CLICK: blink (tile briefly removed, restored on mouseup) ────
+          dblClickRef.current = { r, c, time: now, id: existingId };
+          blinkRef.current = { r, c, id: existingId };
+          setGridRaw(prev => { const g = prev.map(row => [...row]); g[r][c] = null; return g; });
+        }
         return; // do NOT enter painting mode
       }
 
-      // ── NORMAL PAINT: only on empty cells (eraser always allowed) ──
+      // ── NORMAL PAINT: empty cells (or eraser on any cell) ───────────────────
       setPainting(true);
       selectionStartRef.current = [r, c];
       selectionEndRef.current   = [r, c];
@@ -691,11 +722,17 @@ function App() {
       e.preventDefault();
       const [r, c] = cell;
 
-      // ── IMMEDIATE PICK-UP: occupied cell, no eraser → remove tile, start drag ──
+      // ── IMMEDIATE PICK-UP: occupied cell, no eraser → remove tile + mirror counterparts, start drag ──
       // History written once at touchend (drop/discard), not here.
       const existingId = gridRef.current?.[r]?.[c];
       if (existingId && !eraserRef.current) {
-        setGridRaw(prev => { const g = prev.map(row => [...row]); g[r][c] = null; return g; });
+        // Remove the dragged tile AND all its mirrored counterparts from the grid
+        const pickupPositions = getMirrorRef.current ? getMirrorRef.current(r, c) : [[r, c]];
+        setGridRaw(prev => {
+          const g = prev.map(row => [...row]);
+          pickupPositions.forEach(([pr, pc]) => { g[pr][pc] = null; });
+          return g;
+        });
         setDragTile(existingId);
         dragTileRef.current = existingId;
         isDraggingRef.current = true;
@@ -1057,8 +1094,8 @@ function App() {
 
       {/* ── Folder panel — floating modal anchored near card (Task 4) ── */}
       {openFolderKey && (() => {
-        // Search all three entry lists for the open folder key
-        const allEntries = [...objectiveEntries, ...tilesetEntries, ...globalEntries];
+        // Search tileset + global entry lists for the open folder key
+        const allEntries = [...tilesetEntries, ...globalEntries];
         const entry = allEntries.find(e => e.type === 'folder' && e.key === openFolderKey);
         if (!entry) return null;
         const cardSz = isMobile ? 46 : 56;
@@ -1219,10 +1256,11 @@ function App() {
                             <div key={`e${i}`} style={{ background: "#1a0f06" }} />
                           ))}
                         </div>
-                        {/* Chevron — full white, no opacity reduction */}
+                        {/* Chevron — full white, large and tappable */}
                         <div style={{ position: "absolute", inset: 0, zIndex: 3, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
-                          <span style={{ fontSize: 13, lineHeight: 1, color: C.text,
-                            display: "inline-block", transform: isThisOpen ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.15s" }}>▼</span>
+                          <span style={{ fontSize: 22, lineHeight: 1, color: C.text,
+                            display: "inline-block", transform: isThisOpen ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.15s",
+                            filter: "drop-shadow(0 1px 3px rgba(0,0,0,0.9))" }}>▼</span>
                         </div>
                       </div>
                     );
@@ -1245,9 +1283,7 @@ function App() {
                   {tilesLoading ? (
                     <p style={{ fontSize: 12, color: C.muted, alignSelf: "center" }}>Loading…</p>
                   ) : (<>
-                    {/* 2. Objective tiles (global objectives folder) */}
-                    {objectiveEntries.map(renderEntry)}
-                    {/* 3. Active tileset tiles */}
+                    {/* 2. Active tileset tiles */}
                     {tilesetEntries.map(renderEntry)}
                     {/* 4. User-uploaded tiles */}
                     {userTiles.map(t => {
@@ -1338,6 +1374,13 @@ function App() {
                 setDragTile(null); dragTileRef.current = null; isDraggingRef.current = false;
                 return;
               }
+              // ── BLINK RESTORE: single click on occupied cell → restore tile ────────────
+              if (blinkRef.current) {
+                const { r, c, id } = blinkRef.current;
+                blinkRef.current = null;
+                setGridRaw(prev => { const g = prev.map(row => [...row]); g[r][c] = id; return g; });
+                return;
+              }
               if (painting && commitOnUpRef.current) commitOnUpRef.current();
               setPainting(false);
             }}
@@ -1349,12 +1392,18 @@ function App() {
                 setDragTile(null); dragTileRef.current = null; isDraggingRef.current = false;
                 return;
               }
+              // ── BLINK RESTORE: mouse left canvas during single-click blink ─────────────
+              if (blinkRef.current) {
+                const { r, c, id } = blinkRef.current;
+                blinkRef.current = null;
+                setGridRaw(prev => { const g = prev.map(row => [...row]); g[r][c] = id; return g; });
+              }
               if (painting && commitOnUpRef.current) commitOnUpRef.current();
               setPainting(false);
             }}
           >
             <div style={{ padding: 60, display: "flex", alignItems: "flex-start", justifyContent: "flex-start", minWidth: "min-content", minHeight: "min-content" }}>
-              <div style={{ position: "relative", width: gW, height: (GRID_H + 2) * CELL * zoom, flexShrink: 0, margin: "0 auto" }}>
+              <div style={{ position: "relative", width: gW, height: (GRID_H + 2) * CELL * zoom, flexShrink: 0, margin: "0 auto", isolation: "isolate" }}>
 
                 {/* Checkerboard */}
                 {Array.from({ length: GRID_H }).map((_, r) =>
