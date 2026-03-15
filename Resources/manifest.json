@@ -9,7 +9,7 @@
         "crate": "Mausoleum/MSLM-crate.png",
         "barrel": "Mausoleum/MSLM-barrel.png",
         "cactus": "Mausoleum/MSLM-cactus.png",
-        "bush": "Mausoleum/MSLM-bush.png"
+        "bush": "Mausoleum/MSLM-bush.png",
         "breakable": "Mausoleum/MSLM-break.png"
       },
       "folders": {
