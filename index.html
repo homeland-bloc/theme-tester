@@ -2182,11 +2182,13 @@ function App() {
             <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minWidth: "100%", minHeight: "100%", padding: 60, boxSizing: "border-box" }}>
               <div ref={canvasContainerRef} style={{ position: "relative", width: gW, height: (gridH + 2) * CELL * zoom, flexShrink: 0, isolation: "isolate" }}>
 
-                {/* Checkerboard */}
+                {/* Checkerboard — single CSS-gradient element, no inter-cell boundaries at fractional zoom */}
+                <div style={{ position: "absolute", left: 0, top: CELL * zoom, width: gridW * CELL * zoom, height: gridH * CELL * zoom, backgroundColor: bg1, backgroundImage: `linear-gradient(45deg,${bg2} 25%,transparent 25%),linear-gradient(-45deg,${bg2} 25%,transparent 25%),linear-gradient(45deg,transparent 75%,${bg2} 75%),linear-gradient(-45deg,transparent 75%,${bg2} 75%)`, backgroundSize: `${2*CELL*zoom}px ${2*CELL*zoom}px`, backgroundPosition: `0 0,0 ${CELL*zoom}px,${CELL*zoom}px ${-CELL*zoom}px,${-CELL*zoom}px 0`, pointerEvents: "none" }} />
+                {/* Per-cell hit targets; space tiles mask the checkerboard with the canvas background */}
                 {Array.from({ length: gridH }).map((_, r) =>
                   Array.from({ length: gridW }).map((__, c) => (
                     <div key={`${r}-${c}`}
-                      style={{ position: "absolute", left: c * CELL * zoom, top: (r + 1) * CELL * zoom, width: CELL * zoom, height: CELL * zoom, background: grid[r]?.[c] === SPACE_TILE_ID ? "transparent" : ((r + c) % 2 === 0 ? bg1 : bg2) }}
+                      style={{ position: "absolute", left: c * CELL * zoom, top: (r + 1) * CELL * zoom, width: CELL * zoom, height: CELL * zoom, background: grid[r]?.[c] === SPACE_TILE_ID ? C.bg : "transparent" }}
                       onMouseDown={e => onCell(r, c, e)}
                       onMouseMove={e => onCell(r, c, e)}
                     />
@@ -2353,7 +2355,7 @@ function App() {
             <span onClick={() => applyZoom(calcFitZoom(gridW, gridH))}
               style={{ minWidth: 52, textAlign: "center", display: "inline-block", fontSize: 13, fontFamily: "monospace", fontWeight: 700, color: C.text, background: "rgba(180,40,40,0.10)", borderRadius: 7, padding: "3px 6px", border: `1px solid ${C.border}`, cursor: "pointer", userSelect: "none" }}
               title="Click to reset zoom to fit">
-              {Math.round((zoom / calcFitZoom(gridW, gridH)) * 100)}%
+              {Math.round(zoom / ZOOM_STEP) * 10}%
             </span>
             <button style={{ ...btn(false), padding: "4px 9px", fontSize: 15, fontWeight: 700, lineHeight: 1 }} onClick={() => changeZoom(ZOOM_STEP)}>+</button>
           </div>
