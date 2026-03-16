@@ -15,7 +15,7 @@
       "folders": {
         "fence": ["MSLM-fence.png", "MSLM-fenceHORIZONTAL.png", "MSLM-fenceVERTICAL.png"],
         "rope": ["MSLM-post1.png", "MSLM-post2.png", "MSLM-post3.png", "MSLM-post4.png"],
-        "water": ["MSLM-water.png", "MSLM-waterBEND.png", "MSLM-waterCORNER.png", "MSLM-waterLINE.png"]
+        "water": ["MSLM-waterBEND.png", "MSLM-waterCORNER.png", "MSLM-waterLINE.png", "MSLM-water.png"]
       },
       "folderPaths": {
         "fence": "Mausoleum/Fence/",
