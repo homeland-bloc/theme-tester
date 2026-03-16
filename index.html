@@ -441,12 +441,10 @@ function App() {
     const hasMult  = mult !== 1.0;
     const hasOff   = off.ox !== 0 || off.oy !== 0;
     const isPrio   = !!priorityTiles[t.id];
-    const isRot    = isTileRotatable(t);
-    if (!hasMult && !hasOff && !isPrio && !isRot) return null;
+    if (!hasMult && !hasOff && !isPrio) return null;
     const parts = [];
     if (hasMult) parts.push(`${mult}×`);
     if (isPrio)  parts.push("🚨");
-    if (isRot)   parts.push("🐬");
     if (hasOff)  parts.push("📐");
     return (
       <span style={{ position: "absolute", bottom: 2, left: 3, fontSize: 8, fontWeight: 700, color: C.accentBright, background: "rgba(0,0,0,0.65)", borderRadius: 3, padding: "1px 3px", lineHeight: 1.3, pointerEvents: "none" }}>
@@ -704,7 +702,7 @@ function App() {
   const paintCells = useCallback((r, c) => {
     const meta   = getMirrorMeta(r, c);
     const tileId = eraser ? null : (sel ?? null);
-    const rot    = tileId ? (cardRotationsRef.current[tileId] ?? 0) : 0;
+    const rot    = tileId ? ((cardRotationsRef.current[tileId] ?? 0) / 90 % 4) : 0;
     const ms     = mirrorSettingsRef.current;
     setGrid(prev => {
       const g = prev.map(row => [...row]);
@@ -746,7 +744,7 @@ function App() {
     if (!cells.length) return;
     const tileId   = selRef.current;
     const isEraser = eraserRef.current;
-    const rot      = tileId ? (cardRotationsRef.current[tileId] ?? 0) : 0;
+    const rot      = tileId ? ((cardRotationsRef.current[tileId] ?? 0) / 90 % 4) : 0;
     const ms       = mirrorSettingsRef.current;
     const placedMeta = [];
     setGrid(prev => {
@@ -1725,13 +1723,13 @@ function App() {
                   const failed = failedTiles.has(t.id);
                   const isStarredF = starredTiles.includes(t.id);
                   const rotatable = isTileRotatable(t);
-                  const rotStep = cardRotations[t.id] ?? 0;
+                  const rotDeg = cardRotations[t.id] ?? 0;
                   return (
                     <div key={t.id}
                       onClick={() => {
                         if (failed) { setFailedWarning(true); return; }
                         if (rotatable && sel === t.id && !eraser) {
-                          setCardRotations(prev => ({ ...prev, [t.id]: ((prev[t.id] ?? 0) + 1) % 4 }));
+                          setCardRotations(prev => ({ ...prev, [t.id]: (prev[t.id] ?? 0) + 90 }));
                         }
                         setSel(t.id); setEraser(false); setHandMode(false);
                       }}
@@ -1741,11 +1739,11 @@ function App() {
                         position: "relative", opacity: failed ? 0.55 : 1, overflow: "visible" }}>
                       <div style={{ position: "absolute", inset: 0, borderRadius: 6, overflow: "hidden", background: C.panelDeep, display: "flex", alignItems: "center", justifyContent: "center" }}>
                         {failed ? <span style={{ fontSize: 18 }}>⚠️</span>
-                          : <img src={t.src} alt="" onError={() => markFailed(t.id)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated", transform: `rotate(${rotStep * 90}deg)`, transition: "transform 0.15s" }} />}
+                          : <img src={t.src} alt="" onError={() => markFailed(t.id)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated", transform: `rotate(${rotDeg}deg)`, transition: "transform 0.15s" }} />}
                       </div>
                       {rotatable && (
                         <div style={{ position: "absolute", inset: 0, zIndex: 4, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
-                          <span style={{ fontSize: 14, lineHeight: 1, color: active ? "rgba(255,255,255,0.95)" : "rgba(255,255,255,0.55)", display: "inline-block", transform: `rotate(${[180,270,0,90][rotStep]}deg)`, transition: "transform 0.15s", filter: "drop-shadow(0 1px 3px rgba(0,0,0,0.9))" }}>▼</span>
+                          <span style={{ fontSize: 17, lineHeight: 1, display: "inline-block", filter: "drop-shadow(0 1px 3px rgba(0,0,0,0.9))" }}>🐬</span>
                         </div>
                       )}
                       <span onClick={ev => { ev.stopPropagation(); setInfoTile(t.id); }}
@@ -1831,18 +1829,16 @@ function App() {
                   const cardSz  = isMobile ? 56 : 64;
                   const cardGap = 5;
 
-                  // rotStep→degrees: 0=up(180°), 1=right(270°), 2=down(0°), 3=left(90°)
-                  const ROT_DEG = [180, 270, 0, 90];
-                  const RotChevron = ({ rotStep, active }) => (
+                  const RotChevron = () => (
                     <div style={{ position: "absolute", inset: 0, zIndex: 4, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
-                      <span style={{ fontSize: 14, lineHeight: 1, color: active ? "rgba(255,255,255,0.95)" : "rgba(255,255,255,0.55)", display: "inline-block", transform: `rotate(${ROT_DEG[rotStep]}deg)`, transition: "transform 0.15s", filter: "drop-shadow(0 1px 3px rgba(0,0,0,0.9))" }}>▼</span>
+                      <span style={{ fontSize: 17, lineHeight: 1, display: "inline-block", filter: "drop-shadow(0 1px 3px rgba(0,0,0,0.9))" }}>🐬</span>
                     </div>
                   );
                   const renderFlatCard = t => {
                     const active    = sel === t.id && !eraser;
                     const failed    = failedTiles.has(t.id);
                     const rotatable = isTileRotatable(t);
-                    const rotStep   = cardRotations[t.id] ?? 0;
+                    const rotDeg    = cardRotations[t.id] ?? 0;
                     const isStarred = starredTiles.includes(t.id);
                     return (
                       <div key={t.id}
@@ -1850,7 +1846,7 @@ function App() {
                           if (failed) { setFailedWarning(true); return; }
                           if (rotatable && sel === t.id && !eraser) {
                             // Already selected rotatable tile: rotate 90° clockwise
-                            setCardRotations(prev => ({ ...prev, [t.id]: ((prev[t.id] ?? 0) + 1) % 4 }));
+                            setCardRotations(prev => ({ ...prev, [t.id]: (prev[t.id] ?? 0) + 90 }));
                           }
                           setSel(t.id); setEraser(false); setHandMode(false);
                         }}
@@ -1858,9 +1854,9 @@ function App() {
                         {/* Inner clipped area for image */}
                         <div style={{ position: "absolute", inset: 0, borderRadius: 6, overflow: "hidden", background: C.panelDeep, display: "flex", alignItems: "center", justifyContent: "center" }}>
                           {failed ? <span style={{ fontSize: 20 }}>⚠️</span>
-                            : <img src={t.src} alt="" onError={() => markFailed(t.id)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated", transform: `rotate(${rotStep * 90}deg)`, transition: "transform 0.15s" }} />}
+                            : <img src={t.src} alt="" onError={() => markFailed(t.id)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated", transform: `rotate(${rotDeg}deg)`, transition: "transform 0.15s" }} />}
                         </div>
-                        {rotatable && <RotChevron rotStep={rotStep} active={active} />}
+                        {rotatable && <RotChevron />}
                         {/* Info button: yellow if starred, white otherwise — top-right corner */}
                         <span onClick={e => { e.stopPropagation(); setInfoTile(t.id); }}
                           style={{ position: "absolute", top: -7, right: -7, width: 15, height: 15, fontSize: 13, cursor: "pointer", color: isStarred ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "15px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
@@ -2049,15 +2045,15 @@ function App() {
                 const st = getTile(selKey);
                 if (!st || !st.src) return null;
                 const isRot = isTileRotatable(st);
-                const rotStep = cardRotations[selKey] ?? 0;
+                const rotDeg = cardRotations[selKey] ?? 0;
                 return (
-                  <div onClick={() => { if (isRot) setCardRotations(prev => ({ ...prev, [selKey]: ((prev[selKey] ?? 0) + 1) % 4 })); }}
+                  <div onClick={() => { if (isRot) setCardRotations(prev => ({ ...prev, [selKey]: (prev[selKey] ?? 0) + 90 })); }}
                     style={{ width: 32, height: 32, borderRadius: 6, cursor: isRot ? "pointer" : "default", overflow: "hidden", position: "relative", border: `1px solid ${C.accentBright}`, background: C.accentDim }}
                     title={isRot ? `${st.label || "Tile"} — click to rotate` : (st.label || "Tile (selected)")}>
-                    <img src={st.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", transform: `rotate(${rotStep * 90}deg)`, transition: "transform 0.15s" }} />
+                    <img src={st.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", transform: `rotate(${rotDeg}deg)`, transition: "transform 0.15s" }} />
                     {isRot && (
                       <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
-                        <span style={{ fontSize: 11, lineHeight: 1, color: "rgba(255,255,255,0.85)", display: "inline-block", transform: `rotate(${[180,270,0,90][rotStep]}deg)`, transition: "transform 0.15s", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.9))" }}>▼</span>
+                        <span style={{ fontSize: 13, lineHeight: 1, display: "inline-block", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.9))" }}>🐬</span>
                       </div>
                     )}
                   </div>
@@ -2103,22 +2099,22 @@ function App() {
                   if (!st || !st.src) return null;
                   const active = sel === sid && !eraser;
                   const isRot = isTileRotatable(st);
-                  const rotStep = cardRotations[sid] ?? 0;
+                  const rotDeg = cardRotations[sid] ?? 0;
                   return (
                     <div key={sid}
                       onClick={() => {
                         if (isRot && sel === sid && !eraser) {
-                          setCardRotations(prev => ({ ...prev, [sid]: ((prev[sid] ?? 0) + 1) % 4 }));
+                          setCardRotations(prev => ({ ...prev, [sid]: (prev[sid] ?? 0) + 90 }));
                         }
                         setSel(sid); setEraser(false); setHandMode(false);
                       }}
                       style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", overflow: "hidden", position: "relative",
                         border: `1px solid ${active ? C.accentBright : C.border}`, background: active ? C.accentDim : C.panelDeep }}
                       title={isRot ? `${st.label || `Tile ${sid}`} — click to rotate` : (st.label || `Tile ${sid}`)}>
-                      <img src={st.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", transform: `rotate(${rotStep * 90}deg)`, transition: "transform 0.15s" }} />
+                      <img src={st.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", transform: `rotate(${rotDeg}deg)`, transition: "transform 0.15s" }} />
                       {isRot && (
                         <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
-                          <span style={{ fontSize: 11, lineHeight: 1, color: active ? "rgba(255,255,255,0.9)" : "rgba(255,255,255,0.55)", display: "inline-block", transform: `rotate(${[180,270,0,90][rotStep]}deg)`, transition: "transform 0.15s", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.9))" }}>▼</span>
+                          <span style={{ fontSize: 13, lineHeight: 1, display: "inline-block", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.9))" }}>🐬</span>
                         </div>
                       )}
                     </div>
