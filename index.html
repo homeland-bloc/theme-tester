@@ -88,9 +88,9 @@ const deriveCodename = src => {
     "MSLM-cactus": "Cactus", "MSLM-bush": "Bush", "MSLM-break": "Breakable",
     "MSLM-fence": "Fence1", "MSLM-fenceHORIZONTAL": "Fence2", "MSLM-fenceVERTICAL": "Fence3",
     "MSLM-post1": "Rope1", "MSLM-post2": "Rope2", "MSLM-post3": "Rope3", "MSLM-post4": "Rope4",
-    "MSLM-water": "Water1", "MSLM-waterBEND": "Water2", "MSLM-waterCORNER": "Water3", "MSLM-waterLINE": "Water4",
+    "MSLM-water": "WaterFill", "MSLM-waterBEND": "WaterBend", "MSLM-waterCORNER": "WaterCorner", "MSLM-waterLINE": "WaterLine",
     // Global water
-    "00001011": "GWater1", "01111111": "GWater2", "01101011": "GWater3", "11111111": "GWater4",
+    "00001011": "GWaterBend", "01111111": "GWaterCorner", "01101011": "GWaterLine", "11111111": "GWaterFill",
     // Global special
     "Unbreakable": "Unbreakable", "HealPad": "HealPad", "SlowTile": "SlowTile",
     "Smoke": "Smoke", "SpeedTile": "SpeedTile", "Spikes": "Spike",
@@ -99,7 +99,7 @@ const deriveCodename = src => {
     // Objectives
     "Bounty": "Bounty", "Gem_Grab": "GGObjective", "Heist": "Heist", "Hot_Zone": "HZObjective",
     // Teleporters
-    "Blue": "BlueTeleporter", "Green": "GreenTeleporter", "Red": "RedTeleporter", "Yellow": "YellowTeleporter",
+    "Blue": "BlueTeleport", "Green": "GreenTeleport", "Red": "RedTeleport", "Yellow": "YellowTeleport",
     // Jumppads
     "B": "BottomJumppad", "BL": "BottomLeftJumppad", "BR": "BottomRightJumppad",
     "L": "LeftJumppad", "R": "RightJumppad", "T": "TopJumppad",
@@ -225,6 +225,7 @@ function App() {
   // Bottom section: extra rows collapsed by default on mobile
   const [bottomOpen,  setBottomOpen] = useState(!mobile);
   const [infoTile,    setInfoTile]  = useState(null);
+  const [infoTool,    setInfoTool]  = useState(null); // "erase" | "hand" | "space"
   // Starred tiles: up to 5, shown when tiles panel is collapsed
   // Special IDs: "erase" and "hand"; regular tiles use numeric ID
   const [starredTiles, setStarredTiles] = useState(() => load("oph_starred", ["erase", "hand", 1, 6]));
@@ -286,6 +287,7 @@ function App() {
   const dragRotationRef    = useRef(0); // rotation of tile currently being dragged
   const cardRotationsRef   = useRef({});
   const mirrorSettingsRef  = useRef({ mirrorSpawns: true, mirrorRotation: true, allowSwap: false });
+  const canvasContainerRef = useRef(null); // ref to the relative canvas container for accurate coordinate calc
 
   // Stable refs for touch/paint handlers
   const selRef      = useRef(sel);
@@ -793,13 +795,14 @@ function App() {
 
   // Convert screen (clientX, clientY) → grid [r, c], or null if outside the grid area
   const cellFromEvent = (clientX, clientY) => {
-    const el = scrollRef.current;
-    if (!el) return null;
-    const rect = el.getBoundingClientRect();
-    const x = clientX - rect.left + el.scrollLeft - 60; // 60 = CSS padding
-    const y = clientY - rect.top  + el.scrollTop  - 60 - CELL * zoomRef.current; // subtract top-row offset
-    const c = Math.floor(x / (CELL * zoomRef.current));
-    const r = Math.floor(y / (CELL * zoomRef.current));
+    const container = canvasContainerRef.current;
+    if (!container) return null;
+    const rect = container.getBoundingClientRect();
+    const z = zoomRef.current;
+    const x = clientX - rect.left;
+    const y = clientY - rect.top - CELL * z; // subtract 1-row top border offset
+    const c = Math.floor(x / (CELL * z));
+    const r = Math.floor(y / (CELL * z));
     return r >= 0 && r < gridH && c >= 0 && c < gridW ? [r, c] : null;
   };
 
@@ -1319,13 +1322,13 @@ function App() {
     };
     const stepOx = delta => {
       const cur = parseFloat(oxInput) || 0;
-      const next = Math.round((cur + delta) * 10) / 10;
+      const next = Math.round((cur + delta) * 100) / 100;
       setOxInput(String(next));
       commitOffset(next, parseFloat(oyInput) || 0);
     };
     const stepOy = delta => {
       const cur = parseFloat(oyInput) || 0;
-      const next = Math.round((cur + delta) * 10) / 10;
+      const next = Math.round((cur + delta) * 100) / 100;
       setOyInput(String(next));
       commitOffset(parseFloat(oxInput) || 0, next);
     };
@@ -1389,21 +1392,21 @@ function App() {
           {/* H/V offsets */}
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>H offset (%)</span>
-            <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepOx(-5)}>−</button>
+            <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepOx(-0.05)}>−</button>
             <input type="number" value={oxInput} onChange={e => setOxInput(e.target.value)}
               onBlur={() => commitOffset()} onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
               style={{ width: 62, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none", textAlign: "center" }} />
-            <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepOx(+5)}>+</button>
+            <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepOx(+0.05)}>+</button>
             <button style={{ ...btn(false), fontSize: 10, padding: "3px 7px", marginLeft: "auto" }}
               onClick={() => { setOxInput(String(defaultOff.ox)); setTileOffsets(prev => { const n = {...prev}; const o = {...(prev[t.id] ?? {}), ox: defaultOff.ox}; n[t.id] = o; return n; }); }}>Reset</button>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>V offset (%)</span>
-            <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepOy(-5)}>−</button>
+            <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepOy(-0.05)}>−</button>
             <input type="number" value={oyInput} onChange={e => setOyInput(e.target.value)}
               onBlur={() => commitOffset()} onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
               style={{ width: 62, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none", textAlign: "center" }} />
-            <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepOy(+5)}>+</button>
+            <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepOy(+0.05)}>+</button>
             <button style={{ ...btn(false), fontSize: 10, padding: "3px 7px", marginLeft: "auto" }}
               onClick={() => { setOyInput(String(defaultOff.oy)); setTileOffsets(prev => { const n = {...prev}; const o = {...(prev[t.id] ?? {}), oy: defaultOff.oy}; n[t.id] = o; return n; }); }}>Reset</button>
           </div>
@@ -1570,6 +1573,41 @@ function App() {
     );
   };
 
+  // ── Tool info modal (Erase / Hand / Space) ───────────────────────
+  const ToolInfoModal = () => {
+    if (!infoTool) return null;
+    const toolDefs = {
+      erase: { label: "Erase", icon: "✕", color: C.danger, desc: "Removes tiles from cells. Click or drag across cells to erase.", iconColor: C.danger },
+      hand:  { label: "Hand", icon: "✋", color: C.accent, desc: "Drag to pan the map canvas. On mobile, swipe to scroll.", iconColor: C.accent },
+      space: { label: "Space", icon: "🛸", color: C.accentBright, desc: "Places an invisible space tile, making the cell fully transparent in the exported map.", iconColor: null },
+    };
+    const def = toolDefs[infoTool];
+    if (!def) return null;
+    // Space uses numeric SPACE_TILE_ID for starring; erase/hand use string keys
+    const toolId = infoTool === "space" ? SPACE_TILE_ID : infoTool;
+    const isStarredTool = starredTiles.includes(toolId);
+    return (
+      <div className="modal-backdrop" onClick={() => setInfoTool(null)}>
+        <div className="modal-box" onClick={e => e.stopPropagation()}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>{def.label}</span>
+            <button onClick={() => setInfoTool(null)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
+          </div>
+          <div style={{ background: "#1a0f06", borderRadius: 8, padding: 20, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 80 }}>
+            <span style={{ fontSize: 36, color: def.iconColor ?? undefined }}>{def.icon}</span>
+          </div>
+          <p style={{ fontSize: 12, color: C.muted, lineHeight: 1.6 }}>{def.desc}</p>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
+            <input type="checkbox" checked={isStarredTool}
+              onChange={() => toggleStar(toolId)}
+              style={{ width: 14, height: 14, accentColor: C.accent, cursor: "pointer" }} />
+            <span style={{ fontSize: 11, color: C.text }}>Starred shortcut ⭐{!isStarredTool && starredTiles.length >= 10 ? <span style={{ color: C.muted, marginLeft: 6 }}>(max 10 reached)</span> : null}</span>
+          </label>
+        </div>
+      </div>
+    );
+  };
+
   // ─────────────────────────────────────────────────────────────────
   // Grid size in pixels (at current zoom)
   const gW = gridW * CELL * zoom;
@@ -1587,6 +1625,7 @@ function App() {
       <InfoModal />
       <ReplaceModal />
       <FailedTileModal />
+      <ToolInfoModal />
 
       {/* Map size confirmation dialog */}
       {pendingSize && (() => {
@@ -1701,9 +1740,11 @@ function App() {
         <img src="favicon/favicon-32x32.png" alt="Ophelia" style={{ width: 28, height: 28, flexShrink: 0, imageRendering: "auto" }} />
         <span style={{ fontFamily: "'Lilita One', cursive", fontWeight: 400, fontSize: isMobile ? 15 : 18, letterSpacing: 0.4, whiteSpace: "nowrap",
           background: uiTheme === "cold"
-            ? "linear-gradient(90deg,#38bdf8,#a78bfa,#34d399,#7dd3fc)"
-            : "linear-gradient(90deg,#c45c6a,#fbbf24)",
-          WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", flexShrink: 0 }}>
+            ? "linear-gradient(90deg,#a78bfa,#38bdf8,#34d399)"
+            : "linear-gradient(90deg,#c45c6a,#fb923c,#fbbf24)",
+          backgroundClip: "text", WebkitBackgroundClip: "text",
+          color: "transparent", WebkitTextFillColor: "transparent",
+          flexShrink: 0, display: "inline-block" }}>
           Ophelia — Custom Theme Tester
         </span>
       </div>
@@ -1753,28 +1794,33 @@ function App() {
                     const failed    = failedTiles.has(t.id);
                     const rotatable = isTileRotatable(t);
                     const rotStep   = cardRotations[t.id] ?? 0;
+                    const isStarred = starredTiles.includes(t.id);
                     return (
                       <div key={t.id}
-                        onClick={() => { if (failed) { setFailedWarning(true); return; } setSel(t.id); setEraser(false); setHandMode(false); }}
-                        style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: failed ? "not-allowed" : "pointer", border: `2px solid ${failed ? C.danger : active ? C.accentBright : C.border}`, background: failed ? "rgba(248,113,113,0.08)" : active ? C.accentDim : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", overflow: "hidden", opacity: failed ? 0.55 : 1, position: "relative" }}>
-                        <div style={{ width: "100%", height: "100%", background: "#1a0f06", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                        onClick={() => {
+                          if (failed) { setFailedWarning(true); return; }
+                          if (rotatable && sel === t.id && !eraser) {
+                            // Already selected rotatable tile: rotate 90° clockwise
+                            setCardRotations(prev => ({ ...prev, [t.id]: ((prev[t.id] ?? 0) + 1) % 4 }));
+                          }
+                          setSel(t.id); setEraser(false); setHandMode(false);
+                        }}
+                        style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: failed ? "not-allowed" : "pointer", border: `2px solid ${failed ? C.danger : active ? C.accentBright : C.border}`, background: failed ? "rgba(248,113,113,0.08)" : active ? C.accentDim : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", opacity: failed ? 0.55 : 1, position: "relative", overflow: "visible" }}>
+                        {/* Inner clipped area for image */}
+                        <div style={{ position: "absolute", inset: 0, borderRadius: 6, overflow: "hidden", background: "#1a0f06", display: "flex", alignItems: "center", justifyContent: "center" }}>
                           {failed ? <span style={{ fontSize: 20 }}>⚠️</span>
                             : <img src={t.src} alt="" onError={() => markFailed(t.id)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated", transform: `rotate(${rotStep * 90}deg)`, transition: "transform 0.15s" }} />}
                         </div>
                         {rotatable && (
-                          <span onClick={e => { e.stopPropagation(); setCardRotations(prev => ({ ...prev, [t.id]: ((prev[t.id] ?? 0) + 1) % 4 })); setSel(t.id); setEraser(false); setHandMode(false); }}
-                            style={{ position: "absolute", bottom: 1, left: 1, zIndex: 4, cursor: "pointer", fontSize: 11, color: "rgba(255,255,255,0.9)", filter: "drop-shadow(0 1px 3px rgba(0,0,0,0.9))", lineHeight: 1, padding: "1px 2px", background: "rgba(0,0,0,0.45)", borderRadius: 3 }}
-                            title="Click to rotate 90°">
+                          <span style={{ position: "absolute", bottom: 2, left: 2, zIndex: 4, pointerEvents: "none", fontSize: 10, color: active ? "rgba(255,255,255,1)" : "rgba(255,255,255,0.65)", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.9))", lineHeight: 1 }}
+                            title="Current rotation direction">
                             {ROT_ARROWS[rotStep]}
                           </span>
                         )}
-                        {starredTiles.includes(t.id) && (
-                          <span style={{ position: "absolute", top: -8, left: -8, width: 16, height: 16, fontSize: 14, cursor: "pointer", color: "#fbbf24", lineHeight: "16px", textAlign: "center", zIndex: 5, background: "rgba(0,0,0,0.65)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
-                            onClick={e => { e.stopPropagation(); setInfoTile(t.id); }} title="Starred — click for info">ⓘ</span>
-                        )}
+                        {/* Info button: yellow if starred, white otherwise — top-right corner */}
                         <span onClick={e => { e.stopPropagation(); setInfoTile(t.id); }}
-                          style={{ position: "absolute", top: -8, right: -8, width: 16, height: 16, fontSize: 14, cursor: "pointer", color: "rgba(255,255,255,0.9)", lineHeight: "16px", textAlign: "center", zIndex: 4, background: "rgba(0,0,0,0.65)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
-                          title="Tile info">ⓘ</span>
+                          style={{ position: "absolute", top: -7, right: -7, width: 15, height: 15, fontSize: 13, cursor: "pointer", color: isStarred ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "15px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
+                          title={isStarred ? "Starred tile — click for info" : "Tile info"}>ⓘ</span>
                         <TileBadge t={t} />
                       </div>
                     );
@@ -1821,25 +1867,45 @@ function App() {
                   return (
                   <div style={{ display: "flex", flexWrap: "wrap", gap: cardGap }}>
                   {/* 1. Eraser */}
-                  <div onClick={() => { setEraser(true); setSel(null); setHandMode(false); }}
-                    style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${eraser ? C.danger : C.border}`, background: eraser ? "rgba(248,113,113,0.14)" : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", overflow: "hidden" }}>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: eraser ? "rgba(248,113,113,0.32)" : "rgba(248,113,113,0.14)", padding: "2px 4px" }}>
-                      <span style={{ fontSize: 9, fontWeight: 700, color: eraser ? C.danger : "rgba(248,113,113,0.7)" }}>Erase</span>
-                    </div>
-                    <div style={{ height: cardSz - 18, background: "#1a0f06", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                      <span style={{ fontSize: 20, color: eraser ? C.danger : "rgba(248,113,113,0.5)", lineHeight: 1 }}>✕</span>
-                    </div>
-                  </div>
+                  {(() => {
+                    const isStarredErase = starredTiles.includes("erase");
+                    return (
+                      <div onClick={() => { setEraser(true); setSel(null); setHandMode(false); }}
+                        style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${eraser ? C.danger : C.border}`, background: eraser ? "rgba(248,113,113,0.14)" : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
+                        <div style={{ borderRadius: 6, overflow: "hidden" }}>
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: eraser ? "rgba(248,113,113,0.32)" : "rgba(248,113,113,0.14)", padding: "2px 4px" }}>
+                            <span style={{ fontSize: 9, fontWeight: 700, color: eraser ? C.danger : "rgba(248,113,113,0.7)" }}>Erase</span>
+                          </div>
+                          <div style={{ height: cardSz - 18, background: "#1a0f06", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                            <span style={{ fontSize: 20, color: eraser ? C.danger : "rgba(248,113,113,0.5)", lineHeight: 1 }}>✕</span>
+                          </div>
+                        </div>
+                        <span onClick={e => { e.stopPropagation(); setInfoTool("erase"); }}
+                          style={{ position: "absolute", top: -7, right: -7, width: 15, height: 15, fontSize: 13, cursor: "pointer", color: isStarredErase ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "15px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
+                          title="Erase info">ⓘ</span>
+                      </div>
+                    );
+                  })()}
                   {/* 1b. Hand (pan) */}
-                  <div onClick={() => { setHandMode(h => !h); setEraser(false); setSel(null); }}
-                    style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${handMode ? C.accent : C.border}`, background: handMode ? C.accentDim : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", overflow: "hidden" }}>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: handMode ? "rgba(251,146,60,0.22)" : "rgba(251,146,60,0.08)", padding: "2px 4px" }}>
-                      <span style={{ fontSize: 9, fontWeight: 700, color: handMode ? C.accent : C.muted }}>Hand</span>
-                    </div>
-                    <div style={{ height: cardSz - 18, background: "#1a0f06", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                      <span style={{ fontSize: 20, color: handMode ? C.accent : C.muted, lineHeight: 1 }}>✋</span>
-                    </div>
-                  </div>
+                  {(() => {
+                    const isStarredHand = starredTiles.includes("hand");
+                    return (
+                      <div onClick={() => { setHandMode(h => !h); setEraser(false); setSel(null); }}
+                        style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${handMode ? C.accent : C.border}`, background: handMode ? C.accentDim : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
+                        <div style={{ borderRadius: 6, overflow: "hidden" }}>
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: handMode ? "rgba(251,146,60,0.22)" : "rgba(251,146,60,0.08)", padding: "2px 4px" }}>
+                            <span style={{ fontSize: 9, fontWeight: 700, color: handMode ? C.accent : C.muted }}>Hand</span>
+                          </div>
+                          <div style={{ height: cardSz - 18, background: "#1a0f06", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                            <span style={{ fontSize: 20, color: handMode ? C.accent : C.muted, lineHeight: 1 }}>✋</span>
+                          </div>
+                        </div>
+                        <span onClick={e => { e.stopPropagation(); setInfoTool("hand"); }}
+                          style={{ position: "absolute", top: -7, right: -7, width: 15, height: 15, fontSize: 13, cursor: "pointer", color: isStarredHand ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "15px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
+                          title="Hand info">ⓘ</span>
+                      </div>
+                    );
+                  })()}
                   {tilesLoading ? (
                     <p style={{ fontSize: 12, color: C.muted, alignSelf: "center" }}>Loading…</p>
                   ) : (<>
@@ -1849,21 +1915,18 @@ function App() {
                     {userTiles.map(t => {
                       const active = sel === t.id && !eraser;
                       const failed = failedTiles.has(t.id);
+                      const isStarredU = starredTiles.includes(t.id);
                       return (
                         <div key={t.id}
                           onClick={() => { if (failed) { setFailedWarning(true); return; } setSel(t.id); setEraser(false); setHandMode(false); }}
-                          style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: failed ? "not-allowed" : "pointer", border: `2px solid ${failed ? C.danger : active ? C.accentBright : C.border}`, background: failed ? "rgba(248,113,113,0.08)" : active ? C.accentDim : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", overflow: "hidden", opacity: failed ? 0.55 : 1, position: "relative" }}>
-                          <div style={{ width: "100%", height: "100%", background: "#1a0f06", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                            {failed ? <span style={{ fontSize: 20, color: C.danger }}>✕</span>
+                          style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: failed ? "not-allowed" : "pointer", border: `2px solid ${failed ? C.danger : active ? C.accentBright : C.border}`, background: failed ? "rgba(248,113,113,0.08)" : active ? C.accentDim : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", opacity: failed ? 0.55 : 1, position: "relative", overflow: "visible" }}>
+                          <div style={{ position: "absolute", inset: 0, borderRadius: 6, overflow: "hidden", background: "#1a0f06", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                            {failed ? <span style={{ fontSize: 20 }}>⚠️</span>
                               : <img src={t.src} alt="" onError={() => markFailed(t.id)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated" }} />}
                           </div>
-                          {starredTiles.includes(t.id) && (
-                            <span style={{ position: "absolute", top: -8, left: -8, width: 16, height: 16, fontSize: 14, cursor: "pointer", color: "#fbbf24", lineHeight: "16px", textAlign: "center", zIndex: 5, background: "rgba(0,0,0,0.65)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
-                            onClick={e => { e.stopPropagation(); setInfoTile(t.id); }} title="Starred — click for info">ⓘ</span>
-                          )}
                           <span onClick={e => { e.stopPropagation(); setInfoTile(t.id); }}
-                            style={{ position: "absolute", top: -8, right: -8, width: 16, height: 16, fontSize: 14, cursor: "pointer", color: "rgba(255,255,255,0.9)", lineHeight: "16px", textAlign: "center", zIndex: 4, background: "rgba(0,0,0,0.65)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
-                            title="Tile info">ⓘ</span>
+                            style={{ position: "absolute", top: -7, right: -7, width: 15, height: 15, fontSize: 13, cursor: "pointer", color: isStarredU ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "15px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
+                            title={isStarredU ? "Starred tile — click for info" : "Tile info"}>ⓘ</span>
                           <TileBadge t={t} />
                         </div>
                       );
@@ -1883,19 +1946,30 @@ function App() {
                     </>)}
                     {/* 7. Space tile (🛸) */}
                     <div style={{ width: "100%", flexBasis: "100%", height: 1, background: C.border, margin: "3px 0", flexShrink: 0 }} />
-                    <div onClick={() => { setSel(SPACE_TILE_ID); setEraser(false); setHandMode(false); }}
-                      style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer",
-                        border: `2px solid ${sel === SPACE_TILE_ID && !eraser ? C.accentBright : C.border}`,
-                        background: sel === SPACE_TILE_ID && !eraser ? C.accentDim : "rgba(255,255,255,0.03)",
-                        transition: "border 0.12s, background 0.12s", overflow: "hidden" }}
-                      title="Space — makes cell transparent">
-                      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: sel === SPACE_TILE_ID && !eraser ? "rgba(125,211,252,0.22)" : "rgba(125,211,252,0.08)", padding: "2px 4px" }}>
-                        <span style={{ fontSize: 9, fontWeight: 700, color: sel === SPACE_TILE_ID && !eraser ? C.accentBright : C.muted }}>Space</span>
-                      </div>
-                      <div style={{ height: cardSz - 18, background: "#1a0f06", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                        <span style={{ fontSize: 20, lineHeight: 1 }}>🛸</span>
-                      </div>
-                    </div>
+                    {(() => {
+                      const isStarredSpace = starredTiles.includes(SPACE_TILE_ID);
+                      const spaceActive = sel === SPACE_TILE_ID && !eraser;
+                      return (
+                        <div onClick={() => { setSel(SPACE_TILE_ID); setEraser(false); setHandMode(false); }}
+                          style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer",
+                            border: `2px solid ${spaceActive ? C.accentBright : C.border}`,
+                            background: spaceActive ? C.accentDim : "rgba(255,255,255,0.03)",
+                            transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}
+                          title="Space — makes cell transparent">
+                          <div style={{ borderRadius: 6, overflow: "hidden" }}>
+                            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: spaceActive ? "rgba(125,211,252,0.22)" : "rgba(125,211,252,0.08)", padding: "2px 4px" }}>
+                              <span style={{ fontSize: 9, fontWeight: 700, color: spaceActive ? C.accentBright : C.muted }}>Space</span>
+                            </div>
+                            <div style={{ height: cardSz - 18, background: "#1a0f06", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                              <span style={{ fontSize: 20, lineHeight: 1 }}>🛸</span>
+                            </div>
+                          </div>
+                          <span onClick={e => { e.stopPropagation(); setInfoTool("space"); }}
+                            style={{ position: "absolute", top: -7, right: -7, width: 15, height: 15, fontSize: 13, cursor: "pointer", color: isStarredSpace ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "15px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
+                            title="Space info">ⓘ</span>
+                        </div>
+                      );
+                    })()}
                   </>)}
                   </div>
                   );
@@ -1964,6 +2038,26 @@ function App() {
           <div ref={scrollRef}
             style={{ flex: 1, minWidth: 0, height: "100%", overflow: "auto", background: "#1a0f06", cursor: handMode ? "grab" : (dragTile ? "grabbing" : "crosshair") }}
             onWheel={onWheel}
+            onMouseDown={e => {
+              if (!handModeRef.current || isDraggingRef.current) return;
+              // PC hand-mode: drag to pan
+              const el = scrollRef.current;
+              const startX = e.clientX, startY = e.clientY;
+              const startScrollLeft = el.scrollLeft, startScrollTop = el.scrollTop;
+              el.style.cursor = "grabbing";
+              const onMove = ev => {
+                el.scrollLeft = startScrollLeft - (ev.clientX - startX);
+                el.scrollTop  = startScrollTop  - (ev.clientY - startY);
+              };
+              const onUp = () => {
+                el.style.cursor = "";
+                document.removeEventListener('mousemove', onMove);
+                document.removeEventListener('mouseup',   onUp);
+              };
+              document.addEventListener('mousemove', onMove);
+              document.addEventListener('mouseup',   onUp);
+              e.preventDefault();
+            }}
             onMouseMove={e => {
               // Active drag: update ghost + target cell highlight
               if (isDraggingRef.current) {
@@ -1987,8 +2081,8 @@ function App() {
               paintingRef.current = false;
             }}
           >
-            <div style={{ padding: 60, display: "flex", alignItems: "flex-start", justifyContent: "flex-start", minWidth: "min-content", minHeight: "min-content" }}>
-              <div style={{ position: "relative", width: gW, height: (gridH + 2) * CELL * zoom, flexShrink: 0, isolation: "isolate" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minWidth: "100%", minHeight: "100%", padding: 60, boxSizing: "border-box" }}>
+              <div ref={canvasContainerRef} style={{ position: "relative", width: gW, height: (gridH + 2) * CELL * zoom, flexShrink: 0, isolation: "isolate" }}>
 
                 {/* Checkerboard */}
                 {Array.from({ length: gridH }).map((_, r) =>
