@@ -427,7 +427,7 @@ function App() {
   };
 
   // Water tiles have rotation on by default
-  const isDefaultRotatable = t => !!(t?.src && t.src.includes("Global/Water/"));
+  const isDefaultRotatable = t => !!(t?.src && (t.src.includes("Global/Water/") || t.src.includes("Mausoleum/Water/")));
 
   const isTileRotatable = t => {
     if (rotatableMap[t.id] !== undefined) return rotatableMap[t.id];
@@ -1743,7 +1743,7 @@ function App() {
                       </div>
                       {rotatable && (
                         <div style={{ position: "absolute", inset: 0, zIndex: 4, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
-                          <span style={{ fontSize: 17, lineHeight: 1, display: "inline-block", filter: "drop-shadow(0 1px 3px rgba(0,0,0,0.9))" }}>🐬</span>
+                          <span style={{ fontSize: 17, lineHeight: 1, display: "inline-block", transform: `rotate(${rotDeg}deg)`, transition: "transform 0.15s", filter: "drop-shadow(0 1px 3px rgba(0,0,0,0.9))" }}>🐬</span>
                         </div>
                       )}
                       <span onClick={ev => { ev.stopPropagation(); setInfoTile(t.id); }}
@@ -1829,9 +1829,9 @@ function App() {
                   const cardSz  = isMobile ? 56 : 64;
                   const cardGap = 5;
 
-                  const RotChevron = () => (
+                  const RotChevron = ({ rotDeg }) => (
                     <div style={{ position: "absolute", inset: 0, zIndex: 4, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
-                      <span style={{ fontSize: 17, lineHeight: 1, display: "inline-block", filter: "drop-shadow(0 1px 3px rgba(0,0,0,0.9))" }}>🐬</span>
+                      <span style={{ fontSize: 17, lineHeight: 1, display: "inline-block", transform: `rotate(${rotDeg}deg)`, transition: "transform 0.15s", filter: "drop-shadow(0 1px 3px rgba(0,0,0,0.9))" }}>🐬</span>
                     </div>
                   );
                   const renderFlatCard = t => {
@@ -1856,7 +1856,7 @@ function App() {
                           {failed ? <span style={{ fontSize: 20 }}>⚠️</span>
                             : <img src={t.src} alt="" onError={() => markFailed(t.id)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated", transform: `rotate(${rotDeg}deg)`, transition: "transform 0.15s" }} />}
                         </div>
-                        {rotatable && <RotChevron />}
+                        {rotatable && <RotChevron rotDeg={rotDeg} />}
                         {/* Info button: yellow if starred, white otherwise — top-right corner */}
                         <span onClick={e => { e.stopPropagation(); setInfoTile(t.id); }}
                           style={{ position: "absolute", top: -7, right: -7, width: 15, height: 15, fontSize: 13, cursor: "pointer", color: isStarred ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "15px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
@@ -2053,7 +2053,7 @@ function App() {
                     <img src={st.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", transform: `rotate(${rotDeg}deg)`, transition: "transform 0.15s" }} />
                     {isRot && (
                       <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
-                        <span style={{ fontSize: 13, lineHeight: 1, display: "inline-block", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.9))" }}>🐬</span>
+                        <span style={{ fontSize: 13, lineHeight: 1, display: "inline-block", transform: `rotate(${rotDeg}deg)`, transition: "transform 0.15s", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.9))" }}>🐬</span>
                       </div>
                     )}
                   </div>
@@ -2114,7 +2114,7 @@ function App() {
                       <img src={st.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", transform: `rotate(${rotDeg}deg)`, transition: "transform 0.15s" }} />
                       {isRot && (
                         <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
-                          <span style={{ fontSize: 13, lineHeight: 1, display: "inline-block", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.9))" }}>🐬</span>
+                          <span style={{ fontSize: 13, lineHeight: 1, display: "inline-block", transform: `rotate(${rotDeg}deg)`, transition: "transform 0.15s", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.9))" }}>🐬</span>
                         </div>
                       )}
                     </div>
