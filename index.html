@@ -37,6 +37,9 @@
     ::-webkit-scrollbar-thumb:hover { background: rgba(251,146,60,0.8); }
     * { -webkit-tap-highlight-color: transparent; }
 
+    /* Title gradient — overridden by oph-dyn-style on theme change */
+    .oph-title-text { background: linear-gradient(90deg,#c45c6a,#fb923c,#fbbf24); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; color: transparent; }
+
     /* Modal backdrop — must sit above priority tiles (z-index 9999) and folder panel (2000) */
     .modal-backdrop {
       position: fixed; inset: 0; background: rgba(0,0,0,0.72);
@@ -245,7 +248,7 @@ function App() {
   const [replaceA,    setReplaceA]  = useState(null);
   const [replaceB,    setReplaceB]  = useState(null);
   // Map name for export filename
-  const [mapName, setMapName] = useState("");
+  const [mapName, setMapName] = useState(() => load("oph_map_name", ""));
   // Pending map size change awaiting confirmation
   const [pendingSize, setPendingSize] = useState(null); // { w, h }
   // Tile size multipliers
@@ -345,13 +348,18 @@ function App() {
     const modalBorder = isC ? "rgba(56,189,248,0.22)" : "rgba(251,146,60,0.18)";
     let dynStyle = document.getElementById("oph-dyn-style");
     if (!dynStyle) { dynStyle = document.createElement("style"); dynStyle.id = "oph-dyn-style"; document.head.appendChild(dynStyle); }
+    const titleGrad = isC
+      ? "linear-gradient(90deg,#a78bfa,#38bdf8,#34d399)"
+      : "linear-gradient(90deg,#c45c6a,#fb923c,#fbbf24)";
     dynStyle.textContent = `
       ::-webkit-scrollbar-thumb { background: ${scrollColor} !important; border-color: ${scrollBorder} !important; }
       ::-webkit-scrollbar-thumb:hover { background: ${scrollColorHover} !important; }
       .modal-box { background: ${modalBg} !important; border-color: ${modalBorder} !important; }
+      .oph-title-text { background: ${titleGrad} !important; -webkit-background-clip: text !important; background-clip: text !important; -webkit-text-fill-color: transparent !important; color: transparent !important; }
     `;
   }, [uiTheme]);
   useEffect(() => { save("oph_starred", starredTiles); }, [starredTiles]);
+  useEffect(() => { save("oph_map_name", mapName); }, [mapName]);
   useEffect(() => { save(SK.gridW, gridW); setSizeWInput(String(gridW)); }, [gridW]);
   useEffect(() => { save(SK.gridH, gridH); setSizeHInput(String(gridH)); }, [gridH]);
 
@@ -1224,15 +1232,22 @@ function App() {
       ctx.fillRect(c * CELL, r * CELL + padding, CELL, CELL);
     }
     const draws = [];
+    const spaceCells = []; // cells that should be cleared to transparent
     grid.forEach((row, r) => row.forEach((id, c) => {
       const t = id && getTile(id);
-      if (t && !t.isSpace) draws.push({ id: t.id, src: t.src, r, c, mult: getTileMultiplier(t), off: getTileOffset(t), rotDeg: (gridRotations[`${r},${c}`] ?? 0) * 90 });
+      if (!t) return;
+      if (t.isSpace) { spaceCells.push({ r, c }); return; }
+      draws.push({ id: t.id, src: t.src, r, c, mult: getTileMultiplier(t), off: getTileOffset(t), rotDeg: (gridRotations[`${r},${c}`] ?? 0) * 90 });
     }));
     const filename = (mapName.trim() || "ophelia-map") + ".png";
-    const finish = () => cv.toBlob(b => {
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(b); a.download = filename; a.click();
-    });
+    const finish = () => {
+      // Clear space tile cells last so they are fully transparent in the output
+      spaceCells.forEach(({ r, c }) => ctx.clearRect(c * CELL, r * CELL + padding, CELL, CELL));
+      cv.toBlob(b => {
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(b); a.download = filename; a.click();
+      });
+    };
     if (!draws.length) { finish(); return; }
     // Sort so priority tiles are drawn last → always on top in the exported image
     draws.sort((a, b) => (priorityTiles[a.id] ? 1 : 0) - (priorityTiles[b.id] ? 1 : 0));
@@ -1416,14 +1431,14 @@ function App() {
             <input type="checkbox" checked={isTileRotatable(t)}
               onChange={ev => setRotatableMap(prev => ({ ...prev, [t.id]: ev.target.checked }))}
               style={{ width: 14, height: 14, accentColor: C.accent, cursor: "pointer" }} />
-            <span style={{ fontSize: 11, color: C.text }}>Allow rotation</span>
+            <span style={{ fontSize: 11, color: C.text }}>Allow rotation 🔄</span>
           </label>
           {/* Always render on top */}
           <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
             <input type="checkbox" checked={isPriority}
               onChange={ev => setPriorityTiles(prev => { const n = { ...prev }; if (ev.target.checked) n[t.id] = true; else delete n[t.id]; return n; })}
               style={{ width: 14, height: 14, accentColor: C.accent, cursor: "pointer" }} />
-            <span style={{ fontSize: 11, color: C.text }}>Always render on top</span>
+            <span style={{ fontSize: 11, color: C.text }}>Always render on top 🚨</span>
           </label>
           {/* Starred shortcut */}
           <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
@@ -1689,19 +1704,21 @@ function App() {
                 {entry.tiles.map(t => {
                   const active = sel === t.id && !eraser;
                   const failed = failedTiles.has(t.id);
+                  const isStarredF = starredTiles.includes(t.id);
                   return (
                     <div key={t.id}
                       onClick={() => { if (failed) { setFailedWarning(true); return; } setSel(t.id); setEraser(false); setHandMode(false); }}
                       style={{ width: cardSz, height: cardSz, borderRadius: 8, cursor: failed ? "not-allowed" : "pointer",
                         border: `2px solid ${failed ? C.danger : active ? C.accentBright : C.border}`,
-                        background: active ? C.accentDim : "#1a0f06", overflow: "hidden",
-                        display: "flex", alignItems: "center", justifyContent: "center",
-                        position: "relative", opacity: failed ? 0.55 : 1 }}>
-                      {failed ? <span style={{ fontSize: 18 }}>⚠️</span>
-                        : <img src={t.src} alt="" onError={() => markFailed(t.id)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated" }} />}
+                        background: active ? C.accentDim : "transparent",
+                        position: "relative", opacity: failed ? 0.55 : 1, overflow: "visible" }}>
+                      <div style={{ position: "absolute", inset: 0, borderRadius: 6, overflow: "hidden", background: "#1a0f06", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                        {failed ? <span style={{ fontSize: 18 }}>⚠️</span>
+                          : <img src={t.src} alt="" onError={() => markFailed(t.id)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated" }} />}
+                      </div>
                       <span onClick={ev => { ev.stopPropagation(); setInfoTile(t.id); }}
-                        style={{ position: "absolute", top: -8, right: -8, width: 16, height: 16, fontSize: 14, cursor: "pointer", color: "rgba(255,255,255,0.9)", lineHeight: "16px", textAlign: "center", zIndex: 4, background: "rgba(0,0,0,0.65)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
-                        title="Tile info">ⓘ</span>
+                        style={{ position: "absolute", top: -7, right: -7, width: 15, height: 15, fontSize: 13, cursor: "pointer", color: isStarredF ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "15px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
+                        title={isStarredF ? "Starred tile — click for info" : "Tile info"}>ⓘ</span>
                       <TileBadge t={t} />
                     </div>
                   );
@@ -1738,13 +1755,7 @@ function App() {
       {/* ══ TOP BAR ══════════════════════════════════════════════════ */}
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 14px", height: 50, flexShrink: 0, background: C.panel, borderBottom: `1px solid ${C.border}` }}>
         <img src="favicon/favicon-32x32.png" alt="Ophelia" style={{ width: 28, height: 28, flexShrink: 0, imageRendering: "auto" }} />
-        <span style={{ fontFamily: "'Lilita One', cursive", fontWeight: 400, fontSize: isMobile ? 15 : 18, letterSpacing: 0.4, whiteSpace: "nowrap",
-          background: uiTheme === "cold"
-            ? "linear-gradient(90deg,#a78bfa,#38bdf8,#34d399)"
-            : "linear-gradient(90deg,#c45c6a,#fb923c,#fbbf24)",
-          backgroundClip: "text", WebkitBackgroundClip: "text",
-          color: "transparent", WebkitTextFillColor: "transparent",
-          flexShrink: 0, display: "inline-block" }}>
+        <span className="oph-title-text" style={{ fontFamily: "'Lilita One', cursive", fontWeight: 400, fontSize: isMobile ? 15 : 18, letterSpacing: 0.4, whiteSpace: "nowrap", flexShrink: 0, display: "inline-block" }}>
           Ophelia — Custom Theme Tester
         </span>
       </div>
@@ -2036,7 +2047,7 @@ function App() {
 
         {/* ── CANVAS ───────────────────────────────────────────────── */}
           <div ref={scrollRef}
-            style={{ flex: 1, minWidth: 0, height: "100%", overflow: "auto", background: "#1a0f06", cursor: handMode ? "grab" : (dragTile ? "grabbing" : "crosshair") }}
+            style={{ flex: 1, minWidth: 0, height: "100%", overflow: "auto", background: C.bg, cursor: handMode ? "grab" : (dragTile ? "grabbing" : "crosshair") }}
             onWheel={onWheel}
             onMouseDown={e => {
               if (!handModeRef.current || isDraggingRef.current) return;
