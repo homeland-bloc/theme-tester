@@ -37,6 +37,17 @@
     ::-webkit-scrollbar-thumb:hover { background: rgba(251,146,60,0.8); }
     * { -webkit-tap-highlight-color: transparent; }
 
+    /* Checkered transparent background for tile image previews in modals */
+    .tile-preview-bg {
+      background-color: #555;
+      background-image: linear-gradient(45deg, #888 25%, transparent 25%),
+                        linear-gradient(-45deg, #888 25%, transparent 25%),
+                        linear-gradient(45deg, transparent 75%, #888 75%),
+                        linear-gradient(-45deg, transparent 75%, #888 75%);
+      background-size: 16px 16px;
+      background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+    }
+
     /* Title gradient — overridden by oph-dyn-style on theme change */
     .oph-title-text { background: linear-gradient(90deg,#c45c6a,#fb923c,#fbbf24); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; color: transparent; }
 
@@ -100,7 +111,7 @@ const deriveCodename = src => {
     // Spawns
     "1": "SpawnRed", "2": "SpawnBlue",
     // Objectives
-    "Bounty": "Bounty", "Gem_Grab": "GGObjective", "Heist": "Heist", "Hot_Zone": "HZObjective",
+    "Bounty": "BountyGObjective", "Gem_Grab": "GGObjective", "Heist": "HeistObjective", "Hot_Zone": "HZObjective",
     // Teleporters
     "Blue": "BlueTeleport", "Green": "GreenTeleport", "Red": "RedTeleport", "Yellow": "YellowTeleport",
     // Jumppads
@@ -682,8 +693,8 @@ function App() {
   // fV = flip left-right (horizontal axis flip), fH = flip top-bottom, fD = 180° rotation
   const applyRotMirror = (rot, fV, fH, fD) => {
     let r = rot;
-    if (fV) { if (r === 1) r = 3; else if (r === 3) r = 1; }       // ←→ swap
-    if (fH) { if (r === 0) r = 2; else if (r === 2) r = 0; }       // ↑↓ swap
+    if (fV) { if (r === 0) r = 2; else if (r === 2) r = 0; }       // ↑↓ swap (vertical mirror)
+    if (fH) { if (r === 1) r = 3; else if (r === 3) r = 1; }       // ←→ swap (horizontal mirror)
     if (fD) { r = (r + 2) % 4; }                                    // 180°
     return r;
   };
@@ -1002,11 +1013,14 @@ function App() {
     if (!el) return;
     // Converts a Touch to grid [r, c], or null if outside the grid
     const cellAt = touch => {
-      const rect = el.getBoundingClientRect();
-      const x = touch.clientX - rect.left + el.scrollLeft - 60; // 60 = CSS padding
-      const y = touch.clientY - rect.top  + el.scrollTop  - 60 - CELL * zoomRef.current;
-      const c = Math.floor(x / (CELL * zoomRef.current));
-      const r = Math.floor(y / (CELL * zoomRef.current));
+      const container = canvasContainerRef.current;
+      if (!container) return null;
+      const rect = container.getBoundingClientRect();
+      const z = zoomRef.current;
+      const x = touch.clientX - rect.left;
+      const y = touch.clientY - rect.top - CELL * z; // subtract 1-row top border offset
+      const c = Math.floor(x / (CELL * z));
+      const r = Math.floor(y / (CELL * z));
       return r >= 0 && r < gridHRef.current && c >= 0 && c < gridWRef.current ? [r, c] : null;
     };
     let isTouchPainting = false;
@@ -1365,7 +1379,7 @@ function App() {
             <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Tile info</span>
             <button onClick={() => setInfoTile(null)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
           </div>
-          <div style={{ background: "#1a0f06", borderRadius: 8, padding: 12, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 120 }}>
+          <div className="tile-preview-bg" style={{ borderRadius: 8, padding: 12, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 120 }}>
             <img src={t.src} alt="" style={{ maxWidth: "100%", maxHeight: 180, objectFit: "contain", imageRendering: "pixelated" }} />
           </div>
 
@@ -1392,7 +1406,7 @@ function App() {
 
           {/* Size multiplier */}
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Size multiplier</span>
+            <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Size multiplier (%)</span>
             <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepMult(-0.05)}>−</button>
             <input type="number" value={multInput} step="0.05"
               onChange={e => setMultInput(e.target.value)}
@@ -1404,9 +1418,10 @@ function App() {
               onClick={() => { setTileMultipliers(prev => { const n = {...prev}; delete n[t.id]; return n; }); setMultInput(String(defaultMult)); }}>Reset</button>
           </div>
 
-          {/* H/V offsets */}
+          {/* Offsets */}
+          <span style={{ fontSize: 11, color: C.muted, fontWeight: 600 }}>Offsets (%) 📐</span>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>H offset (%)</span>
+            <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Horizontal</span>
             <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepOx(-0.05)}>−</button>
             <input type="number" value={oxInput} onChange={e => setOxInput(e.target.value)}
               onBlur={() => commitOffset()} onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
@@ -1416,7 +1431,7 @@ function App() {
               onClick={() => { setOxInput(String(defaultOff.ox)); setTileOffsets(prev => { const n = {...prev}; const o = {...(prev[t.id] ?? {}), ox: defaultOff.ox}; n[t.id] = o; return n; }); }}>Reset</button>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>V offset (%)</span>
+            <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Vertical</span>
             <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepOy(-0.05)}>−</button>
             <input type="number" value={oyInput} onChange={e => setOyInput(e.target.value)}
               onBlur={() => commitOffset()} onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
@@ -1592,8 +1607,8 @@ function App() {
   const ToolInfoModal = () => {
     if (!infoTool) return null;
     const toolDefs = {
-      erase: { label: "Erase", icon: "✕", color: C.danger, desc: "Removes tiles from cells. Click or drag across cells to erase.", iconColor: C.danger },
-      hand:  { label: "Hand", icon: "✋", color: C.accent, desc: "Drag to pan the map canvas. On mobile, swipe to scroll.", iconColor: C.accent },
+      erase: { label: "Erase", icon: "🧼", color: C.danger, desc: "Removes tiles from cells. Click or drag across cells to erase.", iconColor: null },
+      hand:  { label: "Hand", icon: "👋", color: "#fbbf24", desc: "Drag to pan the map canvas. On mobile, swipe to scroll.", iconColor: null },
       space: { label: "Space", icon: "🛸", color: C.accentBright, desc: "Places an invisible space tile, making the cell fully transparent in the exported map.", iconColor: null },
     };
     const def = toolDefs[infoTool];
@@ -1608,7 +1623,7 @@ function App() {
             <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>{def.label}</span>
             <button onClick={() => setInfoTool(null)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
           </div>
-          <div style={{ background: "#1a0f06", borderRadius: 8, padding: 20, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 80 }}>
+          <div className="tile-preview-bg" style={{ borderRadius: 8, padding: 20, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 80 }}>
             <span style={{ fontSize: 36, color: def.iconColor ?? undefined }}>{def.icon}</span>
           </div>
           <p style={{ fontSize: 12, color: C.muted, lineHeight: 1.6 }}>{def.desc}</p>
@@ -1705,17 +1720,30 @@ function App() {
                   const active = sel === t.id && !eraser;
                   const failed = failedTiles.has(t.id);
                   const isStarredF = starredTiles.includes(t.id);
+                  const rotatable = isTileRotatable(t);
+                  const rotStep = cardRotations[t.id] ?? 0;
                   return (
                     <div key={t.id}
-                      onClick={() => { if (failed) { setFailedWarning(true); return; } setSel(t.id); setEraser(false); setHandMode(false); }}
+                      onClick={() => {
+                        if (failed) { setFailedWarning(true); return; }
+                        if (rotatable && sel === t.id && !eraser) {
+                          setCardRotations(prev => ({ ...prev, [t.id]: ((prev[t.id] ?? 0) + 1) % 4 }));
+                        }
+                        setSel(t.id); setEraser(false); setHandMode(false);
+                      }}
                       style={{ width: cardSz, height: cardSz, borderRadius: 8, cursor: failed ? "not-allowed" : "pointer",
                         border: `2px solid ${failed ? C.danger : active ? C.accentBright : C.border}`,
                         background: active ? C.accentDim : "transparent",
                         position: "relative", opacity: failed ? 0.55 : 1, overflow: "visible" }}>
-                      <div style={{ position: "absolute", inset: 0, borderRadius: 6, overflow: "hidden", background: "#1a0f06", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      <div style={{ position: "absolute", inset: 0, borderRadius: 6, overflow: "hidden", background: C.panelDeep, display: "flex", alignItems: "center", justifyContent: "center" }}>
                         {failed ? <span style={{ fontSize: 18 }}>⚠️</span>
-                          : <img src={t.src} alt="" onError={() => markFailed(t.id)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated" }} />}
+                          : <img src={t.src} alt="" onError={() => markFailed(t.id)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated", transform: `rotate(${rotStep * 90}deg)`, transition: "transform 0.15s" }} />}
                       </div>
+                      {rotatable && (
+                        <span style={{ position: "absolute", bottom: 2, left: 2, zIndex: 4, pointerEvents: "none", fontSize: 10, color: active ? "rgba(255,255,255,1)" : "rgba(255,255,255,0.65)", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.9))", lineHeight: 1 }}>
+                          {["⬆","➡","⬇","⬅"][rotStep]}
+                        </span>
+                      )}
                       <span onClick={ev => { ev.stopPropagation(); setInfoTile(t.id); }}
                         style={{ position: "absolute", top: -7, right: -7, width: 15, height: 15, fontSize: 13, cursor: "pointer", color: isStarredF ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "15px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
                         title={isStarredF ? "Starred tile — click for info" : "Tile info"}>ⓘ</span>
@@ -1818,7 +1846,7 @@ function App() {
                         }}
                         style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: failed ? "not-allowed" : "pointer", border: `2px solid ${failed ? C.danger : active ? C.accentBright : C.border}`, background: failed ? "rgba(248,113,113,0.08)" : active ? C.accentDim : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", opacity: failed ? 0.55 : 1, position: "relative", overflow: "visible" }}>
                         {/* Inner clipped area for image */}
-                        <div style={{ position: "absolute", inset: 0, borderRadius: 6, overflow: "hidden", background: "#1a0f06", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                        <div style={{ position: "absolute", inset: 0, borderRadius: 6, overflow: "hidden", background: C.panelDeep, display: "flex", alignItems: "center", justifyContent: "center" }}>
                           {failed ? <span style={{ fontSize: 20 }}>⚠️</span>
                             : <img src={t.src} alt="" onError={() => markFailed(t.id)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated", transform: `rotate(${rotStep * 90}deg)`, transition: "transform 0.15s" }} />}
                         </div>
@@ -1849,18 +1877,18 @@ function App() {
                         onTouchStart={e => e.stopPropagation()}
                         style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: "pointer",
                           border: `2px solid ${folderActive ? C.soft : isThisOpen ? C.accent : C.border}`,
-                          background: folderActive ? "rgba(252,211,77,0.07)" : isThisOpen ? C.accentDim : "#1a0f06",
+                          background: folderActive ? "rgba(252,211,77,0.07)" : isThisOpen ? C.accentDim : C.panelDeep,
                           overflow: "hidden", position: "relative",
                           transition: "border 0.12s, background 0.12s" }}>
                         {/* 2×2 preview grid — fills full card, no label strip */}
                         <div style={{ position: "absolute", inset: 0, display: "grid", gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr", gap: 1 }}>
                           {previewTiles.map(t => (
-                            <div key={t.id} style={{ background: "#1a0f06", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
+                            <div key={t.id} style={{ background: C.panelDeep, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
                               <img src={t.src} alt="" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated", opacity: 0.55 }} />
                             </div>
                           ))}
                           {Array.from({ length: Math.max(0, 4 - previewTiles.length) }).map((_, i) => (
-                            <div key={`e${i}`} style={{ background: "#1a0f06" }} />
+                            <div key={`e${i}`} style={{ background: C.panelDeep }} />
                           ))}
                         </div>
                         {/* Chevron — full white, large and tappable */}
@@ -1887,8 +1915,8 @@ function App() {
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: eraser ? "rgba(248,113,113,0.32)" : "rgba(248,113,113,0.14)", padding: "2px 4px" }}>
                             <span style={{ fontSize: 9, fontWeight: 700, color: eraser ? C.danger : "rgba(248,113,113,0.7)" }}>Erase</span>
                           </div>
-                          <div style={{ height: cardSz - 18, background: "#1a0f06", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                            <span style={{ fontSize: 20, color: eraser ? C.danger : "rgba(248,113,113,0.5)", lineHeight: 1 }}>✕</span>
+                          <div style={{ height: cardSz - 18, background: C.panelDeep, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                            <span style={{ fontSize: 20, lineHeight: 1, opacity: eraser ? 1 : 0.55 }}>🧼</span>
                           </div>
                         </div>
                         <span onClick={e => { e.stopPropagation(); setInfoTool("erase"); }}
@@ -1902,13 +1930,13 @@ function App() {
                     const isStarredHand = starredTiles.includes("hand");
                     return (
                       <div onClick={() => { setHandMode(h => !h); setEraser(false); setSel(null); }}
-                        style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${handMode ? C.accent : C.border}`, background: handMode ? C.accentDim : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
+                        style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${handMode ? "#fbbf24" : C.border}`, background: handMode ? "rgba(251,191,36,0.14)" : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
                         <div style={{ borderRadius: 6, overflow: "hidden" }}>
-                          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: handMode ? "rgba(251,146,60,0.22)" : "rgba(251,146,60,0.08)", padding: "2px 4px" }}>
-                            <span style={{ fontSize: 9, fontWeight: 700, color: handMode ? C.accent : C.muted }}>Hand</span>
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: handMode ? "rgba(251,191,36,0.28)" : "rgba(251,191,36,0.08)", padding: "2px 4px" }}>
+                            <span style={{ fontSize: 9, fontWeight: 700, color: handMode ? "#fbbf24" : C.muted }}>Hand</span>
                           </div>
-                          <div style={{ height: cardSz - 18, background: "#1a0f06", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                            <span style={{ fontSize: 20, color: handMode ? C.accent : C.muted, lineHeight: 1 }}>✋</span>
+                          <div style={{ height: cardSz - 18, background: C.panelDeep, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                            <span style={{ fontSize: 20, lineHeight: 1, opacity: handMode ? 1 : 0.55 }}>👋</span>
                           </div>
                         </div>
                         <span onClick={e => { e.stopPropagation(); setInfoTool("hand"); }}
@@ -1931,7 +1959,7 @@ function App() {
                         <div key={t.id}
                           onClick={() => { if (failed) { setFailedWarning(true); return; } setSel(t.id); setEraser(false); setHandMode(false); }}
                           style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: failed ? "not-allowed" : "pointer", border: `2px solid ${failed ? C.danger : active ? C.accentBright : C.border}`, background: failed ? "rgba(248,113,113,0.08)" : active ? C.accentDim : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", opacity: failed ? 0.55 : 1, position: "relative", overflow: "visible" }}>
-                          <div style={{ position: "absolute", inset: 0, borderRadius: 6, overflow: "hidden", background: "#1a0f06", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                          <div style={{ position: "absolute", inset: 0, borderRadius: 6, overflow: "hidden", background: C.panelDeep, display: "flex", alignItems: "center", justifyContent: "center" }}>
                             {failed ? <span style={{ fontSize: 20 }}>⚠️</span>
                               : <img src={t.src} alt="" onError={() => markFailed(t.id)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated" }} />}
                           </div>
@@ -1971,7 +1999,7 @@ function App() {
                             <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: spaceActive ? "rgba(125,211,252,0.22)" : "rgba(125,211,252,0.08)", padding: "2px 4px" }}>
                               <span style={{ fontSize: 9, fontWeight: 700, color: spaceActive ? C.accentBright : C.muted }}>Space</span>
                             </div>
-                            <div style={{ height: cardSz - 18, background: "#1a0f06", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                            <div style={{ height: cardSz - 18, background: C.panelDeep, display: "flex", alignItems: "center", justifyContent: "center" }}>
                               <span style={{ fontSize: 20, lineHeight: 1 }}>🛸</span>
                             </div>
                           </div>
@@ -2000,16 +2028,16 @@ function App() {
                       style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
                         border: `1px solid ${eraser ? C.danger : C.border}`, background: eraser ? "rgba(248,113,113,0.22)" : "rgba(255,255,255,0.04)" }}
                       title="Erase">
-                      <span style={{ fontSize: 12, color: eraser ? C.danger : "rgba(248,113,113,0.6)" }}>✕</span>
+                      <span style={{ fontSize: 14, opacity: eraser ? 1 : 0.55 }}>🧼</span>
                     </div>
                   );
                   // Hand
                   if (sid === "hand") return (
                     <div key="hand" onClick={() => { setHandMode(h => !h); setEraser(false); setSel(null); }}
                       style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
-                        border: `1px solid ${handMode ? C.accent : C.border}`, background: handMode ? C.accentDim : "rgba(255,255,255,0.04)" }}
+                        border: `1px solid ${handMode ? "#fbbf24" : C.border}`, background: handMode ? "rgba(251,191,36,0.14)" : "rgba(255,255,255,0.04)" }}
                       title="Hand (pan)">
-                      <span style={{ fontSize: 13 }}>✋</span>
+                      <span style={{ fontSize: 13 }}>👋</span>
                     </div>
                   );
                   // Space tile
@@ -2028,7 +2056,7 @@ function App() {
                   return (
                     <div key={sid} onClick={() => { setSel(sid); setEraser(false); setHandMode(false); }}
                       style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", overflow: "hidden",
-                        border: `1px solid ${active ? C.accentBright : C.border}`, background: active ? C.accentDim : "#1a0f06" }}
+                        border: `1px solid ${active ? C.accentBright : C.border}`, background: active ? C.accentDim : C.panelDeep }}
                       title={st.label || `Tile ${sid}`}>
                       <img src={st.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated" }} />
                     </div>
