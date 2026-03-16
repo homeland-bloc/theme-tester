@@ -63,7 +63,7 @@ const MIN_ZOOM = 0.25, MAX_ZOOM = 4;
 // Zoom buttons snap to nearest 5%
 const ZOOM_STEP = 0.05;
 const snapTo10 = z => Math.round(z * 20) / 20;
-const SK = { tiles: "oph_tiles", grid: "oph_grid", colors: "oph_colors", userTiles: "oph_user_tiles", multipliers: "oph_multipliers", priority: "oph_priority", offsets: "oph_offsets", rotatable: "oph_rotatable", tileRots: "oph_tile_rots", gridW: "oph_gridW", gridH: "oph_gridH" };
+const SK = { tiles: "oph_tiles", grid: "oph_grid", colors: "oph_colors", userTiles: "oph_user_tiles", multipliers: "oph_multipliers", priority: "oph_priority", offsets: "oph_offsets", rotatable: "oph_rotatable", tileRots: "oph_tile_rots", gridW: "oph_gridW", gridH: "oph_gridH", tileNames: "oph_tile_names" };
 const ACCEPTED = "image/png,image/jpeg,image/gif,image/webp,image/svg+xml,image/bmp";
 const MAX_HISTORY = 60;
 // Non-overlapping tile ID ranges — prevents collisions between sections regardless of reordering
@@ -77,6 +77,36 @@ const SPACE_TILE_ID    = 998; // special: makes a cell fully transparent
 // To add/remove tiles, update that JSON file (or run generate-manifest.sh).
 
 const load = (k, d) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } };
+
+// Derive a human-readable codename from a tile's src path (display only, IDs unchanged)
+const deriveCodename = src => {
+  if (!src) return null;
+  const file = src.split("/").pop().replace(/\.[^.]+$/, "");
+  const map = {
+    // Mausoleum
+    "MSLM-wall": "Wall1", "MSLM-wall2": "Wall2", "MSLM-crate": "Crate", "MSLM-barrel": "Barrel",
+    "MSLM-cactus": "Cactus", "MSLM-bush": "Bush", "MSLM-break": "Breakable",
+    "MSLM-fence": "Fence1", "MSLM-fenceHORIZONTAL": "Fence2", "MSLM-fenceVERTICAL": "Fence3",
+    "MSLM-post1": "Rope1", "MSLM-post2": "Rope2", "MSLM-post3": "Rope3", "MSLM-post4": "Rope4",
+    "MSLM-water": "Water1", "MSLM-waterBEND": "Water2", "MSLM-waterCORNER": "Water3", "MSLM-waterLINE": "Water4",
+    // Global water
+    "00001011": "GWater1", "01111111": "GWater2", "01101011": "GWater3", "11111111": "GWater4",
+    // Global special
+    "Unbreakable": "Unbreakable", "HealPad": "HealPad", "SlowTile": "SlowTile",
+    "Smoke": "Smoke", "SpeedTile": "SpeedTile", "Spikes": "Spike",
+    // Spawns
+    "1": "SpawnRed", "2": "SpawnBlue",
+    // Objectives
+    "Bounty": "Bounty", "Gem_Grab": "GGObjective", "Heist": "Heist", "Hot_Zone": "HZObjective",
+    // Teleporters
+    "Blue": "BlueTeleporter", "Green": "GreenTeleporter", "Red": "RedTeleporter", "Yellow": "YellowTeleporter",
+    // Jumppads
+    "B": "BottomJumppad", "BL": "BottomLeftJumppad", "BR": "BottomRightJumppad",
+    "L": "LeftJumppad", "R": "RightJumppad", "T": "TopJumppad",
+    "TL": "TopLeftJumppad", "TR": "TopRightJumppad",
+  };
+  return map[file] ?? null;
+};
 const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
 const validHex = h => /^#[0-9A-Fa-f]{6}$/.test(h);
 const isMobileDevice = () => typeof window !== "undefined" && window.innerWidth < 768;
@@ -200,7 +230,7 @@ function App() {
   const [starredTiles, setStarredTiles] = useState(() => load("oph_starred", ["erase", "hand", 1, 6]));
   const toggleStar = id => setStarredTiles(prev => {
     if (prev.includes(id)) return prev.filter(s => s !== id);
-    if (prev.length >= 5) return prev; // max 5
+    if (prev.length >= 10) return prev; // max 10
     return [...prev, id];
   });
 
@@ -215,6 +245,8 @@ function App() {
   const [replaceB,    setReplaceB]  = useState(null);
   // Map name for export filename
   const [mapName, setMapName] = useState("");
+  // Pending map size change awaiting confirmation
+  const [pendingSize, setPendingSize] = useState(null); // { w, h }
   // Tile size multipliers
   const [tileMultipliers, setTileMultipliers] = useState(() => load(SK.multipliers, {}));
   // Priority tiles: rendered in a second DOM pass at z-index 9999 (always on top)
@@ -223,6 +255,8 @@ function App() {
   const [tileOffsets, setTileOffsets] = useState(() => load(SK.offsets, {}));
   // Per-tile "Allow rotation" toggle: { [id]: bool } — undefined = use default
   const [rotatableMap, setRotatableMap] = useState(() => load(SK.rotatable, {}));
+  // Per-tile custom names (user-uploaded tiles): { [id]: string }
+  const [tileNames, setTileNames] = useState(() => load(SK.tileNames, {}));
   // Per-tile card rotation step 0-3 (0=up,1=right,2=down,3=left) — used for next placement
   const [cardRotations, setCardRotations] = useState({});
   // Per-cell grid rotation: { "r,c": 0|1|2|3 }
@@ -296,7 +330,25 @@ function App() {
   useEffect(() => { save(SK.offsets,      tileOffsets);     }, [tileOffsets]);
   useEffect(() => { save(SK.rotatable,    rotatableMap);    }, [rotatableMap]);
   useEffect(() => { save(SK.tileRots,     gridRotations);   }, [gridRotations]);
-  useEffect(() => { save("oph_theme", uiTheme); document.body.style.background = C.bg; }, [uiTheme]);
+  useEffect(() => { save(SK.tileNames,    tileNames);       }, [tileNames]);
+  useEffect(() => {
+    save("oph_theme", uiTheme);
+    document.body.style.background = C.bg;
+    // Update dynamic theme styles (scrollbars, modal)
+    const isC = uiTheme === "cold";
+    const scrollColor = isC ? "rgba(56,189,248,0.55)" : "rgba(251,146,60,0.55)";
+    const scrollColorHover = isC ? "rgba(56,189,248,0.85)" : "rgba(251,146,60,0.8)";
+    const scrollBorder = isC ? "rgba(56,189,248,0.2)" : "rgba(251,146,60,0.2)";
+    const modalBg = isC ? "#0a1b2e" : "#2b1a0a";
+    const modalBorder = isC ? "rgba(56,189,248,0.22)" : "rgba(251,146,60,0.18)";
+    let dynStyle = document.getElementById("oph-dyn-style");
+    if (!dynStyle) { dynStyle = document.createElement("style"); dynStyle.id = "oph-dyn-style"; document.head.appendChild(dynStyle); }
+    dynStyle.textContent = `
+      ::-webkit-scrollbar-thumb { background: ${scrollColor} !important; border-color: ${scrollBorder} !important; }
+      ::-webkit-scrollbar-thumb:hover { background: ${scrollColorHover} !important; }
+      .modal-box { background: ${modalBg} !important; border-color: ${modalBorder} !important; }
+    `;
+  }, [uiTheme]);
   useEffect(() => { save("oph_starred", starredTiles); }, [starredTiles]);
   useEffect(() => { save(SK.gridW, gridW); setSizeWInput(String(gridW)); }, [gridW]);
   useEffect(() => { save(SK.gridH, gridH); setSizeHInput(String(gridH)); }, [gridH]);
@@ -308,8 +360,8 @@ function App() {
     if (s.includes("Spawns/")) return 1.65;
     // Barrel
     if (s.includes("barrel") || s.includes("MSLM-barrel")) return 1.1;
-    // Breakable
-    if (s.includes("break") || s.includes("MSLM-break")) return 1.2;
+    // Breakable (MSLM-break only, NOT Unbreakable)
+    if (s.includes("MSLM-break") || (s.includes("break") && !s.includes("Unbreakable"))) return 1.2;
     // Jumppads & Teleporters & HealPad → 2x
     if (s.includes("Jumppads/") || s.includes("Teleporters/") || s.includes("HealPad")) return 2.0;
     // Hot Zone
@@ -330,8 +382,8 @@ function App() {
   const getDefaultOffset = t => {
     if (!t?.src) return { ox: 0, oy: 0 };
     const s = t.src;
-    // Jumppads, Teleporters, HealPad: -50% H and -50% V so 2× tile sits centred on a 2×2 area
-    if (s.includes("Jumppads/") || s.includes("Teleporters/") || s.includes("HealPad")) return { ox: -50, oy: -50 };
+    // Jumppads, Teleporters, HealPad: +50% H and +50% V so 2× tile sits centred on a 2×2 area
+    if (s.includes("Jumppads/") || s.includes("Teleporters/") || s.includes("HealPad")) return { ox: 50, oy: 50 };
     return { ox: 0, oy: 0 };
   };
 
@@ -634,18 +686,20 @@ function App() {
     setGrid(prev => {
       const g = prev.map(row => [...row]);
       meta.forEach(({ pos: [pr, pc], fV, fH, fD }) => {
-        // Spawn swapping: applies when mirrorV (H label) or mirrorD is active for that mirror
+        // Spawn swapping: applies when fH (top-bottom) or fD (diagonal) flips teams
         let id = tileId;
-        if (id && ms.mirrorSpawns && (fV || fD)) id = swapSpawnId(id);
+        if (id && ms.mirrorSpawns && (fH || fD)) id = swapSpawnId(id);
         g[pr][pc] = eraser ? null : id;
       });
       return g;
     }, true);
     if (!eraser && tileId) {
+      const tile = getTile(tileId);
+      const isTileRot = tile ? isTileRotatable(tile) : false;
       setGridRotations(prev => {
         const n = { ...prev };
         meta.forEach(({ pos: [pr, pc], fV, fH, fD }) => {
-          n[`${pr},${pc}`] = ms.mirrorRotation ? applyRotMirror(rot, fV, fH, fD) : rot;
+          n[`${pr},${pc}`] = (ms.mirrorRotation && isTileRot) ? applyRotMirror(rot, fV, fH, fD) : rot;
         });
         return n;
       });
@@ -678,7 +732,7 @@ function App() {
         getMirrorMeta(r, c).forEach(({ pos: [pr, pc], fV, fH, fD }) => {
           if (!isEraser && g[pr][pc] !== null && !ms.allowSwap) return;
           let id = isEraser ? null : (tileId ?? null);
-          if (id && ms.mirrorSpawns && (fV || fD)) id = swapSpawnId(id);
+          if (id && ms.mirrorSpawns && (fH || fD)) id = swapSpawnId(id);
           g[pr][pc] = id;
           if (!isEraser && tileId) placedMeta.push({ pos: [pr, pc], fV, fH, fD });
         });
@@ -686,10 +740,12 @@ function App() {
       return g;
     });
     if (!isEraser && tileId) {
+      const tile = getTile(tileId);
+      const isTileRot = tile ? isTileRotatable(tile) : false;
       setGridRotations(prev => {
         const n = { ...prev };
         placedMeta.forEach(({ pos: [pr, pc], fV, fH, fD }) => {
-          n[`${pr},${pc}`] = ms.mirrorRotation ? applyRotMirror(rot, fV, fH, fD) : rot;
+          n[`${pr},${pc}`] = (ms.mirrorRotation && isTileRot) ? applyRotMirror(rot, fV, fH, fD) : rot;
         });
         return n;
       });
@@ -755,8 +811,8 @@ function App() {
       // Use gridRef for freshest value (avoids stale closure on rapid clicks)
       const existingId = gridRef.current?.[r]?.[c];
 
-      if (existingId && !eraserRef.current) {
-        // ── OCCUPIED CELL (non-eraser): immediate pickup, same as touch ─────────
+      if (existingId && !eraserRef.current && !mirrorSettingsRef.current?.allowSwap) {
+        // ── OCCUPIED CELL (non-eraser, overwrite disabled): immediate pickup ─────
         const mirrorPositions = getMirrorRef.current ? getMirrorRef.current(r, c) : getMirrorPositions(r, c);
         // Carry the rotation of the picked-up tile
         dragRotationRef.current = gridRotations[`${r},${c}`] ?? 0;
@@ -969,7 +1025,7 @@ function App() {
       // ── IMMEDIATE PICK-UP: occupied cell, no eraser → remove tile + mirror counterparts, start drag ──
       // History written once at touchend (drop/discard), not here.
       const existingId = gridRef.current?.[r]?.[c];
-      if (existingId && !eraserRef.current) {
+      if (existingId && !eraserRef.current && !mirrorSettingsRef.current?.allowSwap) {
         // Remove the dragged tile AND all its mirrored counterparts from the grid
         const pickupPositions = getMirrorRef.current ? getMirrorRef.current(r, c) : [[r, c]];
         dragRotationRef.current = gridRotations[`${r},${c}`] ?? 0;
@@ -1016,6 +1072,8 @@ function App() {
         }); return;
       }
       if (e.touches.length !== 1) return;
+      // Hand mode: allow native scroll (do not prevent default)
+      if (handModeRef.current) return;
       e.preventDefault();
 
       // Active drag: ghost follows finger + target cell highlight
@@ -1133,13 +1191,21 @@ function App() {
     if (replaceA == null || replaceB == null) return;
     let count = 0;
     setGrid(prev => prev.map(row => row.map(id => { if (id === replaceA) { count++; return replaceB; } return id; })));
-    const msg = count > 0 ? `✓ Replaced ${count} tile${count !== 1 ? "s" : ""}` : "Tile A not found in grid";
-    setReplaceMsg(msg);
+    if (count === 0) {
+      setReplaceMsg("⚠ No cells with that tile found on the map.");
+      if (replaceMsgTimerRef.current) clearTimeout(replaceMsgTimerRef.current);
+      replaceMsgTimerRef.current = setTimeout(() => setReplaceMsg(""), 2500);
+      return;
+    }
+    const tileA = getTile(replaceA); const tileB = getTile(replaceB);
+    const nameA = (tileA?.isSpace ? "Space" : deriveCodename(tileA?.src)) || (tileA ? `#${replaceA}` : "?");
+    const nameB = (tileB?.isSpace ? "Space" : deriveCodename(tileB?.src)) || (tileB ? `#${replaceB}` : "?");
+    setReplaceMsg(`✓ Replaced ${count} × ${nameA} → ${nameB}`);
     if (replaceMsgTimerRef.current) clearTimeout(replaceMsgTimerRef.current);
     replaceMsgTimerRef.current = setTimeout(() => {
       setReplaceMsg("");
-      setReplaceOpen(false); setReplaceA(null); setReplaceB(null);
-    }, 1500);
+      setReplaceOpen(false); setReplaceStep(1); setReplaceA(null); setReplaceB(null);
+    }, 2000);
   };
 
   // ── Export ────────────────────────────────────────────────────────
@@ -1245,10 +1311,23 @@ function App() {
       const next = Math.max(0.1, Math.min(MAX_MULT_ARROW, Math.round((cur + delta) * 20) / 20));
       commitMult(String(next));
     };
-    const commitOffset = () => {
-      const ox = parseFloat(oxInput), oy = parseFloat(oyInput);
+    const commitOffset = (ox2, oy2) => {
+      const ox = ox2 !== undefined ? ox2 : parseFloat(oxInput);
+      const oy = oy2 !== undefined ? oy2 : parseFloat(oyInput);
       const newOff = { ox: isNaN(ox) ? 0 : ox, oy: isNaN(oy) ? 0 : oy };
       setTileOffsets(prev => ({ ...prev, [t.id]: newOff }));
+    };
+    const stepOx = delta => {
+      const cur = parseFloat(oxInput) || 0;
+      const next = Math.round((cur + delta) * 10) / 10;
+      setOxInput(String(next));
+      commitOffset(next, parseFloat(oyInput) || 0);
+    };
+    const stepOy = delta => {
+      const cur = parseFloat(oyInput) || 0;
+      const next = Math.round((cur + delta) * 10) / 10;
+      setOyInput(String(next));
+      commitOffset(parseFloat(oxInput) || 0, next);
     };
 
     const fieldRow = (label, input, setInput, onBlur, extra) => (
@@ -1272,6 +1351,27 @@ function App() {
             <img src={t.src} alt="" style={{ maxWidth: "100%", maxHeight: 180, objectFit: "contain", imageRendering: "pixelated" }} />
           </div>
 
+          {/* Tile codename */}
+          {(() => {
+            const codename = deriveCodename(t.src);
+            const customName = tileNames[t.id] ?? "";
+            if (t.isDefault && codename) {
+              return <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Codename</span>
+                <span style={{ fontSize: 12, fontFamily: "monospace", color: C.text }}>{codename}</span>
+              </div>;
+            }
+            if (!t.isDefault) {
+              return <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Name</span>
+                <input value={customName} onChange={e => setTileNames(prev => ({ ...prev, [t.id]: e.target.value }))}
+                  placeholder="Enter name…"
+                  style={{ flex: 1, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none" }} />
+              </div>;
+            }
+            return null;
+          })()}
+
           {/* Size multiplier */}
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Size multiplier</span>
@@ -1287,14 +1387,26 @@ function App() {
           </div>
 
           {/* H/V offsets */}
-          {fieldRow("H offset (%)", oxInput, setOxInput, commitOffset,
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>H offset (%)</span>
+            <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepOx(-5)}>−</button>
+            <input type="number" value={oxInput} onChange={e => setOxInput(e.target.value)}
+              onBlur={() => commitOffset()} onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
+              style={{ width: 62, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none", textAlign: "center" }} />
+            <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepOx(+5)}>+</button>
             <button style={{ ...btn(false), fontSize: 10, padding: "3px 7px", marginLeft: "auto" }}
-              onClick={() => { setOxInput(String(defaultOff.ox)); setTileOffsets(prev => { const n = {...prev}; if (prev[t.id]) { const o = {...prev[t.id], ox: defaultOff.ox}; n[t.id] = o; } return n; }); }}>Reset</button>
-          )}
-          {fieldRow("V offset (%)", oyInput, setOyInput, commitOffset,
+              onClick={() => { setOxInput(String(defaultOff.ox)); setTileOffsets(prev => { const n = {...prev}; const o = {...(prev[t.id] ?? {}), ox: defaultOff.ox}; n[t.id] = o; return n; }); }}>Reset</button>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>V offset (%)</span>
+            <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepOy(-5)}>−</button>
+            <input type="number" value={oyInput} onChange={e => setOyInput(e.target.value)}
+              onBlur={() => commitOffset()} onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
+              style={{ width: 62, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none", textAlign: "center" }} />
+            <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepOy(+5)}>+</button>
             <button style={{ ...btn(false), fontSize: 10, padding: "3px 7px", marginLeft: "auto" }}
-              onClick={() => { setOyInput(String(defaultOff.oy)); setTileOffsets(prev => { const n = {...prev}; if (prev[t.id]) { const o = {...prev[t.id], oy: defaultOff.oy}; n[t.id] = o; } return n; }); }}>Reset</button>
-          )}
+              onClick={() => { setOyInput(String(defaultOff.oy)); setTileOffsets(prev => { const n = {...prev}; const o = {...(prev[t.id] ?? {}), oy: defaultOff.oy}; n[t.id] = o; return n; }); }}>Reset</button>
+          </div>
 
           {/* Allow rotation */}
           <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
@@ -1315,7 +1427,7 @@ function App() {
             <input type="checkbox" checked={starredTiles.includes(t.id)}
               onChange={() => toggleStar(t.id)}
               style={{ width: 14, height: 14, accentColor: C.accent, cursor: "pointer" }} />
-            <span style={{ fontSize: 11, color: C.text }}>Starred shortcut ⭐{!starredTiles.includes(t.id) && starredTiles.length >= 5 ? <span style={{ color: C.muted, marginLeft: 6 }}>(max 5 reached)</span> : null}</span>
+            <span style={{ fontSize: 11, color: C.text }}>Starred shortcut ⭐{!starredTiles.includes(t.id) && starredTiles.length >= 10 ? <span style={{ color: C.muted, marginLeft: 6 }}>(max 10 reached)</span> : null}</span>
           </label>
 
           {!t.isDefault && (
@@ -1334,9 +1446,10 @@ function App() {
   const [replaceMsg, setReplaceMsg] = useState("");
   const replaceMsgTimerRef = useRef(null);
 
+  const replaceScrollRef = useRef(null);
   const ReplaceModal = () => {
     if (!replaceOpen) return null;
-    const close = () => { setReplaceOpen(false); setReplaceMsg(""); };
+    const close = () => { setReplaceOpen(false); setReplaceMsg(""); setReplaceStep(1); setReplaceA(null); setReplaceB(null); };
 
     // Tile card used in both steps
     const RCard = ({ t, selected, onSelect, isSpace }) => (
@@ -1407,16 +1520,16 @@ function App() {
             <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Replace with — which tile?</span>
             <button onClick={close} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18 }}>×</button>
           </div>
-          <div style={{ overflowY: "auto", maxHeight: 320, padding: "2px 0" }}>
+          <div ref={replaceScrollRef} style={{ overflowY: "auto", maxHeight: 320, padding: "2px 0" }}>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(52px, 1fr))", gap: 5 }}>
               {tilesetTiles_.length > 0 && <SepLine label="Tileset" />}
-              {tilesetTiles_.map(t => <RCard key={t.id} t={t} selected={replaceB} onSelect={setReplaceB} />)}
+              {tilesetTiles_.map(t => <RCard key={t.id} t={t} selected={replaceB} onSelect={id => { const s = replaceScrollRef.current?.scrollTop; setReplaceB(id); requestAnimationFrame(() => { if (replaceScrollRef.current) replaceScrollRef.current.scrollTop = s; }); }} />)}
               {userTiles_.length > 0 && <SepLine label="Uploaded" />}
-              {userTiles_.map(t => <RCard key={t.id} t={t} selected={replaceB} onSelect={setReplaceB} />)}
+              {userTiles_.map(t => <RCard key={t.id} t={t} selected={replaceB} onSelect={id => { const s = replaceScrollRef.current?.scrollTop; setReplaceB(id); requestAnimationFrame(() => { if (replaceScrollRef.current) replaceScrollRef.current.scrollTop = s; }); }} />)}
               {globalTiles_.length > 0 && <SepLine label="Global" />}
-              {globalTiles_.map(t => <RCard key={t.id} t={t} selected={replaceB} onSelect={setReplaceB} />)}
+              {globalTiles_.map(t => <RCard key={t.id} t={t} selected={replaceB} onSelect={id => { const s = replaceScrollRef.current?.scrollTop; setReplaceB(id); requestAnimationFrame(() => { if (replaceScrollRef.current) replaceScrollRef.current.scrollTop = s; }); }} />)}
               <SepLine label="Special" />
-              <RCard key="space" t={null} selected={replaceB} onSelect={setReplaceB} isSpace />
+              <RCard key="space" t={null} selected={replaceB} onSelect={id => { const s = replaceScrollRef.current?.scrollTop; setReplaceB(id); requestAnimationFrame(() => { if (replaceScrollRef.current) replaceScrollRef.current.scrollTop = s; }); }} isSpace />
             </div>
           </div>
           {replaceMsg ? (
@@ -1475,6 +1588,41 @@ function App() {
       <ReplaceModal />
       <FailedTileModal />
 
+      {/* Map size confirmation dialog */}
+      {pendingSize && (() => {
+        const { w, h } = pendingSize;
+        const shrinkW = w < gridW, shrinkH = h < gridH;
+        const expandW = w > gridW, expandH = h > gridH;
+        const willLose = shrinkW || shrinkH;
+        const lines = [];
+        if (shrinkW) lines.push(`Columns reduced from ${gridW} to ${w}: tiles in columns ${w + 1}–${gridW} will be removed.`);
+        if (shrinkH) lines.push(`Rows reduced from ${gridH} to ${h}: tiles in rows ${h + 1}–${gridH} will be removed.`);
+        if (expandW) lines.push(`Columns increased from ${gridW} to ${w}: new empty columns added on the right.`);
+        if (expandH) lines.push(`Rows increased from ${gridH} to ${h}: new empty rows added at the bottom.`);
+        return (
+          <div className="modal-backdrop" onClick={() => setPendingSize(null)}>
+            <div className="modal-box" onClick={e => e.stopPropagation()}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Apply map size {w} × {h}?</span>
+                <button onClick={() => setPendingSize(null)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {lines.map((l, i) => <p key={i} style={{ fontSize: 12, color: willLose ? C.danger : C.text }}>{l}</p>)}
+                {!willLose && !expandW && !expandH && <p style={{ fontSize: 12, color: C.muted }}>No content changes — same size.</p>}
+                {willLose && <p style={{ fontSize: 11, color: C.muted }}>This cannot be undone.</p>}
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button style={{ ...btn(false), flex: 1 }} onClick={() => setPendingSize(null)}>Cancel</button>
+                <button style={{ ...btn(true, willLose ? C.danger : C.accent, willLose ? "rgba(248,113,113,0.14)" : C.accentDim), flex: 1 }}
+                  onClick={() => { applyGridSize(w, h); setPendingSize(null); }}>
+                  {willLose ? "Apply & Remove tiles" : "Apply"}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* ── Folder panel — floating modal anchored near card (Task 4) ── */}
       {openFolderKey && (() => {
         // Search tileset + global entry lists for the open folder key
@@ -1510,10 +1658,10 @@ function App() {
                         background: active ? C.accentDim : "#1a0f06", overflow: "hidden",
                         display: "flex", alignItems: "center", justifyContent: "center",
                         position: "relative", opacity: failed ? 0.55 : 1 }}>
-                      {failed ? <span style={{ fontSize: 18, color: C.danger }}>✕</span>
+                      {failed ? <span style={{ fontSize: 18 }}>⚠️</span>
                         : <img src={t.src} alt="" onError={() => markFailed(t.id)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated" }} />}
                       <span onClick={ev => { ev.stopPropagation(); setInfoTile(t.id); }}
-                        style={{ position: "absolute", top: -1, right: -1, fontSize: 13, cursor: "pointer", color: "rgba(255,255,255,0.82)", lineHeight: 1, zIndex: 4, background: "rgba(0,0,0,0.5)", borderRadius: "0 6px 0 4px", padding: "1px 2px" }}
+                        style={{ position: "absolute", top: -8, right: -8, width: 16, height: 16, fontSize: 14, cursor: "pointer", color: "rgba(255,255,255,0.9)", lineHeight: "16px", textAlign: "center", zIndex: 4, background: "rgba(0,0,0,0.65)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
                         title="Tile info">ⓘ</span>
                       <TileBadge t={t} />
                     </div>
@@ -1551,7 +1699,11 @@ function App() {
       {/* ══ TOP BAR ══════════════════════════════════════════════════ */}
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 14px", height: 50, flexShrink: 0, background: C.panel, borderBottom: `1px solid ${C.border}` }}>
         <img src="favicon/favicon-32x32.png" alt="Ophelia" style={{ width: 28, height: 28, flexShrink: 0, imageRendering: "auto" }} />
-        <span style={{ fontFamily: "'Lilita One', cursive", fontWeight: 400, fontSize: isMobile ? 15 : 18, letterSpacing: 0.4, whiteSpace: "nowrap", background: "linear-gradient(90deg,#c45c6a,#fbbf24)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", flexShrink: 0 }}>
+        <span style={{ fontFamily: "'Lilita One', cursive", fontWeight: 400, fontSize: isMobile ? 15 : 18, letterSpacing: 0.4, whiteSpace: "nowrap",
+          background: uiTheme === "cold"
+            ? "linear-gradient(90deg,#38bdf8,#a78bfa,#34d399,#7dd3fc)"
+            : "linear-gradient(90deg,#c45c6a,#fbbf24)",
+          WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", flexShrink: 0 }}>
           Ophelia — Custom Theme Tester
         </span>
       </div>
@@ -1560,7 +1712,7 @@ function App() {
       <div style={{ flex: 1, display: "flex", flexDirection: "row", overflow: "hidden", minHeight: 0 }}>
 
         {/* ── LEFT SIDEBAR: Tiles ──────────────────────────────────── */}
-        <div style={{ display: "flex", flexDirection: "row", flexShrink: 0, alignSelf: "center", maxHeight: "min(88vh, 700px)" }}>
+        <div style={{ display: "flex", flexDirection: "row", flexShrink: 0, alignSelf: "stretch" }}>
           {tilesOpen && (
             <div style={{ width: isMobile ? 160 : 240, background: C.panelDeep, borderRight: `1px solid ${C.border}`, borderRadius: "8px 0 0 8px", display: "flex", flexDirection: "column", overflow: "hidden", maxHeight: "min(88vh, 700px)" }}>
               <SectionHeader
@@ -1606,21 +1758,22 @@ function App() {
                         onClick={() => { if (failed) { setFailedWarning(true); return; } setSel(t.id); setEraser(false); setHandMode(false); }}
                         style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: failed ? "not-allowed" : "pointer", border: `2px solid ${failed ? C.danger : active ? C.accentBright : C.border}`, background: failed ? "rgba(248,113,113,0.08)" : active ? C.accentDim : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", overflow: "hidden", opacity: failed ? 0.55 : 1, position: "relative" }}>
                         <div style={{ width: "100%", height: "100%", background: "#1a0f06", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                          {failed ? <span style={{ fontSize: 20, color: C.danger }}>✕</span>
-                            : <img src={t.src} alt="" onError={() => markFailed(t.id)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated" }} />}
+                          {failed ? <span style={{ fontSize: 20 }}>⚠️</span>
+                            : <img src={t.src} alt="" onError={() => markFailed(t.id)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated", transform: `rotate(${rotStep * 90}deg)`, transition: "transform 0.15s" }} />}
                         </div>
                         {rotatable && (
-                          <span onClick={e => { e.stopPropagation(); setCardRotations(prev => ({ ...prev, [t.id]: ((prev[t.id] ?? 0) + 1) % 4 })); }}
-                            style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 3, cursor: "pointer", fontSize: 18, color: "rgba(255,255,255,0.9)", filter: "drop-shadow(0 1px 3px rgba(0,0,0,0.9))", pointerEvents: "auto" }}
-                            title="Click to rotate">
+                          <span onClick={e => { e.stopPropagation(); setCardRotations(prev => ({ ...prev, [t.id]: ((prev[t.id] ?? 0) + 1) % 4 })); setSel(t.id); setEraser(false); setHandMode(false); }}
+                            style={{ position: "absolute", bottom: 1, left: 1, zIndex: 4, cursor: "pointer", fontSize: 11, color: "rgba(255,255,255,0.9)", filter: "drop-shadow(0 1px 3px rgba(0,0,0,0.9))", lineHeight: 1, padding: "1px 2px", background: "rgba(0,0,0,0.45)", borderRadius: 3 }}
+                            title="Click to rotate 90°">
                             {ROT_ARROWS[rotStep]}
                           </span>
                         )}
                         {starredTiles.includes(t.id) && (
-                          <span style={{ position: "absolute", top: -1, right: 14, fontSize: 10, lineHeight: 1, zIndex: 4, pointerEvents: "none", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}>⭐</span>
+                          <span style={{ position: "absolute", top: -8, left: -8, width: 16, height: 16, fontSize: 14, cursor: "pointer", color: "#fbbf24", lineHeight: "16px", textAlign: "center", zIndex: 5, background: "rgba(0,0,0,0.65)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
+                            onClick={e => { e.stopPropagation(); setInfoTile(t.id); }} title="Starred — click for info">ⓘ</span>
                         )}
                         <span onClick={e => { e.stopPropagation(); setInfoTile(t.id); }}
-                          style={{ position: "absolute", top: -1, right: -1, fontSize: 13, cursor: "pointer", color: "rgba(255,255,255,0.82)", lineHeight: 1, zIndex: 4, background: "rgba(0,0,0,0.5)", borderRadius: "0 6px 0 4px", padding: "1px 2px" }}
+                          style={{ position: "absolute", top: -8, right: -8, width: 16, height: 16, fontSize: 14, cursor: "pointer", color: "rgba(255,255,255,0.9)", lineHeight: "16px", textAlign: "center", zIndex: 4, background: "rgba(0,0,0,0.65)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
                           title="Tile info">ⓘ</span>
                         <TileBadge t={t} />
                       </div>
@@ -1638,9 +1791,10 @@ function App() {
                         onMouseDown={e => e.stopPropagation()}
                         onTouchStart={e => e.stopPropagation()}
                         style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: "pointer",
-                          border: `2px solid ${folderActive ? C.accentBright : isThisOpen ? C.accent : C.border}`,
-                          background: "#1a0f06", overflow: "hidden", position: "relative",
-                          transition: "border 0.12s" }}>
+                          border: `2px solid ${folderActive ? C.soft : isThisOpen ? C.accent : C.border}`,
+                          background: folderActive ? "rgba(252,211,77,0.07)" : isThisOpen ? C.accentDim : "#1a0f06",
+                          overflow: "hidden", position: "relative",
+                          transition: "border 0.12s, background 0.12s" }}>
                         {/* 2×2 preview grid — fills full card, no label strip */}
                         <div style={{ position: "absolute", inset: 0, display: "grid", gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr", gap: 1 }}>
                           {previewTiles.map(t => (
@@ -1677,7 +1831,7 @@ function App() {
                     </div>
                   </div>
                   {/* 1b. Hand (pan) */}
-                  <div onClick={() => { setHandMode(h => !h); setEraser(false); }}
+                  <div onClick={() => { setHandMode(h => !h); setEraser(false); setSel(null); }}
                     style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${handMode ? C.accent : C.border}`, background: handMode ? C.accentDim : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", overflow: "hidden" }}>
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: handMode ? "rgba(251,146,60,0.22)" : "rgba(251,146,60,0.08)", padding: "2px 4px" }}>
                       <span style={{ fontSize: 9, fontWeight: 700, color: handMode ? C.accent : C.muted }}>Hand</span>
@@ -1704,10 +1858,11 @@ function App() {
                               : <img src={t.src} alt="" onError={() => markFailed(t.id)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated" }} />}
                           </div>
                           {starredTiles.includes(t.id) && (
-                            <span style={{ position: "absolute", top: -1, right: 14, fontSize: 10, lineHeight: 1, zIndex: 4, pointerEvents: "none", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}>⭐</span>
+                            <span style={{ position: "absolute", top: -8, left: -8, width: 16, height: 16, fontSize: 14, cursor: "pointer", color: "#fbbf24", lineHeight: "16px", textAlign: "center", zIndex: 5, background: "rgba(0,0,0,0.65)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
+                            onClick={e => { e.stopPropagation(); setInfoTile(t.id); }} title="Starred — click for info">ⓘ</span>
                           )}
                           <span onClick={e => { e.stopPropagation(); setInfoTile(t.id); }}
-                            style={{ position: "absolute", top: -1, right: -1, fontSize: 13, cursor: "pointer", color: "rgba(255,255,255,0.82)", lineHeight: 1, zIndex: 4, background: "rgba(0,0,0,0.5)", borderRadius: "0 6px 0 4px", padding: "1px 2px" }}
+                            style={{ position: "absolute", top: -8, right: -8, width: 16, height: 16, fontSize: 14, cursor: "pointer", color: "rgba(255,255,255,0.9)", lineHeight: "16px", textAlign: "center", zIndex: 4, background: "rgba(0,0,0,0.65)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
                             title="Tile info">ⓘ</span>
                           <TileBadge t={t} />
                         </div>
@@ -1729,14 +1884,17 @@ function App() {
                     {/* 7. Space tile (🛸) */}
                     <div style={{ width: "100%", flexBasis: "100%", height: 1, background: C.border, margin: "3px 0", flexShrink: 0 }} />
                     <div onClick={() => { setSel(SPACE_TILE_ID); setEraser(false); setHandMode(false); }}
-                      style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: "pointer",
+                      style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer",
                         border: `2px solid ${sel === SPACE_TILE_ID && !eraser ? C.accentBright : C.border}`,
                         background: sel === SPACE_TILE_ID && !eraser ? C.accentDim : "rgba(255,255,255,0.03)",
-                        transition: "border 0.12s, background 0.12s", overflow: "hidden",
-                        display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2 }}
+                        transition: "border 0.12s, background 0.12s", overflow: "hidden" }}
                       title="Space — makes cell transparent">
-                      <span style={{ fontSize: 20, lineHeight: 1 }}>🛸</span>
-                      <span style={{ fontSize: 8, color: C.muted, textTransform: "uppercase", letterSpacing: 0.6 }}>Space</span>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: sel === SPACE_TILE_ID && !eraser ? "rgba(125,211,252,0.22)" : "rgba(125,211,252,0.08)", padding: "2px 4px" }}>
+                        <span style={{ fontSize: 9, fontWeight: 700, color: sel === SPACE_TILE_ID && !eraser ? C.accentBright : C.muted }}>Space</span>
+                      </div>
+                      <div style={{ height: cardSz - 18, background: "#1a0f06", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                        <span style={{ fontSize: 20, lineHeight: 1 }}>🛸</span>
+                      </div>
                     </div>
                   </>)}
                   </div>
@@ -1746,15 +1904,15 @@ function App() {
             </div>
           )}
           {/* Left toggle strip (with starred mini-cards when collapsed) */}
-          <div style={{ width: 28, display: "flex", flexDirection: "column", flexShrink: 0, background: C.panelDeep, borderRight: `1px solid ${C.border}` }}>
+          <div style={{ width: tilesOpen ? 28 : 40, display: "flex", flexDirection: "column", flexShrink: 0, background: C.panelDeep, borderRight: `1px solid ${C.border}` }}>
             {/* Starred mini-cards — only when panel is collapsed */}
             {!tilesOpen && starredTiles.length > 0 && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 3, padding: "4px 2px", overflowY: "auto" }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 3, padding: "4px 2px", overflowY: "auto", scrollbarWidth: "none", msOverflowStyle: "none" }}>
                 {starredTiles.map(sid => {
                   // Erase
                   if (sid === "erase") return (
                     <div key="erase" onClick={() => { setEraser(true); setSel(null); setHandMode(false); }}
-                      style={{ width: 24, height: 24, borderRadius: 5, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+                      style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
                         border: `1px solid ${eraser ? C.danger : C.border}`, background: eraser ? "rgba(248,113,113,0.22)" : "rgba(255,255,255,0.04)" }}
                       title="Erase">
                       <span style={{ fontSize: 12, color: eraser ? C.danger : "rgba(248,113,113,0.6)" }}>✕</span>
@@ -1762,8 +1920,8 @@ function App() {
                   );
                   // Hand
                   if (sid === "hand") return (
-                    <div key="hand" onClick={() => { setHandMode(h => !h); setEraser(false); }}
-                      style={{ width: 24, height: 24, borderRadius: 5, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+                    <div key="hand" onClick={() => { setHandMode(h => !h); setEraser(false); setSel(null); }}
+                      style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
                         border: `1px solid ${handMode ? C.accent : C.border}`, background: handMode ? C.accentDim : "rgba(255,255,255,0.04)" }}
                       title="Hand (pan)">
                       <span style={{ fontSize: 13 }}>✋</span>
@@ -1772,7 +1930,7 @@ function App() {
                   // Space tile
                   if (sid === SPACE_TILE_ID) return (
                     <div key="space" onClick={() => { setSel(SPACE_TILE_ID); setEraser(false); setHandMode(false); }}
-                      style={{ width: 24, height: 24, borderRadius: 5, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+                      style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
                         border: `1px solid ${sel === SPACE_TILE_ID && !eraser ? C.accentBright : C.border}`, background: sel === SPACE_TILE_ID && !eraser ? C.accentDim : "rgba(255,255,255,0.04)" }}
                       title="Space">
                       <span style={{ fontSize: 13 }}>🛸</span>
@@ -1784,7 +1942,7 @@ function App() {
                   const active = sel === sid && !eraser;
                   return (
                     <div key={sid} onClick={() => { setSel(sid); setEraser(false); setHandMode(false); }}
-                      style={{ width: 24, height: 24, borderRadius: 5, cursor: "pointer", overflow: "hidden",
+                      style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", overflow: "hidden",
                         border: `1px solid ${active ? C.accentBright : C.border}`, background: active ? C.accentDim : "#1a0f06" }}
                       title={st.label || `Tile ${sid}`}>
                       <img src={st.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated" }} />
@@ -1795,7 +1953,7 @@ function App() {
             )}
             {/* Toggle button — fills remaining space */}
             <button onClick={() => setTilesOpen(o => !o)}
-              style={{ flex: 1, minHeight: 28, background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 10, display: "flex", alignItems: "center", justifyContent: "center", userSelect: "none" }}
+              style={{ flex: 1, minHeight: 28, background: "none", border: "none", cursor: "pointer", color: C.accentBright, fontSize: 12, display: "flex", alignItems: "center", justifyContent: "center", userSelect: "none", fontWeight: 700 }}
               title={tilesOpen ? "Collapse tiles" : "Expand tiles"}>
               {tilesOpen ? "◀" : "▶"}
             </button>
@@ -1830,13 +1988,13 @@ function App() {
             }}
           >
             <div style={{ padding: 60, display: "flex", alignItems: "flex-start", justifyContent: "flex-start", minWidth: "min-content", minHeight: "min-content" }}>
-              <div style={{ position: "relative", width: gW, height: (gridH + 2) * CELL * zoom, flexShrink: 0, margin: "0 auto", isolation: "isolate" }}>
+              <div style={{ position: "relative", width: gW, height: (gridH + 2) * CELL * zoom, flexShrink: 0, isolation: "isolate" }}>
 
                 {/* Checkerboard */}
                 {Array.from({ length: gridH }).map((_, r) =>
                   Array.from({ length: gridW }).map((__, c) => (
                     <div key={`${r}-${c}`}
-                      style={{ position: "absolute", left: c * CELL * zoom, top: (r + 1) * CELL * zoom, width: CELL * zoom, height: CELL * zoom, background: (r + c) % 2 === 0 ? bg1 : bg2 }}
+                      style={{ position: "absolute", left: c * CELL * zoom, top: (r + 1) * CELL * zoom, width: CELL * zoom, height: CELL * zoom, background: grid[r]?.[c] === SPACE_TILE_ID ? "transparent" : ((r + c) % 2 === 0 ? bg1 : bg2) }}
                       onMouseDown={e => onCell(r, c, e)}
                       onMouseMove={e => onCell(r, c, e)}
                     />
@@ -1918,10 +2076,10 @@ function App() {
           </div>
 
         {/* ── RIGHT SIDEBAR: Tools ─────────────────────────────────── */}
-        <div style={{ display: "flex", flexDirection: "row", flexShrink: 0, alignSelf: "center", maxHeight: "min(88vh, 700px)" }}>
+        <div style={{ display: "flex", flexDirection: "row", flexShrink: 0, alignSelf: "stretch" }}>
           {/* Right toggle strip */}
           <button onClick={() => setToolsOpen(o => !o)}
-            style={{ width: 28, background: C.panelDeep, border: "none", borderLeft: `1px solid ${C.border}`, cursor: "pointer", color: C.muted, fontSize: 10, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, userSelect: "none" }}
+            style={{ width: 28, background: C.panelDeep, border: "none", borderLeft: `1px solid ${C.border}`, cursor: "pointer", color: C.accentBright, fontSize: 12, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, userSelect: "none" }}
             title={toolsOpen ? "Collapse tools" : "Expand tools"}>
             {toolsOpen ? "▶" : "◀"}
           </button>
@@ -1929,7 +2087,7 @@ function App() {
             <div className="modal-backdrop" onClick={() => setMirrorSettingsOpen(false)}>
               <div className="modal-box" style={{ maxWidth: 320 }} onClick={e => e.stopPropagation()}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Mirroring Settings</span>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Tools Settings</span>
                   <button onClick={() => setMirrorSettingsOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18 }}>×</button>
                 </div>
                 <label style={{ display: "flex", flexDirection: "column", gap: 4, cursor: "pointer", userSelect: "none" }}>
@@ -1977,8 +2135,8 @@ function App() {
                 <div style={{ height: 1, background: C.border }} />
                 <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1 }}>Mirroring</span>
                 <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
-                  <button style={btn(mirrorH, C.pale, C.paleDim)}           onClick={() => setMirrorH(v => !v)}>Horizontal</button>
-                  <button style={btn(mirrorV, C.soft, C.softDim)}           onClick={() => setMirrorV(v => !v)}>Vertical</button>
+                  <button style={btn(mirrorV, C.pale, C.paleDim)}           onClick={() => setMirrorV(v => !v)}>Horizontal</button>
+                  <button style={btn(mirrorH, C.soft, C.softDim)}           onClick={() => setMirrorH(v => !v)}>Vertical</button>
                   <button style={btn(mirrorD, C.accentBright, C.accentDim)} onClick={() => setMirrorD(v => !v)}>Diagonal</button>
                 </div>
                 <div style={{ height: 1, background: C.border }} />
@@ -2065,11 +2223,11 @@ function App() {
               onBlur={() => { const h = parseInt(sizeHInput, 10); if (!isNaN(h) && h > 0) { setSizeHInput(String(Math.max(1, Math.min(99, h)))); } else setSizeHInput(String(gridH)); }}
               style={{ width: 36, textAlign: "center", background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 11, padding: "3px 4px", outline: "none" }} />
             <button style={{ ...btn(true, C.accent, C.accentDim), fontSize: 10, padding: "3px 9px" }}
-              onClick={() => { const w = parseInt(sizeWInput, 10), h = parseInt(sizeHInput, 10); if (w > 0 && h > 0) applyGridSize(w, h); }}>
+              onClick={() => { const w = parseInt(sizeWInput, 10), h = parseInt(sizeHInput, 10); if (w > 0 && h > 0) setPendingSize({ w, h }); }}>
               Apply
             </button>
             <button style={{ ...btn(false), fontSize: 10, padding: "3px 9px" }}
-              onClick={() => { setSizeWInput(String(GRID_W)); setSizeHInput(String(GRID_H)); applyGridSize(GRID_W, GRID_H); }}>
+              onClick={() => { setSizeWInput(String(GRID_W)); setSizeHInput(String(GRID_H)); setPendingSize({ w: GRID_W, h: GRID_H }); }}>
               ↺ Reset
             </button>
           </div>
