@@ -2,7 +2,7 @@
   "tilesets": [
     {
       "name": "Mausoleum",
-      "order": ["wall1", "wall2", "crate", "barrel", "cactus", "bush", "breakable", "fence", "rope"],
+      "order": ["wall1", "wall2", "crate", "barrel", "cactus", "bush", "breakable", "fence", "rope", "water"],
       "files": {
         "wall1": "Mausoleum/MSLM-wall.png",
         "wall2": "Mausoleum/MSLM-wall2.png",
@@ -14,18 +14,20 @@
       },
       "folders": {
         "fence": ["MSLM-fence.png", "MSLM-fenceHORIZONTAL.png", "MSLM-fenceVERTICAL.png"],
-        "rope": ["MSLM-post1.png", "MSLM-post2.png", "MSLM-post3.png", "MSLM-post4.png"]
+        "rope": ["MSLM-post1.png", "MSLM-post2.png", "MSLM-post3.png", "MSLM-post4.png"],
+        "water": ["MSLM-water.png", "MSLM-waterBEND.png", "MSLM-waterCORNER.png", "MSLM-waterLINE.png"]
       },
       "folderPaths": {
         "fence": "Mausoleum/Fence/",
-        "rope": "Mausoleum/Rope/"
+        "rope": "Mausoleum/Rope/",
+        "water": "Mausoleum/Water/"
       }
     }
   ],
   "global": {
     "order": ["water", "spawns", "objectives", "special", "teleporters", "jumppads"],
     "folders": {
-      "water": ["00001011.png", "01101000.png", "01101011.png", "11111111.png"],
+      "water": ["00001011.png", "01111111.png", "01101011.png", "11111111.png"],
       "spawns": ["1.png", "2.png"],
       "objectives": ["Bounty.png", "Gem_Grab.png", "Heist.png", "Hot_Zone.png"],
       "special": ["Unbreakable.png", "HealPad.png", "SlowTile.png", "Smoke.png", "SpeedTile.png", "Spikes.png"],
