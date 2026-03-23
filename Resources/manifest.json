@@ -28,7 +28,7 @@
     "order": ["water", "spawns", "objectives", "special", "teleporters", "jumppads"],
     "folders": {
       "water": ["00001011.png", "01111111.png", "01101011.png", "11111111.png"],
-      "spawns": ["1.png", "2.png"],
+      "spawns": ["1.png", "2.png", "5.png", "6.png"],
       "objectives": ["Bounty.png", "Gem_Grab.png", "Heist.png", "Hot_Zone.png"],
       "special": ["Unbreakable.png", "HealPad.png", "SlowTile.png", "Smoke.png", "SpeedTile.png", "Spikes.png"],
       "teleporters": ["Blue.png", "Green.png", "Red.png", "Yellow.png"],

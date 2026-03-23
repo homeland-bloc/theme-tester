@@ -79,7 +79,7 @@ const MIN_ZOOM = 0.25, MAX_ZOOM = 4;
 // Zoom buttons snap to nearest 5%
 const ZOOM_STEP = 0.05;
 const snapTo10 = z => Math.round(z * 20) / 20;
-const SK = { tiles: "oph_tiles", grid: "oph_grid", colors: "oph_colors", userTiles: "oph_user_tiles", multipliers: "oph_multipliers", priority: "oph_priority", offsets: "oph_offsets", rotatable: "oph_rotatable", tileRots: "oph_tile_rots", gridW: "oph_gridW", gridH: "oph_gridH", tileNames: "oph_tile_names" };
+const SK = { tiles: "oph_tiles", grid: "oph_grid", colors: "oph_colors", userTiles: "oph_user_tiles", multipliers: "oph_multipliers", priority: "oph_priority", offsets: "oph_offsets", rotatable: "oph_rotatable", tileRots: "oph_tile_rots", gridW: "oph_gridW", gridH: "oph_gridH", tileNames: "oph_tile_names", bottom: "oph_bottom" };
 const ACCEPTED = "image/png,image/jpeg,image/gif,image/webp,image/svg+xml,image/bmp";
 const MAX_HISTORY = 60;
 // Non-overlapping tile ID ranges — prevents collisions between sections regardless of reordering
@@ -111,7 +111,7 @@ const deriveCodename = src => {
     "Unbreakable": "Unbreakable", "HealPad": "HealPad", "SlowTile": "SlowTile",
     "Smoke": "Smoke", "SpeedTile": "SpeedTile", "Spikes": "Spike",
     // Spawns
-    "1": "SpawnRed", "2": "SpawnBlue",
+    "1": "SpawnRed", "2": "SpawnBlue", "5": "RespawnRed", "6": "RespawnBlue",
     // Objectives
     "Bounty": "BountyGObjective", "Gem_Grab": "GGObjective", "Heist": "HeistObjective", "Hot_Zone": "HZObjective",
     // Teleporters
@@ -268,6 +268,8 @@ function App() {
   const [tileMultipliers, setTileMultipliers] = useState(() => load(SK.multipliers, {}));
   // Priority tiles: rendered in a second DOM pass at z-index 9999 (always on top)
   const [priorityTiles, setPriorityTiles] = useState(() => load(SK.priority, {}));
+  // Bottom tiles: rendered in Pass 0 at low z-index (always below normal tiles)
+  const [bottomTiles, setBottomTiles] = useState(() => load(SK.bottom, {}));
   // Per-tile offsets: { [id]: { ox: %, oy: % } }  (positive oy = down, positive ox = right)
   const [tileOffsets, setTileOffsets] = useState(() => load(SK.offsets, {}));
   // Per-tile "Allow rotation" toggle: { [id]: bool } — undefined = use default
@@ -326,6 +328,7 @@ function App() {
   const paintingRef       = useRef(false);    // mirrors painting state for event-handler closures
   const gridRef           = useRef(null);     // up-to-date grid for touch-handler closure
   const getMirrorRef      = useRef(null);     // always-current getMirrorPositions for touch handler
+  const getMirrorMetaRef  = useRef(null);     // always-current getMirrorMeta for drag-drop handlers
 
   const handModeRef = useRef(false);
   const gridWRef = useRef(gridW);
@@ -346,6 +349,7 @@ function App() {
   useEffect(() => { save(SK.multipliers,  tileMultipliers); }, [tileMultipliers]);
   useEffect(() => { save(SK.priority,     priorityTiles);   }, [priorityTiles]);
   useEffect(() => { save(SK.offsets,      tileOffsets);     }, [tileOffsets]);
+  useEffect(() => { save(SK.bottom,      bottomTiles);     }, [bottomTiles]);
   useEffect(() => { save(SK.rotatable,    rotatableMap);    }, [rotatableMap]);
   useEffect(() => { save(SK.tileRots,     gridRotations);   }, [gridRotations]);
   useEffect(() => { save(SK.tileNames,    tileNames);       }, [tileNames]);
@@ -384,7 +388,7 @@ function App() {
     // Barrel
     if (s.includes("barrel") || s.includes("MSLM-barrel")) return 1.1;
     // Breakable (MSLM-break only, NOT Unbreakable)
-    if (s.includes("MSLM-break") || (s.includes("break") && !s.includes("Unbreakable"))) return 1.2;
+    if (s.includes("MSLM-break") || (s.includes("break") && !s.includes("Unbreakable"))) return 1.1;
     // Jumppads & Teleporters & HealPad → 2x
     if (s.includes("Jumppads/") || s.includes("Teleporters/") || s.includes("HealPad")) return 2.0;
     // Hot Zone
@@ -407,6 +411,8 @@ function App() {
     const s = t.src;
     // Jumppads, Teleporters, HealPad: +50% H and +50% V so 2× tile sits centred on a 2×2 area
     if (s.includes("Jumppads/") || s.includes("Teleporters/") || s.includes("HealPad")) return { ox: 50, oy: 50 };
+    // Heist safe: vertical offset -50
+    if (s.includes("Heist")) return { ox: 0, oy: -50 };
     return { ox: 0, oy: 0 };
   };
 
@@ -418,11 +424,15 @@ function App() {
   // Spawn tile identification (src-based)
   const isSpawn1 = t => !!(t?.src && t.src.includes("Spawns/1.png")); // red
   const isSpawn2 = t => !!(t?.src && t.src.includes("Spawns/2.png")); // blue
+  const isRespawn1 = t => !!(t?.src && t.src.includes("Spawns/5.png")); // red respawn
+  const isRespawn2 = t => !!(t?.src && t.src.includes("Spawns/6.png")); // blue respawn
   const swapSpawnId = (id) => {
     const t = tiles.find(x => x.id === id);
     if (!t) return id;
     if (isSpawn1(t)) { const b = tiles.find(x => isSpawn2(x)); return b ? b.id : id; }
     if (isSpawn2(t)) { const r = tiles.find(x => isSpawn1(x)); return r ? r.id : id; }
+    if (isRespawn1(t)) { const b = tiles.find(x => isRespawn2(x)); return b ? b.id : id; }
+    if (isRespawn2(t)) { const r = tiles.find(x => isRespawn1(x)); return r ? r.id : id; }
     return id;
   };
 
@@ -441,10 +451,12 @@ function App() {
     const hasMult  = mult !== 1.0;
     const hasOff   = off.ox !== 0 || off.oy !== 0;
     const isPrio   = !!priorityTiles[t.id];
-    if (!hasMult && !hasOff && !isPrio) return null;
+    const isBottom = !!bottomTiles[t.id];
+    if (!hasMult && !hasOff && !isPrio && !isBottom) return null;
     const parts = [];
     if (hasMult) parts.push(`${mult}×`);
     if (isPrio)  parts.push("🚨");
+    if (isBottom) parts.push("⚓");
     if (hasOff)  parts.push("📐");
     return (
       <span style={{ position: "absolute", bottom: 2, left: 3, fontSize: 8, fontWeight: 700, color: C.accentBright, background: "rgba(0,0,0,0.65)", borderRadius: 3, padding: "1px 3px", lineHeight: 1.3, pointerEvents: "none" }}>
@@ -562,6 +574,18 @@ function App() {
         let changed = false;
         flatDefaultTiles.forEach(t => {
           if (/\/objectives\//i.test(t.src) && !next[t.id]) {
+            next[t.id] = true; changed = true;
+          }
+        });
+        return changed ? next : prev;
+      });
+      setBottomTiles(prev => {
+        const next = { ...prev };
+        let changed = false;
+        flatDefaultTiles.forEach(t => {
+          if (!t.src) return;
+          const isBottom = t.src.includes("/Water/") || t.src.includes("Jumppads/") || t.src.includes("Teleporters/") || t.src.includes("HealPad");
+          if (isBottom && !next[t.id]) {
             next[t.id] = true; changed = true;
           }
         });
@@ -833,11 +857,12 @@ function App() {
       // Use gridRef for freshest value (avoids stale closure on rapid clicks)
       const existingId = gridRef.current?.[r]?.[c];
 
-      if (existingId && !eraserRef.current && !mirrorSettingsRef.current?.allowSwap) {
-        // ── OCCUPIED CELL (non-eraser, overwrite disabled): immediate pickup ─────
+      if (existingId && !eraserRef.current) {
+        // ── OCCUPIED CELL (non-eraser): immediate pickup ─────
         const mirrorPositions = getMirrorRef.current ? getMirrorRef.current(r, c) : getMirrorPositions(r, c);
-        // Carry the rotation of the picked-up tile
-        dragRotationRef.current = gridRotations[`${r},${c}`] ?? 0;
+        // Carry the rotation of the picked-up tile (force 0 for non-rotatable)
+        const pickupTile = getTile(existingId);
+        dragRotationRef.current = (pickupTile && isTileRotatable(pickupTile)) ? (gridRotations[`${r},${c}`] ?? 0) : 0;
         setGridRaw(prevGrid => {
           const g = prevGrid.map(row => [...row]);
           mirrorPositions.forEach(([pr, pc]) => { g[pr][pc] = null; });
@@ -934,6 +959,7 @@ function App() {
 
   useEffect(() => { absZoomRef.current   = applyZoom;            }, [applyZoom]);
   useEffect(() => { getMirrorRef.current  = getMirrorPositions;  }, [getMirrorPositions]);
+  useEffect(() => { getMirrorMetaRef.current = getMirrorMeta; }, [mirrorV, mirrorH, mirrorD, gridW, gridH]);
   useEffect(() => { setGridStableRef.current = setGrid;          }, [setGrid]);
 
   // Global mousemove/mouseup: keep ghost following cursor even outside the canvas container,
@@ -953,19 +979,32 @@ function App() {
       const rot = dragRotationRef.current;
       if (cell) {
         const [r, c] = cell;
-        const positions = getMirrorRef.current ? getMirrorRef.current(r, c) : [[r, c]];
-        const placed = [];
+        const metaFn = getMirrorMetaRef.current;
+        const meta = metaFn ? metaFn(r, c) : [{ pos: [r, c], fV: false, fH: false, fD: false }];
+        const ms = mirrorSettingsRef.current;
+        const tile = tiles.find(x => x.id === id);
+        const tileRot = tile ? isTileRotatable(tile) : false;
+        const placedMeta = [];
         setGridStableRef.current(prev => {
-          const anyEmpty = positions.some(([pr, pc]) => prev[pr]?.[pc] === null);
+          const anyEmpty = meta.some(({ pos: [pr, pc] }) => prev[pr]?.[pc] === null);
           if (!anyEmpty) return prev;
           const g = prev.map(row => [...row]);
-          positions.forEach(([pr, pc]) => { if (g[pr]?.[pc] === null) { g[pr][pc] = id; placed.push([pr, pc]); } });
+          meta.forEach(({ pos: [pr, pc], fV, fH, fD }) => {
+            if (g[pr]?.[pc] === null) {
+              let placeId = id;
+              if (placeId && ms.mirrorSpawns && (fH || fD)) placeId = swapSpawnId(placeId);
+              g[pr][pc] = placeId;
+              placedMeta.push({ pos: [pr, pc], fV, fH, fD });
+            }
+          });
           return g;
         });
-        if (placed.length) {
+        if (placedMeta.length) {
           setGridRotations(prev => {
             const n = { ...prev };
-            placed.forEach(([pr, pc]) => { n[`${pr},${pc}`] = rot; });
+            placedMeta.forEach(({ pos: [pr, pc], fV, fH, fD }) => {
+              n[`${pr},${pc}`] = (ms.mirrorRotation && tileRot) ? applyRotMirror(rot, fV, fH, fD) : rot;
+            });
             return n;
           });
         }
@@ -1050,10 +1089,12 @@ function App() {
       // ── IMMEDIATE PICK-UP: occupied cell, no eraser → remove tile + mirror counterparts, start drag ──
       // History written once at touchend (drop/discard), not here.
       const existingId = gridRef.current?.[r]?.[c];
-      if (existingId && !eraserRef.current && !mirrorSettingsRef.current?.allowSwap) {
+      if (existingId && !eraserRef.current) {
         // Remove the dragged tile AND all its mirrored counterparts from the grid
         const pickupPositions = getMirrorRef.current ? getMirrorRef.current(r, c) : [[r, c]];
-        dragRotationRef.current = gridRotations[`${r},${c}`] ?? 0;
+        // Carry the rotation of the picked-up tile (force 0 for non-rotatable)
+        const pickupTile = tiles.find(x => x.id === existingId);
+        dragRotationRef.current = (pickupTile && isTileRotatable(pickupTile)) ? (gridRotations[`${r},${c}`] ?? 0) : 0;
         setGridRaw(prev => {
           const g = prev.map(row => [...row]);
           pickupPositions.forEach(([pr, pc]) => { g[pr][pc] = null; });
@@ -1137,22 +1178,35 @@ function App() {
           const touch = e.changedTouches[0];
           const cell = cellAt(touch);
           const id = dragTileRef.current;
-          const commit = setGridStableRef.current; // latest setGrid (writes history)
+          const commit = setGridStableRef.current;
           const rot = dragRotationRef.current;
+          const ms = mirrorSettingsRef.current;
           if (cell) {
             const [r, c] = cell;
-            const positions = getMirrorRef.current ? getMirrorRef.current(r, c) : [[r, c]];
-            const anyEmpty = positions.some(([pr, pc]) => gridRef.current?.[pr]?.[pc] === null);
+            const metaFn = getMirrorMetaRef.current;
+            const meta = metaFn ? metaFn(r, c) : [{ pos: [r, c], fV: false, fH: false, fD: false }];
+            const tile = tiles.find(x => x.id === id);
+            const tileRot = tile ? isTileRotatable(tile) : false;
+            const anyEmpty = meta.some(({ pos: [pr, pc] }) => gridRef.current?.[pr]?.[pc] === null);
             if (anyEmpty) {
-              const placed = [];
+              const placedMeta = [];
               commit(prev => {
                 const g = prev.map(row => [...row]);
-                positions.forEach(([pr, pc]) => { if (g[pr][pc] === null) { g[pr][pc] = id; placed.push([pr, pc]); } });
+                meta.forEach(({ pos: [pr, pc], fV, fH, fD }) => {
+                  if (g[pr][pc] === null) {
+                    let placeId = id;
+                    if (placeId && ms.mirrorSpawns && (fH || fD)) placeId = swapSpawnId(placeId);
+                    g[pr][pc] = placeId;
+                    placedMeta.push({ pos: [pr, pc], fV, fH, fD });
+                  }
+                });
                 return g;
               });
               setGridRotations(prev => {
                 const n = { ...prev };
-                placed.forEach(([pr, pc]) => { n[`${pr},${pc}`] = rot; });
+                placedMeta.forEach(({ pos: [pr, pc], fV, fH, fD }) => {
+                  n[`${pr},${pc}`] = (ms.mirrorRotation && tileRot) ? applyRotMirror(rot, fV, fH, fD) : rot;
+                });
                 return n;
               });
               setDragTile(null); dragTileRef.current = null; isDraggingRef.current = false;
@@ -1185,6 +1239,14 @@ function App() {
     const h = e => {
       if ((e.ctrlKey || e.metaKey) && e.key === "z") { e.preventDefault(); e.shiftKey ? redo() : undo(); }
       if ((e.ctrlKey || e.metaKey) && e.key === "y") { e.preventDefault(); redo(); }
+      // Bare-key shortcuts (only when not typing in an input)
+      if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+        const tag = e.target.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || e.target.isContentEditable) return;
+        if (e.key === "e" || e.key === "E") { setEraser(true); setSel(null); setHandMode(false); }
+        if (e.key === "z" || e.key === "Z") { undo(); }
+        if (e.key === "x" || e.key === "X") { redo(); }
+      }
     };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
@@ -1263,8 +1325,9 @@ function App() {
       });
     };
     if (!draws.length) { finish(); return; }
-    // Sort so priority tiles are drawn last → always on top in the exported image
-    draws.sort((a, b) => (priorityTiles[a.id] ? 1 : 0) - (priorityTiles[b.id] ? 1 : 0));
+    // Sort: bottom tiles first, then normal, then priority tiles last → correct z-order in export
+    const zOrder = id => priorityTiles[id] ? 2 : (bottomTiles[id] && !priorityTiles[id]) ? 0 : 1;
+    draws.sort((a, b) => zOrder(a.id) - zOrder(b.id));
     // Load all images then draw in sorted order (guarantees z-order)
     Promise.all(draws.map(d => new Promise(resolve => {
       const img = new Image(); img.src = d.src;
@@ -1416,8 +1479,11 @@ function App() {
               onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
               style={{ width: 62, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none", textAlign: "center" }} />
             <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepMult(+0.05)}>+</button>
-            <button style={{ ...btn(false), fontSize: 10, padding: "3px 7px", marginLeft: "auto" }}
-              onClick={() => { setTileMultipliers(prev => { const n = {...prev}; delete n[t.id]; return n; }); setMultInput(String(defaultMult)); }}>Reset</button>
+            {(() => { const isDefault = currentMult === defaultMult; const greenStyle = isDefault ? { color: "#4ade80", borderColor: "#4ade80", background: "rgba(74,222,128,0.12)" } : {}; return (
+              <button style={{ ...btn(false), fontSize: 10, padding: "3px 7px", marginLeft: "auto", ...greenStyle }}
+                disabled={isDefault} title={isDefault ? "Already at default" : "Reset to default"}
+                onClick={() => { setTileMultipliers(prev => { const n = {...prev}; delete n[t.id]; return n; }); setMultInput(String(defaultMult)); }}>Reset</button>
+            ); })()}
           </div>
 
           {/* Offsets */}
@@ -1429,8 +1495,11 @@ function App() {
               onBlur={() => commitOffset()} onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
               style={{ width: 62, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none", textAlign: "center" }} />
             <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepOx(+0.05)}>+</button>
-            <button style={{ ...btn(false), fontSize: 10, padding: "3px 7px", marginLeft: "auto" }}
-              onClick={() => { setOxInput(String(defaultOff.ox)); setTileOffsets(prev => { const n = {...prev}; const o = {...(prev[t.id] ?? {}), ox: defaultOff.ox}; n[t.id] = o; return n; }); }}>Reset</button>
+            {(() => { const isDefault = currentOff.ox === defaultOff.ox; const greenStyle = isDefault ? { color: "#4ade80", borderColor: "#4ade80", background: "rgba(74,222,128,0.12)" } : {}; return (
+              <button style={{ ...btn(false), fontSize: 10, padding: "3px 7px", marginLeft: "auto", ...greenStyle }}
+                disabled={isDefault} title={isDefault ? "Already at default" : "Reset to default"}
+                onClick={() => { setOxInput(String(defaultOff.ox)); setTileOffsets(prev => { const n = {...prev}; const o = {...(prev[t.id] ?? {}), ox: defaultOff.ox}; n[t.id] = o; return n; }); }}>Reset</button>
+            ); })()}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Vertical</span>
@@ -1439,8 +1508,11 @@ function App() {
               onBlur={() => commitOffset()} onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
               style={{ width: 62, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none", textAlign: "center" }} />
             <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepOy(+0.05)}>+</button>
-            <button style={{ ...btn(false), fontSize: 10, padding: "3px 7px", marginLeft: "auto" }}
-              onClick={() => { setOyInput(String(defaultOff.oy)); setTileOffsets(prev => { const n = {...prev}; const o = {...(prev[t.id] ?? {}), oy: defaultOff.oy}; n[t.id] = o; return n; }); }}>Reset</button>
+            {(() => { const isDefault = currentOff.oy === defaultOff.oy; const greenStyle = isDefault ? { color: "#4ade80", borderColor: "#4ade80", background: "rgba(74,222,128,0.12)" } : {}; return (
+              <button style={{ ...btn(false), fontSize: 10, padding: "3px 7px", marginLeft: "auto", ...greenStyle }}
+                disabled={isDefault} title={isDefault ? "Already at default" : "Reset to default"}
+                onClick={() => { setOyInput(String(defaultOff.oy)); setTileOffsets(prev => { const n = {...prev}; const o = {...(prev[t.id] ?? {}), oy: defaultOff.oy}; n[t.id] = o; return n; }); }}>Reset</button>
+            ); })()}
           </div>
 
           {/* Allow rotation */}
@@ -1457,6 +1529,16 @@ function App() {
               style={{ width: 14, height: 14, accentColor: C.accent, cursor: "pointer" }} />
             <span style={{ fontSize: 11, color: C.text }}>Always render on top 🚨</span>
           </label>
+          {/* Always render on bottom */}
+          <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
+            <input type="checkbox" checked={!!bottomTiles[t.id]}
+              onChange={ev => setBottomTiles(prev => { const n = { ...prev }; if (ev.target.checked) n[t.id] = true; else delete n[t.id]; return n; })}
+              style={{ width: 14, height: 14, accentColor: C.accent, cursor: "pointer" }} />
+            <span style={{ fontSize: 11, color: C.text }}>Always render on bottom ⚓</span>
+          </label>
+          {isPriority && !!bottomTiles[t.id] && (
+            <p style={{ fontSize: 10, color: "#fbbf24", background: "rgba(251,191,36,0.12)", borderRadius: 5, padding: "4px 8px" }}>Both flags set — render on top takes priority.</p>
+          )}
           {/* Starred shortcut */}
           <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
             <input type="checkbox" checked={starredTiles.includes(t.id)}
@@ -1612,6 +1694,9 @@ function App() {
       erase: { label: "Erase", icon: "🧼", color: C.danger, desc: "Removes tiles from cells. Click or drag across cells to erase.", iconColor: null },
       hand:  { label: "Hand", icon: "👋", color: "#fbbf24", desc: "Drag to pan the map canvas. On mobile, swipe to scroll.", iconColor: null },
       space: { label: "Space", icon: "🛸", color: C.accentBright, desc: "Places an invisible space tile, making the cell fully transparent in the exported map.", iconColor: null },
+      guides: { label: "Guides", icon: "📏", color: C.accent, desc: "Shows dashed mirror axis lines on the canvas — a vertical line and a horizontal line through the grid centre. Useful for aligning tiles when mirroring is active.", iconColor: null },
+      replace: { label: "Replace", icon: "🔄", color: C.soft, desc: "Two-step tile replacement: first pick a tile on the map, then pick its replacement. All instances of the original tile are swapped at once.", iconColor: null },
+      overwrite: { label: "Block Overwrite", icon: "🧱", color: C.accent, desc: "When enabled, painting over an occupied cell replaces it with the currently selected tile instead of picking it up for dragging.", iconColor: null },
     };
     const def = toolDefs[infoTool];
     if (!def) return null;
@@ -2195,12 +2280,32 @@ function App() {
                   ))
                 )}
 
-                {/* Pass 1: normal tiles (z-index = r + 1 for natural depth), skipping priority tiles */}
+                {/* Pass 0: bottom tiles — rendered first at low z-index (always below normal tiles) */}
                 {grid.map((row, r) =>
                   row.map((id, c) => {
                     const t = id && getTile(id); if (!t) return null;
-                    if (t.isSpace) return null; // space tile = transparent, nothing to render
+                    if (t.isSpace) return null;
+                    if (!bottomTiles[t.id] || priorityTiles[t.id]) return null;
+                    const mult   = getTileMultiplier(t);
+                    const off    = getTileOffset(t);
+                    const rotDeg = (gridRotations[`${r},${c}`] ?? 0) * 90;
+                    const cellPx = CELL * zoom;
+                    const ox = (off.ox / 100) * cellPx;
+                    const oy = (off.oy / 100) * cellPx;
+                    return (
+                      <img key={`bot${r}-${c}`} src={t.src} alt="" draggable={false}
+                        style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%) rotate(${rotDeg}deg)`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 1 }}
+                      />
+                    );
+                  })
+                )}
+                {/* Pass 1: normal tiles (z-index = r + 1 for natural depth), skipping priority and bottom tiles */}
+                {grid.map((row, r) =>
+                  row.map((id, c) => {
+                    const t = id && getTile(id); if (!t) return null;
+                    if (t.isSpace) return null;
                     if (priorityTiles[t.id]) return null;
+                    if (bottomTiles[t.id]) return null;
                     const mult   = getTileMultiplier(t);
                     const off    = getTileOffset(t);
                     const rotDeg = (gridRotations[`${r},${c}`] ?? 0) * 90;
@@ -2209,7 +2314,7 @@ function App() {
                     const oy = (off.oy / 100) * cellPx;
                     return (
                       <img key={`t${r}-${c}`} src={t.src} alt="" draggable={false}
-                        style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%) rotate(${rotDeg}deg)`, pointerEvents: "none", imageRendering: "pixelated", zIndex: r + 1 }}
+                        style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%) rotate(${rotDeg}deg)`, pointerEvents: "none", imageRendering: "pixelated", zIndex: r + 2 }}
                       />
                     );
                   })
@@ -2334,9 +2439,18 @@ function App() {
                   <button style={btn(mirrorD, C.accentBright, C.accentDim)} onClick={() => setMirrorD(v => !v)}>Diagonal</button>
                 </div>
                 <div style={{ height: 1, background: C.border }} />
-                <button style={btn(showGuides, C.accent, C.accentDim)} onClick={() => setShowGuides(v => !v)} title="Toggle mirror guide lines">Guides</button>
-                <div style={{ height: 1, background: C.border }} />
-                <button style={btn(false, C.soft, C.softDim)} onClick={() => { setReplaceOpen(true); setReplaceStep(1); setReplaceA(null); setReplaceB(null); setReplaceMsg(""); }}>Replace</button>
+                <div style={{ display: "flex", alignItems: "center", gap: 3 }}>
+                  <button style={btn(showGuides, C.accent, C.accentDim)} onClick={() => setShowGuides(v => !v)} title="Toggle mirror guide lines">Guides</button>
+                  <span onClick={() => setInfoTool("guides")} style={{ fontSize: 12, cursor: "pointer", color: "rgba(255,255,255,0.6)", lineHeight: 1, verticalAlign: "super" }} title="Guides info">ⓘ</span>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 3 }}>
+                  <button style={btn(false, C.soft, C.softDim)} onClick={() => { setReplaceOpen(true); setReplaceStep(1); setReplaceA(null); setReplaceB(null); setReplaceMsg(""); }}>Replace</button>
+                  <span onClick={() => setInfoTool("replace")} style={{ fontSize: 12, cursor: "pointer", color: "rgba(255,255,255,0.6)", lineHeight: 1, verticalAlign: "super" }} title="Replace info">ⓘ</span>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 3 }}>
+                  <button style={btn(mirrorSettings.allowSwap, C.accent, C.accentDim)} onClick={() => setMirrorSettings(p => ({ ...p, allowSwap: !p.allowSwap }))} title="When enabled, painting over occupied cells replaces them instead of picking them up">Block Overwrite</button>
+                  <span onClick={() => setInfoTool("overwrite")} style={{ fontSize: 12, cursor: "pointer", color: "rgba(255,255,255,0.6)", lineHeight: 1, verticalAlign: "super" }} title="Block Overwrite info">ⓘ</span>
+                </div>
               </div>
             </div>
           )}
@@ -2374,6 +2488,28 @@ function App() {
             <button style={btn(true, C.danger, "rgba(248,113,113,0.18)")}
               onClick={() => { if (confirm("Clear the whole grid?")) setGrid(Array.from({ length: gridH }, () => Array(gridW).fill(null))); }}>
               Clear Map
+            </button>
+            <button style={{ ...btn(false, C.danger, "rgba(248,113,113,0.14)"), fontSize: 10 }}
+              onClick={() => {
+                if (!confirm("Reset all custom tile settings?\n\nThis will clear all custom multipliers, offsets, rotation flags, priority flags, and render-on-bottom flags, then reapply computed defaults.\n\nThis cannot be undone.")) return;
+                setTileMultipliers({});
+                setTileOffsets({});
+                setRotatableMap({});
+                setPriorityTiles(() => {
+                  const n = {};
+                  flatDefaultTiles.forEach(t => { if (/\/objectives\//i.test(t.src)) n[t.id] = true; });
+                  return n;
+                });
+                setBottomTiles(() => {
+                  const n = {};
+                  flatDefaultTiles.forEach(t => {
+                    if (!t.src) return;
+                    if (t.src.includes("/Water/") || t.src.includes("Jumppads/") || t.src.includes("Teleporters/") || t.src.includes("HealPad")) n[t.id] = true;
+                  });
+                  return n;
+                });
+              }}>
+              Reset All Tile Settings
             </button>
             <input type="text" value={mapName} onChange={e => setMapName(e.target.value)}
               placeholder="map name…"
