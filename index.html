@@ -105,6 +105,9 @@ const deriveCodename = src => {
     "MSLM-fence": "Fence1", "MSLM-fenceHORIZONTAL": "Fence2", "MSLM-fenceVERTICAL": "Fence3",
     "MSLM-post1": "Rope1", "MSLM-post2": "Rope2", "MSLM-post3": "Rope3", "MSLM-post4": "Rope4",
     "MSLM-water": "WaterFill", "MSLM-waterBEND": "WaterBend", "MSLM-waterCORNER": "WaterCorner", "MSLM-waterLINE": "WaterLine",
+    "MSLM-waterDOUBLEBEND": "WaterDoubleBend", "MSLM-waterDOUBLELINE": "WaterDoubleLine", "MSLM-waterFULL": "WaterFullTile",
+    // Mausoleum objectives
+    "MSLM-ball": "MSLMBall", "MSLM-safe": "MSLMSafe", "MSLM-mine": "MSLMMine",
     // Global water
     "00001011": "GWaterBend", "01111111": "GWaterCorner", "01101011": "GWaterLine", "11111111": "GWaterFill",
     // Global special
@@ -395,8 +398,8 @@ function App() {
     if (s.includes("Hot_Zone")) return 7.0;
     // Smoke / poison / gas
     if (s.includes("Smoke")) return 1.65;
-    // Gem Grab & Heist objectives → 2x
-    if (s.includes("Gem_Grab") || s.includes("Heist")) return 2.0;
+    // Gem Grab & Heist objectives + Mausoleum objectives → 2x
+    if (s.includes("Gem_Grab") || s.includes("Heist") || s.includes("Mausoleum/Objectives/")) return 2.0;
     return 1.0;
   };
 
@@ -411,8 +414,8 @@ function App() {
     const s = t.src;
     // Jumppads, Teleporters, HealPad: +50% H and +50% V so 2× tile sits centred on a 2×2 area
     if (s.includes("Jumppads/") || s.includes("Teleporters/") || s.includes("HealPad")) return { ox: 50, oy: 50 };
-    // Heist safe: vertical offset -50
-    if (s.includes("Heist")) return { ox: 0, oy: -50 };
+    // Heist safe + Mausoleum safe: vertical offset -50
+    if (s.includes("Heist") || s.includes("MSLM-safe")) return { ox: 0, oy: -50 };
     return { ox: 0, oy: 0 };
   };
 
