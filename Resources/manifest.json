@@ -2,7 +2,7 @@
   "tilesets": [
     {
       "name": "Mausoleum",
-      "order": ["wall1", "wall2", "crate", "barrel", "cactus", "bush", "breakable", "fence", "rope", "water"],
+      "order": ["wall1", "wall2", "crate", "barrel", "cactus", "bush", "breakable", "fence", "rope", "water", "objectives"],
       "files": {
         "wall1": "Mausoleum/MSLM-wall.png",
         "wall2": "Mausoleum/MSLM-wall2.png",
@@ -15,12 +15,14 @@
       "folders": {
         "fence": ["MSLM-fence.png", "MSLM-fenceHORIZONTAL.png", "MSLM-fenceVERTICAL.png"],
         "rope": ["MSLM-post1.png", "MSLM-post2.png", "MSLM-post3.png", "MSLM-post4.png"],
-        "water": ["MSLM-waterBEND.png", "MSLM-waterCORNER.png", "MSLM-waterLINE.png", "MSLM-water.png"]
+        "water": ["MSLM-waterBEND.png", "MSLM-waterCORNER.png", "MSLM-waterLINE.png", "MSLM-water.png", "MSLM-waterDOUBLEBEND.png", "MSLM-waterDOUBLELINE.png", "MSLM-waterFULL.png"],
+        "objectives": ["MSLM-ball.png", "MSLM-safe.png", "MSLM-mine.png"]
       },
       "folderPaths": {
         "fence": "Mausoleum/Fence/",
         "rope": "Mausoleum/Rope/",
-        "water": "Mausoleum/Water/"
+        "water": "Mausoleum/Water/",
+        "objectives": "Mausoleum/Objectives/"
       }
     }
   ],
