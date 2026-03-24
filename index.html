@@ -398,8 +398,12 @@ function App() {
     if (s.includes("Hot_Zone")) return 7.0;
     // Smoke / poison / gas
     if (s.includes("Smoke")) return 1.65;
-    // Gem Grab & Heist objectives + Mausoleum objectives → 2x
-    if (s.includes("Gem_Grab") || s.includes("Heist") || s.includes("Mausoleum/Objectives/")) return 2.0;
+    // Gem mine (MSLM-mine) → 2.3x
+    if (s.includes("MSLM-mine")) return 2.3;
+    // Brawl ball (MSLM-ball) → 1.7x
+    if (s.includes("MSLM-ball")) return 1.7;
+    // Gem Grab & Heist objectives + Mausoleum safe → 2x
+    if (s.includes("Gem_Grab") || s.includes("Heist") || s.includes("MSLM-safe")) return 2.0;
     return 1.0;
   };
 
@@ -414,8 +418,8 @@ function App() {
     const s = t.src;
     // Jumppads, Teleporters, HealPad: +50% H and +50% V so 2× tile sits centred on a 2×2 area
     if (s.includes("Jumppads/") || s.includes("Teleporters/") || s.includes("HealPad")) return { ox: 50, oy: 50 };
-    // Heist safe + Mausoleum safe: vertical offset -50
-    if (s.includes("Heist") || s.includes("MSLM-safe")) return { ox: 0, oy: -50 };
+    // Heist safe + Mausoleum safe: vertical offset -90
+    if (s.includes("Heist") || s.includes("MSLM-safe")) return { ox: 0, oy: -90 };
     return { ox: 0, oy: 0 };
   };
 
