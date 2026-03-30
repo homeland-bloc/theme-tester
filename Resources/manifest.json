@@ -24,6 +24,24 @@
         "water": "Mausoleum/Water/",
         "objectives": "Mausoleum/Objectives/"
       }
+    },
+    {
+      "name": "Sewer",
+      "order": ["wall1", "wall2", "crate", "barrel", "cactus", "bush", "water"],
+      "files": {
+        "wall1": "Sewer/SWR-wall.png",
+        "wall2": "Sewer/SWR-wall2.png",
+        "crate": "Sewer/SWR-crate.png",
+        "barrel": "Sewer/SWR-barrel.png",
+        "cactus": "Sewer/SWR-cactus.png",
+        "bush": "Sewer/SWR-bush.png"
+      },
+      "folders": {
+        "water": ["SWR-waterBEND.png", "SWR-waterCORNER.png", "SWR-waterLINE.png", "SWR-water.png", "SWR-waterDOUBLEBEND.png", "SWR-waterDOUBLELINE.png", "SWR-waterFULL.png"]
+      },
+      "folderPaths": {
+        "water": "Sewer/Water/"
+      }
     }
   ],
   "global": {
