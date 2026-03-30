@@ -788,6 +788,19 @@ function App() {
         return n;
       });
     }
+    // Update per-cell offset overrides for mirror offset feature
+    setGridOffsets(prev => {
+      const n = { ...prev };
+      if (eraser) {
+        meta.forEach(({ pos: [pr, pc] }) => { delete n[`${pr},${pc}`]; });
+      } else if (tileId) {
+        meta.forEach(({ pos: [pr, pc], fV, fH, fD }) => {
+          const over = computeMirrorOffsetOverride(tileId, fV, fH, fD);
+          if (over !== undefined) { n[`${pr},${pc}`] = over; } else { delete n[`${pr},${pc}`]; }
+        });
+      }
+      return n;
+    });
   }, [eraser, sel, mirrorV, mirrorH, mirrorD, setGrid, tiles]);
 
   useEffect(() => { paintRef.current        = paintCells;           }, [paintCells]);
@@ -836,6 +849,21 @@ function App() {
         return n;
       });
     }
+    // Per-cell offset overrides
+    setGridOffsets(prev => {
+      const n = { ...prev };
+      if (isEraser) {
+        cells.forEach(([r, c]) => {
+          getMirrorMeta(r, c).forEach(({ pos: [pr, pc] }) => { delete n[`${pr},${pc}`]; });
+        });
+      } else if (tileId) {
+        placedMeta.forEach(({ pos: [pr, pc], fV, fH, fD }) => {
+          const over = computeMirrorOffsetOverride(tileId, fV, fH, fD);
+          if (over !== undefined) { n[`${pr},${pc}`] = over; } else { delete n[`${pr},${pc}`]; }
+        });
+      }
+      return n;
+    });
   }, [mirrorV, mirrorH, mirrorD, setGrid, tiles]);
 
   // Called on mouseup / touch-end to finalise the current selection.
@@ -902,6 +930,11 @@ function App() {
           return g;
         });
         setGridRotations(prev => {
+          const n = { ...prev };
+          mirrorPositions.forEach(([pr, pc]) => { delete n[`${pr},${pc}`]; });
+          return n;
+        });
+        setGridOffsets(prev => {
           const n = { ...prev };
           mirrorPositions.forEach(([pr, pc]) => { delete n[`${pr},${pc}`]; });
           return n;
@@ -1057,6 +1090,14 @@ function App() {
             });
             return n;
           });
+          setGridOffsets(prev => {
+            const n = { ...prev };
+            placedMeta.forEach(({ pos: [pr, pc], fV, fH, fD }) => {
+              const over = computeMirrorOffsetOverride(id, fV, fH, fD);
+              if (over !== undefined) { n[`${pr},${pc}`] = over; } else { delete n[`${pr},${pc}`]; }
+            });
+            return n;
+          });
         }
       } else {
         setGridStableRef.current(g => g);
@@ -1151,6 +1192,11 @@ function App() {
           return g;
         });
         setGridRotations(prev => {
+          const n = { ...prev };
+          pickupPositions.forEach(([pr, pc]) => { delete n[`${pr},${pc}`]; });
+          return n;
+        });
+        setGridOffsets(prev => {
           const n = { ...prev };
           pickupPositions.forEach(([pr, pc]) => { delete n[`${pr},${pc}`]; });
           return n;
@@ -1259,6 +1305,14 @@ function App() {
                 });
                 return n;
               });
+              setGridOffsets(prev => {
+                const n = { ...prev };
+                placedMeta.forEach(({ pos: [pr, pc], fV, fH, fD }) => {
+                  const over = computeMirrorOffsetOverride(id, fV, fH, fD);
+                  if (over !== undefined) { n[`${pr},${pc}`] = over; } else { delete n[`${pr},${pc}`]; }
+                });
+                return n;
+              });
               setDragTile(null); dragTileRef.current = null; isDraggingRef.current = false;
               return;
             }
@@ -1320,6 +1374,14 @@ function App() {
       });
       return n;
     });
+    setGridOffsets(prev => {
+      const n = {};
+      Object.entries(prev).forEach(([k, v]) => {
+        const [r, c] = k.split(",").map(Number);
+        if (r < h && c < w) n[k] = v;
+      });
+      return n;
+    });
     applyZoom(calcFitZoom(w, h));
   };
 
@@ -1363,7 +1425,7 @@ function App() {
       const t = id && getTile(id);
       if (!t) return;
       if (t.isSpace) { spaceCells.push({ r, c }); return; }
-      draws.push({ id: t.id, src: t.src, r, c, mult: getTileMultiplier(t), off: getTileOffset(t), rotDeg: (gridRotations[`${r},${c}`] ?? 0) * 90 });
+      draws.push({ id: t.id, src: t.src, r, c, mult: getTileMultiplier(t), off: getEffectiveOffset(t, r, c), rotDeg: (gridRotations[`${r},${c}`] ?? 0) * 90 });
     }));
     const filename = (mapName.trim() || "ophelia-map") + ".png";
     const finish = () => {
@@ -1571,6 +1633,13 @@ function App() {
               onChange={ev => setRotatableMap(prev => ({ ...prev, [t.id]: ev.target.checked }))}
               style={{ width: 14, height: 14, accentColor: C.accent, cursor: "pointer" }} />
             <span style={{ fontSize: 11, color: C.text }}>Allow rotation 🔄</span>
+          </label>
+          {/* Allow mirror offset */}
+          <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
+            <input type="checkbox" checked={isMirrorOffset(t)}
+              onChange={ev => setMirrorOffsetTiles(prev => ({ ...prev, [t.id]: ev.target.checked }))}
+              style={{ width: 14, height: 14, accentColor: C.accent, cursor: "pointer" }} />
+            <span style={{ fontSize: 11, color: C.text }}>Allow mirror offset 🌊</span>
           </label>
           {/* Always render on top */}
           <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
@@ -2087,25 +2156,7 @@ function App() {
                     {/* 2. Active tileset tiles */}
                     {tilesetEntries.map(renderEntry)}
                     {/* 4. User-uploaded tiles */}
-                    {userTiles.map(t => {
-                      const active = sel === t.id && !eraser;
-                      const failed = failedTiles.has(t.id);
-                      const isStarredU = starredTiles.includes(t.id);
-                      return (
-                        <div key={t.id}
-                          onClick={() => { if (failed) { setFailedWarning(true); return; } setSel(t.id); setEraser(false); setHandMode(false); }}
-                          style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: failed ? "not-allowed" : "pointer", border: `2px solid ${failed ? C.danger : active ? C.accentBright : C.border}`, background: failed ? "rgba(248,113,113,0.08)" : active ? C.accentDim : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", opacity: failed ? 0.55 : 1, position: "relative", overflow: "visible" }}>
-                          <div style={{ position: "absolute", inset: 0, borderRadius: 6, overflow: "hidden", background: C.panelDeep, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                            {failed ? <span style={{ fontSize: 20 }}>⚠️</span>
-                              : <img src={t.src} alt="" onError={() => markFailed(t.id)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated" }} />}
-                          </div>
-                          <span onClick={e => { e.stopPropagation(); setInfoTile(t.id); }}
-                            style={{ position: "absolute", top: -7, right: -7, width: 15, height: 15, fontSize: 13, cursor: "pointer", color: isStarredU ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "15px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
-                            title={isStarredU ? "Starred tile — click for info" : "Tile info"}>ⓘ</span>
-                          <TileBadge t={t} />
-                        </div>
-                      );
-                    })}
+                    {userTiles.map(t => renderFlatCard(t))}
                     {/* 5. Separator + Upload card */}
                     <div style={{ width: "100%", flexBasis: "100%", height: 1, background: C.border, margin: "3px 0", flexShrink: 0 }} />
                     <div onClick={() => fileRef.current.click()}
@@ -2337,7 +2388,7 @@ function App() {
                     if (t.isSpace) return null;
                     if (!bottomTiles[t.id] || priorityTiles[t.id]) return null;
                     const mult   = getTileMultiplier(t);
-                    const off    = getTileOffset(t);
+                    const off    = getEffectiveOffset(t, r, c);
                     const rotDeg = (gridRotations[`${r},${c}`] ?? 0) * 90;
                     const cellPx = CELL * zoom;
                     const ox = (off.ox / 100) * cellPx;
@@ -2357,7 +2408,7 @@ function App() {
                     if (priorityTiles[t.id]) return null;
                     if (bottomTiles[t.id]) return null;
                     const mult   = getTileMultiplier(t);
-                    const off    = getTileOffset(t);
+                    const off    = getEffectiveOffset(t, r, c);
                     const rotDeg = (gridRotations[`${r},${c}`] ?? 0) * 90;
                     const cellPx = CELL * zoom;
                     const ox = (off.ox / 100) * cellPx;
@@ -2376,7 +2427,7 @@ function App() {
                     if (t.isSpace) return null;
                     if (!priorityTiles[t.id]) return null;
                     const mult   = getTileMultiplier(t);
-                    const off    = getTileOffset(t);
+                    const off    = getEffectiveOffset(t, r, c);
                     const rotDeg = (gridRotations[`${r},${c}`] ?? 0) * 90;
                     const cellPx = CELL * zoom;
                     const ox = (off.ox / 100) * cellPx;
@@ -2419,6 +2470,33 @@ function App() {
                       stroke={mirrorH ? C.soft : "rgba(255,255,255,0.38)"} strokeWidth={mirrorH ? 2 : 1.5} opacity={1} strokeDasharray="6 3" />
                   </svg>
                 )}
+
+                {/* Offset center markers — "+" at the cell center for tiles with non-zero offset */}
+                {showOffsetCenters && (() => {
+                  const cellPx = CELL * zoom;
+                  const markers = [];
+                  grid.forEach((row, r) => row.forEach((id, c) => {
+                    const t = id && getTile(id);
+                    if (!t || t.isSpace) return;
+                    const off = getEffectiveOffset(t, r, c);
+                    if (off.ox === 0 && off.oy === 0) return;
+                    const cx = (c + 0.5) * cellPx;
+                    const cy = (r + 0.5) * cellPx;
+                    markers.push({ cx, cy, key: `${r}-${c}` });
+                  }));
+                  if (!markers.length) return null;
+                  const sz = Math.max(4, cellPx * 0.18);
+                  return (
+                    <svg style={{ position: "absolute", left: 0, top: CELL * zoom, width: gW, height: gH, pointerEvents: "none", zIndex: 202, overflow: "visible" }}>
+                      {markers.map(({ cx, cy, key }) => (
+                        <g key={key} transform={`translate(${cx},${cy})`}>
+                          <line x1={-sz} y1={0} x2={sz} y2={0} stroke="rgba(255,255,0,0.9)" strokeWidth={1.5} />
+                          <line x1={0} y1={-sz} x2={0} y2={sz} stroke="rgba(255,255,0,0.9)" strokeWidth={1.5} />
+                        </g>
+                      ))}
+                    </svg>
+                  );
+                })()}
 
               </div>
             </div>
@@ -2489,9 +2567,10 @@ function App() {
                   <button style={btn(mirrorD, C.accentBright, C.accentDim)} onClick={() => setMirrorD(v => !v)}>Diagonal</button>
                 </div>
                 <div style={{ height: 1, background: C.border }} />
-                <div style={{ display: "flex", alignItems: "center", gap: 3 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 3, flexWrap: "wrap" }}>
                   <button style={btn(showGuides, C.accent, C.accentDim)} onClick={() => setShowGuides(v => !v)} title="Toggle mirror guide lines">Guides</button>
                   <span onClick={() => setInfoTool("guides")} style={{ fontSize: 12, cursor: "pointer", color: "rgba(255,255,255,0.6)", lineHeight: 1, verticalAlign: "super" }} title="Guides info">ⓘ</span>
+                  <button style={btn(showOffsetCenters, C.soft, C.softDim)} onClick={() => setShowOffsetCenters(v => !v)} title="Show a + at the placement cell of tiles with non-zero offset">Offset Centers</button>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 3 }}>
                   <button style={btn(false, C.soft, C.softDim)} onClick={() => { setReplaceOpen(true); setReplaceStep(1); setReplaceA(null); setReplaceB(null); setReplaceMsg(""); }}>Replace</button>
@@ -2545,6 +2624,8 @@ function App() {
                 setTileMultipliers({});
                 setTileOffsets({});
                 setRotatableMap({});
+                setMirrorOffsetTiles({});
+                setGridOffsets({});
                 setPriorityTiles(() => {
                   const n = {};
                   flatDefaultTiles.forEach(t => { if (/\/objectives\//i.test(t.src)) n[t.id] = true; });
