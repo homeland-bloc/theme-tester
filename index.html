@@ -127,6 +127,22 @@ const deriveCodename = src => {
   return map[file] ?? null;
 };
 const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
+// Convert a data URL to a blob URL for faster browser rendering (blob URLs bypass data URI parsing overhead)
+const dataURLtoBlobURL = dataURL => {
+  try {
+    const sep = dataURL.indexOf(',');
+    const meta = dataURL.slice(0, sep);
+    const data = dataURL.slice(sep + 1);
+    const mime = (meta.match(/:(.*?);/) || [])[1] || 'application/octet-stream';
+    if (meta.includes(';base64')) {
+      const bytes = atob(data);
+      const arr = new Uint8Array(bytes.length);
+      for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+      return URL.createObjectURL(new Blob([arr], { type: mime }));
+    }
+    return URL.createObjectURL(new Blob([decodeURIComponent(data)], { type: mime }));
+  } catch { return null; }
+};
 const validHex = h => /^#[0-9A-Fa-f]{6}$/.test(h);
 const isMobileDevice = () => typeof window !== "undefined" && window.innerWidth < 768;
 
@@ -196,7 +212,11 @@ function App() {
   const [tilesLoading, setTilesLoading]   = useState(true);
 
   // User-uploaded tiles persisted in localStorage; IDs start after defaults
-  const [userTiles, setUserTiles] = useState(() => load(SK.userTiles, []));
+  // blobSrc is generated at load time for faster rendering (blob URLs skip data URI parsing)
+  const [userTiles, setUserTiles] = useState(() => {
+    const saved = load(SK.userTiles, []);
+    return saved.map(t => ({ ...t, blobSrc: t.src ? dataURLtoBlobURL(t.src) : undefined }));
+  });
   const tiles = useMemo(() => [...defaultTiles, ...userTiles], [defaultTiles, userTiles]);
 
   const [gridW, setGridW] = useState(() => load(SK.gridW, GRID_W));
@@ -253,6 +273,8 @@ function App() {
     if (prev.length >= 10) return prev; // max 10
     return [...prev, id];
   });
+  // Last 3 selected tile IDs (numeric only, most-recent first)
+  const [recentTileIds, setRecentTileIds] = useState(() => load("oph_recent", []));
 
   // Map size input fields (local string state for editing)
   const [sizeWInput, setSizeWInput] = useState(String(load(SK.gridW, GRID_W)));
@@ -354,7 +376,7 @@ function App() {
   useEffect(() => { tileOffsetsRef.current       = tileOffsets;       }, [tileOffsets]);
 
   // Persist
-  useEffect(() => { save(SK.userTiles,    userTiles);       }, [userTiles]);
+  useEffect(() => { save(SK.userTiles, userTiles.map(({ blobSrc: _b, ...t }) => t)); }, [userTiles]);
   useEffect(() => { save(SK.grid,         grid);            }, [grid]);
   useEffect(() => { save(SK.multipliers,  tileMultipliers); }, [tileMultipliers]);
   useEffect(() => { save(SK.priority,     priorityTiles);   }, [priorityTiles]);
@@ -388,6 +410,15 @@ function App() {
     `;
   }, [uiTheme]);
   useEffect(() => { save("oph_starred", starredTiles); }, [starredTiles]);
+  useEffect(() => { save("oph_recent", recentTileIds); }, [recentTileIds]);
+  // Track last 3 selected numeric tile IDs
+  useEffect(() => {
+    if (sel === null || typeof sel !== "number") return;
+    setRecentTileIds(prev => {
+      const next = [sel, ...prev.filter(id => id !== sel)].slice(0, 3);
+      return next;
+    });
+  }, [sel]);
   useEffect(() => { save("oph_map_name", mapName); }, [mapName]);
   useEffect(() => { save(SK.gridW, gridW); setSizeWInput(String(gridW)); }, [gridW]);
   useEffect(() => { save(SK.gridH, gridH); setSizeHInput(String(gridH)); }, [gridH]);
@@ -413,6 +444,8 @@ function App() {
     if (s.includes("MSLM-ball")) return 1.7;
     // Gem Grab & Heist objectives + Mausoleum safe → 2x
     if (s.includes("Gem_Grab") || s.includes("Heist") || s.includes("MSLM-safe")) return 2.0;
+    // Bounty star → 1.25x
+    if (s.includes("Bounty")) return 1.25;
     return 1.0;
   };
 
@@ -429,6 +462,10 @@ function App() {
     if (s.includes("Jumppads/") || s.includes("Teleporters/") || s.includes("HealPad")) return { ox: 50, oy: 50 };
     // Heist safe + Mausoleum safe: vertical offset -90
     if (s.includes("Heist") || s.includes("MSLM-safe")) return { ox: 0, oy: -90 };
+    // Bounty star: slight upward offset
+    if (s.includes("Bounty")) return { ox: 0, oy: -10 };
+    // Mausoleum rope fences (MSLM-post*): -20 vertical
+    if (s.includes("MSLM-post")) return { ox: 0, oy: -20 };
     return { ox: 0, oy: 0 };
   };
 
@@ -700,11 +737,12 @@ function App() {
     if (!imageFiles.length) return;
     let loaded = 0;
     imageFiles.forEach(f => {
+      const blobSrc = URL.createObjectURL(f); // fast blob URL for immediate rendering
       const r = new FileReader();
       r.onload = e => {
         if (nextId.current > USER_ID_MAX) { console.warn("User tile limit reached (IDs 100–199)"); return; }
         const id = nextId.current++;
-        setUserTiles(prev => [...prev, { id, src: e.target.result }]);
+        setUserTiles(prev => [...prev, { id, src: e.target.result, blobSrc }]);
         loaded++;
         if (loaded === imageFiles.length) {
           // Flash notification
@@ -757,7 +795,7 @@ function App() {
   };
 
   const paintCells = useCallback((r, c) => {
-    const meta   = getMirrorMeta(r, c);
+    const meta   = (getMirrorMetaRef.current ?? getMirrorMeta)(r, c);
     const tileId = eraser ? null : (sel ?? null);
     const rot    = tileId ? ((cardRotationsRef.current[tileId] ?? 0) / 90 % 4) : 0;
     const ms     = mirrorSettingsRef.current;
@@ -819,8 +857,9 @@ function App() {
     const placedMeta = [];
     setGrid(prev => {
       const g = prev.map(row => [...row]);
+      const metaFnC = getMirrorMetaRef.current ?? getMirrorMeta;
       cells.forEach(([r, c]) => {
-        getMirrorMeta(r, c).forEach(({ pos: [pr, pc], fV, fH, fD }) => {
+        metaFnC(r, c).forEach(({ pos: [pr, pc], fV, fH, fD }) => {
           if (!isEraser && g[pr][pc] !== null && !ms.allowSwap) return;
           let id = isEraser ? null : (tileId ?? null);
           if (id && ms.mirrorSpawns && (fH || fD)) id = swapSpawnId(id);
@@ -841,10 +880,11 @@ function App() {
         return n;
       });
     } else if (isEraser) {
+      const metaFnE = getMirrorMetaRef.current ?? getMirrorMeta;
       setGridRotations(prev => {
         const n = { ...prev };
         cells.forEach(([r, c]) => {
-          getMirrorMeta(r, c).forEach(({ pos: [pr, pc] }) => { delete n[`${pr},${pc}`]; });
+          metaFnE(r, c).forEach(({ pos: [pr, pc] }) => { delete n[`${pr},${pc}`]; });
         });
         return n;
       });
@@ -853,8 +893,9 @@ function App() {
     setGridOffsets(prev => {
       const n = { ...prev };
       if (isEraser) {
+        const metaFnO = getMirrorMetaRef.current ?? getMirrorMeta;
         cells.forEach(([r, c]) => {
-          getMirrorMeta(r, c).forEach(({ pos: [pr, pc] }) => { delete n[`${pr},${pc}`]; });
+          metaFnO(r, c).forEach(({ pos: [pr, pc] }) => { delete n[`${pr},${pc}`]; });
         });
       } else if (tileId) {
         placedMeta.forEach(({ pos: [pr, pc], fV, fH, fD }) => {
@@ -1388,14 +1429,15 @@ function App() {
   // ── Replace A → B ─────────────────────────────────────────────────
   const doReplace = () => {
     if (replaceA == null || replaceB == null) return;
-    let count = 0;
-    setGrid(prev => prev.map(row => row.map(id => { if (id === replaceA) { count++; return replaceB; } return id; })));
+    // Count synchronously before setGrid (updater is async in React 18)
+    const count = grid.reduce((s, row) => s + row.filter(id => id === replaceA).length, 0);
     if (count === 0) {
       setReplaceMsg("⚠ No cells with that tile found on the map.");
       if (replaceMsgTimerRef.current) clearTimeout(replaceMsgTimerRef.current);
       replaceMsgTimerRef.current = setTimeout(() => setReplaceMsg(""), 2500);
       return;
     }
+    setGrid(prev => prev.map(row => row.map(id => id === replaceA ? replaceB : id)));
     const tileA = getTile(replaceA); const tileB = getTile(replaceB);
     const nameA = (tileA?.isSpace ? "Space" : deriveCodename(tileA?.src)) || (tileA ? `#${replaceA}` : "?");
     const nameB = (tileB?.isSpace ? "Space" : deriveCodename(tileB?.src)) || (tileB ? `#${replaceB}` : "?");
@@ -1425,7 +1467,7 @@ function App() {
       const t = id && getTile(id);
       if (!t) return;
       if (t.isSpace) { spaceCells.push({ r, c }); return; }
-      draws.push({ id: t.id, src: t.src, r, c, mult: getTileMultiplier(t), off: getEffectiveOffset(t, r, c), rotDeg: (gridRotations[`${r},${c}`] ?? 0) * 90 });
+      draws.push({ id: t.id, src: t.blobSrc ?? t.src, r, c, mult: getTileMultiplier(t), off: getEffectiveOffset(t, r, c), rotDeg: (gridRotations[`${r},${c}`] ?? 0) * 90 });
     }));
     const filename = (mapName.trim() || "ophelia-map") + ".png";
     const finish = () => {
@@ -1556,7 +1598,7 @@ function App() {
           </div>
           <div style={{ background: C.panelDeep, borderRadius: 8, padding: 12, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 120 }}>
             <div className="tile-img-checker" style={{ borderRadius: 4, overflow: "hidden" }}>
-              <img src={t.src} alt="" style={{ maxWidth: "260px", maxHeight: 180, imageRendering: "pixelated" }} />
+              <img src={t.blobSrc ?? t.src} alt="" style={{ maxWidth: "260px", maxHeight: 180, imageRendering: "pixelated" }} />
             </div>
           </div>
 
@@ -1696,7 +1738,7 @@ function App() {
           display: "flex", alignItems: "center", justifyContent: "center" }}>
         {isSpace
           ? <span style={{ fontSize: 20 }}>🛸</span>
-          : <img src={t.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated" }} />}
+          : <img src={t.blobSrc ?? t.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated" }} />}
       </div>
     );
 
@@ -1813,8 +1855,15 @@ function App() {
       erase: { label: "Erase", icon: "🧼", color: C.danger, desc: "Removes tiles from cells. Click or drag across cells to erase.", iconColor: null },
       hand:  { label: "Hand", icon: "👋", color: "#fbbf24", desc: "Drag to pan the map canvas. On mobile, swipe to scroll.", iconColor: null },
       space: { label: "Space", icon: "🛸", color: C.accentBright, desc: "Places an invisible space tile, making the cell fully transparent in the exported map.", iconColor: null },
-      guides: { label: "Guides", icon: "📏", color: C.accent, desc: "Shows dashed mirror axis lines on the canvas — a vertical line and a horizontal line through the grid centre. Useful for aligning tiles when mirroring is active.", iconColor: null },
-      replace: { label: "Replace", icon: "🔄", color: C.soft, desc: "Two-step tile replacement: first pick a tile on the map, then pick its replacement. All instances of the original tile are swapped at once.", iconColor: null },
+      single: { label: "Single", icon: "✏️", color: C.accent, desc: "Freehand paint mode. Click or drag to place tiles one cell at a time.", iconColor: null },
+      line:   { label: "Line", icon: "📏", color: C.accent, desc: "Line draw mode. Click a start cell and drag to an end cell — tiles are placed in a straight line between them.", iconColor: null },
+      rect:   { label: "Rectangle", icon: "⬜", color: C.accent, desc: "Rectangle fill mode. Click and drag to define a bounding box — all cells inside are filled with the selected tile.", iconColor: null },
+      mirrorV: { label: "Horizontal Mirror", icon: "↔", color: C.pale, desc: "Mirrors every paint action horizontally (left ↔ right). The mirror axis runs vertically through the grid centre.", iconColor: C.pale },
+      mirrorH: { label: "Vertical Mirror", icon: "↕", color: C.soft, desc: "Mirrors every paint action vertically (top ↔ bottom). The mirror axis runs horizontally through the grid centre.", iconColor: C.soft },
+      mirrorD: { label: "Diagonal Mirror", icon: "✕", color: C.accentBright, desc: "Mirrors every paint action diagonally (point-reflected through the grid centre). Can be combined with Horizontal and Vertical mirrors.", iconColor: C.accentBright },
+      guides: { label: "Guides", icon: "🧭", color: C.accent, desc: "Shows dashed mirror axis lines on the canvas — a vertical line and a horizontal line through the grid centre. Useful for aligning tiles when mirroring is active.", iconColor: null },
+      offsetCenters: { label: "Offset Centers", icon: "🎯", color: C.soft, desc: "Overlays a white + marker at the original grid-cell centre of every tile that has a non-zero offset applied. Useful for checking placement alignment.", iconColor: null },
+      replace: { label: "Replace", icon: "♻️", color: C.soft, desc: "Two-step tile replacement: first pick a tile on the map, then pick its replacement. All instances of the original tile are swapped at once.", iconColor: null },
       overwrite: { label: "Block Overwrite", icon: "🧱", color: C.accent, desc: "When enabled, painting over an occupied cell replaces it with the currently selected tile instead of picking it up for dragging.", iconColor: null },
     };
     const def = toolDefs[infoTool];
@@ -1943,7 +1992,7 @@ function App() {
                         position: "relative", opacity: failed ? 0.55 : 1, overflow: "visible" }}>
                       <div style={{ position: "absolute", inset: 0, borderRadius: 6, overflow: "hidden", background: C.panelDeep, display: "flex", alignItems: "center", justifyContent: "center" }}>
                         {failed ? <span style={{ fontSize: 18 }}>⚠️</span>
-                          : <img src={t.src} alt="" onError={() => markFailed(t.id)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated", transform: `rotate(${rotDeg}deg)`, transition: "transform 0.15s" }} />}
+                          : <img src={t.blobSrc ?? t.src} alt="" onError={() => markFailed(t.id)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated", transform: `rotate(${rotDeg}deg)`, transition: "transform 0.15s" }} />}
                       </div>
                       {rotatable && (
                         <div style={{ position: "absolute", inset: 0, zIndex: 4, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
@@ -1973,7 +2022,7 @@ function App() {
             fontSize: CELL * zoom * 0.6, opacity: 0.65, pointerEvents: "none", zIndex: 9999 }}>🛸</div>
         );
         return (
-          <img src={t.src} alt="" draggable={false}
+          <img src={t.blobSrc ?? t.src} alt="" draggable={false}
             style={{
               position: "fixed",
               left: dragPos.x - (CELL * zoom) / 2,
@@ -2058,7 +2107,7 @@ function App() {
                         {/* Inner clipped area for image */}
                         <div style={{ position: "absolute", inset: 0, borderRadius: 6, overflow: "hidden", background: C.panelDeep, display: "flex", alignItems: "center", justifyContent: "center" }}>
                           {failed ? <span style={{ fontSize: 20 }}>⚠️</span>
-                            : <img src={t.src} alt="" onError={() => markFailed(t.id)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated", transform: `rotate(${rotDeg}deg)`, transition: "transform 0.15s" }} />}
+                            : <img src={t.blobSrc ?? t.src} alt="" onError={() => markFailed(t.id)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated", transform: `rotate(${rotDeg}deg)`, transition: "transform 0.15s" }} />}
                         </div>
                         {rotatable && <RotChevron rotDeg={rotDeg} />}
                         {/* Info button: yellow if starred, white otherwise — top-right corner */}
@@ -2089,7 +2138,7 @@ function App() {
                         <div style={{ position: "absolute", inset: 0, display: "grid", gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr", gap: 1 }}>
                           {previewTiles.map(t => (
                             <div key={t.id} style={{ background: C.panelDeep, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
-                              <img src={t.src} alt="" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated", opacity: 0.55 }} />
+                              <img src={t.blobSrc ?? t.src} alt="" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated", opacity: 0.55 }} />
                             </div>
                           ))}
                           {Array.from({ length: Math.max(0, 4 - previewTiles.length) }).map((_, i) => (
@@ -2236,7 +2285,7 @@ function App() {
                   <div onClick={() => { if (isRot) setCardRotations(prev => ({ ...prev, [selKey]: (prev[selKey] ?? 0) + 90 })); }}
                     style={{ width: 32, height: 32, borderRadius: 6, cursor: isRot ? "pointer" : "default", overflow: "hidden", position: "relative", border: `1px solid ${C.accentBright}`, background: C.accentDim }}
                     title={isRot ? `${st.label || "Tile"} — click to rotate` : (st.label || "Tile (selected)")}>
-                    <img src={st.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", transform: `rotate(${rotDeg}deg)`, transition: "transform 0.15s" }} />
+                    <img src={st.blobSrc ?? st.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", transform: `rotate(${rotDeg}deg)`, transition: "transform 0.15s" }} />
                     {isRot && (
                       <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
                         <span style={{ fontSize: 13, lineHeight: 1, display: "inline-block", transform: `rotate(${rotDeg}deg)`, transition: "transform 0.15s", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.9))" }}>🐬</span>
@@ -2246,12 +2295,40 @@ function App() {
                 );
               };
               const hasSelected = selKey !== null && !selAlreadyStarred;
+              // Recent tiles: exclude current selection and starred tiles, max 3
+              const visibleRecent = recentTileIds.filter(id => id !== selKey && !starredTiles.includes(id)).slice(0, 3);
+              const hasRecent = visibleRecent.length > 0;
               const hasStarred = starredTiles.length > 0;
-              if (!hasSelected && !hasStarred) return null;
+              if (!hasSelected && !hasRecent && !hasStarred) return null;
               return (
                 <div style={{ display: "flex", flexDirection: "column", gap: 3, padding: "4px 2px", overflowY: "auto", scrollbarWidth: "none", msOverflowStyle: "none" }}>
                   {hasSelected && <SelectedCard />}
-                  {hasSelected && hasStarred && <div style={{ height: 1, background: C.border, margin: "1px 0" }} />}
+                  {hasSelected && hasRecent && <div style={{ height: 1, background: C.border, margin: "1px 0" }} />}
+                  {hasRecent && visibleRecent.map(rid => {
+                    const rt = getTile(rid);
+                    if (!rt || !rt.src) return null;
+                    const active = sel === rid && !eraser;
+                    const isRot = isTileRotatable(rt);
+                    const rotDeg = cardRotations[rid] ?? 0;
+                    return (
+                      <div key={rid}
+                        onClick={() => {
+                          if (isRot && sel === rid && !eraser) setCardRotations(prev => ({ ...prev, [rid]: (prev[rid] ?? 0) + 90 }));
+                          setSel(rid); setEraser(false); setHandMode(false);
+                        }}
+                        style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", overflow: "hidden", position: "relative",
+                          border: `1px solid ${active ? C.accentBright : "rgba(255,255,255,0.25)"}`, background: active ? C.accentDim : C.panelDeep, opacity: 0.75 }}
+                        title={`Recent: ${rt.label || `Tile ${rid}`}`}>
+                        <img src={rt.blobSrc ?? rt.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", transform: `rotate(${rotDeg}deg)`, transition: "transform 0.15s" }} />
+                        {isRot && (
+                          <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
+                            <span style={{ fontSize: 10, lineHeight: 1, display: "inline-block", transform: `rotate(${rotDeg}deg)`, filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.9))" }}>🐬</span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                  {(hasSelected || hasRecent) && hasStarred && <div style={{ height: 1, background: C.border, margin: "1px 0" }} />}
                   {starredTiles.map(sid => {
                   // Erase
                   if (sid === "erase") return (
@@ -2297,7 +2374,7 @@ function App() {
                       style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", overflow: "hidden", position: "relative",
                         border: `1px solid ${active ? C.accentBright : C.border}`, background: active ? C.accentDim : C.panelDeep }}
                       title={isRot ? `${st.label || `Tile ${sid}`} — click to rotate` : (st.label || `Tile ${sid}`)}>
-                      <img src={st.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", transform: `rotate(${rotDeg}deg)`, transition: "transform 0.15s" }} />
+                      <img src={st.blobSrc ?? st.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", transform: `rotate(${rotDeg}deg)`, transition: "transform 0.15s" }} />
                       {isRot && (
                         <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
                           <span style={{ fontSize: 13, lineHeight: 1, display: "inline-block", transform: `rotate(${rotDeg}deg)`, transition: "transform 0.15s", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.9))" }}>🐬</span>
@@ -2490,8 +2567,8 @@ function App() {
                     <svg style={{ position: "absolute", left: 0, top: CELL * zoom, width: gW, height: gH, pointerEvents: "none", zIndex: 202, overflow: "visible" }}>
                       {markers.map(({ cx, cy, key }) => (
                         <g key={key} transform={`translate(${cx},${cy})`}>
-                          <line x1={-sz} y1={0} x2={sz} y2={0} stroke="rgba(255,255,0,0.9)" strokeWidth={1.5} />
-                          <line x1={0} y1={-sz} x2={0} y2={sz} stroke="rgba(255,255,0,0.9)" strokeWidth={1.5} />
+                          <line x1={-sz} y1={0} x2={sz} y2={0} stroke="rgba(255,255,255,0.9)" strokeWidth={1.5} />
+                          <line x1={0} y1={-sz} x2={0} y2={sz} stroke="rgba(255,255,255,0.9)" strokeWidth={1.5} />
                         </g>
                       ))}
                     </svg>
@@ -2504,12 +2581,79 @@ function App() {
 
         {/* ── RIGHT SIDEBAR: Tools ─────────────────────────────────── */}
         <div style={{ display: "flex", flexDirection: "row", flexShrink: 0, alignSelf: "stretch" }}>
-          {/* Right toggle strip */}
-          <button onClick={() => setToolsOpen(o => !o)}
-            style={{ width: 28, background: C.panelDeep, border: "none", borderLeft: `1px solid ${C.border}`, cursor: "pointer", color: C.accentBright, fontSize: 12, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, userSelect: "none" }}
-            title={toolsOpen ? "Collapse tools" : "Expand tools"}>
-            {toolsOpen ? "▶" : "◀"}
-          </button>
+          {/* Right toggle strip — shows starred-tool mini-cards when collapsed */}
+          <div style={{ width: 36, background: C.panelDeep, borderLeft: `1px solid ${C.border}`, display: "flex", flexDirection: "column", alignItems: "center", flexShrink: 0 }}>
+            {/* Starred tool mini-cards when collapsed */}
+            {!toolsOpen && (() => {
+              const toolIconMap = {
+                erase: "🧼", hand: "👋", space: "🛸",
+                single: "✏️", line: "📏", rect: "⬜",
+                mirrorV: "↔", mirrorH: "↕", mirrorD: "✕",
+                guides: "🧭", offsetCenters: "🎯", replace: "♻️", overwrite: "🧱",
+              };
+              const toolActionMap = {
+                erase: () => { setEraser(true); setSel(null); setHandMode(false); },
+                hand:  () => { setHandMode(h => !h); setEraser(false); setSel(null); },
+                space: () => { setSel(SPACE_TILE_ID); setEraser(false); setHandMode(false); },
+                single: () => setSelectionMode('single'),
+                line:   () => setSelectionMode('line'),
+                rect:   () => setSelectionMode('rect'),
+                mirrorV: () => setMirrorV(v => !v),
+                mirrorH: () => setMirrorH(v => !v),
+                mirrorD: () => setMirrorD(v => !v),
+                guides: () => setShowGuides(v => !v),
+                offsetCenters: () => setShowOffsetCenters(v => !v),
+                replace: () => { setReplaceOpen(true); setReplaceStep(1); setReplaceA(null); setReplaceB(null); setReplaceMsg(""); },
+                overwrite: () => setMirrorSettings(p => ({ ...p, allowSwap: !p.allowSwap })),
+              };
+              const toolActiveMap = {
+                erase: eraser,
+                hand: handMode,
+                space: sel === SPACE_TILE_ID && !eraser,
+                single: selectionMode === 'single',
+                line: selectionMode === 'line',
+                rect: selectionMode === 'rect',
+                mirrorV, mirrorH, mirrorD,
+                guides: showGuides,
+                offsetCenters: showOffsetCenters,
+                replace: false,
+                overwrite: mirrorSettings.allowSwap,
+              };
+              const toolColorMap = {
+                erase: C.danger, hand: "#fbbf24", space: C.accentBright,
+                single: C.accent, line: C.accent, rect: C.accent,
+                mirrorV: C.pale, mirrorH: C.soft, mirrorD: C.accentBright,
+                guides: C.accent, offsetCenters: C.soft, replace: C.soft, overwrite: C.accent,
+              };
+              // Only show tool-key starred items (not numeric tile IDs)
+              const starredTools = starredTiles.filter(s => typeof s === "string" && toolIconMap[s]);
+              if (!starredTools.length) return null;
+              return (
+                <div style={{ display: "flex", flexDirection: "column", gap: 3, padding: "4px 2px", overflowY: "auto", scrollbarWidth: "none", msOverflowStyle: "none", width: "100%" }}>
+                  {starredTools.map(tid => {
+                    const icon = toolIconMap[tid];
+                    const active = toolActiveMap[tid];
+                    const color = toolColorMap[tid] ?? C.accent;
+                    return (
+                      <div key={tid}
+                        onClick={toolActionMap[tid]}
+                        style={{ width: 28, height: 28, margin: "0 auto", borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+                          border: `1px solid ${active ? color : C.border}`, background: active ? `${color}22` : "rgba(255,255,255,0.04)" }}
+                        title={tid}>
+                        <span style={{ fontSize: 13, lineHeight: 1 }}>{icon}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })()}
+            {/* Toggle button — fills remaining space */}
+            <button onClick={() => setToolsOpen(o => !o)}
+              style={{ flex: 1, minHeight: 28, width: "100%", background: "none", border: "none", cursor: "pointer", color: C.accentBright, fontSize: 12, display: "flex", alignItems: "center", justifyContent: "center", userSelect: "none", fontWeight: 700 }}
+              title={toolsOpen ? "Collapse tools" : "Expand tools"}>
+              {toolsOpen ? "▶" : "◀"}
+            </button>
+          </div>
           {mirrorSettingsOpen && (
             <div className="modal-backdrop" onClick={() => setMirrorSettingsOpen(false)}>
               <div className="modal-box" style={{ maxWidth: 320 }} onClick={e => e.stopPropagation()}>
@@ -2535,15 +2679,6 @@ function App() {
                   </div>
                   <span style={{ fontSize: 10, color: C.muted, paddingLeft: 22 }}>Mirrored tile copies have their rotation automatically flipped to match the mirroring axis (e.g. a left-pointing tile becomes right-pointing when mirrored horizontally).</span>
                 </label>
-                <label style={{ display: "flex", flexDirection: "column", gap: 4, cursor: "pointer", userSelect: "none" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <input type="checkbox" checked={mirrorSettings.allowSwap}
-                      onChange={ev => setMirrorSettings(p => ({ ...p, allowSwap: ev.target.checked }))}
-                      style={{ width: 14, height: 14, accentColor: C.accent, cursor: "pointer" }} />
-                    <span style={{ fontSize: 12, fontWeight: 600, color: C.text }}>Allow Tile Overwrite</span>
-                  </div>
-                  <span style={{ fontSize: 10, color: C.muted, paddingLeft: 22 }}>Clicking on an already-placed tile replaces it with the currently selected tile instead of picking it up.</span>
-                </label>
               </div>
             </div>
           )}
@@ -2554,23 +2689,30 @@ function App() {
               />
               <div style={{ overflowY: "auto", flex: 1, padding: "8px 12px 10px", display: "flex", flexDirection: "column", gap: 7 }}>
                 <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1 }}>Selection Mode</span>
-                <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}>
                   <button style={btn(selectionMode === 'single', C.accent, C.accentDim)} onClick={() => setSelectionMode('single')} title="Freehand">Single</button>
+                  <span onClick={() => setInfoTool("single")} style={{ fontSize: 12, cursor: "pointer", color: "rgba(255,255,255,0.6)", lineHeight: 1, verticalAlign: "super" }} title="Single info">ⓘ</span>
                   <button style={btn(selectionMode === 'line',   C.accent, C.accentDim)} onClick={() => setSelectionMode('line')}   title="Line">Line</button>
+                  <span onClick={() => setInfoTool("line")} style={{ fontSize: 12, cursor: "pointer", color: "rgba(255,255,255,0.6)", lineHeight: 1, verticalAlign: "super" }} title="Line info">ⓘ</span>
                   <button style={btn(selectionMode === 'rect',   C.accent, C.accentDim)} onClick={() => setSelectionMode('rect')}   title="Bounding box">Rectangle</button>
+                  <span onClick={() => setInfoTool("rect")} style={{ fontSize: 12, cursor: "pointer", color: "rgba(255,255,255,0.6)", lineHeight: 1, verticalAlign: "super" }} title="Rectangle info">ⓘ</span>
                 </div>
                 <div style={{ height: 1, background: C.border }} />
                 <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1 }}>Mirroring</span>
-                <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}>
                   <button style={btn(mirrorV, C.pale, C.paleDim)}           onClick={() => setMirrorV(v => !v)}>Horizontal</button>
+                  <span onClick={() => setInfoTool("mirrorV")} style={{ fontSize: 12, cursor: "pointer", color: "rgba(255,255,255,0.6)", lineHeight: 1, verticalAlign: "super" }} title="Horizontal mirror info">ⓘ</span>
                   <button style={btn(mirrorH, C.soft, C.softDim)}           onClick={() => setMirrorH(v => !v)}>Vertical</button>
+                  <span onClick={() => setInfoTool("mirrorH")} style={{ fontSize: 12, cursor: "pointer", color: "rgba(255,255,255,0.6)", lineHeight: 1, verticalAlign: "super" }} title="Vertical mirror info">ⓘ</span>
                   <button style={btn(mirrorD, C.accentBright, C.accentDim)} onClick={() => setMirrorD(v => !v)}>Diagonal</button>
+                  <span onClick={() => setInfoTool("mirrorD")} style={{ fontSize: 12, cursor: "pointer", color: "rgba(255,255,255,0.6)", lineHeight: 1, verticalAlign: "super" }} title="Diagonal mirror info">ⓘ</span>
                 </div>
                 <div style={{ height: 1, background: C.border }} />
                 <div style={{ display: "flex", alignItems: "center", gap: 3, flexWrap: "wrap" }}>
                   <button style={btn(showGuides, C.accent, C.accentDim)} onClick={() => setShowGuides(v => !v)} title="Toggle mirror guide lines">Guides</button>
                   <span onClick={() => setInfoTool("guides")} style={{ fontSize: 12, cursor: "pointer", color: "rgba(255,255,255,0.6)", lineHeight: 1, verticalAlign: "super" }} title="Guides info">ⓘ</span>
                   <button style={btn(showOffsetCenters, C.soft, C.softDim)} onClick={() => setShowOffsetCenters(v => !v)} title="Show a + at the placement cell of tiles with non-zero offset">Offset Centers</button>
+                  <span onClick={() => setInfoTool("offsetCenters")} style={{ fontSize: 12, cursor: "pointer", color: "rgba(255,255,255,0.6)", lineHeight: 1, verticalAlign: "super" }} title="Offset Centers info">ⓘ</span>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 3 }}>
                   <button style={btn(false, C.soft, C.softDim)} onClick={() => { setReplaceOpen(true); setReplaceStep(1); setReplaceA(null); setReplaceB(null); setReplaceMsg(""); }}>Replace</button>
@@ -2687,10 +2829,19 @@ function App() {
               onClick={() => { const w = parseInt(sizeWInput, 10), h = parseInt(sizeHInput, 10); if (w > 0 && h > 0) setPendingSize({ w, h }); }}>
               Apply
             </button>
-            <button style={{ ...btn(false), fontSize: 10, padding: "3px 9px" }}
-              onClick={() => { setSizeWInput(String(GRID_W)); setSizeHInput(String(GRID_H)); setPendingSize({ w: GRID_W, h: GRID_H }); }}>
-              ↺ Reset
-            </button>
+            <select style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontSize: 10, padding: "3px 5px", cursor: "pointer", outline: "none" }}
+              value=""
+              onChange={e => {
+                const v = e.target.value;
+                if (v === "3v3") { setSizeWInput("21"); setSizeHInput("33"); setPendingSize({ w: 21, h: 33 }); }
+                else if (v === "sd") { setSizeWInput("60"); setSizeHInput("60"); setPendingSize({ w: 60, h: 60 }); }
+                else if (v === "reset") { setSizeWInput(String(GRID_W)); setSizeHInput(String(GRID_H)); setPendingSize({ w: GRID_W, h: GRID_H }); }
+              }}>
+              <option value="">Presets…</option>
+              <option value="3v3">3v3 (21×33)</option>
+              <option value="sd">Showdown (60×60)</option>
+              <option value="reset">↺ Reset</option>
+            </select>
           </div>
 
           {/* Row 5: Theme switcher */}
