@@ -79,7 +79,7 @@ const MIN_ZOOM = 0.25, MAX_ZOOM = 4;
 // Zoom buttons snap to nearest 5%
 const ZOOM_STEP = 0.05;
 const snapTo10 = z => Math.round(z * 20) / 20;
-const SK = { tiles: "oph_tiles", grid: "oph_grid", colors: "oph_colors", userTiles: "oph_user_tiles", multipliers: "oph_multipliers", priority: "oph_priority", offsets: "oph_offsets", rotatable: "oph_rotatable", tileRots: "oph_tile_rots", gridW: "oph_gridW", gridH: "oph_gridH", tileNames: "oph_tile_names", bottom: "oph_bottom" };
+const SK = { tiles: "oph_tiles", grid: "oph_grid", colors: "oph_colors", userTiles: "oph_user_tiles", multipliers: "oph_multipliers", priority: "oph_priority", offsets: "oph_offsets", rotatable: "oph_rotatable", tileRots: "oph_tile_rots", gridW: "oph_gridW", gridH: "oph_gridH", tileNames: "oph_tile_names", bottom: "oph_bottom", mirrorOffset: "oph_mirror_offset", gridOff: "oph_grid_off" };
 const ACCEPTED = "image/png,image/jpeg,image/gif,image/webp,image/svg+xml,image/bmp";
 const MAX_HISTORY = 60;
 // Non-overlapping tile ID ranges — prevents collisions between sections regardless of reordering
@@ -217,7 +217,7 @@ function App() {
   const [mirrorV,     setMirrorV]   = useState(false);
   const [mirrorH,     setMirrorH]   = useState(false);
   const [mirrorD,     setMirrorD]   = useState(false);
-  const [showGuides,    setShowGuides]    = useState(true);
+  const [showGuides,    setShowGuides]    = useState(false);
   const [mirrorSettings, setMirrorSettings] = useState({ mirrorSpawns: true, mirrorRotation: true, allowSwap: false });
   const [mirrorSettingsOpen, setMirrorSettingsOpen] = useState(false);
   const [zoom,        setZoom]      = useState(calcFitZoom);
@@ -283,6 +283,9 @@ function App() {
   const [cardRotations, setCardRotations] = useState({});
   // Per-cell grid rotation: { "r,c": 0|1|2|3 }
   const [gridRotations, setGridRotations] = useState(() => load(SK.tileRots, {}));
+  const [gridOffsets,       setGridOffsets]       = useState(() => load(SK.gridOff, {}));
+  const [mirrorOffsetTiles, setMirrorOffsetTiles] = useState(() => load(SK.mirrorOffset, {}));
+  const [showOffsetCenters, setShowOffsetCenters] = useState(false);
   // Failed tile tracking
   const [failedTiles,   setFailedTiles]   = useState(new Set());
   const [failedWarning, setFailedWarning] = useState(false);
@@ -306,6 +309,8 @@ function App() {
   const nextId    = useRef(userTiles.length ? Math.max(USER_ID_START, Math.min(USER_ID_MAX, Math.max(...userTiles.map(t => t.id)) + 1)) : USER_ID_START);
 
   const dragRotationRef    = useRef(0); // rotation of tile currently being dragged
+  const mirrorOffsetTilesRef = useRef({});
+  const tileOffsetsRef       = useRef({});
   const cardRotationsRef   = useRef({});
   const mirrorSettingsRef  = useRef({ mirrorSpawns: true, mirrorRotation: true, allowSwap: false });
   const canvasContainerRef = useRef(null); // ref to the relative canvas container for accurate coordinate calc
@@ -345,6 +350,8 @@ function App() {
   useEffect(() => { selectionModeRef.current = selectionMode; }, [selectionMode]);
   useEffect(() => { gridRef.current = grid; }, [grid]);
   useEffect(() => { paintingRef.current = painting; }, [painting]);
+  useEffect(() => { mirrorOffsetTilesRef.current = mirrorOffsetTiles; }, [mirrorOffsetTiles]);
+  useEffect(() => { tileOffsetsRef.current       = tileOffsets;       }, [tileOffsets]);
 
   // Persist
   useEffect(() => { save(SK.userTiles,    userTiles);       }, [userTiles]);
@@ -355,6 +362,8 @@ function App() {
   useEffect(() => { save(SK.bottom,      bottomTiles);     }, [bottomTiles]);
   useEffect(() => { save(SK.rotatable,    rotatableMap);    }, [rotatableMap]);
   useEffect(() => { save(SK.tileRots,     gridRotations);   }, [gridRotations]);
+  useEffect(() => { save(SK.gridOff,      gridOffsets);       }, [gridOffsets]);
+  useEffect(() => { save(SK.mirrorOffset, mirrorOffsetTiles); }, [mirrorOffsetTiles]);
   useEffect(() => { save(SK.tileNames,    tileNames);       }, [tileNames]);
   useEffect(() => {
     save("oph_theme", uiTheme);
@@ -428,6 +437,13 @@ function App() {
     return getDefaultOffset(t);
   };
 
+  // Returns the effective offset for a cell, respecting per-cell overrides (from mirror-offset placement).
+  const getEffectiveOffset = (t, r, c) => {
+    const over = gridOffsets[`${r},${c}`];
+    if (over !== undefined) return over;
+    return getTileOffset(t);
+  };
+
   // Spawn tile identification (src-based)
   const isSpawn1 = t => !!(t?.src && t.src.includes("Spawns/1.png")); // red
   const isSpawn2 = t => !!(t?.src && t.src.includes("Spawns/2.png")); // blue
@@ -451,20 +467,30 @@ function App() {
     return isDefaultRotatable(t);
   };
 
+  const isDefaultMirrorOffset = t => !!(t?.src && (
+    t.src.includes("Jumppads/") || t.src.includes("Teleporters/") || t.src.includes("HealPad")
+  ));
+  const isMirrorOffset = t => {
+    if (mirrorOffsetTiles[t.id] !== undefined) return mirrorOffsetTiles[t.id];
+    return isDefaultMirrorOffset(t);
+  };
+
   // Badge label shown at bottom-left of tile cards
   const TileBadge = ({ t }) => {
     const mult   = getTileMultiplier(t);
     const off    = getTileOffset(t);
-    const hasMult  = mult !== 1.0;
-    const hasOff   = off.ox !== 0 || off.oy !== 0;
-    const isPrio   = !!priorityTiles[t.id];
-    const isBottom = !!bottomTiles[t.id];
-    if (!hasMult && !hasOff && !isPrio && !isBottom) return null;
+    const hasMult       = mult !== 1.0;
+    const hasOff        = off.ox !== 0 || off.oy !== 0;
+    const isPrio        = !!priorityTiles[t.id];
+    const isBottom      = !!bottomTiles[t.id];
+    const hasMirrorOff  = isMirrorOffset(t);
+    if (!hasMult && !hasOff && !isPrio && !isBottom && !hasMirrorOff) return null;
     const parts = [];
     if (hasMult) parts.push(`${mult}×`);
     if (isPrio)  parts.push("🚨");
     if (isBottom) parts.push("⚓");
     if (hasOff)  parts.push("📐");
+    if (hasMirrorOff) parts.push("🌊");
     return (
       <span style={{ position: "absolute", bottom: 2, left: 3, fontSize: 8, fontWeight: 700, color: C.accentBright, background: "rgba(0,0,0,0.65)", borderRadius: 3, padding: "1px 3px", lineHeight: 1.3, pointerEvents: "none" }}>
         {parts.join("")}
@@ -926,6 +952,23 @@ function App() {
 
   const SPACE_TILE = { id: SPACE_TILE_ID, src: null, label: "Space", isSpace: true };
   const getTile = id => id === SPACE_TILE_ID ? SPACE_TILE : tiles.find(t => t.id === id);
+
+  // Returns { ox, oy } override if the tile has mirror offset enabled and flags indicate a flip, else undefined.
+  const computeMirrorOffsetOverride = (tileId, fV, fH, fD) => {
+    const tile = getTile(tileId);
+    if (!tile) return undefined;
+    const mo = mirrorOffsetTilesRef.current[tile.id] !== undefined
+      ? mirrorOffsetTilesRef.current[tile.id]
+      : isDefaultMirrorOffset(tile);
+    if (!mo) return undefined;
+    const base = tileOffsetsRef.current[tile.id] !== undefined
+      ? tileOffsetsRef.current[tile.id]
+      : getDefaultOffset(tile);
+    const flipX = fV || fD;
+    const flipY = fH || fD;
+    if (!flipX && !flipY) return undefined; // source cell — no override needed
+    return { ox: flipX ? -base.ox : base.ox, oy: flipY ? -base.oy : base.oy };
+  };
 
   // ── Zoom ──────────────────────────────────────────────────────────
   const applyZoom = useCallback((newZ, focal = null) => {
