@@ -119,6 +119,12 @@ const deriveCodename = src => {
     "Bounty": "BountyGObjective", "Gem_Grab": "GGObjective", "Heist": "HeistObjective", "Hot_Zone": "HZObjective",
     // Teleporters
     "Blue": "BlueTeleport", "Green": "GreenTeleport", "Red": "RedTeleport", "Yellow": "YellowTeleport",
+    // Sewer
+    "SWR-wall": "Wall1", "SWR-wall2": "Wall2", "SWR-crate": "Crate", "SWR-barrel": "Barrel",
+    "SWR-cactus": "Cactus", "SWR-bush": "Bush",
+    "SWR-water": "WaterFill", "SWR-waterBEND": "WaterBend", "SWR-waterCORNER": "WaterCorner",
+    "SWR-waterLINE": "WaterLine", "SWR-waterDOUBLEBEND": "WaterDoubleBend",
+    "SWR-waterDOUBLELINE": "WaterDoubleLine", "SWR-waterFULL": "WaterFullTile",
     // Jumppads
     "B": "BottomJumppad", "BL": "BottomLeftJumppad", "BR": "BottomRightJumppad",
     "L": "LeftJumppad", "R": "RightJumppad", "T": "TopJumppad",
@@ -267,10 +273,12 @@ function App() {
   const [infoTool,    setInfoTool]  = useState(null); // "erase" | "hand" | "space"
   // Starred tiles: up to 5, shown when tiles panel is collapsed
   // Special IDs: "erase" and "hand"; regular tiles use numeric ID
-  const [starredTiles, setStarredTiles] = useState(() => load("oph_starred", ["erase", "hand", 1, 6]));
+  const [starredTiles, setStarredTiles] = useState(() => load("oph_starred", [1, 6]));
   const toggleStar = id => setStarredTiles(prev => {
     if (prev.includes(id)) return prev.filter(s => s !== id);
-    if (prev.length >= 10) return prev; // max 10
+    const isTool = typeof id === "string";
+    const count = prev.filter(s => (typeof s === "string") === isTool).length;
+    if (count >= 10) return prev;
     return [...prev, id];
   });
   // Last 3 selected tile IDs (numeric only, most-recent first)
@@ -322,7 +330,7 @@ function App() {
   const [isMobile,    setIsMobile]  = useState(mobile);
 
   // History
-  const [history,  setHistory]  = useState([grid]);
+  const [history,  setHistory]  = useState([{ grid, w: load(SK.gridW, GRID_W), h: load(SK.gridH, GRID_H) }]);
   const [histIdx,  setHistIdx]  = useState(0);
 
   const fileRef   = useRef();
@@ -698,7 +706,7 @@ function App() {
         setHistory(h => {
           const trimmed = h.slice(0, histIdx + 1);
           const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-          return [...capped, next];
+          return [...capped, { grid: next, w: gridWRef.current, h: gridHRef.current }];
         });
         setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
       }
@@ -710,20 +718,24 @@ function App() {
     if (histIdx <= 0) return;
     const newIdx = histIdx - 1;
     setHistIdx(newIdx);
-    setGridRaw(history[newIdx]);
+    const snap = history[newIdx];
+    setGridRaw(snap.grid ?? snap);
+    if (snap.w !== undefined) { setGridW(snap.w); setGridH(snap.h); }
   }, [history, histIdx]);
 
   const redo = useCallback(() => {
     if (histIdx >= history.length - 1) return;
     const newIdx = histIdx + 1;
     setHistIdx(newIdx);
-    setGridRaw(history[newIdx]);
+    const snap = history[newIdx];
+    setGridRaw(snap.grid ?? snap);
+    if (snap.w !== undefined) { setGridW(snap.w); setGridH(snap.h); }
   }, [history, histIdx]);
 
   // Push the current grid as a history snapshot (called once on mousedown, before any paint).
   // All cell writes during a drag use skipHistory=true, so the whole drag is one undo step.
   const pushHistorySnapshot = useCallback(() => {
-    const snap = grid;
+    const snap = { grid, w: gridWRef.current, h: gridHRef.current };
     setHistory(h => {
       const trimmed = h.slice(0, histIdx + 1);
       const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
@@ -960,32 +972,36 @@ function App() {
       const existingId = gridRef.current?.[r]?.[c];
 
       if (existingId && !eraserRef.current) {
-        // ── OCCUPIED CELL (non-eraser): immediate pickup ─────
-        const mirrorPositions = getMirrorRef.current ? getMirrorRef.current(r, c) : getMirrorPositions(r, c);
-        // Carry the rotation of the picked-up tile (force 0 for non-rotatable)
-        const pickupTile = getTile(existingId);
-        dragRotationRef.current = (pickupTile && isTileRotatable(pickupTile)) ? (gridRotations[`${r},${c}`] ?? 0) : 0;
-        setGridRaw(prevGrid => {
-          const g = prevGrid.map(row => [...row]);
-          mirrorPositions.forEach(([pr, pc]) => { g[pr][pc] = null; });
-          return g;
-        });
-        setGridRotations(prev => {
-          const n = { ...prev };
-          mirrorPositions.forEach(([pr, pc]) => { delete n[`${pr},${pc}`]; });
-          return n;
-        });
-        setGridOffsets(prev => {
-          const n = { ...prev };
-          mirrorPositions.forEach(([pr, pc]) => { delete n[`${pr},${pc}`]; });
-          return n;
-        });
-        setDragTile(existingId);
-        dragTileRef.current = existingId;
-        isDraggingRef.current = true;
-        setDragPos({ x: e.clientX, y: e.clientY });
-        setDragTargetCell(null);
-        return; // do NOT enter painting mode
+        // ── OCCUPIED CELL (non-eraser): pickup or overwrite depending on allowSwap ─────
+        if (!mirrorSettingsRef.current?.allowSwap) {
+          // Block overwrite is OFF: do normal drag pickup
+          const mirrorPositions = getMirrorRef.current ? getMirrorRef.current(r, c) : getMirrorPositions(r, c);
+          // Carry the rotation of the picked-up tile (force 0 for non-rotatable)
+          const pickupTile = getTile(existingId);
+          dragRotationRef.current = (pickupTile && isTileRotatable(pickupTile)) ? (gridRotations[`${r},${c}`] ?? 0) : 0;
+          setGridRaw(prevGrid => {
+            const g = prevGrid.map(row => [...row]);
+            mirrorPositions.forEach(([pr, pc]) => { g[pr][pc] = null; });
+            return g;
+          });
+          setGridRotations(prev => {
+            const n = { ...prev };
+            mirrorPositions.forEach(([pr, pc]) => { delete n[`${pr},${pc}`]; });
+            return n;
+          });
+          setGridOffsets(prev => {
+            const n = { ...prev };
+            mirrorPositions.forEach(([pr, pc]) => { delete n[`${pr},${pc}`]; });
+            return n;
+          });
+          setDragTile(existingId);
+          dragTileRef.current = existingId;
+          isDraggingRef.current = true;
+          setDragPos({ x: e.clientX, y: e.clientY });
+          setDragTargetCell(null);
+          return; // do NOT enter painting mode
+        }
+        // Block overwrite is ON: fall through to normal paint mode below
       }
 
       // ── NORMAL PAINT: empty cells (or eraser on any cell) ───────────────────
@@ -1401,6 +1417,7 @@ function App() {
   const applyGridSize = (newW, newH) => {
     const w = Math.max(1, Math.min(99, newW)), h = Math.max(1, Math.min(99, newH));
     setGridW(w); setGridH(h);
+    gridWRef.current = w; gridHRef.current = h;
     setGrid(prev => {
       const g = Array.from({ length: h }, (_, r) =>
         Array.from({ length: w }, (__, c) => (prev[r] && c < prev[r].length ? prev[r][c] : null))
@@ -1705,7 +1722,7 @@ function App() {
             <input type="checkbox" checked={starredTiles.includes(t.id)}
               onChange={() => toggleStar(t.id)}
               style={{ width: 14, height: 14, accentColor: C.accent, cursor: "pointer" }} />
-            <span style={{ fontSize: 11, color: C.text }}>Starred shortcut ⭐{!starredTiles.includes(t.id) && starredTiles.length >= 10 ? <span style={{ color: C.muted, marginLeft: 6 }}>(max 10 reached)</span> : null}</span>
+            <span style={{ fontSize: 11, color: C.text }}>Starred shortcut ⭐{!starredTiles.includes(t.id) && starredTiles.filter(s => typeof s !== "string").length >= 10 ? <span style={{ color: C.muted, marginLeft: 6 }}>(max 10 tiles reached)</span> : null}</span>
           </label>
 
           {!t.isDefault && (
@@ -1886,7 +1903,7 @@ function App() {
             <input type="checkbox" checked={isStarredTool}
               onChange={() => toggleStar(toolId)}
               style={{ width: 14, height: 14, accentColor: C.accent, cursor: "pointer" }} />
-            <span style={{ fontSize: 11, color: C.text }}>Starred shortcut ⭐{!isStarredTool && starredTiles.length >= 10 ? <span style={{ color: C.muted, marginLeft: 6 }}>(max 10 reached)</span> : null}</span>
+            <span style={{ fontSize: 11, color: C.text }}>Starred shortcut ⭐{!isStarredTool && starredTiles.filter(s => typeof s === "string").length >= 10 ? <span style={{ color: C.muted, marginLeft: 6 }}>(max 10 tools reached)</span> : null}</span>
           </label>
         </div>
       </div>
@@ -2330,24 +2347,8 @@ function App() {
                   })}
                   {(hasSelected || hasRecent) && hasStarred && <div style={{ height: 1, background: C.border, margin: "1px 0" }} />}
                   {starredTiles.map(sid => {
-                  // Erase
-                  if (sid === "erase") return (
-                    <div key="erase" onClick={() => { setEraser(true); setSel(null); setHandMode(false); }}
-                      style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
-                        border: `1px solid ${eraser ? C.danger : C.border}`, background: eraser ? "rgba(248,113,113,0.22)" : "rgba(255,255,255,0.04)" }}
-                      title="Erase">
-                      <span style={{ fontSize: 14, opacity: eraser ? 1 : 0.55 }}>🧼</span>
-                    </div>
-                  );
-                  // Hand
-                  if (sid === "hand") return (
-                    <div key="hand" onClick={() => { setHandMode(h => !h); setEraser(false); setSel(null); }}
-                      style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
-                        border: `1px solid ${handMode ? "#fbbf24" : C.border}`, background: handMode ? "rgba(251,191,36,0.14)" : "rgba(255,255,255,0.04)" }}
-                      title="Hand (pan)">
-                      <span style={{ fontSize: 13 }}>👋</span>
-                    </div>
-                  );
+                  // Skip erase/hand in the left (tiles) shortcut bar — they live in the right tools bar
+                  if (sid === "erase" || sid === "hand") return null;
                   // Space tile
                   if (sid === SPACE_TILE_ID) return (
                     <div key="space" onClick={() => { setSel(SPACE_TILE_ID); setEraser(false); setHandMode(false); }}
