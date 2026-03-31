@@ -337,6 +337,8 @@ function App() {
   const [gridOffsets,       setGridOffsets]       = useState(() => load(SK.gridOff, {}));
   const [mirrorOffsetTiles, setMirrorOffsetTiles] = useState(() => load(SK.mirrorOffset, {}));
   const [showOffsetCenters, setShowOffsetCenters] = useState(false);
+  // Collapsible tiles panel sections: true = collapsed
+  const [panelCollapsed, setPanelCollapsed] = useState(() => load("oph_panel_collapsed", { essentials: false, tileset: false, user: false, global: false, atlas: false }));
   // Failed tile tracking
   const [failedTiles,   setFailedTiles]   = useState(new Set());
   const [failedWarning, setFailedWarning] = useState(false);
@@ -410,6 +412,7 @@ function App() {
   // Persist
   useEffect(() => { save(SK.userTiles,   userTiles.map(({ blobSrc: _b, ...t }) => t)); }, [userTiles]);
   useEffect(() => { save(SK.atlasTiles,  atlasTiles); }, [atlasTiles]);
+  useEffect(() => { save("oph_panel_collapsed", panelCollapsed); }, [panelCollapsed]);
   useEffect(() => { save(SK.grid,         grid);            }, [grid]);
   useEffect(() => { save(SK.multipliers,  tileMultipliers); }, [tileMultipliers]);
   useEffect(() => { save(SK.priority,     priorityTiles);   }, [priorityTiles]);
@@ -2549,18 +2552,21 @@ function App() {
                   </span>
                 ) : null}
               />
-              {/* Tileset dropdown */}
+              {/* Tileset selector — checkboxes, multiple visible simultaneously */}
               {manifest?.tilesets?.length > 0 && (
-                <div style={{ padding: "5px 8px", borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
-                  <select
-                    value={activeTileset ?? ""}
-                    onChange={e => switchTileset(e.target.value)}
-                    style={{ width: "100%", background: C.panel, color: C.text, border: `1px solid ${C.border}`, borderRadius: 5, fontSize: 11, fontFamily: "'Inter', sans-serif", padding: "3px 6px", cursor: "pointer", outline: "none" }}
-                  >
-                    {manifest.tilesets.map(ts => (
-                      <option key={ts.name} value={ts.name}>{ts.name}{ts.name === "Sewer" ? " (WIP)" : ""}</option>
-                    ))}
-                  </select>
+                <div style={{ padding: "5px 8px", borderBottom: `1px solid ${C.border}`, flexShrink: 0, display: "flex", flexWrap: "wrap", gap: 5, alignItems: "center" }}>
+                  {manifest.tilesets.map(ts => {
+                    const isActive = (activeTileset ?? manifest.tilesets[0]?.name) === ts.name;
+                    return (
+                      <label key={ts.name} style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer", userSelect: "none" }}>
+                        <input type="checkbox" checked={isActive} onChange={() => { if (!isActive) switchTileset(ts.name); }}
+                          style={{ accentColor: C.accent, cursor: "pointer", width: 12, height: 12 }} />
+                        <span style={{ fontSize: 11, color: isActive ? C.accentBright : C.text, fontWeight: isActive ? 600 : 400 }}>
+                          {ts.name}{ts.name === "Sewer" ? " (WIP)" : ""}
+                        </span>
+                      </label>
+                    );
+                  })}
                 </div>
               )}
               {/* Atlas button row */}
@@ -2758,6 +2764,14 @@ function App() {
 
                   return (
                   <div style={{ display: "flex", flexWrap: "wrap", gap: cardGap }}>
+                  {/* ── Essentials section ── */}
+                  <div onClick={() => setPanelCollapsed(p => ({ ...p, essentials: !p.essentials }))}
+                    style={{ width: "100%", flexBasis: "100%", flexShrink: 0, display: "flex", alignItems: "center", gap: 4, padding: "3px 2px", cursor: "pointer", userSelect: "none" }}>
+                    <span style={{ fontSize: 9, color: C.muted, lineHeight: 1 }}>{panelCollapsed.essentials ? "▶" : "▼"}</span>
+                    <span style={{ fontSize: 9, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: 0.8 }}>Essentials</span>
+                    <div style={{ flex: 1, height: 1, background: C.border, marginLeft: 4 }} />
+                  </div>
+                  {!panelCollapsed.essentials && (<>
                   {/* 1. Eraser */}
                   {(() => {
                     const isStarredErase = starredTiles.includes("erase");
@@ -2814,84 +2828,106 @@ function App() {
                       </div>
                     );
                   })()}
+                  {/* 1d. Space tile — in Essentials */}
+                  {(() => {
+                    const isStarredSpace = starredTiles.includes(SPACE_TILE_ID);
+                    const spaceActive = sel === SPACE_TILE_ID && !eraser;
+                    return (
+                      <div onClick={() => { setSel(SPACE_TILE_ID); setEraser(false); setHandMode(false); }}
+                        style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer",
+                          border: `2px solid ${spaceActive ? C.accentBright : C.border}`,
+                          background: spaceActive ? C.accentDim : "rgba(255,255,255,0.03)",
+                          transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}
+                        title="Space — makes cell transparent">
+                        <div style={{ borderRadius: 6, overflow: "hidden" }}>
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: spaceActive ? "rgba(125,211,252,0.22)" : "rgba(125,211,252,0.08)", padding: "2px 4px" }}>
+                            <span style={{ fontSize: 9, fontWeight: 700, color: spaceActive ? C.accentBright : C.muted }}>Space</span>
+                          </div>
+                          <div style={{ height: cardSz - 18, background: C.panelDeep, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                            <span style={{ fontSize: 20, lineHeight: 1 }}>🛸</span>
+                          </div>
+                        </div>
+                        <span onClick={e => { e.stopPropagation(); setInfoTool("space"); }}
+                          style={{ position: "absolute", top: -7, right: -7, width: 15, height: 15, fontSize: 13, cursor: "pointer", color: isStarredSpace ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "15px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
+                          title="Space info">ⓘ</span>
+                      </div>
+                    );
+                  })()}
+                  </>)}
                   {tilesLoading ? (
                     <p style={{ fontSize: 12, color: C.muted, alignSelf: "center" }}>Loading…</p>
                   ) : (<>
-                    {/* 2. Active tileset tiles */}
-                    {tilesetEntries.map(renderEntry)}
-                    {/* 4. User-uploaded tiles */}
-                    {userTiles.map(t => renderFlatCard(t))}
-                    {/* 5. Separator + Upload card */}
-                    <div style={{ width: "100%", flexBasis: "100%", height: 1, background: C.border, margin: "3px 0", flexShrink: 0 }} />
-                    <div onClick={() => fileRef.current.click()}
-                      style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: "pointer", border: `2px dashed ${C.border}`, background: "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", overflow: "hidden", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2 }}
-                      title="Upload tiles">
-                      <span style={{ fontSize: 22, color: C.muted, lineHeight: 1, fontWeight: 300 }}>+</span>
-                      <span style={{ fontSize: 9, color: C.muted, textTransform: "uppercase", letterSpacing: 0.8, lineHeight: 1 }}>Upload</span>
-                    </div>
-                    {/* 6. Separator + remaining global tiles */}
-                    {globalEntries.length > 0 && (<>
-                      <div style={{ width: "100%", flexBasis: "100%", height: 1, background: C.border, margin: "3px 0", flexShrink: 0 }} />
-                      {globalEntries.map(renderEntry)}
-                    </>)}
+                    {/* ── Section header helper ── */}
+                    {(() => {
+                      const SectionHeader = ({ id, label, count }) => (
+                        <div onClick={() => setPanelCollapsed(p => ({ ...p, [id]: !p[id] }))}
+                          style={{ width: "100%", flexBasis: "100%", flexShrink: 0, display: "flex", alignItems: "center", gap: 4, padding: "3px 2px", cursor: "pointer", userSelect: "none", marginTop: 4 }}>
+                          <span style={{ fontSize: 9, color: C.muted, lineHeight: 1 }}>{panelCollapsed[id] ? "▶" : "▼"}</span>
+                          <span style={{ fontSize: 9, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: 0.8 }}>{label}</span>
+                          {count > 0 && <span style={{ fontSize: 8, color: C.muted, marginLeft: 2 }}>({count})</span>}
+                          <div style={{ flex: 1, height: 1, background: C.border, marginLeft: 4 }} />
+                        </div>
+                      );
+                      // Active tileset name for the section label
+                      const tsName = activeTileset ?? manifest?.tilesets?.[0]?.name ?? "Tileset";
+                      return (<>
+                        {/* ── Tileset tiles ── */}
+                        {tilesetEntries.length > 0 && (<>
+                          <SectionHeader id="tileset" label={tsName} count={tilesetEntries.reduce((n, e) => n + (e.tiles?.length ?? 1), 0)} />
+                          {!panelCollapsed.tileset && tilesetEntries.map(renderEntry)}
+                        </>)}
+                        {/* ── User Uploaded ── */}
+                        {(userTiles.length > 0 || true) && (<>
+                          <SectionHeader id="user" label="User Uploaded" count={userTiles.length} />
+                          {!panelCollapsed.user && (<>
+                            {userTiles.map(t => renderFlatCard(t))}
+                            <div onClick={() => fileRef.current.click()}
+                              style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: "pointer", border: `2px dashed ${C.border}`, background: "rgba(255,255,255,0.03)", overflow: "hidden", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2 }}
+                              title="Upload tiles">
+                              <span style={{ fontSize: 22, color: C.muted, lineHeight: 1, fontWeight: 300 }}>+</span>
+                              <span style={{ fontSize: 9, color: C.muted, textTransform: "uppercase", letterSpacing: 0.8, lineHeight: 1 }}>Upload</span>
+                            </div>
+                          </>)}
+                        </>)}
+                        {/* ── Global ── */}
+                        {globalEntries.length > 0 && (<>
+                          <SectionHeader id="global" label="Global" count={globalEntries.reduce((n, e) => n + (e.tiles?.length ?? 1), 0)} />
+                          {!panelCollapsed.global && globalEntries.map(renderEntry)}
+                        </>)}
+                      </>);
+                    })()}
                     {/* 6b. Atlas Explored section */}
                     {atlasTiles.length > 0 && (() => {
-                      // Group by atlasTilesetGroup, ungrouped shown flat
                       const groups = {};
                       const ungrouped = [];
                       atlasTiles.forEach(t => {
                         if (t.atlasTilesetGroup) {
                           if (!groups[t.atlasTilesetGroup]) groups[t.atlasTilesetGroup] = [];
                           groups[t.atlasTilesetGroup].push(t);
-                        } else {
-                          ungrouped.push(t);
-                        }
+                        } else ungrouped.push(t);
                       });
                       return (<>
-                        <div style={{ width: "100%", flexBasis: "100%", height: 1, background: C.border, margin: "3px 0", flexShrink: 0 }} />
-                        <div style={{ width: "100%", flexBasis: "100%", flexShrink: 0, display: "flex", alignItems: "center", gap: 4, marginBottom: 2 }}>
+                        <div onClick={() => setPanelCollapsed(p => ({ ...p, atlas: !p.atlas }))}
+                          style={{ width: "100%", flexBasis: "100%", flexShrink: 0, display: "flex", alignItems: "center", gap: 4, padding: "3px 2px", cursor: "pointer", userSelect: "none", marginTop: 4 }}>
+                          <span style={{ fontSize: 9, color: C.muted, lineHeight: 1 }}>{panelCollapsed.atlas ? "▶" : "▼"}</span>
                           <span style={{ fontSize: 9, fontWeight: 700, color: C.accent, textTransform: "uppercase", letterSpacing: 0.8 }}>Atlas Explored</span>
-                          <button onClick={() => { if (confirm("Remove all atlas tiles?")) setAtlasTiles([]); }}
-                            style={{ ...btn(false, C.danger, "rgba(248,113,113,0.14)"), fontSize: 8, padding: "1px 5px", marginLeft: "auto" }}>✕ Clear</button>
+                          <span style={{ fontSize: 8, color: C.muted, marginLeft: 2 }}>({atlasTiles.length})</span>
+                          <div style={{ flex: 1, height: 1, background: C.border, marginLeft: 4 }} />
+                          <button onClick={e => { e.stopPropagation(); if (confirm("Remove all atlas tiles?")) setAtlasTiles([]); }}
+                            style={{ ...btn(false, C.danger, "rgba(248,113,113,0.14)"), fontSize: 8, padding: "1px 5px" }}>✕ Clear</button>
                         </div>
-                        {/* Ungrouped atlas tiles */}
-                        {ungrouped.map(t => renderFlatCard(t))}
-                        {/* Grouped atlas tiles */}
-                        {Object.entries(groups).map(([groupName, gTiles]) => (
-                          <React.Fragment key={groupName}>
-                            <div style={{ width: "100%", flexBasis: "100%", flexShrink: 0, marginTop: 4, marginBottom: 2 }}>
-                              <span style={{ fontSize: 9, color: C.muted, fontWeight: 600 }}>📁 {groupName}</span>
-                            </div>
-                            {gTiles.map(t => renderFlatCard(t))}
-                          </React.Fragment>
-                        ))}
+                        {!panelCollapsed.atlas && (<>
+                          {ungrouped.map(t => renderFlatCard(t))}
+                          {Object.entries(groups).map(([groupName, gTiles]) => (
+                            <React.Fragment key={groupName}>
+                              <div style={{ width: "100%", flexBasis: "100%", flexShrink: 0, marginTop: 4, marginBottom: 2 }}>
+                                <span style={{ fontSize: 9, color: C.muted, fontWeight: 600 }}>📁 {groupName}</span>
+                              </div>
+                              {gTiles.map(t => renderFlatCard(t))}
+                            </React.Fragment>
+                          ))}
+                        </>)}
                       </>);
-                    })()}
-                    {/* 7. Space tile (🛸) */}
-                    <div style={{ width: "100%", flexBasis: "100%", height: 1, background: C.border, margin: "3px 0", flexShrink: 0 }} />
-                    {(() => {
-                      const isStarredSpace = starredTiles.includes(SPACE_TILE_ID);
-                      const spaceActive = sel === SPACE_TILE_ID && !eraser;
-                      return (
-                        <div onClick={() => { setSel(SPACE_TILE_ID); setEraser(false); setHandMode(false); }}
-                          style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer",
-                            border: `2px solid ${spaceActive ? C.accentBright : C.border}`,
-                            background: spaceActive ? C.accentDim : "rgba(255,255,255,0.03)",
-                            transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}
-                          title="Space — makes cell transparent">
-                          <div style={{ borderRadius: 6, overflow: "hidden" }}>
-                            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: spaceActive ? "rgba(125,211,252,0.22)" : "rgba(125,211,252,0.08)", padding: "2px 4px" }}>
-                              <span style={{ fontSize: 9, fontWeight: 700, color: spaceActive ? C.accentBright : C.muted }}>Space</span>
-                            </div>
-                            <div style={{ height: cardSz - 18, background: C.panelDeep, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                              <span style={{ fontSize: 20, lineHeight: 1 }}>🛸</span>
-                            </div>
-                          </div>
-                          <span onClick={e => { e.stopPropagation(); setInfoTool("space"); }}
-                            style={{ position: "absolute", top: -7, right: -7, width: 15, height: 15, fontSize: 13, cursor: "pointer", color: isStarredSpace ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "15px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
-                            title="Space info">ⓘ</span>
-                        </div>
-                      );
                     })()}
                     {/* Reset All Tile Settings button */}
                     <div style={{ width: "100%", flexBasis: "100%", flexShrink: 0 }}>
@@ -3271,7 +3307,7 @@ function App() {
                   </svg>
                 )}
 
-                {/* Offset center markers — "+" at the cell center for tiles with non-zero offset */}
+                {/* Offset center markers — full-cell square at each cell with non-zero offset */}
                 {showOffsetCenters && (() => {
                   const cellPx = CELL * zoom;
                   const markers = [];
@@ -3280,17 +3316,14 @@ function App() {
                     if (!t || t.isSpace) return;
                     const off = getEffectiveOffset(t, r, c);
                     if (off.ox === 0 && off.oy === 0) return;
-                    const cx = (c + 0.5) * cellPx;
-                    const cy = (r + 0.5) * cellPx;
-                    markers.push({ cx, cy, key: `${r}-${c}` });
+                    markers.push({ r, c, key: `${r}-${c}` });
                   }));
                   if (!markers.length) return null;
-                  const sz = Math.max(4, cellPx * 0.18);
                   return (
-                    <svg style={{ position: "absolute", left: 0, top: CELL * zoom, width: gW, height: gH, pointerEvents: "none", zIndex: 202, overflow: "visible" }}>
-                      {markers.map(({ cx, cy, key }) => (
-                        <rect key={key} x={cx - sz * 0.7} y={cy - sz * 0.7} width={sz * 1.4} height={sz * 1.4}
-                          fill="rgba(255,255,255,0.8)" rx={1} />
+                    <svg style={{ position: "absolute", left: 0, top: CELL * zoom, width: gW, height: gH, pointerEvents: "none", zIndex: 10000, overflow: "visible" }}>
+                      {markers.map(({ r, c, key }) => (
+                        <rect key={key} x={c * cellPx} y={r * cellPx} width={cellPx} height={cellPx}
+                          fill="rgba(255,255,255,0.18)" stroke="rgba(255,255,255,0.7)" strokeWidth={1} rx={1} />
                       ))}
                     </svg>
                   );
