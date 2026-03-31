@@ -2563,6 +2563,115 @@ function App() {
                   </select>
                 </div>
               )}
+              {/* Atlas button row */}
+              <div style={{ padding: "4px 8px", borderBottom: `1px solid ${C.border}`, flexShrink: 0, display: "flex", alignItems: "center", gap: 6 }}>
+                <button
+                  onClick={() => { setAtlasOpen(o => !o); if (!atlasOpen && atlasItems === null) navigateAtlas(""); }}
+                  style={{ ...btn(atlasOpen, C.accent, C.accentDim), fontSize: 10, padding: "3px 8px", flex: 1 }}
+                  title="Browse She-Fairy/atlas-horizon tiles">
+                  🗺 Atlas…
+                </button>
+                {atlasTiles.length > 0 && (
+                  <span style={{ fontSize: 9, color: C.muted }}>{atlasTiles.length}</span>
+                )}
+              </div>
+
+              {/* Atlas floating panel */}
+              {atlasOpen && (() => {
+                const isRoot = atlasPath === "";
+                const pathParts = atlasPath ? atlasPath.split('/') : [];
+                const imageExts = /\.(png|jpg|jpeg|gif|webp|svg|bmp)$/i;
+                return (
+                  <div style={{ position: "fixed", top: 80, left: isMobile ? 10 : 250, width: isMobile ? "calc(100vw - 20px)" : 320, maxHeight: 480, background: C.panel, border: `1px solid ${C.border}`, borderRadius: 12, boxShadow: "0 8px 32px rgba(0,0,0,0.75)", zIndex: 3000, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+                    {/* Header */}
+                    <div style={{ padding: "6px 10px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+                      {!isRoot && (
+                        <button onClick={() => { const up = pathParts.slice(0, -1).join('/'); navigateAtlas(up); }}
+                          style={{ background: "none", border: "none", cursor: "pointer", color: C.accentBright, fontSize: 14, lineHeight: 1, padding: "0 2px" }} title="Go up">←</button>
+                      )}
+                      <span style={{ fontSize: 10, color: C.accent, fontWeight: 700, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        Resources{atlasPath ? ' / ' + pathParts.join(' / ') : ' /'}
+                      </span>
+                      <button onClick={() => setAtlasOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 16, lineHeight: 1, padding: "0 2px" }}>×</button>
+                    </div>
+                    {/* Add all in folder button (non-root) */}
+                    {!isRoot && atlasItems && atlasItems.length > 0 && (
+                      <div style={{ padding: "4px 8px", borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
+                        <button
+                          onClick={async () => {
+                            const imageFiles = atlasItems.filter(f => f.type === 'file' && imageExts.test(f.name));
+                            if (imageFiles.length === 0) return;
+                            const groupName = pathParts[pathParts.length - 1];
+                            await addAtlasTilesetFolder(groupName, imageFiles);
+                          }}
+                          style={{ ...btn(false, C.soft, "rgba(252,211,77,0.12)"), fontSize: 10, padding: "3px 8px", width: "100%" }}>
+                          + Add all tiles in this folder
+                        </button>
+                      </div>
+                    )}
+                    {/* Error */}
+                    {atlasError && (
+                      <div style={{ padding: "6px 10px", color: "#f87171", fontSize: 11, borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>{atlasError}</div>
+                    )}
+                    {/* Content */}
+                    <div style={{ overflowY: "auto", flex: 1, padding: "4px 0" }}>
+                      {atlasLoading ? (
+                        <div style={{ padding: "12px 10px", color: C.muted, fontSize: 11, textAlign: "center" }}>Loading…</div>
+                      ) : atlasItems === null ? null : atlasItems.length === 0 ? (
+                        <div style={{ padding: "12px 10px", color: C.muted, fontSize: 11, textAlign: "center" }}>Empty folder</div>
+                      ) : atlasItems.map(item => {
+                        const isDir = item.type === 'dir';
+                        const isImg = !isDir && imageExts.test(item.name);
+                        if (!isDir && !isImg) return null;
+                        const relPath = item.path.replace(/^Resources\//, '');
+                        const rawSrc = `https://raw.githubusercontent.com/She-Fairy/atlas-horizon/main/Resources/${relPath}`;
+                        const alreadyAdded = atlasTiles.some(t => t.src === rawSrc);
+                        return (
+                          <div key={item.name}
+                            onClick={() => {
+                              if (isDir) {
+                                if (isRoot) {
+                                  // Root folder click: offer "As Group" vs "Individually"
+                                  const choice = confirm(`Add all tiles in "${item.name}" as a group (OK) or browse individually (Cancel)?`);
+                                  if (choice) {
+                                    // As Group: fetch folder then add all
+                                    (async () => {
+                                      try {
+                                        const files = await fetchAtlasDir(relPath);
+                                        addAtlasTilesetFolder(item.name, Array.isArray(files) ? files : []);
+                                      } catch {}
+                                    })();
+                                  } else {
+                                    navigateAtlas(relPath);
+                                  }
+                                } else {
+                                  navigateAtlas(relPath);
+                                }
+                              } else {
+                                if (!alreadyAdded) addAtlasTile(relPath);
+                              }
+                            }}
+                            style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 10px", cursor: "pointer", background: "transparent", transition: "background 0.1s" }}
+                            onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,0.07)"}
+                            onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                            {isDir ? (
+                              <span style={{ fontSize: 14, lineHeight: 1, flexShrink: 0 }}>📁</span>
+                            ) : (
+                              <div style={{ width: 20, height: 20, flexShrink: 0, background: C.panelDeep, borderRadius: 3, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                                <img src={rawSrc} alt="" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated" }} />
+                              </div>
+                            )}
+                            <span style={{ fontSize: 10, color: C.text, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.name}</span>
+                            {!isDir && alreadyAdded && <span style={{ fontSize: 10, color: "#4ade80", flexShrink: 0 }}>✓</span>}
+                            {isDir && <span style={{ fontSize: 10, color: C.muted, flexShrink: 0 }}>›</span>}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()}
+
               <input ref={fileRef} type="file" accept={ACCEPTED} multiple style={{ display: "none" }}
                 onChange={e => { loadFiles(e.target.files); e.target.value = ""; }} />
               <div style={{ overflowY: "auto", flex: 1, padding: "8px 8px 10px" }}>
@@ -2725,6 +2834,39 @@ function App() {
                       <div style={{ width: "100%", flexBasis: "100%", height: 1, background: C.border, margin: "3px 0", flexShrink: 0 }} />
                       {globalEntries.map(renderEntry)}
                     </>)}
+                    {/* 6b. Atlas Explored section */}
+                    {atlasTiles.length > 0 && (() => {
+                      // Group by atlasTilesetGroup, ungrouped shown flat
+                      const groups = {};
+                      const ungrouped = [];
+                      atlasTiles.forEach(t => {
+                        if (t.atlasTilesetGroup) {
+                          if (!groups[t.atlasTilesetGroup]) groups[t.atlasTilesetGroup] = [];
+                          groups[t.atlasTilesetGroup].push(t);
+                        } else {
+                          ungrouped.push(t);
+                        }
+                      });
+                      return (<>
+                        <div style={{ width: "100%", flexBasis: "100%", height: 1, background: C.border, margin: "3px 0", flexShrink: 0 }} />
+                        <div style={{ width: "100%", flexBasis: "100%", flexShrink: 0, display: "flex", alignItems: "center", gap: 4, marginBottom: 2 }}>
+                          <span style={{ fontSize: 9, fontWeight: 700, color: C.accent, textTransform: "uppercase", letterSpacing: 0.8 }}>Atlas Explored</span>
+                          <button onClick={() => { if (confirm("Remove all atlas tiles?")) setAtlasTiles([]); }}
+                            style={{ ...btn(false, C.danger, "rgba(248,113,113,0.14)"), fontSize: 8, padding: "1px 5px", marginLeft: "auto" }}>✕ Clear</button>
+                        </div>
+                        {/* Ungrouped atlas tiles */}
+                        {ungrouped.map(t => renderFlatCard(t))}
+                        {/* Grouped atlas tiles */}
+                        {Object.entries(groups).map(([groupName, gTiles]) => (
+                          <React.Fragment key={groupName}>
+                            <div style={{ width: "100%", flexBasis: "100%", flexShrink: 0, marginTop: 4, marginBottom: 2 }}>
+                              <span style={{ fontSize: 9, color: C.muted, fontWeight: 600 }}>📁 {groupName}</span>
+                            </div>
+                            {gTiles.map(t => renderFlatCard(t))}
+                          </React.Fragment>
+                        ))}
+                      </>);
+                    })()}
                     {/* 7. Space tile (🛸) */}
                     <div style={{ width: "100%", flexBasis: "100%", height: 1, background: C.border, margin: "3px 0", flexShrink: 0 }} />
                     {(() => {
@@ -2889,9 +3031,58 @@ function App() {
                       <span style={{ fontSize: 13 }}>🛸</span>
                     </div>
                   );
+                  // selectionGroup group card
+                  if (sid === "selectionGroup") {
+                    const selActive = selectionMode !== 'single' || false;
+                    return (
+                      <div key="selectionGroup"
+                        onClick={() => setSelectionMode(m => m === 'single' ? 'line' : 'single')}
+                        style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+                          border: `1px solid ${selectionMode !== 'single' ? C.accent : C.border}`, background: selectionMode !== 'single' ? `${C.accent}22` : "rgba(255,255,255,0.04)" }}
+                        title="Selection modes">
+                        <span style={{ fontSize: 14 }}>🤏</span>
+                      </div>
+                    );
+                  }
+                  // mirrorGroup group card
+                  if (sid === "mirrorGroup") {
+                    const anyMirror = mirrorV || mirrorH || mirrorD;
+                    return (
+                      <div key="mirrorGroup"
+                        onClick={() => { if (anyMirror) { setMirrorV(false); setMirrorH(false); setMirrorD(false); } else setMirrorV(true); }}
+                        style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+                          border: `1px solid ${anyMirror ? C.pale : C.border}`, background: anyMirror ? `${C.pale}22` : "rgba(255,255,255,0.04)" }}
+                        title="Mirroring">
+                        <span style={{ fontSize: 14 }}>🪞</span>
+                      </div>
+                    );
+                  }
                   // Regular tile
                   const st = getTile(sid);
                   if (!st || !st.src) return null;
+                  // Folder mini-card: if tile belongs to a folder, show folder card
+                  if (st.folderKey) {
+                    const fKey = st.folderKey;
+                    // Find all tiles in the same folder from the tiles array
+                    const fTiles = tiles.filter(t => t.folderKey === fKey);
+                    const previewTile = fTiles[0];
+                    const folderLabel = st.folderLabel || fKey;
+                    const folderIsActive = !eraser && fTiles.some(t => t.id === sel);
+                    const folderIsOpen = openFolderKey === fKey;
+                    return (
+                      <div key={`folder-${fKey}`}
+                        onClick={e => toggleFolder(fKey, e)}
+                        style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", overflow: "hidden", position: "relative",
+                          border: `1px solid ${folderIsActive ? C.soft : folderIsOpen ? C.accent : C.border}`,
+                          background: folderIsActive ? "rgba(252,211,77,0.1)" : folderIsOpen ? C.accentDim : C.panelDeep }}
+                        title={`Folder: ${folderLabel}`}>
+                        {previewTile && <img src={previewTile.blobSrc ?? previewTile.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", opacity: 0.75 }} />}
+                        <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
+                          <span style={{ fontSize: 10, lineHeight: 1, filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.9))" }}>📁</span>
+                        </div>
+                      </div>
+                    );
+                  }
                   const active = sel === sid && !eraser;
                   const isRot = isTileRotatable(st);
                   const rotDeg = cardRotations[sid] ?? 0;
@@ -3184,11 +3375,38 @@ function App() {
                 otg: C.danger,
               };
               // Only show tool-key starred items (not numeric tile IDs)
-              const starredTools = starredTiles.filter(s => typeof s === "string" && toolIconMap[s]);
+              // Include selectionGroup and mirrorGroup as special group entries
+              const starredTools = starredTiles.filter(s => typeof s === "string" && (toolIconMap[s] || s === "selectionGroup" || s === "mirrorGroup"));
               if (!starredTools.length) return null;
               return (
                 <div style={{ display: "flex", flexDirection: "column", gap: 3, padding: "4px 2px", overflowY: "auto", scrollbarWidth: "none", msOverflowStyle: "none", width: "100%" }}>
                   {starredTools.map(tid => {
+                    // selectionGroup group card
+                    if (tid === "selectionGroup") {
+                      const anySelActive = selectionMode !== 'single';
+                      return (
+                        <div key="selectionGroup"
+                          onClick={() => setSelectionMode(m => m === 'single' ? 'line' : 'single')}
+                          style={{ width: 28, height: 28, margin: "0 auto", borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+                            border: `1px solid ${anySelActive ? C.accent : C.border}`, background: anySelActive ? `${C.accent}22` : "rgba(255,255,255,0.04)" }}
+                          title="Selection modes">
+                          <span style={{ fontSize: 13, lineHeight: 1 }}>🤏</span>
+                        </div>
+                      );
+                    }
+                    // mirrorGroup group card
+                    if (tid === "mirrorGroup") {
+                      const anyMirror = mirrorV || mirrorH || mirrorD;
+                      return (
+                        <div key="mirrorGroup"
+                          onClick={() => { if (anyMirror) { setMirrorV(false); setMirrorH(false); setMirrorD(false); } else setMirrorV(true); }}
+                          style={{ width: 28, height: 28, margin: "0 auto", borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+                            border: `1px solid ${anyMirror ? C.pale : C.border}`, background: anyMirror ? `${C.pale}22` : "rgba(255,255,255,0.04)" }}
+                          title="Mirroring">
+                          <span style={{ fontSize: 13, lineHeight: 1 }}>🪞</span>
+                        </div>
+                      );
+                    }
                     const icon = toolIconMap[tid];
                     const active = toolActiveMap[tid];
                     const color = toolColorMap[tid] ?? C.accent;
