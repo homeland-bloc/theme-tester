@@ -293,6 +293,7 @@ function App() {
   // Replace A→B
   const [replaceOpen, setReplaceOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
+  const [convertOpen, setConvertOpen] = useState(false);
   const [replaceStep, setReplaceStep] = useState(1); // 1=pick tile on map, 2=pick replacement
   const [replaceA,    setReplaceA]  = useState(null);
   const [replaceB,    setReplaceB]  = useState(null);
@@ -2190,6 +2191,90 @@ function App() {
     );
   };
 
+  // ── Convert modal — remap tileset tiles on the board ────────────
+  const ConvertModal = () => {
+    if (!convertOpen) return null;
+    const tilesets = manifest?.tilesets ?? [];
+    const [fromTs, setFromTs] = React.useState(activeTileset ?? tilesets[0]?.name ?? "");
+    const [toTs,   setToTs]   = React.useState(tilesets.find(t => t.name !== fromTs)?.name ?? "");
+    // Build id maps for all tilesets (same logic as the old computeAllTileIds)
+    const buildIdMaps = () => {
+      let id = TILESET_ID_START;
+      const maps = {};
+      for (const tsDef of tilesets) {
+        const m = {};
+        for (const key of (tsDef.order ?? [])) {
+          if (tsDef.folders?.[key]) m[key] = tsDef.folders[key].map(() => id++);
+          else if (tsDef.files?.[key]) m[key] = [id++];
+        }
+        maps[tsDef.name] = m;
+      }
+      return maps;
+    };
+    const maps = buildIdMaps();
+    const fromMap = maps[fromTs] ?? {};
+    const toMap   = maps[toTs]   ?? {};
+    const idRemap = {};
+    for (const key of Object.keys(fromMap)) {
+      const oIds = fromMap[key], nIds = toMap[key];
+      if (nIds) oIds.forEach((oid, i) => { if (i < nIds.length) idRemap[oid] = nIds[i]; });
+    }
+    const fromAll = new Set(Object.values(fromMap).flat());
+    const boardFromIds = new Set();
+    grid.forEach(row => row.forEach(id => { if (id != null && fromAll.has(id)) boardFromIds.add(id); }));
+    const unmapped = [...boardFromIds].filter(id => idRemap[id] === undefined);
+    const mappable = [...boardFromIds].filter(id => idRemap[id] !== undefined);
+    const doConvert = () => {
+      const newGrid = grid.map(row => row.map(id =>
+        (id != null && fromAll.has(id) && idRemap[id] !== undefined) ? idRemap[id] : id
+      ));
+      setGrid(newGrid);
+      setConvertOpen(false);
+    };
+    return (
+      <div className="modal-backdrop" onClick={() => setConvertOpen(false)}>
+        <div className="modal-box" style={{ maxWidth: 360 }} onClick={e => e.stopPropagation()}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Convert Tileset Tiles</span>
+            <button onClick={() => setConvertOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18 }}>×</button>
+          </div>
+          <p style={{ fontSize: 11, color: C.muted, lineHeight: 1.6 }}>Remaps tiles on the board from one tileset to another by matching tile names. Tiles with no equivalent in the target tileset are left unchanged.</p>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 3, flex: 1 }}>
+              <span style={{ fontSize: 10, color: C.muted }}>From</span>
+              <select value={fromTs} onChange={e => setFromTs(e.target.value)}
+                style={{ background: C.panel, color: C.text, border: `1px solid ${C.border}`, borderRadius: 5, fontSize: 11, padding: "3px 6px", cursor: "pointer", outline: "none" }}>
+                {tilesets.map(ts => <option key={ts.name} value={ts.name}>{ts.name}</option>)}
+              </select>
+            </div>
+            <span style={{ color: C.muted, fontSize: 18, marginTop: 14 }}>→</span>
+            <div style={{ display: "flex", flexDirection: "column", gap: 3, flex: 1 }}>
+              <span style={{ fontSize: 10, color: C.muted }}>To</span>
+              <select value={toTs} onChange={e => setToTs(e.target.value)}
+                style={{ background: C.panel, color: C.text, border: `1px solid ${C.border}`, borderRadius: 5, fontSize: 11, padding: "3px 6px", cursor: "pointer", outline: "none" }}>
+                {tilesets.map(ts => <option key={ts.name} value={ts.name}>{ts.name}</option>)}
+              </select>
+            </div>
+          </div>
+          {fromTs && toTs && fromTs !== toTs && (
+            <div style={{ fontSize: 11, color: C.text, background: C.panelAlt ?? "rgba(0,0,0,0.2)", borderRadius: 6, padding: "6px 10px" }}>
+              <div>{mappable.length} tile type{mappable.length !== 1 ? "s" : ""} will be converted.</div>
+              {unmapped.length > 0 && <div style={{ color: "#fbbf24" }}>{unmapped.length} type{unmapped.length !== 1 ? "s" : ""} have no match in {toTs} and will stay as-is.</div>}
+            </div>
+          )}
+          <div style={{ display: "flex", gap: 8 }}>
+            <button style={{ ...btn(true, C.accent, C.accentDim), flex: 1 }}
+              disabled={!fromTs || !toTs || fromTs === toTs}
+              onClick={doConvert}>
+              Convert
+            </button>
+            <button style={btn(false)} onClick={() => setConvertOpen(false)}>Cancel</button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   // ─────────────────────────────────────────────────────────────────
   // Grid size in pixels (at current zoom)
   const gW = gridW * CELL * zoom;
@@ -2210,6 +2295,7 @@ function App() {
       <FailedTileModal />
       <ToolInfoModal />
       <MemoryModal />
+      <ConvertModal />
 
       {/* Map size confirmation dialog */}
       {pendingSize && (() => {
@@ -3070,40 +3156,19 @@ function App() {
                     ))}
                   </div>
                 )}
-                <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1 }}>Selection Mode</span>
+                <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1, display: "flex", alignItems: "center", gap: 4 }}>Selection Mode <span onClick={() => setInfoTool("selectionMode")} style={{ fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.65)", lineHeight: 1 }}>ⓘ</span></span>
                 <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}>
-                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
-                    <button style={btn(selectionMode === 'single', C.accent, C.accentDim)} onClick={() => setSelectionMode('single')} title="Freehand">Single</button>
-                    <span onClick={() => setInfoTool("single")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 9, fontWeight: 700, cursor: "pointer", color: selectionMode === 'single' ? C.accent : "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.75)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>S</span>
-                  </div>
-                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
-                    <button style={btn(selectionMode === 'line', C.accent, C.accentDim)} onClick={() => setSelectionMode('line')} title="Line draw">Line</button>
-                    <span onClick={() => setInfoTool("line")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 9, fontWeight: 700, cursor: "pointer", color: selectionMode === 'line' ? C.accent : "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.75)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>L</span>
-                  </div>
-                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
-                    <button style={btn(selectionMode === 'rect', C.accent, C.accentDim)} onClick={() => setSelectionMode('rect')} title="Rectangle fill">Rectangle</button>
-                    <span onClick={() => setInfoTool("rect")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 9, fontWeight: 700, cursor: "pointer", color: selectionMode === 'rect' ? C.accent : "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.75)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>R</span>
-                  </div>
-                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
-                    <button style={btn(selectionMode === 'fill', C.accent, C.accentDim)} onClick={() => setSelectionMode('fill')} title="Flood fill selection">Fill</button>
-                    <span onClick={() => setInfoTool("fill")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 9, fontWeight: 700, cursor: "pointer", color: selectionMode === 'fill' ? C.accent : "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.75)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>F</span>
-                  </div>
+                  <button style={btn(selectionMode === 'single', C.accent, C.accentDim)} onClick={() => setSelectionMode('single')} title="Freehand">Single</button>
+                  <button style={btn(selectionMode === 'line', C.accent, C.accentDim)} onClick={() => setSelectionMode('line')} title="Line draw">Line</button>
+                  <button style={btn(selectionMode === 'rect', C.accent, C.accentDim)} onClick={() => setSelectionMode('rect')} title="Rectangle fill">Rectangle</button>
+                  <button style={btn(selectionMode === 'fill', C.accent, C.accentDim)} onClick={() => setSelectionMode('fill')} title="Flood fill selection">Fill</button>
                 </div>
                 <div style={{ height: 1, background: C.border }} />
-                <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1 }}>Mirroring</span>
+                <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1, display: "flex", alignItems: "center", gap: 4 }}>Mirroring <span onClick={() => setInfoTool("mirroring")} style={{ fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.65)", lineHeight: 1 }}>ⓘ</span></span>
                 <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}>
-                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
-                    <button style={btn(mirrorV, C.pale, C.paleDim)} onClick={() => setMirrorV(v => !v)} title="Horizontal mirror (left ↔ right)">Horizontal</button>
-                    <span onClick={() => setInfoTool("mirrorV")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 9, fontWeight: 700, cursor: "pointer", color: mirrorV ? C.pale : "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.75)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>H</span>
-                  </div>
-                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
-                    <button style={btn(mirrorH, C.soft, C.softDim)} onClick={() => setMirrorH(v => !v)} title="Vertical mirror (top ↔ bottom)">Vertical</button>
-                    <span onClick={() => setInfoTool("mirrorH")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 9, fontWeight: 700, cursor: "pointer", color: mirrorH ? C.soft : "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.75)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>V</span>
-                  </div>
-                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
-                    <button style={btn(mirrorD, C.accentBright, C.accentDim)} onClick={() => setMirrorD(v => !v)} title="Diagonal mirror (180° rotation)">Diagonal</button>
-                    <span onClick={() => setInfoTool("mirrorD")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 9, fontWeight: 700, cursor: "pointer", color: mirrorD ? C.accentBright : "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.75)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>D</span>
-                  </div>
+                  <button style={btn(mirrorV, C.pale, C.paleDim)} onClick={() => setMirrorV(v => !v)} title="Horizontal mirror (left ↔ right)">Horizontal</button>
+                  <button style={btn(mirrorH, C.soft, C.softDim)} onClick={() => setMirrorH(v => !v)} title="Vertical mirror (top ↔ bottom)">Vertical</button>
+                  <button style={btn(mirrorD, C.accentBright, C.accentDim)} onClick={() => setMirrorD(v => !v)} title="Diagonal mirror (180° rotation)">Diagonal</button>
                 </div>
                 <div style={{ height: 1, background: C.border }} />
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -3122,6 +3187,7 @@ function App() {
                     <button style={btn(false, C.soft, C.softDim)} onClick={() => { setReplaceOpen(true); setReplaceStep(1); setReplaceA(null); setReplaceB(null); setReplaceMsg(""); }}>Replace</button>
                     <span onClick={() => setInfoTool("replace")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
                   </div>
+                  <button style={btn(false, C.soft, C.softDim)} onClick={() => setConvertOpen(true)} title="Remap tileset tiles on the board">Convert</button>
                   <button style={btn(false, C.muted, "rgba(255,255,255,0.08)")} onClick={() => setMemoryOpen(true)} title="Storage usage">Memory…</button>
                   <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
                     <button style={btn(mirrorSettings.allowSwap, C.accent, C.accentDim)} onClick={() => setMirrorSettings(p => ({ ...p, allowSwap: !p.allowSwap }))} title="When enabled, painting over occupied cells replaces them instead of picking them up">Block Overwrite</button>
