@@ -265,6 +265,7 @@ function App() {
   const [painting,    setPainting]  = useState(false);
   const [selectionMode, setSelectionMode] = useState('single'); // 'single' | 'line' | 'rect' | 'fill'
   const [eyedropperMode, setEyedropperMode] = useState(false); // eyedropper pick tool
+  const [highlightMode, setHighlightMode] = useState(false);
   const eyedropperModeRef = useRef(false);
   const [rectPreview,   setRectPreview]   = useState(null);     // {r1,c1,r2,c2} during rect drag
   const [previewCells,  setPreviewCells]  = useState(null);     // [[r,c],...] during single/line drag
@@ -2308,7 +2309,8 @@ function App() {
     const toolDefs = {
       erase: { label: "Erase", icon: "🧼", color: C.danger, desc: "Removes tiles from cells. Click or drag across cells to erase.", iconColor: null },
       hand:  { label: "Hand", icon: "👋", color: "#fbbf24", desc: "Drag to pan the map canvas. On mobile, swipe to scroll.", iconColor: null },
-      space: { label: "Space", icon: "🛸", color: C.accentBright, desc: "Places an invisible space tile, making the cell fully transparent in the exported map.", iconColor: null },
+      space: { label: "Space", icon: "🛸", color: "#60a5fa", desc: "Places an invisible space tile, making the cell fully transparent in the exported map.", iconColor: null },
+      eyedropper: { label: "Pick (Eyedropper)", icon: "🧪", color: "#22d3ee", desc: "Click a cell on the map to pick up its tile as the active selection. The tile becomes your current painting tile.", iconColor: null },
       single: { label: "Single", icon: "S", color: C.accent, desc: "Freehand paint mode. Click or drag to place tiles one cell at a time.", iconColor: C.accent },
       line:   { label: "Line", icon: "L", color: C.accent, desc: "Line draw mode. Click a start cell and drag to an end cell — tiles are placed in a straight line between them.", iconColor: C.accent },
       rect:   { label: "Rectangle", icon: "R", color: C.accent, desc: "Rectangle fill mode. Click and drag to define a bounding box — all cells inside are filled with the selected tile.", iconColor: C.accent },
@@ -2320,6 +2322,8 @@ function App() {
       offsetCenters: { label: "Offset Centers", icon: "🎯", color: C.soft, desc: "Overlays a white + marker at the original grid-cell centre of every tile that has a non-zero offset applied. Useful for checking placement alignment.", iconColor: null },
       replace: { label: "Replace", icon: "♻️", color: C.soft, desc: "Two-step tile replacement: first pick a tile on the map, then pick its replacement. All instances of the original tile are swapped at once.", iconColor: null },
       overwrite: { label: "Block Overwrite", icon: "🧱", color: C.accent, desc: "When enabled, painting over an occupied cell replaces it with the currently selected tile instead of picking it up for dragging.", iconColor: null },
+      otg: { label: "OTG Detection", icon: "🧩", color: C.danger, desc: "Detects One Tile Gap cells — cells that create unreachable single-tile passages. Red overlay highlights them. Map edges count as walls.", iconColor: null },
+      highlight: { label: "Highlight", icon: "🪄", color: "#a78bfa", desc: "Select an area to highlight and move it as a group. Draw with any selection mode to highlight cells, then drag the highlighted region to move it.", iconColor: "#a78bfa" },
     };
     const def = toolDefs[infoTool];
     if (!def) return null;
@@ -2343,6 +2347,12 @@ function App() {
               style={{ width: 14, height: 14, accentColor: C.accent, cursor: "pointer" }} />
             <span style={{ fontSize: 11, color: C.text }}>Starred shortcut ⭐</span>
           </label>
+          {infoTool === "otg" && (
+            <button style={{ ...btn(false, C.soft, C.softDim), fontSize: 11 }}
+              onClick={() => { setOtgOpen(true); setInfoTool(null); }}>
+              ⚙ OTG Settings
+            </button>
+          )}
         </div>
       </div>
     );
@@ -2396,6 +2406,8 @@ function App() {
     const tilesets = manifest?.tilesets ?? [];
     const [fromTs, setFromTs] = React.useState(activeTileset ?? tilesets[0]?.name ?? "");
     const [toTs,   setToTs]   = React.useState(tilesets.find(t => t.name !== fromTs)?.name ?? "");
+    const [autoConvert, setAutoConvert] = React.useState(() => load("oph_auto_convert", false));
+    React.useEffect(() => { save("oph_auto_convert", autoConvert); }, [autoConvert]);
     // Build id maps for all tilesets (same logic as the old computeAllTileIds)
     const buildIdMaps = () => {
       let id = TILESET_ID_START;
@@ -2438,10 +2450,23 @@ function App() {
             <button onClick={() => setConvertOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18 }}>×</button>
           </div>
           <p style={{ fontSize: 11, color: C.muted, lineHeight: 1.6 }}>Remaps tiles on the board from one tileset to another by matching tile names. Tiles with no equivalent in the target tileset are left unchanged.</p>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", userSelect: "none", fontSize: 11, color: C.text }}>
+            <input type="checkbox" checked={autoConvert} onChange={e => setAutoConvert(e.target.checked)}
+              style={{ accentColor: C.accent, cursor: "pointer" }} />
+            Auto-convert on tileset switch
+            <span style={{ fontSize: 10, color: C.muted }}>(limits to one tileset at a time)</span>
+          </label>
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
             <div style={{ display: "flex", flexDirection: "column", gap: 3, flex: 1 }}>
               <span style={{ fontSize: 10, color: C.muted }}>From</span>
-              <select value={fromTs} onChange={e => setFromTs(e.target.value)}
+              <select value={fromTs} onChange={e => {
+                  const v = e.target.value;
+                  setFromTs(v);
+                  if (v === toTs) {
+                    const alt = tilesets.find(t => t.name !== v);
+                    if (alt) setToTs(alt.name);
+                  }
+                }}
                 style={{ background: C.panel, color: C.text, border: `1px solid ${C.border}`, borderRadius: 5, fontSize: 11, padding: "3px 6px", cursor: "pointer", outline: "none" }}>
                 {tilesets.map(ts => <option key={ts.name} value={ts.name}>{ts.name}</option>)}
               </select>
@@ -2449,7 +2474,14 @@ function App() {
             <span style={{ color: C.muted, fontSize: 18, marginTop: 14 }}>→</span>
             <div style={{ display: "flex", flexDirection: "column", gap: 3, flex: 1 }}>
               <span style={{ fontSize: 10, color: C.muted }}>To</span>
-              <select value={toTs} onChange={e => setToTs(e.target.value)}
+              <select value={toTs} onChange={e => {
+                  const v = e.target.value;
+                  setToTs(v);
+                  if (v === fromTs) {
+                    const alt = tilesets.find(t => t.name !== v);
+                    if (alt) setFromTs(alt.name);
+                  }
+                }}
                 style={{ background: C.panel, color: C.text, border: `1px solid ${C.border}`, borderRadius: 5, fontSize: 11, padding: "3px 6px", cursor: "pointer", outline: "none" }}>
                 {tilesets.map(ts => <option key={ts.name} value={ts.name}>{ts.name}</option>)}
               </select>
@@ -2469,6 +2501,43 @@ function App() {
             </button>
             <button style={btn(false)} onClick={() => setConvertOpen(false)}>Cancel</button>
           </div>
+        </div>
+      </div>
+    );
+  };
+
+  // ── Hotkeys modal ─────────────────────────────────────────────
+  const HotkeysModal = () => {
+    if (!hotkeysOpen) return null;
+    const keys = [
+      ["E", "Erase tool"],
+      ["H", "Hand / pan tool"],
+      ["W", "Pick (eyedropper) tool"],
+      ["Z / Ctrl+Z", "Undo"],
+      ["X / Ctrl+Y", "Redo"],
+      ["S", "Single selection mode"],
+      ["L", "Line selection mode"],
+      ["R", "Rectangle selection mode"],
+      ["F", "Fill selection mode"],
+      ["Arrow keys", "Pan the map"],
+      ["+/-", "Zoom in/out"],
+    ];
+    return (
+      <div className="modal-backdrop" onClick={() => setHotkeysOpen(false)}>
+        <div className="modal-box" style={{ maxWidth: 320 }} onClick={e => e.stopPropagation()}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Hotkeys</span>
+            <button onClick={() => setHotkeysOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18 }}>×</button>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {keys.map(([key, desc]) => (
+              <div key={key} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <kbd style={{ background: "rgba(0,0,0,0.35)", border: `1px solid ${C.border}`, borderRadius: 4, padding: "2px 7px", fontSize: 11, fontFamily: "monospace", color: C.accentBright, minWidth: 80, textAlign: "center", flexShrink: 0 }}>{key}</kbd>
+                <span style={{ fontSize: 11, color: C.text }}>{desc}</span>
+              </div>
+            ))}
+          </div>
+          <button style={btn(false)} onClick={() => setHotkeysOpen(false)}>Close</button>
         </div>
       </div>
     );
@@ -2495,6 +2564,7 @@ function App() {
       <ToolInfoModal />
       <MemoryModal />
       <ConvertModal />
+      <HotkeysModal />
 
       {/* Map size confirmation dialog */}
       {pendingSize && (() => {
@@ -2896,7 +2966,7 @@ function App() {
                         </div>
                         <span onClick={e => { e.stopPropagation(); setInfoTool("erase"); }}
                           style={{ position: "absolute", top: -7, right: -7, width: 18, height: 18, fontSize: 15, cursor: "pointer", color: isStarredErase ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "18px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
-                          title="Erase info">ⓘ</span>
+                          title={isStarredErase ? "Starred — click for info" : "Erase info"}>{isStarredErase ? "★" : "ⓘ"}</span>
                       </div>
                     );
                   })()}
@@ -2916,23 +2986,27 @@ function App() {
                         </div>
                         <span onClick={e => { e.stopPropagation(); setInfoTool("hand"); }}
                           style={{ position: "absolute", top: -7, right: -7, width: 18, height: 18, fontSize: 15, cursor: "pointer", color: isStarredHand ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "18px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
-                          title="Hand info">ⓘ</span>
+                          title={isStarredHand ? "Starred — click for info" : "Hand info"}>{isStarredHand ? "★" : "ⓘ"}</span>
                       </div>
                     );
                   })()}
                   {/* 1c. Eyedropper */}
                   {(() => {
+                    const isStarredEyedropper = starredTiles.includes("eyedropper");
                     return (
                       <div onClick={() => { setEyedropperMode(prev => !prev); setEraser(false); setHandMode(false); if (!eyedropperMode) setSel(null); }}
-                        style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${eyedropperMode ? C.accentBright : C.border}`, background: eyedropperMode ? C.accentDim : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
+                        style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${eyedropperMode ? "#22d3ee" : C.border}`, background: eyedropperMode ? "rgba(34,211,238,0.15)" : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
                         <div style={{ borderRadius: 6, overflow: "hidden" }}>
-                          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: eyedropperMode ? "rgba(125,211,252,0.22)" : "rgba(125,211,252,0.06)", padding: "2px 4px" }}>
-                            <span style={{ fontSize: 9, fontWeight: 700, color: eyedropperMode ? C.accentBright : C.muted }}>Pick</span>
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: eyedropperMode ? "rgba(34,211,238,0.22)" : "rgba(34,211,238,0.08)", padding: "2px 4px" }}>
+                            <span style={{ fontSize: 9, fontWeight: 700, color: eyedropperMode ? "#22d3ee" : C.muted }}>Pick</span>
                           </div>
                           <div style={{ height: cardSz - 18, background: C.panelDeep, display: "flex", alignItems: "center", justifyContent: "center" }}>
                             <span style={{ fontSize: 20, lineHeight: 1, opacity: eyedropperMode ? 1 : 0.55 }}>🧪</span>
                           </div>
                         </div>
+                        <span onClick={e => { e.stopPropagation(); setInfoTool("eyedropper"); }}
+                          style={{ position: "absolute", top: -7, right: -7, width: 18, height: 18, fontSize: 15, cursor: "pointer", color: isStarredEyedropper ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "18px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
+                          title={isStarredEyedropper ? "Starred — click for info" : "Pick info"}>{isStarredEyedropper ? "★" : "ⓘ"}</span>
                       </div>
                     );
                   })()}
@@ -2943,13 +3017,13 @@ function App() {
                     return (
                       <div onClick={() => { setSel(SPACE_TILE_ID); setEraser(false); setHandMode(false); setEyedropperMode(false); }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer",
-                          border: `2px solid ${spaceActive ? C.accentBright : C.border}`,
-                          background: spaceActive ? C.accentDim : "rgba(255,255,255,0.03)",
+                          border: `2px solid ${spaceActive ? "#60a5fa" : C.border}`,
+                          background: spaceActive ? "rgba(96,165,250,0.15)" : "rgba(255,255,255,0.03)",
                           transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}
                         title="Space — makes cell transparent">
                         <div style={{ borderRadius: 6, overflow: "hidden" }}>
-                          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: spaceActive ? "rgba(125,211,252,0.22)" : "rgba(125,211,252,0.08)", padding: "2px 4px" }}>
-                            <span style={{ fontSize: 9, fontWeight: 700, color: spaceActive ? C.accentBright : C.muted }}>Space</span>
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: spaceActive ? "rgba(96,165,250,0.22)" : "rgba(96,165,250,0.08)", padding: "2px 4px" }}>
+                            <span style={{ fontSize: 9, fontWeight: 700, color: spaceActive ? "#60a5fa" : C.muted }}>Space</span>
                           </div>
                           <div style={{ height: cardSz - 18, background: C.panelDeep, display: "flex", alignItems: "center", justifyContent: "center" }}>
                             <span style={{ fontSize: 20, lineHeight: 1 }}>🛸</span>
@@ -2957,7 +3031,33 @@ function App() {
                         </div>
                         <span onClick={e => { e.stopPropagation(); setInfoTool("space"); }}
                           style={{ position: "absolute", top: -7, right: -7, width: 18, height: 18, fontSize: 15, cursor: "pointer", color: isStarredSpace ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "18px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
-                          title="Space info">ⓘ</span>
+                          title={isStarredSpace ? "Starred — click for info" : "Space info"}>{isStarredSpace ? "★" : "ⓘ"}</span>
+                      </div>
+                    );
+                  })()}
+                  {/* 1e. Highlight */}
+                  {(() => {
+                    const isStarredHighlight = starredTiles.includes("highlight");
+                    return (
+                      <div onClick={() => { setHighlightMode(h => !h); setEraser(false); setHandMode(false); setEyedropperMode(false); if (highlightMode) setSel(null); }}
+                        style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer",
+                          border: `2px solid ${highlightMode ? "#a78bfa" : C.border}`,
+                          background: highlightMode ? "rgba(167,139,250,0.15)" : "rgba(255,255,255,0.03)",
+                          transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
+                        <div style={{ borderRadius: 6, overflow: "hidden" }}>
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "center",
+                            background: highlightMode ? "rgba(167,139,250,0.22)" : "rgba(167,139,250,0.08)", padding: "2px 4px" }}>
+                            <span style={{ fontSize: 9, fontWeight: 700, color: highlightMode ? "#a78bfa" : C.muted }}>Highlight</span>
+                          </div>
+                          <div style={{ height: cardSz - 18, background: C.panelDeep, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                            <span style={{ fontSize: 20, lineHeight: 1, opacity: highlightMode ? 1 : 0.55 }}>🪄</span>
+                          </div>
+                        </div>
+                        <span onClick={e => { e.stopPropagation(); setInfoTool("highlight"); }}
+                          style={{ position: "absolute", top: -7, right: -7, width: 18, height: 18, fontSize: 15, cursor: "pointer",
+                            color: isStarredHighlight ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "18px", textAlign: "center",
+                            zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
+                          title="Highlight info">{isStarredHighlight ? "★" : "ⓘ"}</span>
                       </div>
                     );
                   })()}
@@ -3624,6 +3724,7 @@ function App() {
                     <button style={btn(showGuides, C.accent, C.accentDim)} onClick={() => setShowGuides(v => !v)} title="Toggle mirror guide lines">Guides</button>
                     <span onClick={() => setInfoTool("guides")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
                   </div>
+                  <button style={{ ...btn(false), fontSize: 10, padding: "3px 9px" }} onClick={() => setHotkeysOpen(true)}>Hotkeys</button>
                   <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
                     <button style={btn(showOffsetCenters, C.soft, C.softDim)} onClick={() => setShowOffsetCenters(v => !v)} title="Show a marker at the placement cell of tiles with non-zero offset">Offset Centers</button>
                     <span onClick={() => setInfoTool("offsetCenters")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
