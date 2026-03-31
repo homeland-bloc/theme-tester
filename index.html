@@ -290,6 +290,7 @@ function App() {
 
   // Replace A→B
   const [replaceOpen, setReplaceOpen] = useState(false);
+  const [memoryOpen, setMemoryOpen] = useState(false);
   const [replaceStep, setReplaceStep] = useState(1); // 1=pick tile on map, 2=pick replacement
   const [replaceA,    setReplaceA]  = useState(null);
   const [replaceB,    setReplaceB]  = useState(null);
@@ -621,8 +622,6 @@ function App() {
 
   // Active tileset name (drives which tileset's tiles are shown)
   const [activeTileset, setActiveTileset] = useState(null);
-  // Theme switch warning modal state
-  const [themeSwitchWarning, setThemeSwitchWarning] = useState(null); // { oldTheme, newTheme, unmappedCount }
   // Parsed manifest data
   const [manifest, setManifest] = useState(null);
   useEffect(() => { openFolderKeyRef.current = openFolderKey; }, [openFolderKey]);
@@ -721,65 +720,13 @@ function App() {
     return { tilesetEntries: tsEntries, globalEntries: glbEntries, flatDefaultTiles: flatTiles, tilesetTileCount: tsCount };
   }, [manifest, activeTileset]);
 
-  // Helper: compute { tilesetName -> { key -> [ids] } } matching the useMemo ID assignment.
-  // All tilesets are iterated in manifest order so IDs are stable and non-overlapping.
-  const computeAllTileIds = () => {
-    let id = TILESET_ID_START;
-    const allMaps = {};
-    for (const tsDef of (manifest?.tilesets ?? [])) {
-      const tsMap = {};
-      for (const key of (tsDef.order ?? [])) {
-        if (tsDef.folders?.[key]) { tsMap[key] = tsDef.folders[key].map(() => id++); }
-        else if (tsDef.files?.[key]) { tsMap[key] = [id++]; }
-      }
-      allMaps[tsDef.name] = tsMap;
-    }
-    return allMaps;
-  };
-
-  // Switch tileset with grid ID remapping based on matching codename keys.
-  // Because all tilesets now have non-overlapping IDs, unmapped tiles keep their old IDs
-  // and still render correctly (their tiles remain in flatDefaultTiles permanently).
+  // Switch tileset — only updates the tile panel and BG colours; board tiles are never remapped.
+  // To convert tiles on the board use the Convert tool.
   const switchTileset = (newTilesetName) => {
     if (!manifest || newTilesetName === activeTileset) return;
-    const allMaps = computeAllTileIds();
-    const oldMap = allMaps[activeTileset];
-    const newMap = allMaps[newTilesetName];
-    if (!oldMap || !newMap) { setActiveTileset(newTilesetName); return; }
-    // Build ID remap: old tileset key ids → new tileset key ids
-    const idRemap = {};
-    for (const key of Object.keys(oldMap)) {
-      const oldIds = oldMap[key];
-      const newIds = newMap[key];
-      if (newIds) {
-        oldIds.forEach((oldId, i) => { if (i < newIds.length) idRemap[oldId] = newIds[i]; });
-      }
-    }
-    // Only check/remap IDs that actually belong to the old tileset
-    const oldAllIds = new Set(Object.values(oldMap).flat());
-    const unmappedIds = new Set();
-    grid.forEach(row => row.forEach(id => {
-      if (id != null && oldAllIds.has(id) && idRemap[id] === undefined) unmappedIds.add(id);
-    }));
-    // Remap grid: only touch IDs from the old tileset
-    const remappedGrid = grid.map(row => row.map(id =>
-      (id != null && oldAllIds.has(id)) ? (idRemap[id] ?? id) : id
-    ));
-    // Record in history with new tileset name (bypass setGrid to embed tileset in the snapshot)
-    setHistory(h => {
-      const trimmed = h.slice(0, histIdx + 1);
-      const capped = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-      return [...capped, { grid: remappedGrid, w: gridWRef.current, h: gridHRef.current, tileset: newTilesetName }];
-    });
-    setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
-    setGridRaw(remappedGrid);
     setActiveTileset(newTilesetName);
-    // Auto-set background colours for the tileset
     const tsBg = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4C5647", bg2: "#586352" } }[newTilesetName];
     if (tsBg) { setBg1(tsBg.bg1); setHex1(tsBg.bg1); setBg2(tsBg.bg2); setHex2(tsBg.bg2); save(SK.colors, tsBg); }
-    if (unmappedIds.size > 0) {
-      setThemeSwitchWarning({ oldTheme: activeTileset, newTheme: newTilesetName, unmappedCount: unmappedIds.size });
-    }
   };
 
   // Sync defaultTiles and nextId whenever flatDefaultTiles changes.
@@ -2150,24 +2097,43 @@ function App() {
     );
   };
 
-  // ── Theme switch warning modal ───────────────────────────────────
-  const ThemeSwitchWarningModal = () => {
-    if (!themeSwitchWarning) return null;
-    const { oldTheme, newTheme, unmappedCount } = themeSwitchWarning;
+  // ── Memory usage modal ───────────────────────────────────────────
+  const MemoryModal = () => {
+    if (!memoryOpen) return null;
+    const entries = [];
+    let total = 0;
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      const val = localStorage.getItem(key) || "";
+      const bytes = val.length * 2;
+      total += bytes;
+      entries.push({ key, bytes });
+    }
+    entries.sort((a, b) => b.bytes - a.bytes);
+    const fmt = b => b < 1024 ? `${b} B` : `${(b/1024).toFixed(1)} KB`;
     return (
-      <div className="modal-backdrop" onClick={() => setThemeSwitchWarning(null)}>
-        <div className="modal-box" onClick={e => e.stopPropagation()}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Switched to {newTheme}</span>
-            <button onClick={() => setThemeSwitchWarning(null)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
+      <div className="modal-backdrop" onClick={() => setMemoryOpen(false)}>
+        <div className="modal-box" style={{ maxWidth: 400 }} onClick={e => e.stopPropagation()}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Storage Usage</span>
+            <button onClick={() => setMemoryOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18 }}>×</button>
           </div>
-          <p style={{ fontSize: 12, color: C.text, lineHeight: 1.6 }}>
-            {unmappedCount} tile type{unmappedCount !== 1 ? "s" : ""} from <strong style={{ color: C.accentBright }}>{oldTheme}</strong> {unmappedCount !== 1 ? "don't" : "doesn't"} have equivalents in <strong style={{ color: C.accentBright }}>{newTheme}</strong>.
-          </p>
-          <p style={{ fontSize: 11, color: C.muted, lineHeight: 1.5 }}>
-            Those tiles have been kept on the map as-is. You may want to erase or replace them.
-          </p>
-          <button style={{ ...btn(true, C.accent, C.accentDim) }} onClick={() => setThemeSwitchWarning(null)}>OK</button>
+          <div style={{ overflowY: "auto", maxHeight: 320, display: "flex", flexDirection: "column", gap: 2 }}>
+            {entries.map(({ key, bytes }) => (
+              <div key={key} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, padding: "2px 0", borderBottom: `1px solid ${C.border}` }}>
+                <span style={{ color: C.muted, fontFamily: "monospace", fontSize: 10 }}>{key}</span>
+                <span style={{ color: C.text, fontWeight: 600 }}>{fmt(bytes)}</span>
+              </div>
+            ))}
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span style={{ fontSize: 12, color: C.text }}>Total: <strong>{fmt(total)}</strong></span>
+            <button style={{ ...btn(true, C.danger, "rgba(248,113,113,0.14)") }}
+              onClick={() => { if (confirm("Clear all stored data and reset the app to factory defaults?")) { localStorage.clear(); window.location.reload(); } }}>
+              Clear All Data
+            </button>
+          </div>
+          <button style={btn(false)} onClick={() => setMemoryOpen(false)}>Close</button>
         </div>
       </div>
     );
@@ -2192,7 +2158,6 @@ function App() {
       <OTGSettingsModal />
       <FailedTileModal />
       <ToolInfoModal />
-      <ThemeSwitchWarningModal />
 
       {/* Map size confirmation dialog */}
       {pendingSize && (() => {
@@ -2352,7 +2317,7 @@ function App() {
                     style={{ width: "100%", background: C.panel, color: C.text, border: `1px solid ${C.border}`, borderRadius: 5, fontSize: 11, fontFamily: "'Inter', sans-serif", padding: "3px 6px", cursor: "pointer", outline: "none" }}
                   >
                     {manifest.tilesets.map(ts => (
-                      <option key={ts.name} value={ts.name}>{ts.name}</option>
+                      <option key={ts.name} value={ts.name}>{ts.name}{ts.name === "Sewer" ? " (WIP)" : ""}</option>
                     ))}
                   </select>
                 </div>
@@ -3122,21 +3087,31 @@ function App() {
           {/* Row 3: Background colour pickers */}
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8, padding: "3px 14px 5px", alignItems: "center" }}>
             <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1, userSelect: "none" }}>Background</span>
-            {[
-              { label: "A", bg: bg1, hex: hex1, setHex: setHex1, apply: applyBg1 },
-              { label: "B", bg: bg2, hex: hex2, setHex: setHex2, apply: applyBg2 },
-            ].map(({ label, bg, hex, setHex, apply }) => (
-              <div key={label} style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                <span style={{ fontSize: 10, color: C.muted, fontWeight: 600 }}>{label}</span>
-                <input type="color" value={bg} onChange={e => apply(e.target.value)}
-                  style={{ width: 26, height: 26, border: "none", borderRadius: 5, cursor: "pointer", padding: 2, background: "none", flexShrink: 0 }} />
-                <input type="text" value={hex} maxLength={7}
-                  onChange={e => { const v = e.target.value; setHex(v); if (validHex(v)) apply(v); }}
-                  onBlur={() => { if (!validHex(hex)) setHex(bg); }}
-                  style={{ width: 62, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 11, padding: "3px 6px", outline: "none" }}
-                  spellCheck={false} />
-              </div>
-            ))}
+            <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+              <span style={{ fontSize: 10, color: C.muted, fontWeight: 600 }}>A</span>
+              <input type="color" value={bg1} onChange={e => applyBg1(e.target.value)}
+                style={{ width: 26, height: 26, border: "none", borderRadius: 5, cursor: "pointer", padding: 2, background: "none", flexShrink: 0 }} />
+              <input type="text" value={hex1} maxLength={7}
+                onChange={e => { const v = e.target.value; setHex1(v); if (validHex(v)) applyBg1(v); }}
+                onBlur={() => { if (!validHex(hex1)) setHex1(bg1); }}
+                style={{ width: 62, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 11, padding: "3px 6px", outline: "none" }}
+                spellCheck={false} />
+            </div>
+            <button style={{ ...btn(false), fontSize: 10, padding: "3px 9px" }}
+              onClick={() => { const t1 = bg1, t2 = bg2; applyBg1(t2); applyBg2(t1); }}
+              title="Swap background colours">
+              ⇄
+            </button>
+            <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+              <span style={{ fontSize: 10, color: C.muted, fontWeight: 600 }}>B</span>
+              <input type="color" value={bg2} onChange={e => applyBg2(e.target.value)}
+                style={{ width: 26, height: 26, border: "none", borderRadius: 5, cursor: "pointer", padding: 2, background: "none", flexShrink: 0 }} />
+              <input type="text" value={hex2} maxLength={7}
+                onChange={e => { const v = e.target.value; setHex2(v); if (validHex(v)) applyBg2(v); }}
+                onBlur={() => { if (!validHex(hex2)) setHex2(bg2); }}
+                style={{ width: 62, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 11, padding: "3px 6px", outline: "none" }}
+                spellCheck={false} />
+            </div>
             <button style={{ ...btn(false), fontSize: 10, padding: "3px 9px" }}
               onClick={() => { applyBg1(DEFAULT_BG1); applyBg2(DEFAULT_BG2); save(SK.colors, { bg1: DEFAULT_BG1, bg2: DEFAULT_BG2 }); }}>↺ Reset</button>
           </div>
@@ -3157,17 +3132,10 @@ function App() {
               onClick={() => { const w = parseInt(sizeWInput, 10), h = parseInt(sizeHInput, 10); if (w > 0 && h > 0) setPendingSize({ w, h }); }}>
               Apply
             </button>
-            <select style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontSize: 10, padding: "3px 5px", cursor: "pointer", outline: "none" }}
-              value=""
-              onChange={e => {
-                const v = e.target.value;
-                if (v === "3v3") { setSizeWInput("21"); setSizeHInput("33"); setPendingSize({ w: 21, h: 33 }); }
-                else if (v === "sd") { setSizeWInput("60"); setSizeHInput("60"); setPendingSize({ w: 60, h: 60 }); }
-              }}>
-              <option value="" disabled style={{ background: C.panel, color: C.muted }}>↓ preset</option>
-              <option value="3v3" style={{ background: C.panel, color: C.text }}>3v3 (21×33)</option>
-              <option value="sd" style={{ background: C.panel, color: C.text }}>Showdown (60×60)</option>
-            </select>
+            <button style={{ ...btn(false), fontSize: 10, padding: "3px 9px" }}
+              onClick={() => { setSizeWInput("21"); setSizeHInput("33"); setPendingSize({ w: 21, h: 33 }); }}>
+              3v3
+            </button>
           </div>
 
           {/* Row 5: Theme switcher */}
