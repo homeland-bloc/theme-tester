@@ -304,6 +304,7 @@ function App() {
   const [replaceOpen, setReplaceOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [convertOpen, setConvertOpen] = useState(false);
+  const [hotkeysOpen, setHotkeysOpen] = useState(false);
   const [replaceStep, setReplaceStep] = useState(1); // 1=pick tile on map, 2=pick replacement
   const [replaceA,    setReplaceA]  = useState(null);
   const [replaceB,    setReplaceB]  = useState(null);
@@ -2823,7 +2824,7 @@ function App() {
                         {rotatable && <RotChevron rotDeg={rotDeg} />}
                         {/* Info button: yellow if starred, white otherwise — top-right corner */}
                         <span onClick={e => { e.stopPropagation(); setInfoTile(t.id); }}
-                          style={{ position: "absolute", top: -7, right: -7, width: 18, height: 18, fontSize: isStarred ? 13 : 15, cursor: "pointer", color: isStarred ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "18px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
+                          style={{ position: "absolute", top: -7, right: -7, width: 18, height: 18, fontSize: 15, cursor: "pointer", color: isStarred ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "18px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
                           title={isStarred ? "Starred tile — click for info" : "Tile info"}>{isStarred ? "★" : "ⓘ"}</span>
                         <MultLabel t={t} />
                         <TileBadge t={t} />
@@ -2883,7 +2884,7 @@ function App() {
                   {(() => {
                     const isStarredErase = starredTiles.includes("erase");
                     return (
-                      <div onClick={() => { setEraser(true); setSel(null); setHandMode(false); }}
+                      <div onClick={() => { setEraser(true); setSel(null); setHandMode(false); setEyedropperMode(false); }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${eraser ? C.danger : C.border}`, background: eraser ? "rgba(248,113,113,0.14)" : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
                         <div style={{ borderRadius: 6, overflow: "hidden" }}>
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: eraser ? "rgba(248,113,113,0.32)" : "rgba(248,113,113,0.14)", padding: "2px 4px" }}>
@@ -2903,7 +2904,7 @@ function App() {
                   {(() => {
                     const isStarredHand = starredTiles.includes("hand");
                     return (
-                      <div onClick={() => { setHandMode(h => !h); setEraser(false); setSel(null); }}
+                      <div onClick={() => { setHandMode(h => !h); setEraser(false); setSel(null); setEyedropperMode(false); }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${handMode ? "#fbbf24" : C.border}`, background: handMode ? "rgba(251,191,36,0.14)" : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
                         <div style={{ borderRadius: 6, overflow: "hidden" }}>
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: handMode ? "rgba(251,191,36,0.28)" : "rgba(251,191,36,0.08)", padding: "2px 4px" }}>
@@ -2940,7 +2941,7 @@ function App() {
                     const isStarredSpace = starredTiles.includes(SPACE_TILE_ID);
                     const spaceActive = sel === SPACE_TILE_ID && !eraser;
                     return (
-                      <div onClick={() => { setSel(SPACE_TILE_ID); setEraser(false); setHandMode(false); }}
+                      <div onClick={() => { setSel(SPACE_TILE_ID); setEraser(false); setHandMode(false); setEyedropperMode(false); }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer",
                           border: `2px solid ${spaceActive ? C.accentBright : C.border}`,
                           background: spaceActive ? C.accentDim : "rgba(255,255,255,0.03)",
@@ -3603,25 +3604,12 @@ function App() {
                 right={<button onClick={() => setMirrorSettingsOpen(true)} style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 5, cursor: "pointer", color: C.muted, fontSize: 12, padding: "1px 6px", lineHeight: 1.4 }} title="Mirroring settings">⚙</button>}
               />
               <div style={{ overflowY: "auto", flex: 1, padding: "8px 12px 10px", display: "flex", flexDirection: "column", gap: 7 }}>
-                {showGuides && (
-                  <div style={{ background: "rgba(255,255,255,0.04)", border: `1px solid ${C.border}`, borderRadius: 7, padding: "6px 8px", display: "flex", flexDirection: "column", gap: 3 }}>
-                    <span style={{ fontSize: 9, color: C.accentBright, textTransform: "uppercase", letterSpacing: 1, fontWeight: 700 }}>Hotkeys</span>
-                    {[
-                      ["E", "Erase"], ["W", "Eyedropper"], ["Z", "Undo"], ["X", "Redo"],
-                    ].map(([key, label]) => (
-                      <div key={key} style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                        <span style={{ minWidth: 18, height: 16, borderRadius: 4, background: "rgba(255,255,255,0.12)", border: `1px solid ${C.border}`, fontSize: 9, fontWeight: 700, color: C.accentBright, display: "inline-flex", alignItems: "center", justifyContent: "center", fontFamily: "monospace" }}>{key}</span>
-                        <span style={{ fontSize: 10, color: C.muted }}>{label}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
                 <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1, display: "flex", alignItems: "center", gap: 4 }}>Selection Mode <span onClick={() => setInfoTool("selectionMode")} style={{ fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.65)", lineHeight: 1 }}>ⓘ</span></span>
                 <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}>
                   <button style={btn(selectionMode === 'single', C.accent, C.accentDim)} onClick={() => setSelectionMode('single')} title="Freehand">Single</button>
                   <button style={btn(selectionMode === 'line', C.soft, C.softDim)} onClick={() => setSelectionMode('line')} title="Line draw">Line</button>
                   <button style={btn(selectionMode === 'rect', C.pale, C.paleDim)} onClick={() => setSelectionMode('rect')} title="Rectangle fill">Rectangle</button>
-                  <button style={btn(selectionMode === 'fill', C.accentBright, C.accentDim)} onClick={() => setSelectionMode('fill')} title="Flood fill selection">Fill</button>
+                  <button style={btn(selectionMode === 'fill', "#f59e0b", "rgba(245,158,11,0.18)")} onClick={() => setSelectionMode('fill')} title="Flood fill selection">Fill</button>
                 </div>
                 <div style={{ height: 1, background: C.border }} />
                 <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1, display: "flex", alignItems: "center", gap: 4 }}>Mirroring <span onClick={() => setInfoTool("mirroring")} style={{ fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.65)", lineHeight: 1 }}>ⓘ</span></span>
@@ -3640,16 +3628,14 @@ function App() {
                     <button style={btn(showOffsetCenters, C.soft, C.softDim)} onClick={() => setShowOffsetCenters(v => !v)} title="Show a marker at the placement cell of tiles with non-zero offset">Offset Centers</button>
                     <span onClick={() => setInfoTool("offsetCenters")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
                   </div>
-                  <button style={btn(showOTG, C.danger, "rgba(239,68,68,0.18)")}
-                    onClick={() => setShowOTG(v => !v)}
-                    title="Toggle One Tile Gap detection overlay">
-                    {showOTG ? "🧩 On" : "🧩 Off"}
-                  </button>
-                  <button style={{ ...btn(false, C.soft, C.softDim), fontSize: 10, padding: "3px 9px" }}
-                    onClick={() => setOtgOpen(true)}
-                    title="Configure which tiles count as walls for OTG detection">
-                    ⚙
-                  </button>
+                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
+                    <button style={btn(showOTG, C.danger, "rgba(239,68,68,0.18)")}
+                      onClick={() => setShowOTG(v => !v)}
+                      title="OTG detection">
+                      {showOTG ? "🧩 On" : "🧩 Off"}
+                    </button>
+                    <span onClick={() => setInfoTool("otg")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
+                  </div>
                 </div>
                 <div style={{ height: 1, background: C.border }} />
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
