@@ -79,7 +79,7 @@ const MIN_ZOOM = 0.25, MAX_ZOOM = 4;
 // Zoom buttons snap to nearest 5%
 const ZOOM_STEP = 0.05;
 const snapTo10 = z => Math.round(z * 20) / 20;
-const SK = { tiles: "oph_tiles", grid: "oph_grid", colors: "oph_colors", userTiles: "oph_user_tiles", multipliers: "oph_multipliers", priority: "oph_priority", offsets: "oph_offsets", rotatable: "oph_rotatable", tileRots: "oph_tile_rots", gridW: "oph_gridW", gridH: "oph_gridH", tileNames: "oph_tile_names", bottom: "oph_bottom", mirrorOffset: "oph_mirror_offset", gridOff: "oph_grid_off", activeTileset: "oph_active_ts" };
+const SK = { tiles: "oph_tiles", grid: "oph_grid", colors: "oph_colors", userTiles: "oph_user_tiles", multipliers: "oph_multipliers", priority: "oph_priority", offsets: "oph_offsets", rotatable: "oph_rotatable", tileRots: "oph_tile_rots", gridW: "oph_gridW", gridH: "oph_gridH", tileNames: "oph_tile_names", bottom: "oph_bottom", mirrorOffset: "oph_mirror_offset", gridOff: "oph_grid_off", activeTileset: "oph_active_ts", atlasTiles: "oph_atlas_tiles" };
 const ACCEPTED = "image/png,image/jpeg,image/gif,image/webp,image/svg+xml,image/bmp";
 const MAX_HISTORY = 60;
 // Non-overlapping tile ID ranges — prevents collisions between sections regardless of reordering
@@ -87,7 +87,11 @@ const TILESET_ID_START = 1;   // 001–099: active tileset tiles (Mausoleum wall
 const USER_ID_START    = 100; // 100–199: user-uploaded tiles
 const USER_ID_MAX      = 199;
 const GLOBAL_ID_START  = 200; // 200–299: global tiles (water, spawns, objectives, etc.)
+const ATLAS_ID_START   = 300; // 300–499: atlas tiles (She-Fairy/atlas-horizon)
 const SPACE_TILE_ID    = 998; // special: makes a cell fully transparent
+
+// Module-level cache for GitHub API responses (survives re-renders, not page reload)
+const atlasApiCache = new Map(); // url → resolved data
 
 // Default tiles are loaded dynamically from Resources/manifest.json.
 // To add/remove tiles, update that JSON file (or run generate-manifest.sh).
@@ -223,7 +227,16 @@ function App() {
     const saved = load(SK.userTiles, []);
     return saved.map(t => ({ ...t, blobSrc: t.src ? dataURLtoBlobURL(t.src) : undefined }));
   });
-  const tiles = useMemo(() => [...defaultTiles, ...userTiles], [defaultTiles, userTiles]);
+  // Atlas tiles: stored in localStorage, IDs 300–499
+  const [atlasTiles, setAtlasTiles] = useState(() => load(SK.atlasTiles, []));
+  // Atlas panel UI state
+  const [atlasOpen,    setAtlasOpen]    = useState(false);
+  const [atlasPath,    setAtlasPath]    = useState(""); // current browse path within Resources/
+  const [atlasItems,   setAtlasItems]   = useState(null); // null=not yet loaded, array=loaded
+  const [atlasError,   setAtlasError]   = useState("");
+  const [atlasLoading, setAtlasLoading] = useState(false);
+
+  const tiles = useMemo(() => [...defaultTiles, ...userTiles, ...atlasTiles], [defaultTiles, userTiles, atlasTiles]);
 
   const [gridW, setGridW] = useState(() => load(SK.gridW, GRID_W));
   const [gridH, setGridH] = useState(() => load(SK.gridH, GRID_H));
@@ -395,7 +408,8 @@ function App() {
   useEffect(() => { tileOffsetsRef.current       = tileOffsets;       }, [tileOffsets]);
 
   // Persist
-  useEffect(() => { save(SK.userTiles, userTiles.map(({ blobSrc: _b, ...t }) => t)); }, [userTiles]);
+  useEffect(() => { save(SK.userTiles,   userTiles.map(({ blobSrc: _b, ...t }) => t)); }, [userTiles]);
+  useEffect(() => { save(SK.atlasTiles,  atlasTiles); }, [atlasTiles]);
   useEffect(() => { save(SK.grid,         grid);            }, [grid]);
   useEffect(() => { save(SK.multipliers,  tileMultipliers); }, [tileMultipliers]);
   useEffect(() => { save(SK.priority,     priorityTiles);   }, [priorityTiles]);
@@ -872,6 +886,95 @@ function App() {
     setUserTiles(p => p.filter(t => t.id !== id));
     if (sel === id) setSel(null);
     setInfoTile(null);
+  };
+
+  // ── Atlas helpers ─────────────────────────────────────────────────
+  const nextAtlasId = () => {
+    const used = new Set(atlasTiles.map(t => t.id));
+    for (let id = ATLAS_ID_START; id < 500; id++) { if (!used.has(id)) return id; }
+    return null; // full
+  };
+
+  const fetchAtlasDir = async (path) => {
+    const url = `https://api.github.com/repos/She-Fairy/atlas-horizon/contents/Resources${path ? '/' + path : ''}`;
+    if (atlasApiCache.has(url)) return atlasApiCache.get(url);
+    const p = fetch(url).then(async r => {
+      if (r.status === 403 || r.status === 429) throw new Error("rate_limit");
+      if (!r.ok) throw new Error("fetch_error");
+      return r.json();
+    });
+    atlasApiCache.set(url, p);
+    const resolved = await p;
+    atlasApiCache.set(url, resolved); // replace Promise with resolved data
+    return resolved;
+  };
+
+  const addAtlasTile = (filePath, atlasTilesetGroup) => {
+    const id = nextAtlasId();
+    if (id === null) { alert("Atlas tile limit reached (IDs 300–499). Remove some atlas tiles first."); return; }
+    const src = `https://raw.githubusercontent.com/She-Fairy/atlas-horizon/main/Resources/${filePath}`;
+    const tile = { id, src, isDefault: false, isAtlas: true };
+    if (atlasTilesetGroup) tile.atlasTilesetGroup = atlasTilesetGroup;
+    // Settings inheritance
+    if (filePath.includes('/Water/')) {
+      setRotatableMap(prev => ({ ...prev, [id]: true }));
+    }
+    if (filePath.includes('/Objectives/')) {
+      setPriorityTiles(prev => ({ ...prev, [id]: true }));
+    }
+    setAtlasTiles(prev => [...prev, tile]);
+  };
+
+  const addAtlasTilesetFolder = async (folderName, files) => {
+    const imageFiles = files.filter(f => f.type === 'file' && /\.(png|jpg|jpeg|gif|webp|svg|bmp)$/i.test(f.name));
+    for (const file of imageFiles) {
+      // path relative to Resources/ (file.path is like "Resources/Water/foo.png", strip "Resources/")
+      const relPath = file.path.replace(/^Resources\//, '');
+      // Check if already added
+      const src = `https://raw.githubusercontent.com/She-Fairy/atlas-horizon/main/Resources/${relPath}`;
+      setAtlasTiles(prev => {
+        if (prev.some(t => t.src === src)) return prev;
+        const id = (() => {
+          const used = new Set(prev.map(t => t.id));
+          for (let i = ATLAS_ID_START; i < 500; i++) { if (!used.has(i)) return i; }
+          return null;
+        })();
+        if (id === null) return prev;
+        const tile = { id, src, isDefault: false, isAtlas: true, atlasTilesetGroup: folderName };
+        return [...prev, tile];
+      });
+      // Settings inheritance
+      if (relPath.includes('/Water/')) setRotatableMap(prev => ({ ...prev })); // handled per-tile below
+    }
+    // After batch-add, apply settings inheritance using the folder path
+    imageFiles.forEach(file => {
+      const relPath = file.path.replace(/^Resources\//, '');
+      const src = `https://raw.githubusercontent.com/She-Fairy/atlas-horizon/main/Resources/${relPath}`;
+      setAtlasTiles(prev => {
+        const tile = prev.find(t => t.src === src);
+        if (!tile) return prev;
+        if (relPath.includes('/Water/')) setRotatableMap(rm => ({ ...rm, [tile.id]: true }));
+        if (relPath.includes('/Objectives/')) setPriorityTiles(pt => ({ ...pt, [tile.id]: true }));
+        return prev;
+      });
+    });
+  };
+
+  const navigateAtlas = async (path) => {
+    setAtlasPath(path);
+    setAtlasItems(null);
+    setAtlasError("");
+    setAtlasLoading(true);
+    try {
+      const data = await fetchAtlasDir(path);
+      setAtlasItems(Array.isArray(data) ? data : []);
+    } catch (err) {
+      if (err.message === "rate_limit") setAtlasError("GitHub rate limit reached. Try again later.");
+      else setAtlasError("Failed to load folder contents.");
+      setAtlasItems([]);
+    } finally {
+      setAtlasLoading(false);
+    }
   };
 
   // Returns [pos] — just positions (used by existing drag/drop code)
