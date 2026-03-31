@@ -288,12 +288,9 @@ function App() {
   const [infoTool,    setInfoTool]  = useState(null); // "erase" | "hand" | "space"
   // Starred tiles: up to 5, shown when tiles panel is collapsed
   // Special IDs: "erase" and "hand"; regular tiles use numeric ID
-  const [starredTiles, setStarredTiles] = useState(() => load("oph_starred", [1, 6]));
+  const [starredTiles, setStarredTiles] = useState(() => load("oph_starred", [1, 6, "selectionGroup", "mirrorGroup", "guides", "overwrite"]));
   const toggleStar = id => setStarredTiles(prev => {
     if (prev.includes(id)) return prev.filter(s => s !== id);
-    const isTool = typeof id === "string";
-    const count = prev.filter(s => (typeof s === "string") === isTool).length;
-    if (count >= 10) return prev;
     return [...prev, id];
   });
   // Last 3 selected tile IDs (numeric only, most-recent first)
@@ -389,6 +386,7 @@ function App() {
   const paintingRef       = useRef(false);    // mirrors painting state for event-handler closures
   const gridRef           = useRef(null);     // up-to-date grid for touch-handler closure
   const getMirrorRef      = useRef(null);     // always-current getMirrorPositions for touch handler
+  const bfsFillRef        = useRef(null);     // always-current bfsFill for touch handler closures
   const getMirrorMetaRef  = useRef(null);     // always-current getMirrorMeta for drag-drop handlers
 
   const handModeRef = useRef(false);
@@ -1227,6 +1225,8 @@ function App() {
     return visited;
   }, []);
 
+  useEffect(() => { bfsFillRef.current = bfsFill; }, [bfsFill]);
+
   const onCell = (r, c, e) => {
     if (handModeRef.current) return; // hand mode: let native scroll handle panning
     if (e.type === "mousedown") {
@@ -1516,6 +1516,18 @@ function App() {
       e.preventDefault();
       const [r, c] = cell;
 
+      // ── EYEDROPPER: pick tile on tap ───────────────────────────────
+      if (eyedropperModeRef.current) {
+        const pickedId = gridRef.current?.[r]?.[c];
+        if (pickedId != null) {
+          setSel(pickedId);
+          setEraser(false);
+          setHandMode(false);
+        }
+        setEyedropperMode(false);
+        return;
+      }
+
       // ── IMMEDIATE PICK-UP: occupied cell, no eraser → remove tile + mirror counterparts, start drag ──
       // History written once at touchend (drop/discard), not here.
       const existingId = gridRef.current?.[r]?.[c];
@@ -1563,6 +1575,14 @@ function App() {
       if (mode === 'single')      setPreviewCells([[r, c]]);
       else if (mode === 'line')   setPreviewCells([[r, c]]);
       else if (mode === 'rect')   setRectPreview({ r1: r, c1: c, r2: r, c2: c });
+      else if (mode === 'fill') {
+        const bfs = bfsFillRef.current;
+        if (bfs) {
+          const fillSet = bfs(r, c, gridRef.current, gridWRef.current, gridHRef.current);
+          hoveredTilesRef.current = fillSet;
+          setPreviewCells([...fillSet].map(k => k.split(',').map(Number)));
+        }
+      }
     };
 
     const onTouchMove = e => {
@@ -2038,7 +2058,7 @@ function App() {
             <input type="checkbox" checked={starredTiles.includes(t.id)}
               onChange={() => toggleStar(t.id)}
               style={{ width: 14, height: 14, accentColor: C.accent, cursor: "pointer" }} />
-            <span style={{ fontSize: 11, color: C.text }}>Starred shortcut ⭐{!starredTiles.includes(t.id) && starredTiles.filter(s => typeof s !== "string").length >= 10 ? <span style={{ color: C.muted, marginLeft: 6 }}>(max 10 tiles reached)</span> : null}</span>
+            <span style={{ fontSize: 11, color: C.text }}>Starred shortcut ⭐</span>
           </label>
 
           {!t.isDefault && (
@@ -2277,7 +2297,7 @@ function App() {
             <input type="checkbox" checked={isStarredTool}
               onChange={() => toggleStar(toolId)}
               style={{ width: 14, height: 14, accentColor: C.accent, cursor: "pointer" }} />
-            <span style={{ fontSize: 11, color: C.text }}>Starred shortcut ⭐{!isStarredTool && starredTiles.filter(s => typeof s === "string").length >= 10 ? <span style={{ color: C.muted, marginLeft: 6 }}>(max 10 tools reached)</span> : null}</span>
+            <span style={{ fontSize: 11, color: C.text }}>Starred shortcut ⭐</span>
           </label>
         </div>
       </div>
@@ -2520,7 +2540,7 @@ function App() {
                         </div>
                       )}
                       <span onClick={ev => { ev.stopPropagation(); setInfoTile(t.id); }}
-                        style={{ position: "absolute", top: -7, right: -7, width: 15, height: 15, fontSize: 13, cursor: "pointer", color: isStarredF ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "15px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
+                        style={{ position: "absolute", top: -7, right: -7, width: 18, height: 18, fontSize: 15, cursor: "pointer", color: isStarredF ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "18px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
                         title={isStarredF ? "Starred tile — click for info" : "Tile info"}>ⓘ</span>
                       <MultLabel t={t} />
                       <TileBadge t={t} />
@@ -2760,7 +2780,7 @@ function App() {
                         {rotatable && <RotChevron rotDeg={rotDeg} />}
                         {/* Info button: yellow if starred, white otherwise — top-right corner */}
                         <span onClick={e => { e.stopPropagation(); setInfoTile(t.id); }}
-                          style={{ position: "absolute", top: -7, right: -7, width: 15, height: 15, fontSize: isStarred ? 11 : 13, cursor: "pointer", color: isStarred ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "15px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
+                          style={{ position: "absolute", top: -7, right: -7, width: 18, height: 18, fontSize: isStarred ? 13 : 15, cursor: "pointer", color: isStarred ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "18px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
                           title={isStarred ? "Starred tile — click for info" : "Tile info"}>{isStarred ? "★" : "ⓘ"}</span>
                         <MultLabel t={t} />
                         <TileBadge t={t} />
@@ -2831,7 +2851,7 @@ function App() {
                           </div>
                         </div>
                         <span onClick={e => { e.stopPropagation(); setInfoTool("erase"); }}
-                          style={{ position: "absolute", top: -7, right: -7, width: 15, height: 15, fontSize: 13, cursor: "pointer", color: isStarredErase ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "15px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
+                          style={{ position: "absolute", top: -7, right: -7, width: 18, height: 18, fontSize: 15, cursor: "pointer", color: isStarredErase ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "18px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
                           title="Erase info">ⓘ</span>
                       </div>
                     );
@@ -2851,7 +2871,7 @@ function App() {
                           </div>
                         </div>
                         <span onClick={e => { e.stopPropagation(); setInfoTool("hand"); }}
-                          style={{ position: "absolute", top: -7, right: -7, width: 15, height: 15, fontSize: 13, cursor: "pointer", color: isStarredHand ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "15px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
+                          style={{ position: "absolute", top: -7, right: -7, width: 18, height: 18, fontSize: 15, cursor: "pointer", color: isStarredHand ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "18px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
                           title="Hand info">ⓘ</span>
                       </div>
                     );
@@ -2892,7 +2912,7 @@ function App() {
                           </div>
                         </div>
                         <span onClick={e => { e.stopPropagation(); setInfoTool("space"); }}
-                          style={{ position: "absolute", top: -7, right: -7, width: 15, height: 15, fontSize: 13, cursor: "pointer", color: isStarredSpace ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "15px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
+                          style={{ position: "absolute", top: -7, right: -7, width: 18, height: 18, fontSize: 15, cursor: "pointer", color: isStarredSpace ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "18px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
                           title="Space info">ⓘ</span>
                       </div>
                     );
