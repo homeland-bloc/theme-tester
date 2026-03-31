@@ -79,7 +79,7 @@ const MIN_ZOOM = 0.25, MAX_ZOOM = 4;
 // Zoom buttons snap to nearest 5%
 const ZOOM_STEP = 0.05;
 const snapTo10 = z => Math.round(z * 20) / 20;
-const SK = { tiles: "oph_tiles", grid: "oph_grid", colors: "oph_colors", userTiles: "oph_user_tiles", multipliers: "oph_multipliers", priority: "oph_priority", offsets: "oph_offsets", rotatable: "oph_rotatable", tileRots: "oph_tile_rots", gridW: "oph_gridW", gridH: "oph_gridH", tileNames: "oph_tile_names", bottom: "oph_bottom", mirrorOffset: "oph_mirror_offset", gridOff: "oph_grid_off" };
+const SK = { tiles: "oph_tiles", grid: "oph_grid", colors: "oph_colors", userTiles: "oph_user_tiles", multipliers: "oph_multipliers", priority: "oph_priority", offsets: "oph_offsets", rotatable: "oph_rotatable", tileRots: "oph_tile_rots", gridW: "oph_gridW", gridH: "oph_gridH", tileNames: "oph_tile_names", bottom: "oph_bottom", mirrorOffset: "oph_mirror_offset", gridOff: "oph_grid_off", activeTileset: "oph_active_ts" };
 const ACCEPTED = "image/png,image/jpeg,image/gif,image/webp,image/svg+xml,image/bmp";
 const MAX_HISTORY = 60;
 // Non-overlapping tile ID ranges — prevents collisions between sections regardless of reordering
@@ -172,7 +172,7 @@ const THEMES = {
   },
 };
 // C is mutable so App can update it on theme change; Sep/SectionHeader always read the current value
-let C = { ...THEMES.warm };
+let C = (() => { try { const t = JSON.parse(localStorage.getItem("oph_theme")); return { ...(THEMES[t] || THEMES.warm) }; } catch { return { ...THEMES.warm }; } })();
 
 // ── Tiny helpers ───────────────────────────────────────────────────────
 const Sep = () => <div style={{ width: 1, height: 22, background: C.border, flexShrink: 0, alignSelf: "center" }} />;
@@ -476,10 +476,12 @@ function App() {
     const s = t.src;
     // Jumppads, Teleporters, HealPad: +50% H and +50% V so 2× tile sits centred on a 2×2 area
     if (s.includes("Jumppads/") || s.includes("Teleporters/") || s.includes("HealPad")) return { ox: 50, oy: 50 };
-    // Heist safe + Mausoleum safe: vertical offset -90
-    if (s.includes("Heist") || s.includes("MSLM-safe")) return { ox: 0, oy: -90 };
+    // Heist safe + Mausoleum safe: vertical offset -50
+    if (s.includes("Heist") || s.includes("MSLM-safe")) return { ox: 0, oy: -50 };
     // Bounty star: slight upward offset
     if (s.includes("Bounty")) return { ox: 0, oy: -10 };
+    // Mausoleum Wall2: -12 vertical
+    if (s.includes("MSLM-wall2")) return { ox: 0, oy: -12 };
     // Sewer Wall2: -5 vertical
     if (s.includes("SWR-wall2")) return { ox: 0, oy: -5 };
     // Mausoleum rope fences (MSLM-post*): -20 vertical
@@ -818,11 +820,14 @@ function App() {
       .then(data => {
         setManifest(data);
         const firstName = data.tilesets?.[0]?.name ?? null;
-        setActiveTileset(firstName);
+        const saved = load(SK.activeTileset, null);
+        const name = (saved && data.tilesets?.some(ts => ts.name === saved)) ? saved : firstName;
+        setActiveTileset(name);
       })
       .catch(() => {})
       .finally(() => setTilesLoading(false));
   }, []);
+  useEffect(() => { if (activeTileset) save(SK.activeTileset, activeTileset); }, [activeTileset]);
 
   // Responsive resize listener
   useEffect(() => {
@@ -3133,7 +3138,7 @@ function App() {
               </div>
             ))}
             <button style={{ ...btn(false), fontSize: 10, padding: "3px 9px" }}
-              onClick={() => { applyBg1(DEFAULT_BG1); applyBg2(DEFAULT_BG2); }}>↺ Reset</button>
+              onClick={() => { applyBg1(DEFAULT_BG1); applyBg2(DEFAULT_BG2); save(SK.colors, { bg1: DEFAULT_BG1, bg2: DEFAULT_BG2 }); }}>↺ Reset</button>
           </div>
 
           {/* Row 4: Map size */}
