@@ -641,8 +641,12 @@ function App() {
     );
   };
 
-  // Active tileset name (drives which tileset's tiles are shown)
+  // Active tileset name (primary — drives BG colour on switch, history tileset field)
   const [activeTileset, setActiveTileset] = useState(null);
+  // Set of tileset names whose tiles are shown in the panel (multi-select)
+  const [shownTilesets, setShownTilesets] = useState(() => load("oph_shown_tilesets", null));
+  // Tileset dropdown open state
+  const [tilesetDropOpen, setTilesetDropOpen] = useState(false);
   // Parsed manifest data
   const [manifest, setManifest] = useState(null);
   useEffect(() => { openFolderKeyRef.current = openFolderKey; }, [openFolderKey]);
@@ -678,44 +682,47 @@ function App() {
   // Build the flat defaultTiles list and the ordered panel entries from manifest + activeTileset.
   // ALL tilesets are loaded with sequential non-overlapping IDs so that switching themes never
   // causes ID collisions (e.g. Mausoleum breakable ID 7 stays valid even when Sewer is active).
-  // Only the ACTIVE tileset's entries are shown in the tiles panel (tilesetEntries).
-  // Returns: tilesetEntries, globalEntries, flatDefaultTiles, tilesetTileCount
-  const { tilesetEntries, globalEntries, flatDefaultTiles, tilesetTileCount } = useMemo(() => {
-    if (!manifest) return { tilesetEntries: [], globalEntries: [], flatDefaultTiles: [], tilesetTileCount: 0 };
+  // shownTilesets controls which tilesets appear in the panel (multi-select).
+  // Returns: tilesetEntriesPerTs, tilesetEntries, globalEntries, flatDefaultTiles, tilesetTileCount
+  const { tilesetEntriesPerTs, tilesetEntries, globalEntries, flatDefaultTiles, tilesetTileCount } = useMemo(() => {
+    if (!manifest) return { tilesetEntriesPerTs: [], tilesetEntries: [], globalEntries: [], flatDefaultTiles: [], tilesetTileCount: 0 };
     const flatTiles = [];
-    // Tileset tiles start at TILESET_ID_START (1); global tiles start at GLOBAL_ID_START (200)
     let idCounter = TILESET_ID_START;
     const makeTile = src => ({ id: idCounter++, src: `Resources/${src}`, isDefault: true });
-    // Derive a human-readable display label from the folder path (e.g. "Global/Special Tiles/" → "Special Tiles")
     const displayLabel = (key, folderPath) => {
       if (folderPath) { const s = folderPath.replace(/\/$/, '').split('/').pop(); if (s) return s; }
       return key;
     };
 
+    // Determine which tilesets are shown — fall back to just the active one
+    const defaultShown = [activeTileset ?? manifest.tilesets?.[0]?.name];
+    const shownNames = new Set(shownTilesets ?? defaultShown);
+
     // ── ALL tilesets — IDs assigned sequentially so no tileset reuses another's IDs ──
-    // Active tileset entries go into the panel; inactive tileset tiles are registered but hidden.
-    const activeName = activeTileset ?? manifest.tilesets?.[0]?.name;
-    let tsEntries = [];
+    const entriesPerTs = []; // [{ name, entries, count }]
     let tsCount = 0;
     for (const tsDef of (manifest.tilesets ?? [])) {
-      const isActive = tsDef.name === activeName;
+      const isShown = shownNames.has(tsDef.name);
+      const entries = [];
       for (const key of (tsDef.order ?? [])) {
         if (tsDef.folders?.[key]) {
           const folderPath = tsDef.folderPaths?.[key] ?? `${tsDef.name}/${key}/`;
           const label = displayLabel(key, folderPath);
           const folderTiles = tsDef.folders[key].map(fn => {
             const t = makeTile(`${folderPath}${fn}`);
-            t.folderKey = key; t.folderLabel = label;
+            t.folderKey = key; t.folderLabel = label; t.tilesetName = tsDef.name;
             return t;
           });
           flatTiles.push(...folderTiles);
-          if (isActive) { tsEntries.push({ type: 'folder', key, label, tiles: folderTiles }); tsCount += folderTiles.length; }
+          if (isShown) { entries.push({ type: 'folder', key, label, tiles: folderTiles }); tsCount += folderTiles.length; }
         } else if (tsDef.files?.[key]) {
           const t = makeTile(tsDef.files[key]);
+          t.tilesetName = tsDef.name;
           flatTiles.push(t);
-          if (isActive) { tsEntries.push({ type: 'flat', tile: t }); tsCount++; }
+          if (isShown) { entries.push({ type: 'flat', tile: t }); tsCount++; }
         }
       }
+      if (isShown) entriesPerTs.push({ name: tsDef.name, entries, count: entries.reduce((n, e) => n + (e.tiles?.length ?? 1), 0) });
     }
 
     // ── Global tiles (including objectives) — IDs start at GLOBAL_ID_START (200) ──
@@ -738,8 +745,9 @@ function App() {
       }
     }
 
-    return { tilesetEntries: tsEntries, globalEntries: glbEntries, flatDefaultTiles: flatTiles, tilesetTileCount: tsCount };
-  }, [manifest, activeTileset]);
+    const tsEntries = entriesPerTs.flatMap(ts => ts.entries);
+    return { tilesetEntriesPerTs: entriesPerTs, tilesetEntries: tsEntries, globalEntries: glbEntries, flatDefaultTiles: flatTiles, tilesetTileCount: tsCount };
+  }, [manifest, activeTileset, shownTilesets]);
 
   // Switch tileset — only updates the tile panel and BG colours; board tiles are never remapped.
   // To convert tiles on the board use the Convert tool.
@@ -748,6 +756,17 @@ function App() {
     setActiveTileset(newTilesetName);
     const tsBg = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4C5647", bg2: "#586352" } }[newTilesetName];
     if (tsBg) { setBg1(tsBg.bg1); setHex1(tsBg.bg1); setBg2(tsBg.bg2); setHex2(tsBg.bg2); save(SK.colors, tsBg); }
+  };
+
+  // Toggle a tileset in the shown set; always keep at least one shown.
+  const toggleTilesetShown = (name) => {
+    setShownTilesets(prev => {
+      const cur = prev ?? [activeTileset ?? name];
+      const s = new Set(cur);
+      if (s.has(name)) { if (s.size <= 1) return cur; s.delete(name); }
+      else { s.add(name); setActiveTileset(name); }
+      return [...s];
+    });
   };
 
   // Sync defaultTiles and nextId whenever flatDefaultTiles changes.
@@ -791,11 +810,21 @@ function App() {
         const saved = load(SK.activeTileset, null);
         const name = (saved && data.tilesets?.some(ts => ts.name === saved)) ? saved : firstName;
         setActiveTileset(name);
+        // Init shownTilesets from saved value or default to [activeTileset]
+        setShownTilesets(prev => prev ?? load("oph_shown_tilesets", [name]));
       })
       .catch(() => {})
       .finally(() => setTilesLoading(false));
   }, []);
   useEffect(() => { if (activeTileset) save(SK.activeTileset, activeTileset); }, [activeTileset]);
+  useEffect(() => { if (shownTilesets) save("oph_shown_tilesets", shownTilesets); }, [shownTilesets]);
+  // Close tileset dropdown on outside click
+  useEffect(() => {
+    if (!tilesetDropOpen) return;
+    const handler = () => setTilesetDropOpen(false);
+    document.addEventListener("mousedown", handler, true);
+    return () => document.removeEventListener("mousedown", handler, true);
+  }, [tilesetDropOpen]);
 
   // Responsive resize listener
   useEffect(() => {
@@ -2552,23 +2581,38 @@ function App() {
                   </span>
                 ) : null}
               />
-              {/* Tileset selector — checkboxes, multiple visible simultaneously */}
-              {manifest?.tilesets?.length > 0 && (
-                <div style={{ padding: "5px 8px", borderBottom: `1px solid ${C.border}`, flexShrink: 0, display: "flex", flexWrap: "wrap", gap: 5, alignItems: "center" }}>
-                  {manifest.tilesets.map(ts => {
-                    const isActive = (activeTileset ?? manifest.tilesets[0]?.name) === ts.name;
-                    return (
-                      <label key={ts.name} style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer", userSelect: "none" }}>
-                        <input type="checkbox" checked={isActive} onChange={() => { if (!isActive) switchTileset(ts.name); }}
-                          style={{ accentColor: C.accent, cursor: "pointer", width: 12, height: 12 }} />
-                        <span style={{ fontSize: 11, color: isActive ? C.accentBright : C.text, fontWeight: isActive ? 600 : 400 }}>
-                          {ts.name}{ts.name === "Sewer" ? " (WIP)" : ""}
-                        </span>
-                      </label>
-                    );
-                  })}
-                </div>
-              )}
+              {/* Tileset selector — dropdown with multi-select checkboxes */}
+              {manifest?.tilesets?.length > 0 && (() => {
+                const shown = new Set(shownTilesets ?? [activeTileset ?? manifest.tilesets[0]?.name]);
+                const label = [...shown].join(", ") || "None";
+                return (
+                  <div style={{ padding: "4px 8px", borderBottom: `1px solid ${C.border}`, flexShrink: 0, position: "relative" }}>
+                    <button
+                      onClick={() => setTilesetDropOpen(o => !o)}
+                      style={{ width: "100%", background: C.panel, color: C.text, border: `1px solid ${C.border}`, borderRadius: 5, fontSize: 11, fontFamily: "'Inter', sans-serif", padding: "3px 6px", cursor: "pointer", outline: "none", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span style={{ color: C.accentBright, fontWeight: 600 }}>{label}</span>
+                      <span style={{ color: C.muted, fontSize: 9 }}>{tilesetDropOpen ? "▲" : "▼"}</span>
+                    </button>
+                    {tilesetDropOpen && (
+                      <div style={{ position: "absolute", top: "100%", left: 8, right: 8, background: C.panelDeep, border: `1px solid ${C.border}`, borderRadius: 6, zIndex: 200, padding: "4px 0", boxShadow: "0 4px 16px rgba(0,0,0,0.45)" }}>
+                        {manifest.tilesets.map(ts => {
+                          const checked = shown.has(ts.name);
+                          return (
+                            <label key={ts.name} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", cursor: "pointer", userSelect: "none" }}
+                              onClick={e => { e.preventDefault(); toggleTilesetShown(ts.name); }}>
+                              <input type="checkbox" readOnly checked={checked}
+                                style={{ accentColor: C.accent, cursor: "pointer", width: 13, height: 13, pointerEvents: "none" }} />
+                              <span style={{ fontSize: 11, color: checked ? C.accentBright : C.text, fontWeight: checked ? 600 : 400 }}>
+                                {ts.name}{ts.name === "Sewer" ? " (WIP)" : ""}
+                              </span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
               {/* Atlas button row */}
               <div style={{ padding: "4px 8px", borderBottom: `1px solid ${C.border}`, flexShrink: 0, display: "flex", alignItems: "center", gap: 6 }}>
                 <button
@@ -2868,14 +2912,17 @@ function App() {
                           <div style={{ flex: 1, height: 1, background: C.border, marginLeft: 4 }} />
                         </div>
                       );
-                      // Active tileset name for the section label
-                      const tsName = activeTileset ?? manifest?.tilesets?.[0]?.name ?? "Tileset";
                       return (<>
-                        {/* ── Tileset tiles ── */}
-                        {tilesetEntries.length > 0 && (<>
-                          <SectionHeader id="tileset" label={tsName} count={tilesetEntries.reduce((n, e) => n + (e.tiles?.length ?? 1), 0)} />
-                          {!panelCollapsed.tileset && tilesetEntries.map(renderEntry)}
-                        </>)}
+                        {/* ── Per-tileset sections (one per shown tileset) ── */}
+                        {tilesetEntriesPerTs.map(({ name, entries, count }) => {
+                          const sectionId = `tileset_${name}`;
+                          return entries.length > 0 ? (
+                            <React.Fragment key={name}>
+                              <SectionHeader id={sectionId} label={name} count={count} />
+                              {!panelCollapsed[sectionId] && entries.map(renderEntry)}
+                            </React.Fragment>
+                          ) : null;
+                        })}
                         {/* ── User Uploaded ── */}
                         {(userTiles.length > 0 || true) && (<>
                           <SectionHeader id="user" label="User Uploaded" count={userTiles.length} />
