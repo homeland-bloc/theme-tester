@@ -293,6 +293,10 @@ function App() {
   const [replaceStep, setReplaceStep] = useState(1); // 1=pick tile on map, 2=pick replacement
   const [replaceA,    setReplaceA]  = useState(null);
   const [replaceB,    setReplaceB]  = useState(null);
+  // OTG (One Tile Gap) detection
+  const [showOTG,          setShowOTG]          = useState(false);
+  const [otgOpen,          setOtgOpen]          = useState(false);
+  const [otgWallOverrides, setOtgWallOverrides] = useState(() => load("oph_otg_walls", {}));
   // Map name for export filename
   const [mapName, setMapName] = useState(() => load("oph_map_name", ""));
   // Pending map size change awaiting confirmation
@@ -396,6 +400,7 @@ function App() {
   useEffect(() => { save(SK.tileRots,     gridRotations);   }, [gridRotations]);
   useEffect(() => { save(SK.gridOff,      gridOffsets);       }, [gridOffsets]);
   useEffect(() => { save(SK.mirrorOffset, mirrorOffsetTiles); }, [mirrorOffsetTiles]);
+  useEffect(() => { save("oph_otg_walls", otgWallOverrides); }, [otgWallOverrides]);
   useEffect(() => { save(SK.tileNames,    tileNames);       }, [tileNames]);
   useEffect(() => {
     save("oph_theme", uiTheme);
@@ -524,6 +529,62 @@ function App() {
     if (mirrorOffsetTiles[t.id] !== undefined) return mirrorOffsetTiles[t.id];
     return isDefaultMirrorOffset(t);
   };
+
+  // OTG: which tiles count as walls by default (all except passable game-layer tiles)
+  const isDefaultOTGWall = t => {
+    if (!t?.src) return false;
+    const s = t.src;
+    if (s.includes("bush") || s.includes("Bush")) return false;
+    if (s.includes("SpeedTile")) return false;
+    if (s.includes("SlowTile")) return false;
+    if (s.includes("Spikes")) return false;
+    if (s.includes("Smoke")) return false;
+    if (s.includes("Spawns/")) return false;
+    if (s.includes("/Objectives/")) return false;
+    if (s.includes("Jumppads/")) return false;
+    if (s.includes("Teleporters/")) return false;
+    return true;
+  };
+  const isOTGWall = t => {
+    if (otgWallOverrides[t.id] !== undefined) return otgWallOverrides[t.id];
+    return isDefaultOTGWall(t);
+  };
+
+  // Compute the set of OTG cells ("r,c" strings) — memoised so it only runs when the map/settings change
+  const otgCells = useMemo(() => {
+    if (!showOTG) return new Set();
+    const isFilled = (r, c) => {
+      if (r < 0 || r >= gridH || c < 0 || c >= gridW) return true; // map edge = wall
+      const id = grid[r]?.[c];
+      if (id == null) return false;
+      const t = id === SPACE_TILE_ID ? null : tiles.find(x => x.id === id);
+      if (!t || t.isSpace) return false;
+      if (otgWallOverrides[t.id] !== undefined) return otgWallOverrides[t.id];
+      return isDefaultOTGWall(t);
+    };
+    const isEmptyCell = (r, c) =>
+      r >= 0 && r < gridH && c >= 0 && c < gridW && !isFilled(r, c);
+    const result = new Set();
+    for (let r = 0; r < gridH; r++) {
+      for (let c = 0; c < gridW; c++) {
+        if (isFilled(r, c)) continue;
+        // Rule 1: fewer than 2 open orthogonal neighbours
+        const openCount = [[-1,0],[1,0],[0,-1],[0,1]]
+          .filter(([dr,dc]) => isEmptyCell(r+dr, c+dc)).length;
+        if (openCount < 2) { result.add(`${r},${c}`); continue; }
+        // Rule 2: 2×2 diagonal pairs — our cell is in the "both empty" pair
+        // NW corner: SE also empty, NE and SW filled
+        if (isEmptyCell(r+1,c+1) && isFilled(r,c+1) && isFilled(r+1,c)) { result.add(`${r},${c}`); continue; }
+        // NE corner: SW also empty, NW and SE filled
+        if (isEmptyCell(r+1,c-1) && isFilled(r,c-1) && isFilled(r+1,c)) { result.add(`${r},${c}`); continue; }
+        // SW corner: NE also empty, NW and SE filled
+        if (isEmptyCell(r-1,c+1) && isFilled(r-1,c) && isFilled(r,c+1)) { result.add(`${r},${c}`); continue; }
+        // SE corner: NW also empty, NE and SW filled
+        if (isEmptyCell(r-1,c-1) && isFilled(r-1,c) && isFilled(r,c-1)) { result.add(`${r},${c}`); continue; }
+      }
+    }
+    return result;
+  }, [showOTG, grid, gridW, gridH, otgWallOverrides, tiles]);
 
   // MultLabel: shows size multiplier at top-left when != 1.0
   const MultLabel = ({ t }) => {
@@ -1960,6 +2021,63 @@ function App() {
     );
   };
 
+  // ── OTG Detection Settings modal ──────────────────────────────────
+  const OTGSettingsModal = () => {
+    if (!otgOpen) return null;
+    const close = () => setOtgOpen(false);
+
+    const SepLine = ({ label }) => (
+      <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "6px 0 2px" }}>
+        <div style={{ height: 1, flex: 1, background: C.border }} />
+        <span style={{ fontSize: 9, color: C.muted, letterSpacing: 1, textTransform: "uppercase" }}>{label}</span>
+        <div style={{ height: 1, flex: 1, background: C.border }} />
+      </div>
+    );
+
+    const TileRow = ({ t }) => {
+      const effective = otgWallOverrides[t.id] !== undefined ? otgWallOverrides[t.id] : isDefaultOTGWall(t);
+      return (
+        <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", padding: "2px 0", userSelect: "none" }}>
+          <input type="checkbox" checked={effective}
+            onChange={ev => setOtgWallOverrides(p => ({ ...p, [t.id]: ev.target.checked }))}
+            style={{ width: 14, height: 14, accentColor: C.accent, cursor: "pointer", flexShrink: 0 }} />
+          <div style={{ width: 24, height: 24, flexShrink: 0 }}>
+            <img src={t.blobSrc ?? t.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated" }} />
+          </div>
+          <span style={{ fontSize: 11, color: C.text }}>{deriveCodename(t.src) || `#${t.id}`}</span>
+        </label>
+      );
+    };
+
+    const tilesetTiles_ = tiles.filter(t => t.id >= TILESET_ID_START && t.id < USER_ID_START);
+    const userTiles_    = tiles.filter(t => t.id >= USER_ID_START && t.id < GLOBAL_ID_START);
+    const globalTiles_  = tiles.filter(t => t.id >= GLOBAL_ID_START);
+
+    return (
+      <div className="modal-backdrop" onClick={close}>
+        <div className="modal-box" style={{ maxWidth: 360 }} onClick={e => e.stopPropagation()}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>OTG Detection — Wall Tiles</span>
+            <button onClick={close} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18 }}>×</button>
+          </div>
+          <p style={{ fontSize: 11, color: C.muted, lineHeight: 1.5 }}>Checked tiles count as walls for OTG detection. Unchecked tiles are treated as passable.</p>
+          <div style={{ overflowY: "auto", maxHeight: 360, display: "flex", flexDirection: "column", gap: 1 }}>
+            {tilesetTiles_.length > 0 && <SepLine label="Tileset" />}
+            {tilesetTiles_.map(t => <TileRow key={t.id} t={t} />)}
+            {userTiles_.length > 0 && <SepLine label="Uploaded" />}
+            {userTiles_.map(t => <TileRow key={t.id} t={t} />)}
+            {globalTiles_.length > 0 && <SepLine label="Global" />}
+            {globalTiles_.map(t => <TileRow key={t.id} t={t} />)}
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button style={{ ...btn(false), flex: 1 }} onClick={() => setOtgWallOverrides({})}>Reset defaults</button>
+            <button style={{ ...btn(true, C.accent, C.accentDim), flex: 1 }} onClick={close}>Done</button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   // ── Failed tile warning modal ─────────────────────────────────────
   const FailedTileModal = () => {
     if (!failedWarning) return null;
@@ -2066,6 +2184,7 @@ function App() {
 
       <InfoModal />
       <ReplaceModal />
+      <OTGSettingsModal />
       <FailedTileModal />
       <ToolInfoModal />
       <ThemeSwitchWarningModal />
@@ -2744,6 +2863,28 @@ function App() {
                   );
                 })()}
 
+                {/* OTG (One Tile Gap) detection overlay */}
+                {showOTG && otgCells.size > 0 && (() => {
+                  const cellPx = CELL * zoom;
+                  return (
+                    <svg style={{ position: "absolute", left: 0, top: CELL * zoom, width: gW, height: gH, pointerEvents: "none", zIndex: 203, overflow: "visible" }}>
+                      {[...otgCells].map(key => {
+                        const [r, c] = key.split(",").map(Number);
+                        return (
+                          <rect key={key}
+                            x={c * cellPx} y={r * cellPx}
+                            width={cellPx} height={cellPx}
+                            fill="rgba(239,68,68,0.35)"
+                            stroke="rgba(239,68,68,0.85)"
+                            strokeWidth="1.5"
+                            rx="2"
+                          />
+                        );
+                      })}
+                    </svg>
+                  );
+                })()}
+
               </div>
             </div>
           </div>
@@ -2759,6 +2900,7 @@ function App() {
                 single: "S", line: "L", rect: "R",
                 mirrorV: "H", mirrorH: "V", mirrorD: "D",
                 guides: "🧭", offsetCenters: "🎯", replace: "♻️", overwrite: "🧱",
+                otg: "⚠",
               };
               const toolActionMap = {
                 erase: () => { setEraser(true); setSel(null); setHandMode(false); },
@@ -2774,6 +2916,7 @@ function App() {
                 offsetCenters: () => setShowOffsetCenters(v => !v),
                 replace: () => { setReplaceOpen(true); setReplaceStep(1); setReplaceA(null); setReplaceB(null); setReplaceMsg(""); },
                 overwrite: () => setMirrorSettings(p => ({ ...p, allowSwap: !p.allowSwap })),
+                otg: () => setShowOTG(v => !v),
               };
               const toolActiveMap = {
                 erase: eraser,
@@ -2787,12 +2930,14 @@ function App() {
                 offsetCenters: showOffsetCenters,
                 replace: false,
                 overwrite: mirrorSettings.allowSwap,
+                otg: showOTG,
               };
               const toolColorMap = {
                 erase: C.danger, hand: "#fbbf24", space: C.accentBright,
                 single: C.accent, line: C.accent, rect: C.accent,
                 mirrorV: C.pale, mirrorH: C.soft, mirrorD: C.accentBright,
                 guides: C.accent, offsetCenters: C.soft, replace: C.soft, overwrite: C.accent,
+                otg: C.danger,
               };
               // Only show tool-key starred items (not numeric tile IDs)
               const starredTools = starredTiles.filter(s => typeof s === "string" && toolIconMap[s]);
@@ -2909,6 +3054,20 @@ function App() {
                     <button style={btn(mirrorSettings.allowSwap, C.accent, C.accentDim)} onClick={() => setMirrorSettings(p => ({ ...p, allowSwap: !p.allowSwap }))} title="When enabled, painting over occupied cells replaces them instead of picking them up">Block Overwrite</button>
                     <span onClick={() => setInfoTool("overwrite")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
                   </div>
+                </div>
+                <div style={{ height: 1, background: C.border }} />
+                <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1 }}>OTG Detection</span>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <button style={btn(showOTG, C.danger, "rgba(239,68,68,0.18)")}
+                    onClick={() => setShowOTG(v => !v)}
+                    title="Toggle One Tile Gap detection overlay">
+                    {showOTG ? "OTG On" : "OTG Off"}
+                  </button>
+                  <button style={{ ...btn(false, C.soft, C.softDim), fontSize: 10, padding: "3px 9px" }}
+                    onClick={() => setOtgOpen(true)}
+                    title="Configure which tiles count as walls for OTG detection">
+                    Settings
+                  </button>
                 </div>
               </div>
             </div>
