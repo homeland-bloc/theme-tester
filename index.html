@@ -250,7 +250,9 @@ function App() {
   const [zoomEditing, setZoomEdit]  = useState(false);
   const [zoomInput,   setZoomInput] = useState("");
   const [painting,    setPainting]  = useState(false);
-  const [selectionMode, setSelectionMode] = useState('single'); // 'single' | 'line' | 'rect'
+  const [selectionMode, setSelectionMode] = useState('single'); // 'single' | 'line' | 'rect' | 'fill'
+  const [eyedropperMode, setEyedropperMode] = useState(false); // eyedropper pick tool
+  const eyedropperModeRef = useRef(false);
   const [rectPreview,   setRectPreview]   = useState(null);     // {r1,c1,r2,c2} during rect drag
   const [previewCells,  setPreviewCells]  = useState(null);     // [[r,c],...] during single/line drag
   // Drag-to-move
@@ -383,6 +385,7 @@ function App() {
   useEffect(() => { selRef.current          = sel;           }, [sel]);
   useEffect(() => { eraserRef.current       = eraser;        }, [eraser]);
   useEffect(() => { handModeRef.current     = handMode;      }, [handMode]);
+  useEffect(() => { eyedropperModeRef.current = eyedropperMode; }, [eyedropperMode]);
   useEffect(() => { zoomRef.current         = zoom;          }, [zoom]);
   useEffect(() => { selectionModeRef.current = selectionMode; }, [selectionMode]);
   useEffect(() => { gridRef.current = grid; }, [grid]);
@@ -1037,6 +1040,9 @@ function App() {
         for (let c = Math.min(sc, ec); c <= Math.max(sc, ec); c++)
           cells.push([r, c]);
       commitMultipleCells(cells);
+    } else if (mode === 'fill') {
+      const cells = [...hoveredTilesRef.current].map(k => k.split(',').map(Number));
+      commitMultipleCells(cells);
     }
     setRectPreview(null);
     setPreviewCells(null);
@@ -1060,10 +1066,48 @@ function App() {
     return r >= 0 && r < gridH && c >= 0 && c < gridW ? [r, c] : null;
   };
 
+  // BFS flood fill — returns Set of "r,c" strings matching the origin cell's filled/empty state
+  const bfsFill = useCallback((startR, startC, currentGrid, gW, gH) => {
+    const originId = currentGrid[startR]?.[startC] ?? null;
+    const originFilled = originId !== null;
+    const visited = new Set();
+    const queue = [[startR, startC]];
+    visited.add(`${startR},${startC}`);
+    while (queue.length > 0) {
+      const [r, c] = queue.shift();
+      for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+        const nr = r + dr, nc = c + dc;
+        if (nr < 0 || nr >= gH || nc < 0 || nc >= gW) continue;
+        const key = `${nr},${nc}`;
+        if (visited.has(key)) continue;
+        const cellId = currentGrid[nr]?.[nc] ?? null;
+        const cellFilled = cellId !== null;
+        if (cellFilled === originFilled) {
+          visited.add(key);
+          queue.push([nr, nc]);
+        }
+      }
+    }
+    return visited;
+  }, []);
+
   const onCell = (r, c, e) => {
     if (handModeRef.current) return; // hand mode: let native scroll handle panning
     if (e.type === "mousedown") {
       e.preventDefault(); // prevent native browser drag + text selection
+
+      // ── EYEDROPPER: pick tile and return to paint mode ──────────────────────
+      if (eyedropperModeRef.current) {
+        const pickedId = gridRef.current?.[r]?.[c];
+        if (pickedId != null) {
+          setSel(pickedId);
+          setEraser(false);
+          setHandMode(false);
+        }
+        setEyedropperMode(false);
+        return;
+      }
+
       // Drag and paint are mutually exclusive — decide here, never switch mid-gesture
       // Use gridRef for freshest value (avoids stale closure on rapid clicks)
       const existingId = gridRef.current?.[r]?.[c];
@@ -1111,6 +1155,11 @@ function App() {
       if (mode === 'single') setPreviewCells([[r, c]]);
       else if (mode === 'line') setPreviewCells([[r, c]]);
       else if (mode === 'rect') setRectPreview({ r1: r, c1: c, r2: r, c2: c });
+      else if (mode === 'fill') {
+        const fillSet = bfsFill(r, c, gridRef.current, gridWRef.current, gridHRef.current);
+        hoveredTilesRef.current = fillSet;
+        setPreviewCells([...fillSet].map(k => k.split(',').map(Number)));
+      }
 
     } else if (e.type === "mousemove") {
       // If dragging, update ghost + target cell — never paint
@@ -1505,7 +1554,8 @@ function App() {
       if (!e.ctrlKey && !e.metaKey && !e.altKey) {
         const tag = e.target.tagName;
         if (tag === "INPUT" || tag === "TEXTAREA" || e.target.isContentEditable) return;
-        if (e.key === "e" || e.key === "E") { setEraser(true); setSel(null); setHandMode(false); }
+        if (e.key === "e" || e.key === "E") { setEraser(true); setSel(null); setHandMode(false); setEyedropperMode(false); }
+        if (e.key === "w" || e.key === "W") { setEyedropperMode(true); setEraser(false); setHandMode(false); }
         if (e.key === "z" || e.key === "Z") { undo(); }
         if (e.key === "x" || e.key === "X") { redo(); }
       }
@@ -2062,6 +2112,7 @@ function App() {
       single: { label: "Single", icon: "S", color: C.accent, desc: "Freehand paint mode. Click or drag to place tiles one cell at a time.", iconColor: C.accent },
       line:   { label: "Line", icon: "L", color: C.accent, desc: "Line draw mode. Click a start cell and drag to an end cell — tiles are placed in a straight line between them.", iconColor: C.accent },
       rect:   { label: "Rectangle", icon: "R", color: C.accent, desc: "Rectangle fill mode. Click and drag to define a bounding box — all cells inside are filled with the selected tile.", iconColor: C.accent },
+      fill:   { label: "Fill", icon: "F", color: C.accent, desc: "Flood fill mode. Click a cell to select all connected cells sharing the same filled/empty state (BFS). Commit fills them all at once.", iconColor: C.accent },
       mirrorV: { label: "Horizontal Mirror", icon: "H", color: C.pale, desc: "Mirrors every paint action horizontally (left ↔ right). The mirror axis runs vertically through the grid centre.", iconColor: C.pale },
       mirrorH: { label: "Vertical Mirror", icon: "V", color: C.soft, desc: "Mirrors every paint action vertically (top ↔ bottom). The mirror axis runs horizontally through the grid centre.", iconColor: C.soft },
       mirrorD: { label: "Diagonal Mirror", icon: "D", color: C.accentBright, desc: "Mirrors every paint action diagonally (point-reflected through the grid centre). Can be combined with Horizontal and Vertical mirrors.", iconColor: C.accentBright },
@@ -2158,6 +2209,7 @@ function App() {
       <OTGSettingsModal />
       <FailedTileModal />
       <ToolInfoModal />
+      <MemoryModal />
 
       {/* Map size confirmation dialog */}
       {pendingSize && (() => {
@@ -2360,8 +2412,8 @@ function App() {
                         {rotatable && <RotChevron rotDeg={rotDeg} />}
                         {/* Info button: yellow if starred, white otherwise — top-right corner */}
                         <span onClick={e => { e.stopPropagation(); setInfoTile(t.id); }}
-                          style={{ position: "absolute", top: -7, right: -7, width: 15, height: 15, fontSize: 13, cursor: "pointer", color: isStarred ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "15px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
-                          title={isStarred ? "Starred tile — click for info" : "Tile info"}>ⓘ</span>
+                          style={{ position: "absolute", top: -7, right: -7, width: 15, height: 15, fontSize: isStarred ? 11 : 13, cursor: "pointer", color: isStarred ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "15px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
+                          title={isStarred ? "Starred tile — click for info" : "Tile info"}>{isStarred ? "★" : "ⓘ"}</span>
                         <MultLabel t={t} />
                         <TileBadge t={t} />
                       </div>
@@ -2445,6 +2497,22 @@ function App() {
                         <span onClick={e => { e.stopPropagation(); setInfoTool("hand"); }}
                           style={{ position: "absolute", top: -7, right: -7, width: 15, height: 15, fontSize: 13, cursor: "pointer", color: isStarredHand ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "15px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
                           title="Hand info">ⓘ</span>
+                      </div>
+                    );
+                  })()}
+                  {/* 1c. Eyedropper */}
+                  {(() => {
+                    return (
+                      <div onClick={() => { setEyedropperMode(prev => !prev); setEraser(false); setHandMode(false); if (!eyedropperMode) setSel(null); }}
+                        style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${eyedropperMode ? C.accentBright : C.border}`, background: eyedropperMode ? C.accentDim : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
+                        <div style={{ borderRadius: 6, overflow: "hidden" }}>
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: eyedropperMode ? "rgba(125,211,252,0.22)" : "rgba(125,211,252,0.06)", padding: "2px 4px" }}>
+                            <span style={{ fontSize: 9, fontWeight: 700, color: eyedropperMode ? C.accentBright : C.muted }}>Pick</span>
+                          </div>
+                          <div style={{ height: cardSz - 18, background: C.panelDeep, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                            <span style={{ fontSize: 20, lineHeight: 1, opacity: eyedropperMode ? 1 : 0.55 }}>🧪</span>
+                          </div>
+                        </div>
                       </div>
                     );
                   })()}
@@ -2606,8 +2674,23 @@ function App() {
                   })}
                   {(hasSelected || hasRecent) && hasStarred && <div style={{ height: 1, background: C.border, margin: "1px 0" }} />}
                   {starredTiles.map(sid => {
-                  // Skip erase/hand in the left (tiles) shortcut bar — they live in the right tools bar
-                  if (sid === "erase" || sid === "hand") return null;
+                  // Erase and Hand shortcuts in the tiles shortcut bar (collapsed strip)
+                  if (sid === "erase") return (
+                    <div key="erase" onClick={() => { setEraser(true); setSel(null); setHandMode(false); }}
+                      style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+                        border: `1px solid ${eraser ? C.danger : C.border}`, background: eraser ? "rgba(248,113,113,0.22)" : "rgba(255,255,255,0.04)" }}
+                      title="Erase">
+                      <span style={{ fontSize: 14 }}>🧼</span>
+                    </div>
+                  );
+                  if (sid === "hand") return (
+                    <div key="hand" onClick={() => { setHandMode(h => !h); setEraser(false); setSel(null); }}
+                      style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+                        border: `1px solid ${handMode ? "#fbbf24" : C.border}`, background: handMode ? "rgba(251,191,36,0.14)" : "rgba(255,255,255,0.04)" }}
+                      title="Hand">
+                      <span style={{ fontSize: 13 }}>👋</span>
+                    </div>
+                  );
                   // Space tile
                   if (sid === SPACE_TILE_ID) return (
                     <div key="space" onClick={() => { setSel(SPACE_TILE_ID); setEraser(false); setHandMode(false); }}
@@ -2657,7 +2740,7 @@ function App() {
 
         {/* ── CANVAS ───────────────────────────────────────────────── */}
           <div ref={scrollRef}
-            style={{ flex: 1, minWidth: 0, height: "100%", overflow: "auto", background: C.bg, cursor: handMode ? "grab" : (dragTile ? "grabbing" : "crosshair") }}
+            style={{ flex: 1, minWidth: 0, height: "100%", overflow: "auto", background: C.bg, cursor: handMode ? "grab" : (dragTile ? "grabbing" : eyedropperMode ? "cell" : "crosshair") }}
             onWheel={onWheel}
             onMouseDown={e => {
               if (!handModeRef.current || isDraggingRef.current) return;
@@ -2867,7 +2950,7 @@ function App() {
             {!toolsOpen && (() => {
               const toolIconMap = {
                 erase: "🧼", hand: "👋", space: "🛸",
-                single: "S", line: "L", rect: "R",
+                single: "S", line: "L", rect: "R", fill: "F",
                 mirrorV: "H", mirrorH: "V", mirrorD: "D",
                 guides: "🧭", offsetCenters: "🎯", replace: "♻️", overwrite: "🧱",
                 otg: "⚠",
@@ -2879,6 +2962,7 @@ function App() {
                 single: () => setSelectionMode('single'),
                 line:   () => setSelectionMode('line'),
                 rect:   () => setSelectionMode('rect'),
+                fill:   () => setSelectionMode('fill'),
                 mirrorV: () => setMirrorV(v => !v),
                 mirrorH: () => setMirrorH(v => !v),
                 mirrorD: () => setMirrorD(v => !v),
@@ -2895,6 +2979,7 @@ function App() {
                 single: selectionMode === 'single',
                 line: selectionMode === 'line',
                 rect: selectionMode === 'rect',
+                fill: selectionMode === 'fill',
                 mirrorV, mirrorH, mirrorD,
                 guides: showGuides,
                 offsetCenters: showOffsetCenters,
@@ -2904,7 +2989,7 @@ function App() {
               };
               const toolColorMap = {
                 erase: C.danger, hand: "#fbbf24", space: C.accentBright,
-                single: C.accent, line: C.accent, rect: C.accent,
+                single: C.accent, line: C.accent, rect: C.accent, fill: C.accent,
                 mirrorV: C.pale, mirrorH: C.soft, mirrorD: C.accentBright,
                 guides: C.accent, offsetCenters: C.soft, replace: C.soft, overwrite: C.accent,
                 otg: C.danger,
@@ -2972,6 +3057,19 @@ function App() {
                 right={<button onClick={() => setMirrorSettingsOpen(true)} style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 5, cursor: "pointer", color: C.muted, fontSize: 12, padding: "1px 6px", lineHeight: 1.4 }} title="Mirroring settings">⚙</button>}
               />
               <div style={{ overflowY: "auto", flex: 1, padding: "8px 12px 10px", display: "flex", flexDirection: "column", gap: 7 }}>
+                {showGuides && (
+                  <div style={{ background: "rgba(255,255,255,0.04)", border: `1px solid ${C.border}`, borderRadius: 7, padding: "6px 8px", display: "flex", flexDirection: "column", gap: 3 }}>
+                    <span style={{ fontSize: 9, color: C.accentBright, textTransform: "uppercase", letterSpacing: 1, fontWeight: 700 }}>Hotkeys</span>
+                    {[
+                      ["E", "Erase"], ["W", "Eyedropper"], ["Z", "Undo"], ["X", "Redo"],
+                    ].map(([key, label]) => (
+                      <div key={key} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <span style={{ minWidth: 18, height: 16, borderRadius: 4, background: "rgba(255,255,255,0.12)", border: `1px solid ${C.border}`, fontSize: 9, fontWeight: 700, color: C.accentBright, display: "inline-flex", alignItems: "center", justifyContent: "center", fontFamily: "monospace" }}>{key}</span>
+                        <span style={{ fontSize: 10, color: C.muted }}>{label}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1 }}>Selection Mode</span>
                 <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}>
                   <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
@@ -2983,8 +3081,12 @@ function App() {
                     <span onClick={() => setInfoTool("line")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 9, fontWeight: 700, cursor: "pointer", color: selectionMode === 'line' ? C.accent : "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.75)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>L</span>
                   </div>
                   <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
-                    <button style={btn(selectionMode === 'rect', C.accent, C.accentDim)} onClick={() => setSelectionMode('rect')} title="Rectangle fill">Rect</button>
+                    <button style={btn(selectionMode === 'rect', C.accent, C.accentDim)} onClick={() => setSelectionMode('rect')} title="Rectangle fill">Rectangle</button>
                     <span onClick={() => setInfoTool("rect")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 9, fontWeight: 700, cursor: "pointer", color: selectionMode === 'rect' ? C.accent : "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.75)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>R</span>
+                  </div>
+                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
+                    <button style={btn(selectionMode === 'fill', C.accent, C.accentDim)} onClick={() => setSelectionMode('fill')} title="Flood fill selection">Fill</button>
+                    <span onClick={() => setInfoTool("fill")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 9, fontWeight: 700, cursor: "pointer", color: selectionMode === 'fill' ? C.accent : "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.75)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>F</span>
                   </div>
                 </div>
                 <div style={{ height: 1, background: C.border }} />
@@ -3015,11 +3117,12 @@ function App() {
                   </div>
                 </div>
                 <div style={{ height: 1, background: C.border }} />
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                   <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
                     <button style={btn(false, C.soft, C.softDim)} onClick={() => { setReplaceOpen(true); setReplaceStep(1); setReplaceA(null); setReplaceB(null); setReplaceMsg(""); }}>Replace</button>
                     <span onClick={() => setInfoTool("replace")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
                   </div>
+                  <button style={btn(false, C.muted, "rgba(255,255,255,0.08)")} onClick={() => setMemoryOpen(true)} title="Storage usage">Memory…</button>
                   <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
                     <button style={btn(mirrorSettings.allowSwap, C.accent, C.accentDim)} onClick={() => setMirrorSettings(p => ({ ...p, allowSwap: !p.allowSwap }))} title="When enabled, painting over occupied cells replaces them instead of picking them up">Block Overwrite</button>
                     <span onClick={() => setInfoTool("overwrite")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
