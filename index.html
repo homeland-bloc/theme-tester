@@ -330,7 +330,7 @@ function App() {
   const [isMobile,    setIsMobile]  = useState(mobile);
 
   // History
-  const [history,  setHistory]  = useState([{ grid, w: load(SK.gridW, GRID_W), h: load(SK.gridH, GRID_H) }]);
+  const [history,  setHistory]  = useState([{ grid, w: load(SK.gridW, GRID_W), h: load(SK.gridH, GRID_H), tileset: null }]);
   const [histIdx,  setHistIdx]  = useState(0);
 
   const fileRef   = useRef();
@@ -369,10 +369,12 @@ function App() {
   const getMirrorMetaRef  = useRef(null);     // always-current getMirrorMeta for drag-drop handlers
 
   const handModeRef = useRef(false);
+  const activeTilesetRef = useRef(null);
   const gridWRef = useRef(gridW);
   const gridHRef = useRef(gridH);
   useEffect(() => { gridWRef.current = gridW; }, [gridW]);
   useEffect(() => { gridHRef.current = gridH; }, [gridH]);
+  useEffect(() => { activeTilesetRef.current = activeTileset ?? null; }, [activeTileset]);
   useEffect(() => { selRef.current          = sel;           }, [sel]);
   useEffect(() => { eraserRef.current       = eraser;        }, [eraser]);
   useEffect(() => { handModeRef.current     = handMode;      }, [handMode]);
@@ -436,7 +438,8 @@ function App() {
     const s = t.src;
     // Spawns
     if (s.includes("Spawns/")) return 1.65;
-    // Barrel
+    // Barrel: Sewer 1.05×, Mausoleum/default 1.1×
+    if (s.includes("SWR-barrel")) return 1.05;
     if (s.includes("barrel") || s.includes("MSLM-barrel")) return 1.1;
     // Breakable (MSLM-break only, NOT Unbreakable)
     if (s.includes("MSLM-break") || (s.includes("break") && !s.includes("Unbreakable"))) return 1.1;
@@ -472,6 +475,8 @@ function App() {
     if (s.includes("Heist") || s.includes("MSLM-safe")) return { ox: 0, oy: -90 };
     // Bounty star: slight upward offset
     if (s.includes("Bounty")) return { ox: 0, oy: -10 };
+    // Sewer Wall2: -5 vertical
+    if (s.includes("SWR-wall2")) return { ox: 0, oy: -5 };
     // Mausoleum rope fences (MSLM-post*): -20 vertical
     if (s.includes("MSLM-post")) return { ox: 0, oy: -20 };
     return { ox: 0, oy: 0 };
@@ -588,7 +593,9 @@ function App() {
   }, [openFolderKey]);
 
   // Build the flat defaultTiles list and the ordered panel entries from manifest + activeTileset.
-  // IDs are assigned in panel display order: tileset tiles first (wall1=ID#1), global tiles after.
+  // ALL tilesets are loaded with sequential non-overlapping IDs so that switching themes never
+  // causes ID collisions (e.g. Mausoleum breakable ID 7 stays valid even when Sewer is active).
+  // Only the ACTIVE tileset's entries are shown in the tiles panel (tilesetEntries).
   // Returns: tilesetEntries, globalEntries, flatDefaultTiles, tilesetTileCount
   const { tilesetEntries, globalEntries, flatDefaultTiles, tilesetTileCount } = useMemo(() => {
     if (!manifest) return { tilesetEntries: [], globalEntries: [], flatDefaultTiles: [], tilesetTileCount: 0 };
@@ -602,11 +609,13 @@ function App() {
       return key;
     };
 
-    // ── Active tileset tiles FIRST — these get IDs starting at TILESET_ID_START (1) ──
-    const tsDef = manifest.tilesets?.find(ts => ts.name === activeTileset) ?? manifest.tilesets?.[0];
-    const tsEntries = [];
+    // ── ALL tilesets — IDs assigned sequentially so no tileset reuses another's IDs ──
+    // Active tileset entries go into the panel; inactive tileset tiles are registered but hidden.
+    const activeName = activeTileset ?? manifest.tilesets?.[0]?.name;
+    let tsEntries = [];
     let tsCount = 0;
-    if (tsDef) {
+    for (const tsDef of (manifest.tilesets ?? [])) {
+      const isActive = tsDef.name === activeName;
       for (const key of (tsDef.order ?? [])) {
         if (tsDef.folders?.[key]) {
           const folderPath = tsDef.folderPaths?.[key] ?? `${tsDef.name}/${key}/`;
@@ -617,13 +626,11 @@ function App() {
             return t;
           });
           flatTiles.push(...folderTiles);
-          tsEntries.push({ type: 'folder', key, label, tiles: folderTiles });
-          tsCount += folderTiles.length;
+          if (isActive) { tsEntries.push({ type: 'folder', key, label, tiles: folderTiles }); tsCount += folderTiles.length; }
         } else if (tsDef.files?.[key]) {
           const t = makeTile(tsDef.files[key]);
           flatTiles.push(t);
-          tsEntries.push({ type: 'flat', tile: t });
-          tsCount++;
+          if (isActive) { tsEntries.push({ type: 'flat', tile: t }); tsCount++; }
         }
       }
     }
@@ -651,54 +658,62 @@ function App() {
     return { tilesetEntries: tsEntries, globalEntries: glbEntries, flatDefaultTiles: flatTiles, tilesetTileCount: tsCount };
   }, [manifest, activeTileset]);
 
-  // Helper: compute { key -> [id, id, ...] } map for a tileset definition starting at a given ID
-  const computeTileIds = (tsDef, startId) => {
-    let id = startId;
-    const map = {};
-    for (const key of (tsDef.order ?? [])) {
-      if (tsDef.folders?.[key]) {
-        map[key] = tsDef.folders[key].map(() => id++);
-      } else if (tsDef.files?.[key]) {
-        map[key] = [id++];
+  // Helper: compute { tilesetName -> { key -> [ids] } } matching the useMemo ID assignment.
+  // All tilesets are iterated in manifest order so IDs are stable and non-overlapping.
+  const computeAllTileIds = () => {
+    let id = TILESET_ID_START;
+    const allMaps = {};
+    for (const tsDef of (manifest?.tilesets ?? [])) {
+      const tsMap = {};
+      for (const key of (tsDef.order ?? [])) {
+        if (tsDef.folders?.[key]) { tsMap[key] = tsDef.folders[key].map(() => id++); }
+        else if (tsDef.files?.[key]) { tsMap[key] = [id++]; }
       }
+      allMaps[tsDef.name] = tsMap;
     }
-    return map;
+    return allMaps;
   };
 
-  // Switch tileset with grid ID remapping
+  // Switch tileset with grid ID remapping based on matching codename keys.
+  // Because all tilesets now have non-overlapping IDs, unmapped tiles keep their old IDs
+  // and still render correctly (their tiles remain in flatDefaultTiles permanently).
   const switchTileset = (newTilesetName) => {
     if (!manifest || newTilesetName === activeTileset) return;
-    const oldTsDef = manifest.tilesets?.find(ts => ts.name === activeTileset);
-    const newTsDef = manifest.tilesets?.find(ts => ts.name === newTilesetName);
-    if (!oldTsDef || !newTsDef) { setActiveTileset(newTilesetName); return; }
-    const oldMap = computeTileIds(oldTsDef, TILESET_ID_START);
-    const newMap = computeTileIds(newTsDef, TILESET_ID_START);
-    // Build ID remap
+    const allMaps = computeAllTileIds();
+    const oldMap = allMaps[activeTileset];
+    const newMap = allMaps[newTilesetName];
+    if (!oldMap || !newMap) { setActiveTileset(newTilesetName); return; }
+    // Build ID remap: old tileset key ids → new tileset key ids
     const idRemap = {};
     for (const key of Object.keys(oldMap)) {
       const oldIds = oldMap[key];
       const newIds = newMap[key];
       if (newIds) {
-        oldIds.forEach((oldId, i) => {
-          if (i < newIds.length) idRemap[oldId] = newIds[i];
-        });
+        oldIds.forEach((oldId, i) => { if (i < newIds.length) idRemap[oldId] = newIds[i]; });
       }
     }
-    // Find unmapped tileset IDs on grid
+    // Only check/remap IDs that actually belong to the old tileset
+    const oldAllIds = new Set(Object.values(oldMap).flat());
     const unmappedIds = new Set();
     grid.forEach(row => row.forEach(id => {
-      if (id != null && id >= TILESET_ID_START && id < USER_ID_START) {
-        if (idRemap[id] === undefined) unmappedIds.add(id);
-      }
+      if (id != null && oldAllIds.has(id) && idRemap[id] === undefined) unmappedIds.add(id);
     }));
-    // Remap grid
-    setGrid(prev => prev.map(row => row.map(id => {
-      if (id != null && id >= TILESET_ID_START && id < USER_ID_START) {
-        return idRemap[id] ?? id;
-      }
-      return id;
-    })));
+    // Remap grid: only touch IDs from the old tileset
+    const remappedGrid = grid.map(row => row.map(id =>
+      (id != null && oldAllIds.has(id)) ? (idRemap[id] ?? id) : id
+    ));
+    // Record in history with new tileset name (bypass setGrid to embed tileset in the snapshot)
+    setHistory(h => {
+      const trimmed = h.slice(0, histIdx + 1);
+      const capped = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
+      return [...capped, { grid: remappedGrid, w: gridWRef.current, h: gridHRef.current, tileset: newTilesetName }];
+    });
+    setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
+    setGridRaw(remappedGrid);
     setActiveTileset(newTilesetName);
+    // Auto-set background colours for the tileset
+    const tsBg = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4C5647", bg2: "#586352" } }[newTilesetName];
+    if (tsBg) { setBg1(tsBg.bg1); setHex1(tsBg.bg1); setBg2(tsBg.bg2); setHex2(tsBg.bg2); save(SK.colors, tsBg); }
     if (unmappedIds.size > 0) {
       setThemeSwitchWarning({ oldTheme: activeTileset, newTheme: newTilesetName, unmappedCount: unmappedIds.size });
     }
@@ -769,7 +784,7 @@ function App() {
         setHistory(h => {
           const trimmed = h.slice(0, histIdx + 1);
           const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-          return [...capped, { grid: next, w: gridWRef.current, h: gridHRef.current }];
+          return [...capped, { grid: next, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current }];
         });
         setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
       }
@@ -777,28 +792,34 @@ function App() {
     });
   }, [histIdx]);
 
+  const restoreSnap = snap => {
+    setGridRaw(snap.grid ?? snap);
+    if (snap.w !== undefined) { setGridW(snap.w); setGridH(snap.h); }
+    if (snap.tileset != null && snap.tileset !== activeTilesetRef.current) {
+      setActiveTileset(snap.tileset);
+      const tsBg = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4C5647", bg2: "#586352" } }[snap.tileset];
+      if (tsBg) { setBg1(tsBg.bg1); setHex1(tsBg.bg1); setBg2(tsBg.bg2); setHex2(tsBg.bg2); save(SK.colors, tsBg); }
+    }
+  };
+
   const undo = useCallback(() => {
     if (histIdx <= 0) return;
     const newIdx = histIdx - 1;
     setHistIdx(newIdx);
-    const snap = history[newIdx];
-    setGridRaw(snap.grid ?? snap);
-    if (snap.w !== undefined) { setGridW(snap.w); setGridH(snap.h); }
+    restoreSnap(history[newIdx]);
   }, [history, histIdx]);
 
   const redo = useCallback(() => {
     if (histIdx >= history.length - 1) return;
     const newIdx = histIdx + 1;
     setHistIdx(newIdx);
-    const snap = history[newIdx];
-    setGridRaw(snap.grid ?? snap);
-    if (snap.w !== undefined) { setGridW(snap.w); setGridH(snap.h); }
+    restoreSnap(history[newIdx]);
   }, [history, histIdx]);
 
   // Push the current grid as a history snapshot (called once on mousedown, before any paint).
   // All cell writes during a drag use skipHistory=true, so the whole drag is one undo step.
   const pushHistorySnapshot = useCallback(() => {
-    const snap = { grid, w: gridWRef.current, h: gridHRef.current };
+    const snap = { grid, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current };
     setHistory(h => {
       const trimmed = h.slice(0, histIdx + 1);
       const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
@@ -1968,12 +1989,12 @@ function App() {
       erase: { label: "Erase", icon: "🧼", color: C.danger, desc: "Removes tiles from cells. Click or drag across cells to erase.", iconColor: null },
       hand:  { label: "Hand", icon: "👋", color: "#fbbf24", desc: "Drag to pan the map canvas. On mobile, swipe to scroll.", iconColor: null },
       space: { label: "Space", icon: "🛸", color: C.accentBright, desc: "Places an invisible space tile, making the cell fully transparent in the exported map.", iconColor: null },
-      single: { label: "Single", icon: "✏️", color: C.accent, desc: "Freehand paint mode. Click or drag to place tiles one cell at a time.", iconColor: null },
-      line:   { label: "Line", icon: "📏", color: C.accent, desc: "Line draw mode. Click a start cell and drag to an end cell — tiles are placed in a straight line between them.", iconColor: null },
-      rect:   { label: "Rectangle", icon: "⬜", color: C.accent, desc: "Rectangle fill mode. Click and drag to define a bounding box — all cells inside are filled with the selected tile.", iconColor: null },
-      mirrorV: { label: "Horizontal Mirror", icon: "↔", color: C.pale, desc: "Mirrors every paint action horizontally (left ↔ right). The mirror axis runs vertically through the grid centre.", iconColor: C.pale },
-      mirrorH: { label: "Vertical Mirror", icon: "↕", color: C.soft, desc: "Mirrors every paint action vertically (top ↔ bottom). The mirror axis runs horizontally through the grid centre.", iconColor: C.soft },
-      mirrorD: { label: "Diagonal Mirror", icon: "✕", color: C.accentBright, desc: "Mirrors every paint action diagonally (point-reflected through the grid centre). Can be combined with Horizontal and Vertical mirrors.", iconColor: C.accentBright },
+      single: { label: "Single", icon: "S", color: C.accent, desc: "Freehand paint mode. Click or drag to place tiles one cell at a time.", iconColor: C.accent },
+      line:   { label: "Line", icon: "L", color: C.accent, desc: "Line draw mode. Click a start cell and drag to an end cell — tiles are placed in a straight line between them.", iconColor: C.accent },
+      rect:   { label: "Rectangle", icon: "R", color: C.accent, desc: "Rectangle fill mode. Click and drag to define a bounding box — all cells inside are filled with the selected tile.", iconColor: C.accent },
+      mirrorV: { label: "Horizontal Mirror", icon: "H", color: C.pale, desc: "Mirrors every paint action horizontally (left ↔ right). The mirror axis runs vertically through the grid centre.", iconColor: C.pale },
+      mirrorH: { label: "Vertical Mirror", icon: "V", color: C.soft, desc: "Mirrors every paint action vertically (top ↔ bottom). The mirror axis runs horizontally through the grid centre.", iconColor: C.soft },
+      mirrorD: { label: "Diagonal Mirror", icon: "D", color: C.accentBright, desc: "Mirrors every paint action diagonally (point-reflected through the grid centre). Can be combined with Horizontal and Vertical mirrors.", iconColor: C.accentBright },
       guides: { label: "Guides", icon: "🧭", color: C.accent, desc: "Shows dashed mirror axis lines on the canvas — a vertical line and a horizontal line through the grid centre. Useful for aligning tiles when mirroring is active.", iconColor: null },
       offsetCenters: { label: "Offset Centers", icon: "🎯", color: C.soft, desc: "Overlays a white + marker at the original grid-cell centre of every tile that has a non-zero offset applied. Useful for checking placement alignment.", iconColor: null },
       replace: { label: "Replace", icon: "♻️", color: C.soft, desc: "Two-step tile replacement: first pick a tile on the map, then pick its replacement. All instances of the original tile are swapped at once.", iconColor: null },
@@ -2735,8 +2756,8 @@ function App() {
             {!toolsOpen && (() => {
               const toolIconMap = {
                 erase: "🧼", hand: "👋", space: "🛸",
-                single: "✏️", line: "📏", rect: "⬜",
-                mirrorV: "↔", mirrorH: "↕", mirrorD: "✕",
+                single: "S", line: "L", rect: "R",
+                mirrorV: "H", mirrorH: "V", mirrorD: "D",
                 guides: "🧭", offsetCenters: "🎯", replace: "♻️", overwrite: "🧱",
               };
               const toolActionMap = {
@@ -2839,32 +2860,32 @@ function App() {
                 <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1 }}>Selection Mode</span>
                 <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}>
                   <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
-                    <button style={btn(selectionMode === 'single', C.accent, C.accentDim)} onClick={() => setSelectionMode('single')} title="Single — Freehand">S</button>
-                    <span onClick={() => setInfoTool("single")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
+                    <button style={btn(selectionMode === 'single', C.accent, C.accentDim)} onClick={() => setSelectionMode('single')} title="Freehand">Single</button>
+                    <span onClick={() => setInfoTool("single")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 9, fontWeight: 700, cursor: "pointer", color: selectionMode === 'single' ? C.accent : "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.75)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>S</span>
                   </div>
                   <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
-                    <button style={btn(selectionMode === 'line', C.accent, C.accentDim)} onClick={() => setSelectionMode('line')} title="Line">L</button>
-                    <span onClick={() => setInfoTool("line")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
+                    <button style={btn(selectionMode === 'line', C.accent, C.accentDim)} onClick={() => setSelectionMode('line')} title="Line draw">Line</button>
+                    <span onClick={() => setInfoTool("line")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 9, fontWeight: 700, cursor: "pointer", color: selectionMode === 'line' ? C.accent : "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.75)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>L</span>
                   </div>
                   <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
-                    <button style={btn(selectionMode === 'rect', C.accent, C.accentDim)} onClick={() => setSelectionMode('rect')} title="Rectangle — Bounding box">R</button>
-                    <span onClick={() => setInfoTool("rect")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
+                    <button style={btn(selectionMode === 'rect', C.accent, C.accentDim)} onClick={() => setSelectionMode('rect')} title="Rectangle fill">Rect</button>
+                    <span onClick={() => setInfoTool("rect")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 9, fontWeight: 700, cursor: "pointer", color: selectionMode === 'rect' ? C.accent : "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.75)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>R</span>
                   </div>
                 </div>
                 <div style={{ height: 1, background: C.border }} />
                 <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1 }}>Mirroring</span>
                 <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}>
                   <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
-                    <button style={btn(mirrorV, C.pale, C.paleDim)} onClick={() => setMirrorV(v => !v)} title="Horizontal mirror">H</button>
-                    <span onClick={() => setInfoTool("mirrorV")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
+                    <button style={btn(mirrorV, C.pale, C.paleDim)} onClick={() => setMirrorV(v => !v)} title="Horizontal mirror (left ↔ right)">Horizontal</button>
+                    <span onClick={() => setInfoTool("mirrorV")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 9, fontWeight: 700, cursor: "pointer", color: mirrorV ? C.pale : "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.75)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>H</span>
                   </div>
                   <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
-                    <button style={btn(mirrorH, C.soft, C.softDim)} onClick={() => setMirrorH(v => !v)} title="Vertical mirror">V</button>
-                    <span onClick={() => setInfoTool("mirrorH")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
+                    <button style={btn(mirrorH, C.soft, C.softDim)} onClick={() => setMirrorH(v => !v)} title="Vertical mirror (top ↔ bottom)">Vertical</button>
+                    <span onClick={() => setInfoTool("mirrorH")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 9, fontWeight: 700, cursor: "pointer", color: mirrorH ? C.soft : "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.75)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>V</span>
                   </div>
                   <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
-                    <button style={btn(mirrorD, C.accentBright, C.accentDim)} onClick={() => setMirrorD(v => !v)} title="Diagonal mirror">D</button>
-                    <span onClick={() => setInfoTool("mirrorD")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
+                    <button style={btn(mirrorD, C.accentBright, C.accentDim)} onClick={() => setMirrorD(v => !v)} title="Diagonal mirror (180° rotation)">Diagonal</button>
+                    <span onClick={() => setInfoTool("mirrorD")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 9, fontWeight: 700, cursor: "pointer", color: mirrorD ? C.accentBright : "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.75)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>D</span>
                   </div>
                 </div>
                 <div style={{ height: 1, background: C.border }} />
