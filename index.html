@@ -2140,10 +2140,43 @@ function App() {
       );
     }
 
-    // Step 2: full tile list with section separators
+    // Step 2: full tile list — tileset tiles grouped with collapsible sections
+    const shownNames = new Set(shownTilesets ?? [activeTileset ?? manifest?.tilesets?.[0]?.name]);
     const tilesetTiles_ = tiles.filter(t => t.id >= TILESET_ID_START && t.id < USER_ID_START);
     const userTiles_    = tiles.filter(t => t.id >= USER_ID_START && t.id < GLOBAL_ID_START);
-    const globalTiles_  = tiles.filter(t => t.id >= GLOBAL_ID_START);
+    const globalTiles_  = tiles.filter(t => t.id >= GLOBAL_ID_START && t.id < 300);
+
+    // Group tileset tiles by tileset name
+    const tsByName = {};
+    tilesetTiles_.forEach(t => {
+      const name = t.tilesetName ?? "Tileset";
+      if (!tsByName[name]) tsByName[name] = [];
+      tsByName[name].push(t);
+    });
+
+    // Collapsible state: shown tilesets open, hidden collapsed by default
+    const [tsCollapsed, setTsCollapsed] = React.useState(() => {
+      const init = {};
+      Object.keys(tsByName).forEach(name => { init[name] = !shownNames.has(name); });
+      return init;
+    });
+
+    const onSelect = id => {
+      const s = replaceScrollRef.current?.scrollTop;
+      setReplaceB(id);
+      requestAnimationFrame(() => { if (replaceScrollRef.current) replaceScrollRef.current.scrollTop = s; });
+    };
+
+    const CollapsibleSepLine = ({ label, isCollapsed, onToggle, isShown }) => (
+      <div onClick={onToggle}
+        style={{ gridColumn: "1 / -1", display: "flex", alignItems: "center", gap: 6, margin: "4px 0 2px", cursor: "pointer", userSelect: "none" }}>
+        <span style={{ fontSize: 9, color: C.muted, lineHeight: 1 }}>{isCollapsed ? "▶" : "▼"}</span>
+        <span style={{ fontSize: 9, letterSpacing: 1, textTransform: "uppercase", fontWeight: isShown ? 700 : 400, color: isShown ? C.accentBright : C.muted }}>{label}</span>
+        {!isShown && <span style={{ fontSize: 8, color: C.muted }}>(hidden)</span>}
+        <div style={{ height: 1, flex: 1, background: C.border }} />
+      </div>
+    );
+
     return (
       <div className="modal-backdrop" onClick={close}>
         <div className="modal-box" style={{ maxWidth: 380 }} onClick={e => e.stopPropagation()}>
@@ -2153,14 +2186,24 @@ function App() {
           </div>
           <div ref={replaceScrollRef} style={{ overflowY: "auto", maxHeight: 320, padding: "2px 0" }}>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(52px, 1fr))", gap: 5 }}>
-              {tilesetTiles_.length > 0 && <SepLine label="Tileset" />}
-              {tilesetTiles_.map(t => <RCard key={t.id} t={t} selected={replaceB} onSelect={id => { const s = replaceScrollRef.current?.scrollTop; setReplaceB(id); requestAnimationFrame(() => { if (replaceScrollRef.current) replaceScrollRef.current.scrollTop = s; }); }} />)}
+              {/* Per-tileset collapsible sections */}
+              {Object.entries(tsByName).map(([name, tsTs]) => {
+                const isCollapsed = !!tsCollapsed[name];
+                const isShown = shownNames.has(name);
+                return (
+                  <React.Fragment key={name}>
+                    <CollapsibleSepLine label={name} isCollapsed={isCollapsed} isShown={isShown}
+                      onToggle={() => setTsCollapsed(p => ({ ...p, [name]: !p[name] }))} />
+                    {!isCollapsed && tsTs.map(t => <RCard key={t.id} t={t} selected={replaceB} onSelect={onSelect} />)}
+                  </React.Fragment>
+                );
+              })}
               {userTiles_.length > 0 && <SepLine label="Uploaded" />}
-              {userTiles_.map(t => <RCard key={t.id} t={t} selected={replaceB} onSelect={id => { const s = replaceScrollRef.current?.scrollTop; setReplaceB(id); requestAnimationFrame(() => { if (replaceScrollRef.current) replaceScrollRef.current.scrollTop = s; }); }} />)}
+              {userTiles_.map(t => <RCard key={t.id} t={t} selected={replaceB} onSelect={onSelect} />)}
               {globalTiles_.length > 0 && <SepLine label="Global" />}
-              {globalTiles_.map(t => <RCard key={t.id} t={t} selected={replaceB} onSelect={id => { const s = replaceScrollRef.current?.scrollTop; setReplaceB(id); requestAnimationFrame(() => { if (replaceScrollRef.current) replaceScrollRef.current.scrollTop = s; }); }} />)}
+              {globalTiles_.map(t => <RCard key={t.id} t={t} selected={replaceB} onSelect={onSelect} />)}
               <SepLine label="Special" />
-              <RCard key="space" t={null} selected={replaceB} onSelect={id => { const s = replaceScrollRef.current?.scrollTop; setReplaceB(id); requestAnimationFrame(() => { if (replaceScrollRef.current) replaceScrollRef.current.scrollTop = s; }); }} isSpace />
+              <RCard key="space" t={null} selected={replaceB} onSelect={onSelect} isSpace />
             </div>
           </div>
           {replaceMsg ? (
@@ -2769,7 +2812,7 @@ function App() {
                             // Already selected rotatable tile: rotate 90° clockwise
                             setCardRotations(prev => ({ ...prev, [t.id]: (prev[t.id] ?? 0) + 90 }));
                           }
-                          setSel(t.id); setEraser(false); setHandMode(false);
+                          setSel(t.id); setEraser(false); setHandMode(false); setEyedropperMode(false);
                         }}
                         style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: failed ? "not-allowed" : "pointer", border: `2px solid ${failed ? C.danger : active ? C.accentBright : C.border}`, background: failed ? "rgba(248,113,113,0.08)" : active ? C.accentDim : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", opacity: failed ? 0.55 : 1, position: "relative", overflow: "visible" }}>
                         {/* Inner clipped area for image */}
@@ -3429,15 +3472,13 @@ function App() {
             {/* Starred tool mini-cards when collapsed */}
             {!toolsOpen && (() => {
               const toolIconMap = {
-                erase: "🧼", hand: "👋", space: "🛸",
+                space: "🛸",
                 single: "S", line: "L", rect: "R", fill: "F",
                 mirrorV: "H", mirrorH: "V", mirrorD: "D",
                 guides: "🧭", offsetCenters: "🎯", replace: "♻️", overwrite: "🧱",
                 otg: "⚠",
               };
               const toolActionMap = {
-                erase: () => { setEraser(true); setSel(null); setHandMode(false); },
-                hand:  () => { setHandMode(h => !h); setEraser(false); setSel(null); },
                 space: () => { setSel(SPACE_TILE_ID); setEraser(false); setHandMode(false); },
                 single: () => setSelectionMode('single'),
                 line:   () => setSelectionMode('line'),
@@ -3453,8 +3494,6 @@ function App() {
                 otg: () => setShowOTG(v => !v),
               };
               const toolActiveMap = {
-                erase: eraser,
-                hand: handMode,
                 space: sel === SPACE_TILE_ID && !eraser,
                 single: selectionMode === 'single',
                 line: selectionMode === 'line',
@@ -3468,7 +3507,7 @@ function App() {
                 otg: showOTG,
               };
               const toolColorMap = {
-                erase: C.danger, hand: "#fbbf24", space: C.accentBright,
+                space: C.accentBright,
                 single: C.accent, line: C.accent, rect: C.accent, fill: C.accent,
                 mirrorV: C.pale, mirrorH: C.soft, mirrorD: C.accentBright,
                 guides: C.accent, offsetCenters: C.soft, replace: C.soft, overwrite: C.accent,
@@ -3580,9 +3619,9 @@ function App() {
                 <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1, display: "flex", alignItems: "center", gap: 4 }}>Selection Mode <span onClick={() => setInfoTool("selectionMode")} style={{ fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.65)", lineHeight: 1 }}>ⓘ</span></span>
                 <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}>
                   <button style={btn(selectionMode === 'single', C.accent, C.accentDim)} onClick={() => setSelectionMode('single')} title="Freehand">Single</button>
-                  <button style={btn(selectionMode === 'line', C.accent, C.accentDim)} onClick={() => setSelectionMode('line')} title="Line draw">Line</button>
-                  <button style={btn(selectionMode === 'rect', C.accent, C.accentDim)} onClick={() => setSelectionMode('rect')} title="Rectangle fill">Rectangle</button>
-                  <button style={btn(selectionMode === 'fill', C.accent, C.accentDim)} onClick={() => setSelectionMode('fill')} title="Flood fill selection">Fill</button>
+                  <button style={btn(selectionMode === 'line', C.soft, C.softDim)} onClick={() => setSelectionMode('line')} title="Line draw">Line</button>
+                  <button style={btn(selectionMode === 'rect', C.pale, C.paleDim)} onClick={() => setSelectionMode('rect')} title="Rectangle fill">Rectangle</button>
+                  <button style={btn(selectionMode === 'fill', C.accentBright, C.accentDim)} onClick={() => setSelectionMode('fill')} title="Flood fill selection">Fill</button>
                 </div>
                 <div style={{ height: 1, background: C.border }} />
                 <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1, display: "flex", alignItems: "center", gap: 4 }}>Mirroring <span onClick={() => setInfoTool("mirroring")} style={{ fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.65)", lineHeight: 1 }}>ⓘ</span></span>
@@ -3601,6 +3640,16 @@ function App() {
                     <button style={btn(showOffsetCenters, C.soft, C.softDim)} onClick={() => setShowOffsetCenters(v => !v)} title="Show a marker at the placement cell of tiles with non-zero offset">Offset Centers</button>
                     <span onClick={() => setInfoTool("offsetCenters")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
                   </div>
+                  <button style={btn(showOTG, C.danger, "rgba(239,68,68,0.18)")}
+                    onClick={() => setShowOTG(v => !v)}
+                    title="Toggle One Tile Gap detection overlay">
+                    {showOTG ? "🧩 On" : "🧩 Off"}
+                  </button>
+                  <button style={{ ...btn(false, C.soft, C.softDim), fontSize: 10, padding: "3px 9px" }}
+                    onClick={() => setOtgOpen(true)}
+                    title="Configure which tiles count as walls for OTG detection">
+                    ⚙
+                  </button>
                 </div>
                 <div style={{ height: 1, background: C.border }} />
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -3609,25 +3658,10 @@ function App() {
                     <span onClick={() => setInfoTool("replace")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
                   </div>
                   <button style={btn(false, C.soft, C.softDim)} onClick={() => setConvertOpen(true)} title="Remap tileset tiles on the board">Convert</button>
-                  <button style={btn(false, C.muted, "rgba(255,255,255,0.08)")} onClick={() => setMemoryOpen(true)} title="Storage usage">Memory…</button>
                   <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
                     <button style={btn(mirrorSettings.allowSwap, C.accent, C.accentDim)} onClick={() => setMirrorSettings(p => ({ ...p, allowSwap: !p.allowSwap }))} title="When enabled, painting over occupied cells replaces them instead of picking them up">Block Overwrite</button>
                     <span onClick={() => setInfoTool("overwrite")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
                   </div>
-                </div>
-                <div style={{ height: 1, background: C.border }} />
-                <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1 }}>OTG Detection</span>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                  <button style={btn(showOTG, C.danger, "rgba(239,68,68,0.18)")}
-                    onClick={() => setShowOTG(v => !v)}
-                    title="Toggle One Tile Gap detection overlay">
-                    {showOTG ? "OTG On" : "OTG Off"}
-                  </button>
-                  <button style={{ ...btn(false, C.soft, C.softDim), fontSize: 10, padding: "3px 9px" }}
-                    onClick={() => setOtgOpen(true)}
-                    title="Configure which tiles count as walls for OTG detection">
-                    Settings
-                  </button>
                 </div>
               </div>
             </div>
@@ -3702,8 +3736,6 @@ function App() {
                 style={{ width: 62, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 11, padding: "3px 6px", outline: "none" }}
                 spellCheck={false} />
             </div>
-            <button style={{ ...btn(false), fontSize: 10, padding: "3px 9px" }}
-              onClick={() => { applyBg1(DEFAULT_BG1); applyBg2(DEFAULT_BG2); save(SK.colors, { bg1: DEFAULT_BG1, bg2: DEFAULT_BG2 }); }}>↺ Reset</button>
           </div>
 
           {/* Row 4: Map size */}
@@ -3726,6 +3758,10 @@ function App() {
               onClick={() => { setSizeWInput("21"); setSizeHInput("33"); setPendingSize({ w: 21, h: 33 }); }}>
               3v3
             </button>
+            <button style={{ ...btn(false), fontSize: 10, padding: "3px 9px" }}
+              onClick={() => { setSizeWInput("60"); setSizeHInput("60"); setPendingSize({ w: 60, h: 60 }); }}>
+              Showdown
+            </button>
           </div>
 
           {/* Row 5: Theme switcher */}
@@ -3737,6 +3773,10 @@ function App() {
                 {th === "warm" ? "🔥 Warm" : "❄️ Cold"}
               </button>
             ))}
+          </div>
+          {/* Row 6: Memory */}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 14px 6px" }}>
+            <button style={btn(false, C.muted, "rgba(255,255,255,0.08)")} onClick={() => setMemoryOpen(true)} title="Storage usage">Memory…</button>
           </div>
         </>)}
 
