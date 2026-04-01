@@ -945,6 +945,27 @@ function App() {
     return resolved;
   };
 
+  const sampleImageCenter = async (url) => {
+    try {
+      const blob = await fetch(url).then(r => r.blob());
+      const blobUrl = URL.createObjectURL(blob);
+      return await new Promise(resolve => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          canvas.width = img.width; canvas.height = img.height;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0);
+          const [r, g, b] = ctx.getImageData(Math.floor(img.width/2), Math.floor(img.height/2), 1, 1).data;
+          URL.revokeObjectURL(blobUrl);
+          resolve(`#${r.toString(16).padStart(2,'0')}${g.toString(16).padStart(2,'0')}${b.toString(16).padStart(2,'0')}`);
+        };
+        img.onerror = () => { URL.revokeObjectURL(blobUrl); resolve(null); };
+        img.src = blobUrl;
+      });
+    } catch { return null; }
+  };
+
   const addAtlasTile = (filePath, atlasTilesetGroup) => {
     const id = nextAtlasId();
     if (id === null) { alert("Atlas tile limit reached (IDs 300–499). Remove some atlas tiles first."); return; }
@@ -2823,11 +2844,35 @@ function App() {
                         const isDir = item.type === 'dir';
                         const isImg = !isDir && imageExts.test(item.name);
                         if (isRoot && item.type === 'dir' && (item.name === 'Additional' || item.name === 'Global')) return null;
-                        // BGDark/BGLight excluded (BG colour extraction requires CORS-safe fetch)
-                        if (!isDir && (item.name === 'BGDark.png' || item.name === 'BGLight.png')) return null;
-                        if (!isDir && !isImg) return null;
+                        if (!isDir && !imageExts.test(item.name)) return null;
                         const relPath = item.path.replace(/^Resources\//, '');
                         const rawSrc = `https://raw.githubusercontent.com/She-Fairy/atlas-horizon/main/Resources/${relPath}`;
+                        const isBgFile = !isDir && (item.name === 'BGDark.png' || item.name === 'BGLight.png');
+                        const isBgDark = item.name === 'BGDark.png';
+                        if (isBgFile) {
+                          return (
+                            <div key={item.name}
+                              onClick={() => {
+                                (async () => {
+                                  const color = await sampleImageCenter(rawSrc);
+                                  if (!color) return;
+                                  if (isBgDark) {
+                                    setBg2(color); setHex2(color);
+                                    save(SK.colors, { bg1, bg2: color });
+                                  } else {
+                                    setBg1(color); setHex1(color);
+                                    save(SK.colors, { bg1: color, bg2 });
+                                  }
+                                })();
+                              }}
+                              style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 10px", cursor: "pointer", background: "transparent", transition: "background 0.1s" }}
+                              onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,0.07)"}
+                              onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                              <span style={{ fontSize: 14, lineHeight: 1, flexShrink: 0 }}>🎨</span>
+                              <span style={{ fontSize: 10, color: C.text, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{isBgDark ? "BGDark" : "BGLight"} — set as background</span>
+                            </div>
+                          );
+                        }
                         const alreadyAdded = atlasTiles.some(t => t.src === rawSrc);
                         return (
                           <div key={item.name}
