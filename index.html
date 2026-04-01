@@ -278,6 +278,13 @@ function App() {
   const [selectionMode, setSelectionMode] = useState('single'); // 'single' | 'line' | 'rect' | 'fill'
   const [eyedropperMode, setEyedropperMode] = useState(false); // eyedropper pick tool
   const [highlightMode, setHighlightMode] = useState(false);
+  const [highlightedCells, setHighlightedCells] = useState(new Set()); // Set of "r,c" strings
+  const highlightedCellsRef = useRef(new Set()); // mirror for closures
+  const [highlightDragOffset, setHighlightDragOffset] = useState(null); // {dr, dc} cell offset while dragging highlight
+  const highlightDragOffsetRef = useRef(null);
+  const isHighlightDraggingRef = useRef(false);
+  const highlightDragAnchorCell = useRef(null); // [r,c] of the cell where drag started
+  const highlightModeRef = useRef(false);
   const eyedropperModeRef = useRef(false);
   const [rectPreview,   setRectPreview]   = useState(null);     // {r1,c1,r2,c2} during rect drag
   const [previewCells,  setPreviewCells]  = useState(null);     // [[r,c],...] during single/line drag
@@ -414,6 +421,9 @@ function App() {
   useEffect(() => { eraserRef.current       = eraser;        }, [eraser]);
   useEffect(() => { handModeRef.current     = handMode;      }, [handMode]);
   useEffect(() => { eyedropperModeRef.current = eyedropperMode; }, [eyedropperMode]);
+  useEffect(() => { highlightModeRef.current = highlightMode; }, [highlightMode]);
+  useEffect(() => { highlightedCellsRef.current = highlightedCells; }, [highlightedCells]);
+  useEffect(() => { highlightDragOffsetRef.current = highlightDragOffset; }, [highlightDragOffset]);
   useEffect(() => { zoomRef.current         = zoom;          }, [zoom]);
   useEffect(() => { selectionModeRef.current = selectionMode; }, [selectionMode]);
   useEffect(() => { gridRef.current = grid; }, [grid]);
@@ -1189,6 +1199,39 @@ function App() {
   // All three modes defer their grid write to this point.
   const commitSelectionOnMouseUp = useCallback(() => {
     const mode = selectionModeRef.current;
+
+    // In highlight mode, commit to highlightedCells instead of the grid
+    if (highlightModeRef.current) {
+      let newCells = [];
+      if (mode === 'single' || mode === 'line') {
+        newCells = [...hoveredTilesRef.current].map(k => k.split(',').map(Number));
+      } else if (mode === 'rect') {
+        if (selectionStartRef.current) {
+          const [sr, sc] = selectionStartRef.current;
+          const [er, ec] = selectionEndRef.current ?? [sr, sc];
+          for (let r = Math.min(sr, er); r <= Math.max(sr, er); r++)
+            for (let c = Math.min(sc, ec); c <= Math.max(sc, ec); c++)
+              newCells.push([r, c]);
+        }
+      } else if (mode === 'fill') {
+        newCells = [...hoveredTilesRef.current].map(k => k.split(',').map(Number));
+      }
+      if (newCells.length) {
+        setHighlightedCells(prev => {
+          const next = new Set(prev);
+          newCells.forEach(([r, c]) => next.add(`${r},${c}`));
+          highlightedCellsRef.current = next;
+          return next;
+        });
+      }
+      setRectPreview(null);
+      setPreviewCells(null);
+      selectionStartRef.current = null;
+      selectionEndRef.current   = null;
+      hoveredTilesRef.current   = new Set();
+      return;
+    }
+
     if (mode === 'single') {
       // place tile at the end point (where the mouse was released)
       if (selectionEndRef.current) {
@@ -1276,6 +1319,36 @@ function App() {
         return;
       }
 
+      // ── HIGHLIGHT MODE ───────────────────────────────────────────────────────
+      if (highlightModeRef.current) {
+        const key = `${r},${c}`;
+        if (highlightedCellsRef.current.has(key) && highlightedCellsRef.current.size > 0) {
+          // Start dragging the highlight region
+          isHighlightDraggingRef.current = true;
+          highlightDragAnchorCell.current = [r, c];
+          setHighlightDragOffset({ dr: 0, dc: 0 });
+          highlightDragOffsetRef.current = { dr: 0, dc: 0 };
+          setDragPos({ x: e.clientX, y: e.clientY });
+        } else {
+          // Paint: add cells to highlighted set
+          setPainting(true);
+          paintingRef.current = true;
+          selectionStartRef.current = [r, c];
+          selectionEndRef.current   = [r, c];
+          hoveredTilesRef.current   = new Set([key]);
+          const mode = selectionModeRef.current;
+          if (mode === 'single') setPreviewCells([[r, c]]);
+          else if (mode === 'line') setPreviewCells([[r, c]]);
+          else if (mode === 'rect') setRectPreview({ r1: r, c1: c, r2: r, c2: c });
+          else if (mode === 'fill') {
+            const fillSet = bfsFill(r, c, gridRef.current, gridWRef.current, gridHRef.current);
+            hoveredTilesRef.current = fillSet;
+            setPreviewCells([...fillSet].map(k => k.split(',').map(Number)));
+          }
+        }
+        return;
+      }
+
       // Drag and paint are mutually exclusive — decide here, never switch mid-gesture
       // Use gridRef for freshest value (avoids stale closure on rapid clicks)
       const existingId = gridRef.current?.[r]?.[c];
@@ -1327,6 +1400,38 @@ function App() {
       }
 
     } else if (e.type === "mousemove") {
+      // If highlight-dragging, update offset — never tile-drag
+      if (isHighlightDraggingRef.current) {
+        setDragPos({ x: e.clientX, y: e.clientY });
+        const cell = cellFromEvent(e.clientX, e.clientY);
+        if (cell && highlightDragAnchorCell.current) {
+          const [ar, ac] = highlightDragAnchorCell.current;
+          const [cr, cc] = cell;
+          const newOffset = { dr: cr - ar, dc: cc - ac };
+          setHighlightDragOffset(newOffset);
+          highlightDragOffsetRef.current = newOffset;
+        }
+        return;
+      }
+      // If highlight paint mode, accumulate cells
+      if (highlightModeRef.current && paintingRef.current) {
+        selectionEndRef.current = [r, c];
+        const mode = selectionModeRef.current;
+        if (mode === 'single') {
+          hoveredTilesRef.current.add(`${r},${c}`);
+          setPreviewCells([...hoveredTilesRef.current].map(k => k.split(',').map(Number)));
+        } else if (mode === 'line') {
+          hoveredTilesRef.current.add(`${r},${c}`);
+          setPreviewCells([...hoveredTilesRef.current].map(k => k.split(',').map(Number)));
+        } else if (mode === 'rect') {
+          const [r1, c1] = selectionStartRef.current;
+          setRectPreview({
+            r1: Math.min(r1, r), c1: Math.min(c1, c),
+            r2: Math.max(r1, r), c2: Math.max(c1, c),
+          });
+        }
+        return;
+      }
       // If dragging, update ghost + target cell — never paint
       if (isDraggingRef.current) {
         setDragPos({ x: e.clientX, y: e.clientY });
@@ -1417,12 +1522,93 @@ function App() {
   // and correctly complete or discard the drag on mouseup anywhere on the page.
   useEffect(() => {
     const onMove = e => {
+      // Highlight region drag — update offset based on current cell
+      if (isHighlightDraggingRef.current) {
+        setDragPos({ x: e.clientX, y: e.clientY });
+        const cell = cellFromEvent(e.clientX, e.clientY);
+        if (cell && highlightDragAnchorCell.current) {
+          const [ar, ac] = highlightDragAnchorCell.current;
+          const [cr, cc] = cell;
+          const newOffset = { dr: cr - ar, dc: cc - ac };
+          setHighlightDragOffset(newOffset);
+          highlightDragOffsetRef.current = newOffset;
+        }
+        return;
+      }
       if (!isDraggingRef.current) return;
       setDragPos({ x: e.clientX, y: e.clientY });
       // Update target cell highlight if cursor is inside scroll container
       setDragTargetCell(cellFromEvent(e.clientX, e.clientY));
     };
     const onUp = e => {
+      // Drop highlight region
+      if (isHighlightDraggingRef.current) {
+        const offset = highlightDragOffsetRef.current ?? { dr: 0, dc: 0 };
+        const { dr, dc } = offset;
+        if (dr !== 0 || dc !== 0) {
+          // Move grid tiles from old positions to new positions (with rotations and offsets)
+          const oldCells = [...highlightedCellsRef.current];
+          const newCells = oldCells
+            .map(key => {
+              const [r, c] = key.split(',').map(Number);
+              return { oldKey: key, newR: r + dr, newC: c + dc };
+            })
+            .filter(({ newR, newC }) => newR >= 0 && newR < gridHRef.current && newC >= 0 && newC < gridWRef.current);
+
+          setGridStableRef.current(prev => {
+            const g = prev.map(row => [...row]);
+            // Collect tile data from old positions
+            const tileData = [];
+            oldCells.forEach(key => {
+              const [r, c] = key.split(',').map(Number);
+              tileData.push({ r, c, id: g[r]?.[c] ?? null });
+              g[r][c] = null; // clear old position
+            });
+            // Place at new positions
+            newCells.forEach(({ oldKey, newR, newC }) => {
+              const [r, c] = oldKey.split(',').map(Number);
+              const entry = tileData.find(d => d.r === r && d.c === c);
+              if (entry) g[newR][newC] = entry.id;
+            });
+            return g;
+          });
+          // Move gridRotations
+          setGridRotations(prev => {
+            const n = { ...prev };
+            const rot_data = {};
+            oldCells.forEach(key => {
+              rot_data[key] = prev[key];
+              delete n[key];
+            });
+            newCells.forEach(({ oldKey, newR, newC }) => {
+              if (rot_data[oldKey] !== undefined) n[`${newR},${newC}`] = rot_data[oldKey];
+            });
+            return n;
+          });
+          // Move gridOffsets
+          setGridOffsets(prev => {
+            const n = { ...prev };
+            const off_data = {};
+            oldCells.forEach(key => {
+              off_data[key] = prev[key];
+              delete n[key];
+            });
+            newCells.forEach(({ oldKey, newR, newC }) => {
+              if (off_data[oldKey] !== undefined) n[`${newR},${newC}`] = off_data[oldKey];
+            });
+            return n;
+          });
+          // Update highlighted cells to new positions
+          const newHighlight = new Set(newCells.map(({ newR, newC }) => `${newR},${newC}`));
+          setHighlightedCells(newHighlight);
+          highlightedCellsRef.current = newHighlight;
+        }
+        isHighlightDraggingRef.current = false;
+        highlightDragAnchorCell.current = null;
+        setHighlightDragOffset(null);
+        highlightDragOffsetRef.current = null;
+        return;
+      }
       if (!isDraggingRef.current) return;
       setDragTargetCell(null);
       const cell = cellFromEvent(e.clientX, e.clientY);
@@ -1735,6 +1921,10 @@ function App() {
       if (!e.ctrlKey && !e.metaKey && !e.altKey) {
         const tag = e.target.tagName;
         if (tag === "INPUT" || tag === "TEXTAREA" || e.target.isContentEditable) return;
+        if (e.key === "Escape" && highlightModeRef.current) {
+          setHighlightedCells(new Set());
+          highlightedCellsRef.current = new Set();
+        }
         if (e.key === "e" || e.key === "E") { setEraser(true); setSel(null); setHandMode(false); setEyedropperMode(false); }
         if (e.key === "w" || e.key === "W") { setEyedropperMode(true); setEraser(false); setHandMode(false); }
         if (e.key === "z" || e.key === "Z") { undo(); }
@@ -3131,7 +3321,7 @@ function App() {
                   {(() => {
                     const isStarredHighlight = starredTiles.includes("highlight");
                     return (
-                      <div onClick={() => { setHighlightMode(h => !h); setEraser(false); setHandMode(false); setEyedropperMode(false); if (highlightMode) setSel(null); }}
+                      <div onClick={() => { setHighlightMode(h => !h); setEraser(false); setHandMode(false); setEyedropperMode(false); if (highlightMode) { setSel(null); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); } }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer",
                           border: `2px solid ${highlightMode ? "#a78bfa" : C.border}`,
                           background: highlightMode ? "rgba(167,139,250,0.15)" : "rgba(255,255,255,0.03)",
@@ -3145,6 +3335,12 @@ function App() {
                             <span style={{ fontSize: 20, lineHeight: 1, opacity: highlightMode ? 1 : 0.55 }}>🪄</span>
                           </div>
                         </div>
+                        {highlightMode && highlightedCells.size > 0 && (
+                          <button onClick={e => { e.stopPropagation(); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
+                            style={{ position: "absolute", bottom: -10, left: "50%", transform: "translateX(-50%)", fontSize: 8, fontWeight: 700, color: "#a78bfa", background: "rgba(0,0,0,0.75)", border: "1px solid #a78bfa", borderRadius: 4, padding: "1px 5px", cursor: "pointer", whiteSpace: "nowrap", zIndex: 8, lineHeight: 1.4 }}>
+                            ✕ Clear
+                          </button>
+                        )}
                         <span onClick={e => { e.stopPropagation(); setInfoTool("highlight"); }}
                           style={{ position: "absolute", top: -7, right: -7, width: 18, height: 18, fontSize: 15, cursor: "pointer",
                             color: "rgba(255,255,255,0.85)", lineHeight: "18px", textAlign: "center",
@@ -3462,7 +3658,7 @@ function App() {
 
         {/* ── CANVAS ───────────────────────────────────────────────── */}
           <div ref={scrollRef}
-            style={{ flex: 1, minWidth: 0, height: "100%", overflow: "auto", background: C.bg, cursor: handMode ? "grab" : (dragTile ? "grabbing" : eyedropperMode ? "cell" : "crosshair") }}
+            style={{ flex: 1, minWidth: 0, height: "100%", overflow: "auto", background: C.bg, cursor: handMode ? "grab" : (dragTile || highlightDragOffset ? "grabbing" : eyedropperMode ? "cell" : highlightMode ? "copy" : "crosshair") }}
             onWheel={onWheel}
             onMouseDown={e => {
               if (!handModeRef.current || isDraggingRef.current) return;
@@ -3494,14 +3690,14 @@ function App() {
             }}
             onMouseUp={e => {
               // Drag is fully handled by the global document mouseup listener — skip here
-              if (isDraggingRef.current) return;
+              if (isDraggingRef.current || isHighlightDraggingRef.current) return;
               if (paintingRef.current && commitOnUpRef.current) commitOnUpRef.current();
               setPainting(false);
               paintingRef.current = false;
             }}
             onMouseLeave={e => {
               // Drag continues globally via document mousemove/mouseup — do not cancel here.
-              if (isDraggingRef.current) return;
+              if (isDraggingRef.current || isHighlightDraggingRef.current) return;
               if (paintingRef.current && commitOnUpRef.current) commitOnUpRef.current();
               setPainting(false);
               paintingRef.current = false;
@@ -3648,6 +3844,32 @@ function App() {
                             width={cellPx} height={cellPx}
                             fill="rgba(239,68,68,0.35)"
                             stroke="rgba(239,68,68,0.85)"
+                            strokeWidth="1.5"
+                            rx="2"
+                          />
+                        );
+                      })}
+                    </svg>
+                  );
+                })()}
+
+                {/* Highlight overlay — purple semi-transparent squares over highlighted cells */}
+                {highlightedCells.size > 0 && (() => {
+                  const cellPx = CELL * zoom;
+                  const { dr, dc } = highlightDragOffset ?? { dr: 0, dc: 0 };
+                  return (
+                    <svg style={{ position: "absolute", left: 0, top: CELL * zoom, width: gW, height: gH, pointerEvents: "none", zIndex: 204, overflow: "visible" }}>
+                      {[...highlightedCells].map(key => {
+                        const [origR, origC] = key.split(",").map(Number);
+                        const r = origR + dr;
+                        const c = origC + dc;
+                        if (r < 0 || r >= gridH || c < 0 || c >= gridW) return null;
+                        return (
+                          <rect key={key}
+                            x={c * cellPx} y={r * cellPx}
+                            width={cellPx} height={cellPx}
+                            fill="rgba(167,139,250,0.35)"
+                            stroke="rgba(167,139,250,0.85)"
                             strokeWidth="1.5"
                             rx="2"
                           />
