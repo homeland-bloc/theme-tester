@@ -646,6 +646,7 @@ function App() {
   const [activeTileset, setActiveTileset] = useState(null);
   // Set of tileset names whose tiles are shown in the panel (multi-select)
   const [shownTilesets, setShownTilesets] = useState(() => load("oph_shown_tilesets", null));
+  const [hiddenAtlasGroups, setHiddenAtlasGroups] = useState(() => load("oph_hidden_atlas_groups", []));
   // Tileset dropdown open state
   const [tilesetDropOpen, setTilesetDropOpen] = useState(false);
   // Parsed manifest data
@@ -822,6 +823,7 @@ function App() {
   }, []);
   useEffect(() => { if (activeTileset) save(SK.activeTileset, activeTileset); }, [activeTileset]);
   useEffect(() => { if (shownTilesets) save("oph_shown_tilesets", shownTilesets); }, [shownTilesets]);
+  useEffect(() => { save("oph_hidden_atlas_groups", hiddenAtlasGroups); }, [hiddenAtlasGroups]);
   // Close tileset dropdown on outside click
   useEffect(() => {
     if (!tilesetDropOpen) return;
@@ -2756,23 +2758,41 @@ function App() {
                       <span style={{ color: C.accentBright, fontWeight: 600 }}>{label}</span>
                       <span style={{ color: C.muted, fontSize: 9 }}>{tilesetDropOpen ? "▲" : "▼"}</span>
                     </button>
-                    {tilesetDropOpen && (
-                      <div style={{ position: "absolute", top: "100%", left: 8, right: 8, background: C.panelDeep, border: `1px solid ${C.border}`, borderRadius: 6, zIndex: 200, padding: "4px 0", boxShadow: "0 4px 16px rgba(0,0,0,0.45)" }}>
-                        {manifest.tilesets.map(ts => {
-                          const checked = shown.has(ts.name);
-                          return (
-                            <label key={ts.name} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", cursor: "pointer", userSelect: "none" }}
-                              onClick={e => { e.preventDefault(); toggleTilesetShown(ts.name); }}>
-                              <input type="checkbox" readOnly checked={checked}
-                                style={{ accentColor: C.accent, cursor: "pointer", width: 13, height: 13, pointerEvents: "none" }} />
-                              <span style={{ fontSize: 11, color: checked ? C.accentBright : C.text, fontWeight: checked ? 600 : 400 }}>
-                                {ts.name}{ts.name === "Sewer" ? " (WIP)" : ""}
-                              </span>
-                            </label>
-                          );
-                        })}
-                      </div>
-                    )}
+                    {tilesetDropOpen && (() => {
+                      const atlasGroups = [...new Set(atlasTiles.map(t => t.atlasTilesetGroup).filter(Boolean))];
+                      return (
+                        <div style={{ position: "absolute", top: "100%", left: 8, right: 8, background: C.panelDeep, border: `1px solid ${C.border}`, borderRadius: 6, zIndex: 200, padding: "4px 0", boxShadow: "0 4px 16px rgba(0,0,0,0.45)" }}>
+                          {manifest.tilesets.map(ts => {
+                            const checked = shown.has(ts.name);
+                            return (
+                              <label key={ts.name} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", cursor: "pointer", userSelect: "none" }}
+                                onClick={e => { e.preventDefault(); toggleTilesetShown(ts.name); }}>
+                                <input type="checkbox" readOnly checked={checked}
+                                  style={{ accentColor: C.accent, cursor: "pointer", width: 13, height: 13, pointerEvents: "none" }} />
+                                <span style={{ fontSize: 11, color: checked ? C.accentBright : C.text, fontWeight: checked ? 600 : 400 }}>
+                                  {ts.name}{ts.name === "Sewer" ? " (WIP)" : ""}
+                                </span>
+                              </label>
+                            );
+                          })}
+                          {atlasGroups.length > 0 && <>
+                            <div style={{ margin: "3px 8px", height: 1, background: C.border }} />
+                            <div style={{ padding: "2px 10px 3px", fontSize: 9, color: C.muted, textTransform: "uppercase", letterSpacing: 0.6 }}>Atlas</div>
+                            {atlasGroups.map(g => {
+                              const hidden = hiddenAtlasGroups.includes(g);
+                              return (
+                                <label key={g} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", cursor: "pointer", userSelect: "none" }}
+                                  onClick={e => { e.preventDefault(); setHiddenAtlasGroups(prev => hidden ? prev.filter(x => x !== g) : [...prev, g]); }}>
+                                  <input type="checkbox" readOnly checked={!hidden}
+                                    style={{ accentColor: "#a78bfa", cursor: "pointer", width: 13, height: 13, pointerEvents: "none" }} />
+                                  <span style={{ fontSize: 11, color: !hidden ? "#a78bfa" : C.text, fontWeight: !hidden ? 600 : 400 }}>{g}</span>
+                                </label>
+                              );
+                            })}
+                          </>}
+                        </div>
+                      );
+                    })()}
                   </div>
                 );
               })()}
@@ -3201,14 +3221,17 @@ function App() {
                         </div>
                         {!panelCollapsed.atlas && (<>
                           {ungrouped.map(t => renderFlatCard(t, { onDelete: id => setAtlasTiles(prev => prev.filter(x => x.id !== id)) }))}
-                          {Object.entries(groups).map(([groupName, gTiles]) => (
-                            <React.Fragment key={groupName}>
-                              <div style={{ width: "100%", flexBasis: "100%", flexShrink: 0, marginTop: 4, marginBottom: 2 }}>
-                                <span style={{ fontSize: 9, color: C.muted, fontWeight: 600 }}>📁 {groupName}</span>
-                              </div>
-                              {gTiles.map(t => renderFlatCard(t, { onDelete: id => setAtlasTiles(prev => prev.filter(x => x.id !== id)) }))}
-                            </React.Fragment>
-                          ))}
+                          {Object.entries(groups).map(([groupName, gTiles]) => {
+                            if (hiddenAtlasGroups.includes(groupName)) return null;
+                            return (
+                              <React.Fragment key={groupName}>
+                                <div style={{ width: "100%", flexBasis: "100%", flexShrink: 0, marginTop: 4, marginBottom: 2 }}>
+                                  <span style={{ fontSize: 9, color: C.muted, fontWeight: 600 }}>📁 {groupName}</span>
+                                </div>
+                                {gTiles.map(t => renderFlatCard(t, { onDelete: id => setAtlasTiles(prev => prev.filter(x => x.id !== id)) }))}
+                              </React.Fragment>
+                            );
+                          })}
                         </>)}
                       </>);
                     })()}
