@@ -93,6 +93,16 @@ const SPACE_TILE_ID    = 998; // special: makes a cell fully transparent
 // Module-level cache for GitHub API responses (survives re-renders, not page reload)
 const atlasApiCache = new Map(); // url → resolved data
 
+// Default per-tile settings: src pattern → property value.
+// Functions like isDefaultRotatable/isDefaultOTGWall read from here.
+const TILE_SETTINGS = {
+  rotatable:    ["/Water/"],   // src substrings → tile is rotatable by default
+  otgPassable:  ["bush", "Bush", "SpeedTile", "SlowTile", "Objective", "Rope/", "Jumppads/", "Teleporters/", "HealPad", "Spawn", "SpawnPoint", "spawn"],
+  mirrorOffset: ["Jumppads/", "Teleporters/", "HealPad"],
+  bottomRender: ["/Water/", "Jumppads/", "Teleporters/", "HealPad"],
+  priority:     ["/objectives/", "/Objectives/"],
+};
+
 // Default tiles are loaded dynamically from Resources/manifest.json.
 // To add/remove tiles, update that JSON file (or run generate-manifest.sh).
 
@@ -229,6 +239,8 @@ function App() {
   });
   // Atlas tiles: stored in localStorage, IDs 300–499
   const [atlasTiles, setAtlasTiles] = useState(() => load(SK.atlasTiles, []));
+  // Atlas icon size for the browser panel
+  const [atlasIconSize, setAtlasIconSize] = useState(() => load("oph_atlas_icon_size", 20));
   // Atlas panel UI state
   const [atlasOpen,    setAtlasOpen]    = useState(false);
   const [atlasPath,    setAtlasPath]    = useState(""); // current browse path within Resources/
@@ -412,6 +424,7 @@ function App() {
   // Persist
   useEffect(() => { save(SK.userTiles,   userTiles.map(({ blobSrc: _b, ...t }) => t)); }, [userTiles]);
   useEffect(() => { save(SK.atlasTiles,  atlasTiles); }, [atlasTiles]);
+  useEffect(() => { save("oph_atlas_icon_size", atlasIconSize); }, [atlasIconSize]);
   useEffect(() => { save("oph_panel_collapsed", panelCollapsed); }, [panelCollapsed]);
   useEffect(() => { save(SK.grid,         grid);            }, [grid]);
   useEffect(() => { save(SK.multipliers,  tileMultipliers); }, [tileMultipliers]);
@@ -539,16 +552,14 @@ function App() {
   };
 
   // Water tiles have rotation on by default
-  const isDefaultRotatable = t => !!(t?.src && (t.src.includes("Global/Water/") || t.src.includes("Mausoleum/Water/") || t.src.includes("Sewer/Water/")));
+  const isDefaultRotatable = t => !!(t?.src && TILE_SETTINGS.rotatable.some(p => t.src.includes(p)));
 
   const isTileRotatable = t => {
     if (rotatableMap[t.id] !== undefined) return rotatableMap[t.id];
     return isDefaultRotatable(t);
   };
 
-  const isDefaultMirrorOffset = t => !!(t?.src && (
-    t.src.includes("Jumppads/") || t.src.includes("Teleporters/") || t.src.includes("HealPad")
-  ));
+  const isDefaultMirrorOffset = t => !!(t?.src && TILE_SETTINGS.mirrorOffset.some(p => t.src.includes(p)));
   const isMirrorOffset = t => {
     if (mirrorOffsetTiles[t.id] !== undefined) return mirrorOffsetTiles[t.id];
     return isDefaultMirrorOffset(t);
@@ -557,17 +568,7 @@ function App() {
   // OTG: which tiles count as walls by default (all except passable game-layer tiles)
   const isDefaultOTGWall = t => {
     if (!t?.src) return false;
-    const s = t.src;
-    if (s.includes("bush") || s.includes("Bush")) return false;
-    if (s.includes("SpeedTile")) return false;
-    if (s.includes("SlowTile")) return false;
-    if (s.includes("Spikes")) return false;
-    if (s.includes("Smoke")) return false;
-    if (s.includes("Spawns/")) return false;
-    if (s.includes("/Objectives/")) return false;
-    if (s.includes("Jumppads/")) return false;
-    if (s.includes("Teleporters/")) return false;
-    return true;
+    return !TILE_SETTINGS.otgPassable.some(p => t.src.includes(p));
   };
   const isOTGWall = t => {
     if (otgWallOverrides[t.id] !== undefined) return otgWallOverrides[t.id];
@@ -711,6 +712,7 @@ function App() {
           const folderTiles = tsDef.folders[key].map(fn => {
             const t = makeTile(`${folderPath}${fn}`);
             t.folderKey = key; t.folderLabel = label; t.tilesetName = tsDef.name;
+            t.codename = `${tsDef.name}_${fn.replace(/\.[^.]+$/, '')}`;
             return t;
           });
           flatTiles.push(...folderTiles);
@@ -718,6 +720,7 @@ function App() {
         } else if (tsDef.files?.[key]) {
           const t = makeTile(tsDef.files[key]);
           t.tilesetName = tsDef.name;
+          t.codename = `${tsDef.name}_${tsDef.files[key].split('/').pop().replace(/\.[^.]+$/, '')}`;
           flatTiles.push(t);
           if (isShown) { entries.push({ type: 'flat', tile: t }); tsCount++; }
         }
@@ -738,6 +741,7 @@ function App() {
         const folderTiles = files.map(fn => {
           const t = makeTile(`${folderPath}${fn}`);
           t.folderKey = `global_${key}`; t.folderLabel = label;
+          t.codename = `Global_${fn.replace(/\.[^.]+$/, '')}`;
           return t;
         });
         flatTiles.push(...folderTiles);
@@ -779,7 +783,7 @@ function App() {
         const next = { ...prev };
         let changed = false;
         flatDefaultTiles.forEach(t => {
-          if (/\/objectives\//i.test(t.src) && !next[t.id]) {
+          if (t.src && TILE_SETTINGS.priority.some(p => t.src.includes(p)) && !next[t.id]) {
             next[t.id] = true; changed = true;
           }
         });
@@ -790,7 +794,7 @@ function App() {
         let changed = false;
         flatDefaultTiles.forEach(t => {
           if (!t.src) return;
-          const isBottom = t.src.includes("/Water/") || t.src.includes("Jumppads/") || t.src.includes("Teleporters/") || t.src.includes("HealPad");
+          const isBottom = TILE_SETTINGS.bottomRender.some(p => t.src.includes(p));
           if (isBottom && !next[t.id]) {
             next[t.id] = true; changed = true;
           }
@@ -945,7 +949,9 @@ function App() {
     const id = nextAtlasId();
     if (id === null) { alert("Atlas tile limit reached (IDs 300–499). Remove some atlas tiles first."); return; }
     const src = `https://raw.githubusercontent.com/She-Fairy/atlas-horizon/main/Resources/${filePath}`;
-    const tile = { id, src, isDefault: false, isAtlas: true };
+    const baseName = filePath.split('/').pop().replace(/\.[^.]+$/, '');
+    const codename = atlasTilesetGroup ? `${atlasTilesetGroup}_${baseName}` : baseName;
+    const tile = { id, src, isDefault: false, isAtlas: true, codename };
     if (atlasTilesetGroup) tile.atlasTilesetGroup = atlasTilesetGroup;
     // Settings inheritance
     if (filePath.includes('/Water/')) {
@@ -972,7 +978,8 @@ function App() {
           return null;
         })();
         if (id === null) return prev;
-        const tile = { id, src, isDefault: false, isAtlas: true, atlasTilesetGroup: folderName };
+        const fileBaseName = relPath.split('/').pop().replace(/\.[^.]+$/, '');
+        const tile = { id, src, isDefault: false, isAtlas: true, atlasTilesetGroup: folderName, codename: `${folderName}_${fileBaseName}` };
         return [...prev, tile];
       });
       // Settings inheritance
@@ -1251,36 +1258,33 @@ function App() {
       const existingId = gridRef.current?.[r]?.[c];
 
       if (existingId && !eraserRef.current) {
-        // ── OCCUPIED CELL (non-eraser): pickup or overwrite depending on allowSwap ─────
-        if (!mirrorSettingsRef.current?.allowSwap) {
-          // Block overwrite is OFF: do normal drag pickup
-          const mirrorPositions = getMirrorRef.current ? getMirrorRef.current(r, c) : getMirrorPositions(r, c);
-          // Carry the rotation of the picked-up tile (force 0 for non-rotatable)
-          const pickupTile = getTile(existingId);
-          dragRotationRef.current = (pickupTile && isTileRotatable(pickupTile)) ? (gridRotations[`${r},${c}`] ?? 0) : 0;
-          setGridRaw(prevGrid => {
-            const g = prevGrid.map(row => [...row]);
-            mirrorPositions.forEach(([pr, pc]) => { g[pr][pc] = null; });
-            return g;
-          });
-          setGridRotations(prev => {
-            const n = { ...prev };
-            mirrorPositions.forEach(([pr, pc]) => { delete n[`${pr},${pc}`]; });
-            return n;
-          });
-          setGridOffsets(prev => {
-            const n = { ...prev };
-            mirrorPositions.forEach(([pr, pc]) => { delete n[`${pr},${pc}`]; });
-            return n;
-          });
-          setDragTile(existingId);
-          dragTileRef.current = existingId;
-          isDraggingRef.current = true;
-          setDragPos({ x: e.clientX, y: e.clientY });
-          setDragTargetCell(null);
-          return; // do NOT enter painting mode
-        }
-        // Block overwrite is ON: fall through to normal paint mode below
+        // ── OCCUPIED CELL (non-eraser): always pick up for drag
+        // (allowSwap only affects mid-stroke overwrite in commitMultipleCells)
+        const mirrorPositions = getMirrorRef.current ? getMirrorRef.current(r, c) : getMirrorPositions(r, c);
+        // Always preserve the rotation of the picked-up tile
+        const pickupTile = getTile(existingId);
+        dragRotationRef.current = gridRotations[`${r},${c}`] ?? 0;
+        setGridRaw(prevGrid => {
+          const g = prevGrid.map(row => [...row]);
+          mirrorPositions.forEach(([pr, pc]) => { g[pr][pc] = null; });
+          return g;
+        });
+        setGridRotations(prev => {
+          const n = { ...prev };
+          mirrorPositions.forEach(([pr, pc]) => { delete n[`${pr},${pc}`]; });
+          return n;
+        });
+        setGridOffsets(prev => {
+          const n = { ...prev };
+          mirrorPositions.forEach(([pr, pc]) => { delete n[`${pr},${pc}`]; });
+          return n;
+        });
+        setDragTile(existingId);
+        dragTileRef.current = existingId;
+        isDraggingRef.current = true;
+        setDragPos({ x: e.clientX, y: e.clientY });
+        setDragTargetCell(null);
+        return; // do NOT enter painting mode
       }
 
       // ── NORMAL PAINT: empty cells (or eraser on any cell) ───────────────────
@@ -1534,37 +1538,33 @@ function App() {
       // History written once at touchend (drop/discard), not here.
       const existingId = gridRef.current?.[r]?.[c];
       if (existingId && !eraserRef.current) {
-        if (!mirrorSettingsRef.current?.allowSwap) {
-          // Block overwrite is OFF: do normal drag pickup
-          // Remove the dragged tile AND all its mirrored counterparts from the grid
-          const pickupPositions = getMirrorRef.current ? getMirrorRef.current(r, c) : [[r, c]];
-          // Carry the rotation of the picked-up tile (force 0 for non-rotatable)
-          const pickupTile = tiles.find(x => x.id === existingId);
-          dragRotationRef.current = (pickupTile && isTileRotatable(pickupTile)) ? (gridRotations[`${r},${c}`] ?? 0) : 0;
-          setGridRaw(prev => {
-            const g = prev.map(row => [...row]);
-            pickupPositions.forEach(([pr, pc]) => { g[pr][pc] = null; });
-            return g;
-          });
-          setGridRotations(prev => {
-            const n = { ...prev };
-            pickupPositions.forEach(([pr, pc]) => { delete n[`${pr},${pc}`]; });
-            return n;
-          });
-          setGridOffsets(prev => {
-            const n = { ...prev };
-            pickupPositions.forEach(([pr, pc]) => { delete n[`${pr},${pc}`]; });
-            return n;
-          });
-          setDragTile(existingId);
-          dragTileRef.current = existingId;
-          isDraggingRef.current = true;
-          setDragPos({ x: e.touches[0].clientX, y: e.touches[0].clientY });
-          setDragTargetCell(null);
-          isTouchPainting = false;
-          return;
-        }
-        // Block overwrite is ON: fall through to normal paint mode below
+        // Always pick up for drag (allowSwap only affects mid-stroke overwrite in commitMultipleCells)
+        // Remove the dragged tile AND all its mirrored counterparts from the grid
+        const pickupPositions = getMirrorRef.current ? getMirrorRef.current(r, c) : [[r, c]];
+        // Always preserve the rotation of the picked-up tile
+        dragRotationRef.current = gridRotations[`${r},${c}`] ?? 0;
+        setGridRaw(prev => {
+          const g = prev.map(row => [...row]);
+          pickupPositions.forEach(([pr, pc]) => { g[pr][pc] = null; });
+          return g;
+        });
+        setGridRotations(prev => {
+          const n = { ...prev };
+          pickupPositions.forEach(([pr, pc]) => { delete n[`${pr},${pc}`]; });
+          return n;
+        });
+        setGridOffsets(prev => {
+          const n = { ...prev };
+          pickupPositions.forEach(([pr, pc]) => { delete n[`${pr},${pc}`]; });
+          return n;
+        });
+        setDragTile(existingId);
+        dragTileRef.current = existingId;
+        isDraggingRef.current = true;
+        setDragPos({ x: e.touches[0].clientX, y: e.touches[0].clientY });
+        setDragTargetCell(null);
+        isTouchPainting = false;
+        return;
       }
 
       // ── Normal paint: only on empty cells (or eraser) ────────────
@@ -1928,6 +1928,13 @@ function App() {
             </div>
           </div>
 
+          {/* Tile codename (new property) */}
+          {t.codename && (
+            <div style={{ fontSize: 10, color: C.muted, fontFamily: "monospace", wordBreak: "break-all" }}>
+              <span style={{ color: C.text }}>ID: </span>{t.codename}
+            </div>
+          )}
+
           {/* Tile codename */}
           {(() => {
             const codename = deriveCodename(t.src);
@@ -2023,7 +2030,7 @@ function App() {
           })()}
           {/* Always render on top */}
           {(() => {
-            const topDefault = /\/objectives\//i.test(t.src ?? "");
+            const topDefault = !!(t.src && TILE_SETTINGS.priority.some(p => t.src.includes(p)));
             const isTopDefault = isPriority === topDefault;
             const topColor = isTopDefault ? "#4ade80" : C.text;
             return (
@@ -2040,7 +2047,7 @@ function App() {
           })()}
           {/* Always render on bottom */}
           {(() => {
-            const bottomDefault = !!(t.src && (t.src.includes("/Water/") || t.src.includes("Jumppads/") || t.src.includes("Teleporters/") || t.src.includes("HealPad")));
+            const bottomDefault = !!(t.src && TILE_SETTINGS.bottomRender.some(p => t.src.includes(p)));
             const isBottomDefault = !!bottomTiles[t.id] === bottomDefault;
             const botColor = isBottomDefault ? "#4ade80" : C.text;
             return (
@@ -2365,6 +2372,7 @@ function App() {
     let total = 0;
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i);
+      if (!key || !key.startsWith('oph_')) continue;
       const val = localStorage.getItem(key) || "";
       const bytes = val.length * 2;
       total += bytes;
@@ -2776,6 +2784,14 @@ function App() {
                       <span style={{ fontSize: 10, color: C.accent, fontWeight: 700, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                         Resources{atlasPath ? ' / ' + pathParts.join(' / ') : ' /'}
                       </span>
+                      <span style={{ display: "flex", gap: 2, alignItems: "center" }}>
+                        {[16, 24, 36, 48].map(sz => (
+                          <button key={sz} onClick={() => setAtlasIconSize(sz)}
+                            style={{ ...btn(atlasIconSize === sz, C.accent, C.accentDim), fontSize: 8, padding: "1px 4px", minWidth: 0 }}>
+                            {sz}
+                          </button>
+                        ))}
+                      </span>
                       <button onClick={() => setAtlasOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 16, lineHeight: 1, padding: "0 2px" }}>×</button>
                     </div>
                     {/* Add all in folder button (non-root) */}
@@ -2806,6 +2822,9 @@ function App() {
                       ) : atlasItems.map(item => {
                         const isDir = item.type === 'dir';
                         const isImg = !isDir && imageExts.test(item.name);
+                        if (isRoot && item.type === 'dir' && (item.name === 'Additional' || item.name === 'Global')) return null;
+                        // BGDark/BGLight excluded (BG colour extraction requires CORS-safe fetch)
+                        if (!isDir && (item.name === 'BGDark.png' || item.name === 'BGLight.png')) return null;
                         if (!isDir && !isImg) return null;
                         const relPath = item.path.replace(/^Resources\//, '');
                         const rawSrc = `https://raw.githubusercontent.com/She-Fairy/atlas-horizon/main/Resources/${relPath}`;
@@ -2841,7 +2860,7 @@ function App() {
                             {isDir ? (
                               <span style={{ fontSize: 14, lineHeight: 1, flexShrink: 0 }}>📁</span>
                             ) : (
-                              <div style={{ width: 20, height: 20, flexShrink: 0, background: C.panelDeep, borderRadius: 3, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                              <div style={{ width: atlasIconSize, height: atlasIconSize, flexShrink: 0, background: C.panelDeep, borderRadius: 3, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center" }}>
                                 <img src={rawSrc} alt="" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated" }} />
                               </div>
                             )}
@@ -2869,7 +2888,8 @@ function App() {
                       <span style={{ fontSize: 17, lineHeight: 1, display: "inline-block", transform: `rotate(${rotDeg}deg)`, transition: "transform 0.15s", filter: "drop-shadow(0 1px 3px rgba(0,0,0,0.9))" }}>🐬</span>
                     </div>
                   );
-                  const renderFlatCard = t => {
+                  const renderFlatCard = (t, opts = {}) => {
+                    const { onDelete } = opts;
                     const active    = sel === t.id && !eraser;
                     const failed    = failedTiles.has(t.id);
                     const rotatable = isTileRotatable(t);
@@ -2895,9 +2915,16 @@ function App() {
                         {/* Info button: yellow if starred, white otherwise — top-right corner */}
                         <span onClick={e => { e.stopPropagation(); setInfoTile(t.id); }}
                           style={{ position: "absolute", top: -7, right: -7, width: 18, height: 18, fontSize: 15, cursor: "pointer", color: "rgba(255,255,255,0.85)", lineHeight: "18px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
-                          title={isStarred ? "Starred tile — click for info" : "Tile info"}>{isStarred ? "★" : "ⓘ"}</span>
+                          title={t.codename ?? (isStarred ? "Starred tile — click for info" : "Tile info")}>{isStarred ? "★" : "ⓘ"}</span>
                         <MultLabel t={t} />
                         <TileBadge t={t} />
+                        {onDelete && (
+                          <span onClick={e => { e.stopPropagation(); onDelete(t.id); }}
+                            style={{ position: "absolute", bottom: -7, left: -7, width: 16, height: 16, fontSize: 11,
+                              cursor: "pointer", color: "#f87171", lineHeight: "16px", textAlign: "center", zIndex: 6,
+                              background: "rgba(0,0,0,0.75)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
+                            title="Remove tile">✕</span>
+                        )}
                       </div>
                     );
                   };
@@ -3128,13 +3155,13 @@ function App() {
                             style={{ ...btn(false, C.danger, "rgba(248,113,113,0.14)"), fontSize: 8, padding: "1px 5px" }}>✕ Clear</button>
                         </div>
                         {!panelCollapsed.atlas && (<>
-                          {ungrouped.map(t => renderFlatCard(t))}
+                          {ungrouped.map(t => renderFlatCard(t, { onDelete: id => setAtlasTiles(prev => prev.filter(x => x.id !== id)) }))}
                           {Object.entries(groups).map(([groupName, gTiles]) => (
                             <React.Fragment key={groupName}>
                               <div style={{ width: "100%", flexBasis: "100%", flexShrink: 0, marginTop: 4, marginBottom: 2 }}>
                                 <span style={{ fontSize: 9, color: C.muted, fontWeight: 600 }}>📁 {groupName}</span>
                               </div>
-                              {gTiles.map(t => renderFlatCard(t))}
+                              {gTiles.map(t => renderFlatCard(t, { onDelete: id => setAtlasTiles(prev => prev.filter(x => x.id !== id)) }))}
                             </React.Fragment>
                           ))}
                         </>)}
@@ -3152,14 +3179,14 @@ function App() {
                           setGridOffsets({});
                           setPriorityTiles(() => {
                             const n = {};
-                            flatDefaultTiles.forEach(t => { if (/\/objectives\//i.test(t.src)) n[t.id] = true; });
+                            flatDefaultTiles.forEach(t => { if (t.src && TILE_SETTINGS.priority.some(p => t.src.includes(p))) n[t.id] = true; });
                             return n;
                           });
                           setBottomTiles(() => {
                             const n = {};
                             flatDefaultTiles.forEach(t => {
                               if (!t.src) return;
-                              if (t.src.includes("/Water/") || t.src.includes("Jumppads/") || t.src.includes("Teleporters/") || t.src.includes("HealPad")) n[t.id] = true;
+                              if (TILE_SETTINGS.bottomRender.some(p => t.src.includes(p))) n[t.id] = true;
                             });
                             return n;
                           });
