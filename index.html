@@ -1882,6 +1882,38 @@ function App() {
         return;
       }
 
+      // ── HIGHLIGHT MODE ─────────────────────────────────────────────
+      if (highlightModeRef.current) {
+        const key = `${r},${c}`;
+        if (highlightedCellsRef.current.has(key) && highlightedCellsRef.current.size > 0) {
+          // Tap on a highlighted cell → start dragging the region
+          isHighlightDraggingRef.current = true;
+          highlightDragAnchorCell.current = [r, c];
+          setHighlightDragOffset({ dr: 0, dc: 0 });
+          highlightDragOffsetRef.current = { dr: 0, dc: 0 };
+          setDragPos({ x: e.touches[0].clientX, y: e.touches[0].clientY });
+        } else {
+          // Tap on empty area → start painting highlight selection
+          isTouchPainting = true;
+          selectionStartRef.current = [r, c];
+          selectionEndRef.current   = [r, c];
+          hoveredTilesRef.current   = new Set([key]);
+          const mode = selectionModeRef.current;
+          if (mode === 'single') setPreviewCells([[r, c]]);
+          else if (mode === 'line') setPreviewCells([[r, c]]);
+          else if (mode === 'rect') setRectPreview({ r1: r, c1: c, r2: r, c2: c });
+          else if (mode === 'fill') {
+            const bfs = bfsFillRef.current;
+            if (bfs) {
+              const fillSet = bfs(r, c, gridRef.current, gridWRef.current, gridHRef.current);
+              hoveredTilesRef.current = fillSet;
+              setPreviewCells([...fillSet].map(k => k.split(',').map(Number)));
+            }
+          }
+        }
+        return;
+      }
+
       // ── IMMEDIATE PICK-UP: occupied cell, no eraser → remove tile + mirror counterparts, start drag ──
       // History written once at touchend (drop/discard), not here.
       const existingId = gridRef.current?.[r]?.[c];
@@ -1964,29 +1996,89 @@ function App() {
         return;
       }
 
+      // Highlight region drag
+      if (isHighlightDraggingRef.current) {
+        setDragPos({ x: e.touches[0].clientX, y: e.touches[0].clientY });
+        const hCell = cellAt(e.touches[0]);
+        if (hCell && highlightDragAnchorCell.current) {
+          const [ar, ac] = highlightDragAnchorCell.current;
+          const [cr, cc] = hCell;
+          const newOffset = { dr: cr - ar, dc: cc - ac };
+          setHighlightDragOffset(newOffset);
+          highlightDragOffsetRef.current = newOffset;
+        }
+        return;
+      }
+
       if (!isTouchPainting) return;
       const cell = cellAt(e.touches[0]);
       if (!cell) return;
       const [r, c] = cell;
       selectionEndRef.current = [r, c];
       const mode = selectionModeRef.current;
-      if (mode === 'single') {
-        setPreviewCells([[r, c]]);
-      } else if (mode === 'line') {
-        hoveredTilesRef.current.add(`${r},${c}`);
-        setPreviewCells([...hoveredTilesRef.current].map(k => k.split(',').map(Number)));
-      } else if (mode === 'rect') {
-        const [r1, c1] = selectionStartRef.current;
-        setRectPreview({
-          r1: Math.min(r1, r), c1: Math.min(c1, c),
-          r2: Math.max(r1, r), c2: Math.max(c1, c),
-        });
+      // Highlight paint accumulation uses same logic for both highlight and regular modes
+      if (highlightModeRef.current) {
+        if (mode === 'single') {
+          hoveredTilesRef.current.add(`${r},${c}`);
+          setPreviewCells([...hoveredTilesRef.current].map(k => k.split(',').map(Number)));
+        } else if (mode === 'line') {
+          hoveredTilesRef.current.add(`${r},${c}`);
+          setPreviewCells([...hoveredTilesRef.current].map(k => k.split(',').map(Number)));
+        } else if (mode === 'rect') {
+          const [r1, c1] = selectionStartRef.current;
+          setRectPreview({ r1: Math.min(r1, r), c1: Math.min(c1, c), r2: Math.max(r1, r), c2: Math.max(c1, c) });
+        }
+      } else {
+        if (mode === 'single') {
+          setPreviewCells([[r, c]]);
+        } else if (mode === 'line') {
+          hoveredTilesRef.current.add(`${r},${c}`);
+          setPreviewCells([...hoveredTilesRef.current].map(k => k.split(',').map(Number)));
+        } else if (mode === 'rect') {
+          const [r1, c1] = selectionStartRef.current;
+          setRectPreview({
+            r1: Math.min(r1, r), c1: Math.min(c1, c),
+            r2: Math.max(r1, r), c2: Math.max(c1, c),
+          });
+        }
       }
     };
 
     const onTouchEnd = e => {
       if (e.touches.length < 2) pinchRef.current = null;
       if (e.touches.length === 0) {
+        // ── DROP: highlight region drag commit ────────────────────────────────
+        if (isHighlightDraggingRef.current) {
+          const offset = highlightDragOffsetRef.current ?? { dr: 0, dc: 0 };
+          const { dr, dc } = offset;
+          if (dr !== 0 || dc !== 0) {
+            const oldCells = [...highlightedCellsRef.current];
+            const newCells = oldCells
+              .map(key => {
+                const [or, oc] = key.split(',').map(Number);
+                return { oldKey: key, newR: or + dr, newC: oc + dc };
+              })
+              .filter(({ newR, newC }) => newR >= 0 && newR < gridHRef.current && newC >= 0 && newC < gridWRef.current);
+            setGridStableRef.current(prev => {
+              const g = prev.map(row => [...row]);
+              const tileData = [];
+              oldCells.forEach(key => { const [or, oc] = key.split(',').map(Number); tileData.push({ r: or, c: oc, id: g[or]?.[oc] ?? null }); g[or][oc] = null; });
+              newCells.forEach(({ oldKey, newR, newC }) => { const [or, oc] = oldKey.split(',').map(Number); const entry = tileData.find(d => d.r === or && d.c === oc); if (entry) g[newR][newC] = entry.id; });
+              return g;
+            });
+            setGridRotations(prev => { const n = { ...prev }; const d = {}; oldCells.forEach(k => { d[k] = prev[k]; delete n[k]; }); newCells.forEach(({ oldKey, newR, newC }) => { if (d[oldKey] !== undefined) n[`${newR},${newC}`] = d[oldKey]; }); return n; });
+            setGridFlips(prev => { const n = { ...prev }; const d = {}; oldCells.forEach(k => { d[k] = prev[k]; delete n[k]; }); newCells.forEach(({ oldKey, newR, newC }) => { if (d[oldKey] !== undefined) n[`${newR},${newC}`] = d[oldKey]; }); return n; });
+            setGridOffsets(prev => { const n = { ...prev }; const d = {}; oldCells.forEach(k => { d[k] = prev[k]; delete n[k]; }); newCells.forEach(({ oldKey, newR, newC }) => { if (d[oldKey] !== undefined) n[`${newR},${newC}`] = d[oldKey]; }); return n; });
+            const newHighlight = new Set(newCells.map(({ newR, newC }) => `${newR},${newC}`));
+            setHighlightedCells(newHighlight);
+            highlightedCellsRef.current = newHighlight;
+          }
+          isHighlightDraggingRef.current = false;
+          highlightDragAnchorCell.current = null;
+          setHighlightDragOffset(null);
+          highlightDragOffsetRef.current = null;
+          return;
+        }
         // ── DROP: if dragging, place at target + mirror positions (if empty) ──
         if (isDraggingRef.current) {
           setDragTargetCell(null);
