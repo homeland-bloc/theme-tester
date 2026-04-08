@@ -271,6 +271,7 @@ function App() {
   const [showGuides,    setShowGuides]    = useState(false);
   const [mirrorSettings, setMirrorSettings] = useState({ mirrorSpawns: true, mirrorRotation: true, allowSwap: false });
   const [mirrorSettingsOpen, setMirrorSettingsOpen] = useState(false);
+  const [shortcutPopover,   setShortcutPopover]   = useState(null); // "selectionGroup" | "mirrorGroup" | null
   const [zoom,        setZoom]      = useState(calcFitZoom);
   const [zoomEditing, setZoomEdit]  = useState(false);
   const [zoomInput,   setZoomInput] = useState("");
@@ -503,6 +504,13 @@ function App() {
     if (s.includes("MSLM-mine")) return 2.3;
     // Brawl ball (MSLM-ball) → 1.7x
     if (s.includes("MSLM-ball")) return 1.7;
+    // Sewer objectives
+    if (s.includes("SWR-ball")) return 1.5;
+    if (s.includes("SWR-mine")) return 2.0;
+    // Global Brawl Ball → 2x
+    if (s.includes("Brawl_Ball")) return 2.0;
+    // Goal posts → 7x
+    if (s.includes("goalRed") || s.includes("goalBlue")) return 7.0;
     // Gem Grab & Heist objectives + Mausoleum safe → 2x
     if (s.includes("Gem_Grab") || s.includes("Heist") || s.includes("MSLM-safe")) return 2.0;
     // Bounty star → 1.25x
@@ -521,8 +529,18 @@ function App() {
     const s = t.src;
     // Jumppads, Teleporters, HealPad: +50% H and +50% V so 2× tile sits centred on a 2×2 area
     if (s.includes("Jumppads/") || s.includes("Teleporters/") || s.includes("HealPad")) return { ox: 50, oy: 50 };
-    // Heist safe + Mausoleum safe: vertical offset -50
-    if (s.includes("Heist") || s.includes("MSLM-safe")) return { ox: 0, oy: -50 };
+    // Mausoleum safe: -90 vertical
+    if (s.includes("MSLM-safe")) return { ox: 0, oy: -90 };
+    // Heist objectives: -50 vertical
+    if (s.includes("Heist")) return { ox: 0, oy: -50 };
+    // Goal posts: -50 vertical
+    if (s.includes("goalRed") || s.includes("goalBlue")) return { ox: 0, oy: -50 };
+    // Sewer objectives
+    if (s.includes("SWR-ball")) return { ox: 0, oy: -30 };
+    if (s.includes("SWR-mine")) return { ox: 0, oy: -20 };
+    if (s.includes("SWR-breakable")) return { ox: 0, oy: 20 };
+    // Sewer fence tiles
+    if (s.includes("Sewer/Fence/")) return { ox: 0, oy: -30 };
     // Bounty star: slight upward offset
     if (s.includes("Bounty")) return { ox: 0, oy: -10 };
     // Mausoleum Wall2: -12 vertical
@@ -551,6 +569,8 @@ function App() {
   const isSpawn2 = t => !!(t?.src && t.src.includes("Spawns/2.png")); // blue
   const isRespawn1 = t => !!(t?.src && t.src.includes("Spawns/5.png")); // red respawn
   const isRespawn2 = t => !!(t?.src && t.src.includes("Spawns/6.png")); // blue respawn
+  const isGoalRed  = t => !!(t?.src && t.src.includes("goalRed.png"));
+  const isGoalBlue = t => !!(t?.src && t.src.includes("goalBlue.png"));
   const swapSpawnId = (id) => {
     const t = tiles.find(x => x.id === id);
     if (!t) return id;
@@ -558,6 +578,8 @@ function App() {
     if (isSpawn2(t)) { const r = tiles.find(x => isSpawn1(x)); return r ? r.id : id; }
     if (isRespawn1(t)) { const b = tiles.find(x => isRespawn2(x)); return b ? b.id : id; }
     if (isRespawn2(t)) { const r = tiles.find(x => isRespawn1(x)); return r ? r.id : id; }
+    if (isGoalRed(t))  { const b = tiles.find(x => isGoalBlue(x)); return b ? b.id : id; }
+    if (isGoalBlue(t)) { const r = tiles.find(x => isGoalRed(x)); return r ? r.id : id; }
     return id;
   };
 
@@ -644,7 +666,7 @@ function App() {
     if (isPrio)  parts.push("🚨");
     if (isBottom) parts.push("⚓");
     if (hasOff)  parts.push("📐");
-    if (hasMirrorOff) parts.push("🌊");
+    if (hasMirrorOff) parts.push("🌪️");
     return (
       <span style={{ position: "absolute", bottom: 2, left: 3, fontSize: 8, fontWeight: 700, color: C.accentBright, background: "rgba(0,0,0,0.65)", borderRadius: 3, padding: "1px 3px", lineHeight: 1.3, pointerEvents: "none" }}>
         {parts.join("")}
@@ -769,7 +791,7 @@ function App() {
   const switchTileset = (newTilesetName) => {
     if (!manifest || newTilesetName === activeTileset) return;
     setActiveTileset(newTilesetName);
-    const tsBg = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4C5647", bg2: "#586352" } }[newTilesetName];
+    const tsBg = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" } }[newTilesetName];
     if (tsBg) { setBg1(tsBg.bg1); setHex1(tsBg.bg1); setBg2(tsBg.bg2); setHex2(tsBg.bg2); save(SK.colors, tsBg); }
   };
 
@@ -779,7 +801,11 @@ function App() {
       const cur = prev ?? [activeTileset ?? name];
       const s = new Set(cur);
       if (s.has(name)) { if (s.size <= 1) return cur; s.delete(name); }
-      else { s.add(name); setActiveTileset(name); }
+      else {
+        s.add(name); setActiveTileset(name);
+        const tsBg = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" } }[name];
+        if (tsBg) { setBg1(tsBg.bg1); setHex1(tsBg.bg1); setBg2(tsBg.bg2); setHex2(tsBg.bg2); save(SK.colors, tsBg); }
+      }
       return [...s];
     });
   };
@@ -876,7 +902,7 @@ function App() {
     if (snap.w !== undefined) { setGridW(snap.w); setGridH(snap.h); }
     if (snap.tileset != null && snap.tileset !== activeTilesetRef.current) {
       setActiveTileset(snap.tileset);
-      const tsBg = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4C5647", bg2: "#586352" } }[snap.tileset];
+      const tsBg = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" } }[snap.tileset];
       if (tsBg) { setBg1(tsBg.bg1); setHex1(tsBg.bg1); setBg2(tsBg.bg2); setHex2(tsBg.bg2); save(SK.colors, tsBg); }
     }
   };
@@ -932,6 +958,7 @@ function App() {
 
   const deleteTile = id => {
     setUserTiles(p => p.filter(t => t.id !== id));
+    setAtlasTiles(p => p.filter(t => t.id !== id));
     if (sel === id) setSel(null);
     setInfoTile(null);
   };
@@ -1076,8 +1103,8 @@ function App() {
   // fV = flip left-right (horizontal axis flip), fH = flip top-bottom, fD = 180° rotation
   const applyRotMirror = (rot, fV, fH, fD) => {
     let r = rot;
-    if (fV) { if (r === 0) r = 2; else if (r === 2) r = 0; }       // ↑↓ swap (vertical mirror)
-    if (fH) { if (r === 1) r = 3; else if (r === 3) r = 1; }       // ←→ swap (horizontal mirror)
+    if (fV) { if (r === 1) r = 3; else if (r === 3) r = 1; }       // ←→ swap (left↔right mirror)
+    if (fH) { if (r === 0) r = 2; else if (r === 2) r = 0; }       // ↑↓ swap (top↔bottom mirror)
     if (fD) { r = (r + 2) % 4; }                                    // 180°
     return r;
   };
@@ -1314,6 +1341,7 @@ function App() {
           setSel(pickedId);
           setEraser(false);
           setHandMode(false);
+          setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set();
         }
         setEyedropperMode(false);
         return;
@@ -1738,6 +1766,7 @@ function App() {
           setSel(pickedId);
           setEraser(false);
           setHandMode(false);
+          setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set();
         }
         setEyedropperMode(false);
         return;
@@ -1925,8 +1954,9 @@ function App() {
           setHighlightedCells(new Set());
           highlightedCellsRef.current = new Set();
         }
-        if (e.key === "e" || e.key === "E") { setEraser(true); setSel(null); setHandMode(false); setEyedropperMode(false); }
-        if (e.key === "w" || e.key === "W") { setEyedropperMode(true); setEraser(false); setHandMode(false); }
+        if (e.key === "e" || e.key === "E") { setEraser(true); setSel(null); setHandMode(false); setEyedropperMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }
+        if (e.key === "w" || e.key === "W") { setEyedropperMode(true); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }
+        if (e.key === "r" || e.key === "R") { const id = selRef.current; if (id != null) setCardRotations(prev => ({ ...prev, [id]: ((prev[id] ?? 0) + 90) % 360 })); }
         if (e.key === "z" || e.key === "Z") { undo(); }
         if (e.key === "x" || e.key === "X") { redo(); }
       }
@@ -2237,7 +2267,7 @@ function App() {
                 <input type="checkbox" checked={isMirrorOffset(t)}
                   onChange={ev => setMirrorOffsetTiles(prev => ({ ...prev, [t.id]: ev.target.checked }))}
                   style={{ width: 14, height: 14, accentColor: isMirrorOffDefault ? "#4ade80" : C.accent, cursor: "pointer" }} />
-                <span style={{ fontSize: 11, color: moColor }}>Allow mirror offset 🌊</span>
+                <span style={{ fontSize: 11, color: moColor }}>Allow mirror offset 🌪️</span>
               </label>
             );
           })()}
@@ -2544,6 +2574,10 @@ function App() {
       overwrite: { label: "Block Overwrite", icon: "🧱", color: C.accent, desc: "When enabled, painting over an occupied cell replaces it with the currently selected tile instead of picking it up for dragging.", iconColor: null },
       otg: { label: "OTG Detection", icon: "🧩", color: C.danger, desc: "Detects One Tile Gap cells — cells that create unreachable single-tile passages. Red overlay highlights them. Map edges count as walls.", iconColor: null },
       highlight: { label: "Highlight", icon: "🪄", color: "#a78bfa", desc: "Select an area to highlight and move it as a group. Draw with any selection mode to highlight cells, then drag the highlighted region to move it.", iconColor: "#a78bfa" },
+      selectionMode: { label: "Selection Mode", icon: "🤏", color: C.accent, desc: "Controls how tiles are placed on the grid. Single: freehand paint. Line: draw a straight line between two points. Rectangle: fill a rectangular area. Fill: flood-fill all connected empty cells.", iconColor: null },
+      mirroring: { label: "Mirroring", icon: "🪞", color: C.pale, desc: "Mirrors every paint action across one or more axes. Horizontal mirrors left↔right. Vertical mirrors top↔bottom. Diagonal applies a 180° point reflection. All three can be combined.", iconColor: null },
+      convert: { label: "Convert", icon: "🔄", color: C.soft, desc: "Remaps tiles on the board from one tileset to another by matching tile names. Tiles with no equivalent in the target tileset are left as-is.", iconColor: null },
+      hotkeys: { label: "Hotkeys", icon: "⌨️", color: C.text, desc: "Keyboard shortcuts: E = Erase, W = Eyedropper, R = Rotate selected tile, Z = Undo, X = Redo, Ctrl+Z = Undo, Ctrl+Y = Redo, Escape = Clear highlight.", iconColor: null },
     };
     const def = toolDefs[infoTool];
     if (!def) return null;
@@ -2627,8 +2661,6 @@ function App() {
     const tilesets = manifest?.tilesets ?? [];
     const [fromTs, setFromTs] = React.useState(activeTileset ?? tilesets[0]?.name ?? "");
     const [toTs,   setToTs]   = React.useState(tilesets.find(t => t.name !== fromTs)?.name ?? "");
-    const [autoConvert, setAutoConvert] = React.useState(() => load("oph_auto_convert", false));
-    React.useEffect(() => { save("oph_auto_convert", autoConvert); }, [autoConvert]);
     // Build id maps for all tilesets (same logic as the old computeAllTileIds)
     const buildIdMaps = () => {
       let id = TILESET_ID_START;
@@ -2671,12 +2703,6 @@ function App() {
             <button onClick={() => setConvertOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18 }}>×</button>
           </div>
           <p style={{ fontSize: 11, color: C.muted, lineHeight: 1.6 }}>Remaps tiles on the board from one tileset to another by matching tile names. Tiles with no equivalent in the target tileset are left unchanged.</p>
-          <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", userSelect: "none", fontSize: 11, color: C.text }}>
-            <input type="checkbox" checked={autoConvert} onChange={e => setAutoConvert(e.target.checked)}
-              style={{ accentColor: C.accent, cursor: "pointer" }} />
-            Auto-convert on tileset switch
-            <span style={{ fontSize: 10, color: C.muted }}>(limits to one tileset at a time)</span>
-          </label>
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
             <div style={{ display: "flex", flexDirection: "column", gap: 3, flex: 1 }}>
               <span style={{ fontSize: 10, color: C.muted }}>From</span>
@@ -2732,14 +2758,11 @@ function App() {
     if (!hotkeysOpen) return null;
     const keys = [
       ["E", "Erase tool"],
-      ["H", "Hand / pan tool"],
       ["W", "Pick (eyedropper) tool"],
+      ["R", "Rotate selected tile"],
       ["Z / Ctrl+Z", "Undo"],
       ["X / Ctrl+Y", "Redo"],
-      ["S", "Single selection mode"],
-      ["L", "Line selection mode"],
-      ["R", "Rectangle selection mode"],
-      ["F", "Fill selection mode"],
+      ["Escape", "Clear highlight"],
       ["Arrow keys", "Pan the map"],
       ["+/-", "Zoom in/out"],
     ];
@@ -2859,7 +2882,7 @@ function App() {
                         if (rotatable && sel === t.id && !eraser) {
                           setCardRotations(prev => ({ ...prev, [t.id]: (prev[t.id] ?? 0) + 90 }));
                         }
-                        setSel(t.id); setEraser(false); setHandMode(false);
+                        setSel(t.id); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set();
                       }}
                       style={{ width: cardSz, height: cardSz, borderRadius: 8, cursor: failed ? "not-allowed" : "pointer",
                         border: `2px solid ${failed ? C.danger : active ? C.accentBright : C.border}`,
@@ -3116,7 +3139,7 @@ function App() {
                               <span style={{ fontSize: 14, lineHeight: 1, flexShrink: 0 }}>📁</span>
                             ) : (
                               <div style={{ width: atlasIconSize, height: atlasIconSize, flexShrink: 0, background: C.panelDeep, borderRadius: 3, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                                <img src={rawSrc} alt="" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated" }} />
+                                <img src={rawSrc} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated" }} />
                               </div>
                             )}
                             <span style={{ fontSize: 10, color: C.text, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.name}</span>
@@ -3158,7 +3181,7 @@ function App() {
                             // Already selected rotatable tile: rotate 90° clockwise
                             setCardRotations(prev => ({ ...prev, [t.id]: (prev[t.id] ?? 0) + 90 }));
                           }
-                          setSel(t.id); setEraser(false); setHandMode(false); setEyedropperMode(false);
+                          setSel(t.id); setEraser(false); setHandMode(false); setEyedropperMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set();
                         }}
                         style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: failed ? "not-allowed" : "pointer", border: `2px solid ${failed ? C.danger : active ? C.accentBright : C.border}`, background: failed ? "rgba(248,113,113,0.08)" : active ? C.accentDim : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", opacity: failed ? 0.55 : 1, position: "relative", overflow: "visible" }}>
                         {/* Inner clipped area for image */}
@@ -3236,7 +3259,7 @@ function App() {
                   {(() => {
                     const isStarredErase = starredTiles.includes("erase");
                     return (
-                      <div onClick={() => { setEraser(true); setSel(null); setHandMode(false); setEyedropperMode(false); }}
+                      <div onClick={() => { setEraser(true); setSel(null); setHandMode(false); setEyedropperMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${eraser ? C.danger : C.border}`, background: eraser ? "rgba(248,113,113,0.14)" : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
                         <div style={{ borderRadius: 6, overflow: "hidden" }}>
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: eraser ? "rgba(248,113,113,0.32)" : "rgba(248,113,113,0.14)", padding: "2px 4px" }}>
@@ -3256,7 +3279,7 @@ function App() {
                   {(() => {
                     const isStarredHand = starredTiles.includes("hand");
                     return (
-                      <div onClick={() => { setHandMode(h => !h); setEraser(false); setSel(null); setEyedropperMode(false); }}
+                      <div onClick={() => { setHandMode(h => !h); setEraser(false); setSel(null); setEyedropperMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${handMode ? "#fbbf24" : C.border}`, background: handMode ? "rgba(251,191,36,0.14)" : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
                         <div style={{ borderRadius: 6, overflow: "hidden" }}>
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: handMode ? "rgba(251,191,36,0.28)" : "rgba(251,191,36,0.08)", padding: "2px 4px" }}>
@@ -3276,7 +3299,7 @@ function App() {
                   {(() => {
                     const isStarredEyedropper = starredTiles.includes("eyedropper");
                     return (
-                      <div onClick={() => { setEyedropperMode(prev => !prev); setEraser(false); setHandMode(false); if (!eyedropperMode) setSel(null); }}
+                      <div onClick={() => { setEyedropperMode(prev => !prev); setEraser(false); setHandMode(false); if (!eyedropperMode) setSel(null); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${eyedropperMode ? "#22d3ee" : C.border}`, background: eyedropperMode ? "rgba(34,211,238,0.15)" : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
                         <div style={{ borderRadius: 6, overflow: "hidden" }}>
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: eyedropperMode ? "rgba(34,211,238,0.22)" : "rgba(34,211,238,0.08)", padding: "2px 4px" }}>
@@ -3297,7 +3320,7 @@ function App() {
                     const isStarredSpace = starredTiles.includes(SPACE_TILE_ID);
                     const spaceActive = sel === SPACE_TILE_ID && !eraser;
                     return (
-                      <div onClick={() => { setSel(SPACE_TILE_ID); setEraser(false); setHandMode(false); setEyedropperMode(false); }}
+                      <div onClick={() => { setSel(SPACE_TILE_ID); setEraser(false); setHandMode(false); setEyedropperMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer",
                           border: `2px solid ${spaceActive ? "#60a5fa" : C.border}`,
                           background: spaceActive ? "rgba(96,165,250,0.15)" : "rgba(255,255,255,0.03)",
@@ -3527,7 +3550,7 @@ function App() {
                       <div key={rid}
                         onClick={() => {
                           if (isRot && sel === rid && !eraser) setCardRotations(prev => ({ ...prev, [rid]: (prev[rid] ?? 0) + 90 }));
-                          setSel(rid); setEraser(false); setHandMode(false);
+                          setSel(rid); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set();
                         }}
                         style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", overflow: "hidden", position: "relative",
                           border: `1px solid ${active ? C.accentBright : "rgba(255,255,255,0.25)"}`, background: active ? C.accentDim : C.panelDeep, opacity: 0.75 }}
@@ -3545,7 +3568,7 @@ function App() {
                   {starredTiles.map(sid => {
                   // Erase and Hand shortcuts in the tiles shortcut bar (collapsed strip)
                   if (sid === "erase") return (
-                    <div key="erase" onClick={() => { setEraser(true); setSel(null); setHandMode(false); }}
+                    <div key="erase" onClick={() => { setEraser(true); setSel(null); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
                       style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
                         border: `1px solid ${eraser ? C.danger : C.border}`, background: eraser ? "rgba(248,113,113,0.22)" : "rgba(255,255,255,0.04)" }}
                       title="Erase">
@@ -3553,7 +3576,7 @@ function App() {
                     </div>
                   );
                   if (sid === "hand") return (
-                    <div key="hand" onClick={() => { setHandMode(h => !h); setEraser(false); setSel(null); }}
+                    <div key="hand" onClick={() => { setHandMode(h => !h); setEraser(false); setSel(null); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
                       style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
                         border: `1px solid ${handMode ? "#fbbf24" : C.border}`, background: handMode ? "rgba(251,191,36,0.14)" : "rgba(255,255,255,0.04)" }}
                       title="Hand">
@@ -3562,7 +3585,7 @@ function App() {
                   );
                   // Space tile
                   if (sid === SPACE_TILE_ID) return (
-                    <div key="space" onClick={() => { setSel(SPACE_TILE_ID); setEraser(false); setHandMode(false); }}
+                    <div key="space" onClick={() => { setSel(SPACE_TILE_ID); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
                       style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
                         border: `1px solid ${sel === SPACE_TILE_ID && !eraser ? C.accentBright : C.border}`, background: sel === SPACE_TILE_ID && !eraser ? C.accentDim : "rgba(255,255,255,0.04)" }}
                       title="Space">
@@ -3630,7 +3653,7 @@ function App() {
                         if (isRot && sel === sid && !eraser) {
                           setCardRotations(prev => ({ ...prev, [sid]: (prev[sid] ?? 0) + 90 }));
                         }
-                        setSel(sid); setEraser(false); setHandMode(false);
+                        setSel(sid); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set();
                       }}
                       style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", overflow: "hidden", position: "relative",
                         border: `1px solid ${active ? C.accentBright : C.border}`, background: active ? C.accentDim : C.panelDeep }}
@@ -3894,10 +3917,10 @@ function App() {
                 single: "S", line: "L", rect: "R", fill: "F",
                 mirrorV: "H", mirrorH: "V", mirrorD: "D",
                 guides: "🧭", offsetCenters: "🎯", replace: "♻️", overwrite: "🧱",
-                otg: "⚠",
+                otg: "🧩",
               };
               const toolActionMap = {
-                space: () => { setSel(SPACE_TILE_ID); setEraser(false); setHandMode(false); },
+                space: () => { setSel(SPACE_TILE_ID); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); },
                 single: () => setSelectionMode('single'),
                 line:   () => setSelectionMode('line'),
                 rect:   () => setSelectionMode('rect'),
@@ -3932,18 +3955,49 @@ function App() {
                 otg: C.danger,
               };
               // Only show tool-key starred items (not numeric tile IDs)
-              // Include selectionGroup and mirrorGroup as special group entries
-              const starredTools = starredTiles.filter(s => typeof s === "string" && (toolIconMap[s] || s === "selectionGroup" || s === "mirrorGroup"));
+              // Individual selection/mirror tools collapse into their group cards
+              const _selTools = new Set(['single', 'line', 'rect', 'fill']);
+              const _mirTools = new Set(['mirrorV', 'mirrorH', 'mirrorD']);
+              const _seen = new Set();
+              const starredTools = starredTiles
+                .filter(s => typeof s === "string" && (toolIconMap[s] || s === "selectionGroup" || s === "mirrorGroup"))
+                .map(s => _selTools.has(s) ? 'selectionGroup' : _mirTools.has(s) ? 'mirrorGroup' : s)
+                .filter(s => { if (_seen.has(s)) return false; _seen.add(s); return true; });
               if (!starredTools.length) return null;
               return (
-                <div style={{ display: "flex", flexDirection: "column", gap: 3, padding: "4px 2px", overflowY: "auto", scrollbarWidth: "none", msOverflowStyle: "none", width: "100%" }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 3, padding: "4px 2px", overflowY: "auto", scrollbarWidth: "none", msOverflowStyle: "none", width: "100%", position: "relative" }}>
+                  {/* Inline popover for selection/mirror group cards */}
+                  {shortcutPopover && (
+                    <div style={{ position: "fixed", zIndex: 300, background: C.panelDeep, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 10px", boxShadow: "0 4px 18px rgba(0,0,0,0.5)", display: "flex", flexDirection: "column", gap: 5, minWidth: 120, right: 44, top: "50%" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 2 }}>
+                        <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 0.8 }}>{shortcutPopover === "selectionGroup" ? "Selection" : "Mirroring"}</span>
+                        <span onClick={() => setShortcutPopover(null)} style={{ cursor: "pointer", color: C.muted, fontSize: 14, lineHeight: 1, padding: "0 2px" }}>×</span>
+                      </div>
+                      {shortcutPopover === "selectionGroup" && (() => {
+                        const SC = uiTheme === 'warm'
+                          ? [["single","Single","#f472b6","rgba(244,114,182,0.18)"],["line","Line","#fb7185","rgba(251,113,133,0.16)"],["rect","Rectangle",C.accent,C.accentDim],["fill","Fill","#f59e0b","rgba(245,158,11,0.18)"]]
+                          : [["single","Single","#c084fc","rgba(192,132,252,0.18)"],["line","Line","#818cf8","rgba(129,140,248,0.18)"],["rect","Rectangle","#60a5fa","rgba(96,165,250,0.18)"],["fill","Fill",C.accent,C.accentDim]];
+                        return (<>{SC.map(([m,label,col,dim]) => (
+                          <button key={m} style={{ ...btn(selectionMode===m, col, dim), fontSize: 10, padding: "3px 8px", textAlign: "left" }}
+                            onClick={() => setSelectionMode(m)}>{label}</button>
+                        ))}</>);
+                      })()}
+                      {shortcutPopover === "mirrorGroup" && (
+                        <>
+                          <button style={{ ...btn(mirrorV, C.pale, C.paleDim), fontSize: 10, padding: "3px 8px", textAlign: "left" }} onClick={() => setMirrorV(v => !v)}>Horizontal</button>
+                          <button style={{ ...btn(mirrorH, C.soft, C.softDim), fontSize: 10, padding: "3px 8px", textAlign: "left" }} onClick={() => setMirrorH(v => !v)}>Vertical</button>
+                          <button style={{ ...btn(mirrorD, C.accentBright, C.accentDim), fontSize: 10, padding: "3px 8px", textAlign: "left" }} onClick={() => setMirrorD(v => !v)}>Diagonal</button>
+                        </>
+                      )}
+                    </div>
+                  )}
                   {starredTools.map(tid => {
                     // selectionGroup group card
                     if (tid === "selectionGroup") {
                       const anySelActive = selectionMode !== 'single';
                       return (
                         <div key="selectionGroup"
-                          onClick={() => setSelectionMode(m => m === 'single' ? 'line' : 'single')}
+                          onClick={() => setShortcutPopover(p => p === "selectionGroup" ? null : "selectionGroup")}
                           style={{ width: 28, height: 28, margin: "0 auto", borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
                             border: `1px solid ${anySelActive ? C.accent : C.border}`, background: anySelActive ? `${C.accent}22` : "rgba(255,255,255,0.04)" }}
                           title="Selection modes">
@@ -3956,7 +4010,7 @@ function App() {
                       const anyMirror = mirrorV || mirrorH || mirrorD;
                       return (
                         <div key="mirrorGroup"
-                          onClick={() => { if (anyMirror) { setMirrorV(false); setMirrorH(false); setMirrorD(false); } else setMirrorV(true); }}
+                          onClick={() => setShortcutPopover(p => p === "mirrorGroup" ? null : "mirrorGroup")}
                           style={{ width: 28, height: 28, margin: "0 auto", borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
                             border: `1px solid ${anyMirror ? C.pale : C.border}`, background: anyMirror ? `${C.pale}22` : "rgba(255,255,255,0.04)" }}
                           title="Mirroring">
@@ -4022,12 +4076,19 @@ function App() {
               />
               <div style={{ overflowY: "auto", flex: 1, padding: "8px 12px 10px", display: "flex", flexDirection: "column", gap: 7 }}>
                 <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1, display: "flex", alignItems: "center", gap: 4 }}>Selection Mode <span onClick={() => setInfoTool("selectionMode")} style={{ fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.65)", lineHeight: 1 }}>ⓘ</span></span>
-                <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}>
-                  <button style={btn(selectionMode === 'single', C.accent, C.accentDim)} onClick={() => setSelectionMode('single')} title="Freehand">Single</button>
-                  <button style={btn(selectionMode === 'line', C.soft, C.softDim)} onClick={() => setSelectionMode('line')} title="Line draw">Line</button>
-                  <button style={btn(selectionMode === 'rect', C.pale, C.paleDim)} onClick={() => setSelectionMode('rect')} title="Rectangle fill">Rectangle</button>
-                  <button style={btn(selectionMode === 'fill', "#f59e0b", "rgba(245,158,11,0.18)")} onClick={() => setSelectionMode('fill')} title="Flood fill selection">Fill</button>
-                </div>
+                {(() => {
+                  const SC = uiTheme === 'warm'
+                    ? { single: ['#f472b6','rgba(244,114,182,0.18)'], line: ['#fb7185','rgba(251,113,133,0.16)'], rect: [C.accent,C.accentDim], fill: ['#f59e0b','rgba(245,158,11,0.18)'] }
+                    : { single: ['#c084fc','rgba(192,132,252,0.18)'], line: ['#818cf8','rgba(129,140,248,0.18)'], rect: ['#60a5fa','rgba(96,165,250,0.18)'], fill: [C.accent,C.accentDim] };
+                  return (
+                    <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}>
+                      <button style={btn(selectionMode === 'single', SC.single[0], SC.single[1])} onClick={() => setSelectionMode('single')} title="Freehand">Single</button>
+                      <button style={btn(selectionMode === 'line', SC.line[0], SC.line[1])} onClick={() => setSelectionMode('line')} title="Line draw">Line</button>
+                      <button style={btn(selectionMode === 'rect', SC.rect[0], SC.rect[1])} onClick={() => setSelectionMode('rect')} title="Rectangle fill">Rectangle</button>
+                      <button style={btn(selectionMode === 'fill', SC.fill[0], SC.fill[1])} onClick={() => setSelectionMode('fill')} title="Flood fill selection">Fill</button>
+                    </div>
+                  );
+                })()}
                 <div style={{ height: 1, background: C.border }} />
                 <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1, display: "flex", alignItems: "center", gap: 4 }}>Mirroring <span onClick={() => setInfoTool("mirroring")} style={{ fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.65)", lineHeight: 1 }}>ⓘ</span></span>
                 <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}>
@@ -4041,7 +4102,10 @@ function App() {
                     <button style={btn(showGuides, C.accent, C.accentDim)} onClick={() => setShowGuides(v => !v)} title="Toggle mirror guide lines">Guides</button>
                     <span onClick={() => setInfoTool("guides")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
                   </div>
-                  <button style={{ ...btn(false), fontSize: 10, padding: "3px 9px" }} onClick={() => setHotkeysOpen(true)}>Hotkeys</button>
+                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
+                    <button style={btn(false)} onClick={() => setHotkeysOpen(true)}>Hotkeys</button>
+                    <span onClick={() => setInfoTool("hotkeys")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
+                  </div>
                   <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
                     <button style={btn(showOffsetCenters, C.soft, C.softDim)} onClick={() => setShowOffsetCenters(v => !v)} title="Show a marker at the placement cell of tiles with non-zero offset">Offset Centers</button>
                     <span onClick={() => setInfoTool("offsetCenters")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
@@ -4050,7 +4114,7 @@ function App() {
                     <button style={btn(showOTG, C.danger, "rgba(239,68,68,0.18)")}
                       onClick={() => setShowOTG(v => !v)}
                       title="OTG detection">
-                      {showOTG ? "🧩 On" : "🧩 Off"}
+                      {showOTG ? "🧩 OTG Check" : "OTG Check"}
                     </button>
                     <span onClick={() => setInfoTool("otg")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
                   </div>
@@ -4061,7 +4125,10 @@ function App() {
                     <button style={btn(false, C.soft, C.softDim)} onClick={() => { setReplaceOpen(true); setReplaceStep(1); setReplaceA(null); setReplaceB(null); setReplaceMsg(""); }}>Replace</button>
                     <span onClick={() => setInfoTool("replace")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
                   </div>
-                  <button style={btn(false, C.soft, C.softDim)} onClick={() => setConvertOpen(true)} title="Remap tileset tiles on the board">Convert</button>
+                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
+                    <button style={btn(false, C.soft, C.softDim)} onClick={() => setConvertOpen(true)} title="Remap tileset tiles on the board">Convert</button>
+                    <span onClick={() => setInfoTool("convert")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
+                  </div>
                   <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
                     <button style={btn(mirrorSettings.allowSwap, C.accent, C.accentDim)} onClick={() => setMirrorSettings(p => ({ ...p, allowSwap: !p.allowSwap }))} title="When enabled, painting over occupied cells replaces them instead of picking them up">Block Overwrite</button>
                     <span onClick={() => setInfoTool("overwrite")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
@@ -4158,14 +4225,19 @@ function App() {
               onClick={() => { const w = parseInt(sizeWInput, 10), h = parseInt(sizeHInput, 10); if (w > 0 && h > 0) setPendingSize({ w, h }); }}>
               Apply
             </button>
-            <button style={{ ...btn(false), fontSize: 10, padding: "3px 9px" }}
-              onClick={() => { setSizeWInput("21"); setSizeHInput("33"); setPendingSize({ w: 21, h: 33 }); }}>
-              3v3
-            </button>
-            <button style={{ ...btn(false), fontSize: 10, padding: "3px 9px" }}
-              onClick={() => { setSizeWInput("60"); setSizeHInput("60"); setPendingSize({ w: 60, h: 60 }); }}>
-              Showdown
-            </button>
+            <select
+              defaultValue=""
+              onChange={e => {
+                const v = e.target.value;
+                if (v === "3v3") { setSizeWInput("21"); setSizeHInput("33"); setPendingSize({ w: 21, h: 33 }); }
+                else if (v === "showdown") { setSizeWInput("60"); setSizeHInput("60"); setPendingSize({ w: 60, h: 60 }); }
+                e.target.value = "";
+              }}
+              style={{ background: C.panel, color: C.text, border: `1px solid ${C.border}`, borderRadius: 5, fontSize: 10, padding: "3px 5px", cursor: "pointer", outline: "none" }}>
+              <option value="" disabled>Preset…</option>
+              <option value="3v3">3v3 (21×33)</option>
+              <option value="showdown">Showdown (60×60)</option>
+            </select>
           </div>
 
           {/* Row 5: Theme switcher */}
