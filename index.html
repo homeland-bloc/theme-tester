@@ -320,6 +320,7 @@ function App() {
   // Map size input fields (local string state for editing)
   const [sizeWInput, setSizeWInput] = useState(String(load(SK.gridW, GRID_W)));
   const [sizeHInput, setSizeHInput] = useState(String(load(SK.gridH, GRID_H)));
+  const [customSizeOpen, setCustomSizeOpen] = useState(false);
 
   // Replace A→B
   const [replaceOpen, setReplaceOpen] = useState(false);
@@ -2946,6 +2947,37 @@ function App() {
       <ConvertModal />
       <HotkeysModal />
 
+      {/* Custom map size modal */}
+      {customSizeOpen && (
+        <div className="modal-backdrop" onClick={() => setCustomSizeOpen(false)}>
+          <div className="modal-box" style={{ maxWidth: 260 }} onClick={e => e.stopPropagation()}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Custom Map Size</span>
+              <button onClick={() => setCustomSizeOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18 }}>×</button>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
+              <input type="text" value={sizeWInput}
+                onChange={e => setSizeWInput(e.target.value.replace(/\D/g, ""))}
+                onBlur={() => { const w = parseInt(sizeWInput, 10); if (isNaN(w) || w < 1) setSizeWInput(String(gridW)); else setSizeWInput(String(Math.max(1, Math.min(99, w)))); }}
+                style={{ width: 48, textAlign: "center", background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 13, padding: "4px 6px", outline: "none" }} />
+              <span style={{ fontSize: 13, color: C.muted }}>×</span>
+              <input type="text" value={sizeHInput}
+                onChange={e => setSizeHInput(e.target.value.replace(/\D/g, ""))}
+                onBlur={() => { const h = parseInt(sizeHInput, 10); if (isNaN(h) || h < 1) setSizeHInput(String(gridH)); else setSizeHInput(String(Math.max(1, Math.min(99, h)))); }}
+                style={{ width: 48, textAlign: "center", background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 13, padding: "4px 6px", outline: "none" }} />
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button style={{ ...btn(false), flex: 1 }} onClick={() => setCustomSizeOpen(false)}>Cancel</button>
+              <button style={{ ...btn(true, C.accent, C.accentDim), flex: 1 }}
+                onClick={() => {
+                  const w = parseInt(sizeWInput, 10), h = parseInt(sizeHInput, 10);
+                  if (w > 0 && h > 0) { setCustomSizeOpen(false); setPendingSize({ w, h }); }
+                }}>Apply</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Map size confirmation dialog */}
       {pendingSize && (() => {
         const { w, h } = pendingSize;
@@ -4392,16 +4424,17 @@ function App() {
           <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 14px" }}>
             <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1, userSelect: "none" }}>Map size</span>
             <select
-              value={gridW === 21 && gridH === 33 ? "3v3" : gridW === 60 && gridH === 60 ? "showdown" : ""}
+              value={gridW === 21 && gridH === 33 ? "3v3" : gridW === 60 && gridH === 60 ? "showdown" : "custom"}
               onChange={e => {
                 const v = e.target.value;
                 if (v === "3v3") { setSizeWInput("21"); setSizeHInput("33"); setPendingSize({ w: 21, h: 33 }); }
                 else if (v === "showdown") { setSizeWInput("60"); setSizeHInput("60"); setPendingSize({ w: 60, h: 60 }); }
+                else if (v === "custom") { setSizeWInput(String(gridW)); setSizeHInput(String(gridH)); setCustomSizeOpen(true); }
               }}
               style={{ background: C.panel, color: C.text, border: `1px solid ${C.border}`, borderRadius: 5, fontSize: 10, padding: "3px 5px", cursor: "pointer", outline: "none" }}>
-              <option value="" disabled>{gridW}×{gridH}</option>
               <option value="3v3">3v3 (21×33)</option>
               <option value="showdown">Showdown (60×60)</option>
+              <option value="custom">{gridW === 21 && gridH === 33 || gridW === 60 && gridH === 60 ? "Custom Map Size…" : `Custom (${gridW}×${gridH})`}</option>
             </select>
           </div>
 
