@@ -41,7 +41,7 @@
         "fence": ["SWR-fence.png", "SWR-fence-VALVE.png", "SWR-fenceH.png", "SWR-fenceH-L.png", "SWR-fenceH-R.png", "SWR-fenceH-VALVE.png", "SWR-fenceV.png", "SWR-fenceV-T.png", "SWR-fenceV-B.png", "SWR-fenceV-B-VALVE.png", "SWR-fenceV-TURN-L.png", "SWR-fenceV-TURN-R.png", "SWR-fenceV-TURN2-L.png", "SWR-fenceV-TURN2-R.png"],
         "rope": ["SWR-post.png", "SWR-post-H.png", "SWR-post-H-L.png", "SWR-post-H-R.png", "SWR-post-V.png", "SWR-post-V-H.png", "SWR-post-V-L.png", "SWR-post-V-R.png"],
         "water": ["SWR-waterBEND.png", "SWR-waterCORNER.png", "SWR-waterLINE.png", "SWR-water.png", "SWR-waterDOUBLEBEND.png", "SWR-waterDOUBLELINE.png", "SWR-waterFULL.png"],
-        "objectives": ["SWR-ball.png", "SWR-mine.png"]
+        "objectives": ["SWR-ball.png", "SWR-safe.png", "SWR-mine.png"]
       },
       "folderPaths": {
         "fence": "Sewer/Fence/",
