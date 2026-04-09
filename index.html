@@ -277,6 +277,8 @@ function App() {
   const [showGuides,    setShowGuides]    = useState(false);
   const [mirrorSettings, setMirrorSettings] = useState({ mirrorSpawns: true, mirrorRotation: true, allowSwap: false });
   const [mirrorSettingsOpen, setMirrorSettingsOpen] = useState(false);
+  const [tilesSettingsOpen,  setTilesSettingsOpen]  = useState(false);
+  const [tileCardLightBg,    setTileCardLightBg]    = useState(() => load("oph_tile_card_light_bg", false));
   const [shortcutPopover,   setShortcutPopover]   = useState(null); // "selectionGroup" | "mirrorGroup" | null
   const [zoom,        setZoom]      = useState(calcFitZoom);
   const [zoomEditing, setZoomEdit]  = useState(false);
@@ -466,6 +468,7 @@ function App() {
   useEffect(() => { save(SK.mirrorOffset, mirrorOffsetTiles); }, [mirrorOffsetTiles]);
   useEffect(() => { save("oph_otg_walls", otgWallOverrides); }, [otgWallOverrides]);
   useEffect(() => { save(SK.tileNames,    tileNames);       }, [tileNames]);
+  useEffect(() => { save("oph_tile_card_light_bg", tileCardLightBg); }, [tileCardLightBg]);
   useEffect(() => {
     save("oph_theme", uiTheme);
     document.body.style.background = C.bg;
@@ -2335,6 +2338,13 @@ function App() {
   const owDim   = uiTheme === 'warm' ? 'rgba(251,113,133,0.16)' : 'rgba(129,140,248,0.16)';
 
   // ── Shared styles ─────────────────────────────────────────────────
+  const cardImgBgStyle = tileCardLightBg ? {
+    backgroundColor: "#b0b0b0",
+    backgroundImage: "linear-gradient(45deg,#d0d0d0 25%,transparent 25%),linear-gradient(-45deg,#d0d0d0 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#d0d0d0 75%),linear-gradient(-45deg,transparent 75%,#d0d0d0 75%)",
+    backgroundSize: "8px 8px",
+    backgroundPosition: "0 0, 0 4px, 4px -4px, -4px 0"
+  } : { background: C.panelDeep };
+
   const btn = (active, color = C.accent, dim = C.accentDim) => ({
     padding: "5px 11px", borderRadius: 7, fontSize: 12, fontWeight: 600,
     cursor: "pointer", touchAction: "manipulation", userSelect: "none",
@@ -3180,7 +3190,7 @@ function App() {
                         border: `2px solid ${failed ? C.danger : active ? C.accentBright : C.border}`,
                         background: active ? C.accentDim : "transparent",
                         position: "relative", opacity: failed ? 0.55 : 1, overflow: "visible" }}>
-                      <div style={{ position: "absolute", inset: 0, borderRadius: 6, overflow: "hidden", background: C.panelDeep, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      <div style={{ position: "absolute", inset: 0, borderRadius: 6, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", ...cardImgBgStyle }}>
                         {failed ? <span style={{ fontSize: 18 }}>⚠️</span>
                           : <img src={t.blobSrc ?? t.src} alt="" onError={() => markFailed(t.id)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated", transform: imgTf, transition: "transform 0.15s" }} />}
                       </div>
@@ -3252,11 +3262,18 @@ function App() {
                 label={`Tiles (${tilesetTileCount + userTiles.length})`}
                 open={tilesOpen}
                 onToggle={() => setTilesOpen(o => !o)}
-                right={uploadFlash > 0 ? (
-                  <span style={{ fontSize: 10, fontWeight: 600, color: "#4ade80", background: "rgba(74,222,128,0.14)", border: "1px solid rgba(74,222,128,0.4)", borderRadius: 6, padding: "2px 6px" }}>
-                    ✓ {uploadFlash}
-                  </span>
-                ) : null}
+                right={
+                  <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                    {uploadFlash > 0 && (
+                      <span style={{ fontSize: 10, fontWeight: 600, color: "#4ade80", background: "rgba(74,222,128,0.14)", border: "1px solid rgba(74,222,128,0.4)", borderRadius: 6, padding: "2px 6px" }}>
+                        ✓ {uploadFlash}
+                      </span>
+                    )}
+                    <button onClick={e => { e.stopPropagation(); setTilesSettingsOpen(true); }}
+                      style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 5, cursor: "pointer", color: C.muted, fontSize: 12, padding: "1px 6px", lineHeight: 1.4 }}
+                      title="Tile panel settings">⚙</button>
+                  </div>
+                }
               />
               {/* Tileset selector — dropdown with multi-select checkboxes */}
               {manifest?.tilesets?.length > 0 && (() => {
@@ -3498,7 +3515,7 @@ function App() {
                         }}
                         style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: failed ? "not-allowed" : "pointer", border: `2px solid ${failed ? C.danger : active ? C.accentBright : C.border}`, background: failed ? "rgba(248,113,113,0.08)" : active ? C.accentDim : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", opacity: failed ? 0.55 : 1, position: "relative", overflow: "visible" }}>
                         {/* Inner clipped area for image */}
-                        <div style={{ position: "absolute", inset: 0, borderRadius: 6, overflow: "hidden", background: C.panelDeep, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                        <div style={{ position: "absolute", inset: 0, borderRadius: 6, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", ...cardImgBgStyle }}>
                           {failed ? <span style={{ fontSize: 20 }}>⚠️</span>
                             : <img src={t.blobSrc ?? t.src} alt="" onError={() => markFailed(t.id)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated", transform: imgTransform, transition: "transform 0.15s" }} />}
                         </div>
@@ -3539,12 +3556,12 @@ function App() {
                         {/* 2×2 preview grid — fills full card, no label strip */}
                         <div style={{ position: "absolute", inset: 0, display: "grid", gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr", gap: 1 }}>
                           {previewTiles.map(t => (
-                            <div key={t.id} style={{ background: C.panelDeep, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
+                            <div key={t.id} style={{ display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", ...cardImgBgStyle }}>
                               <img src={t.blobSrc ?? t.src} alt="" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated", opacity: 0.55 }} />
                             </div>
                           ))}
                           {Array.from({ length: Math.max(0, 4 - previewTiles.length) }).map((_, i) => (
-                            <div key={`e${i}`} style={{ background: C.panelDeep }} />
+                            <div key={`e${i}`} style={{ ...cardImgBgStyle }} />
                           ))}
                         </div>
                         {/* Chevron — full white, large and tappable */}
@@ -4361,6 +4378,22 @@ function App() {
               {toolsOpen ? "▶" : "◀"}
             </button>
           </div>
+          {tilesSettingsOpen && (
+            <div className="modal-backdrop" onClick={() => setTilesSettingsOpen(false)}>
+              <div className="modal-box" style={{ maxWidth: 300 }} onClick={e => e.stopPropagation()}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Tile Panel Settings</span>
+                  <button onClick={() => setTilesSettingsOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18 }}>×</button>
+                </div>
+                <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
+                  <input type="checkbox" checked={tileCardLightBg} onChange={e => setTileCardLightBg(e.target.checked)}
+                    style={{ width: 14, height: 14, accentColor: C.accent, cursor: "pointer", flexShrink: 0 }} />
+                  <span style={{ fontSize: 12, color: C.text }}>Light tile background</span>
+                </label>
+                <p style={{ fontSize: 11, color: C.muted, lineHeight: 1.5, margin: 0 }}>Shows a light checkerboard behind tile images, making dark details easier to see.</p>
+              </div>
+            </div>
+          )}
           {mirrorSettingsOpen && (
             <div className="modal-backdrop" onClick={() => setMirrorSettingsOpen(false)}>
               <div className="modal-box" style={{ maxWidth: 320 }} onClick={e => e.stopPropagation()}>
