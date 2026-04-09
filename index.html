@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <meta name="apple-mobile-web-app-title" content="Ophelia" />
+  <meta name="apple-mobile-web-app-title" content="Opheliapp" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="theme-color" content="#1a0f06" />
   <link rel="manifest" href="manifest.json" />
@@ -16,7 +16,7 @@
   <link rel="icon"    type="image/png" href="favicon/favicon-32x32.png"           sizes="32x32" />
   <link rel="apple-touch-icon"        href="favicon/apple-touch-icon.png" />
 
-  <title>Ophelia</title>
+  <title>Opheliapp</title>
 
   <!-- Lilita One (title only) + Inter (all UI) from Google Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -529,8 +529,8 @@ function App() {
     if (s.includes("Brawl_Ball")) return 2.0;
     // Goal posts → 7x
     if (s.includes("goalRed") || s.includes("goalBlue")) return 7.0;
-    // Gem Grab & Heist objectives + Mausoleum safe → 2x
-    if (s.includes("Gem_Grab") || s.includes("Heist") || s.includes("MSLM-safe")) return 2.0;
+    // Gem Grab & Heist objectives + Mausoleum safe + Sewer safe → 2x
+    if (s.includes("Gem_Grab") || s.includes("Heist") || s.includes("MSLM-safe") || s.includes("SWR-safe")) return 2.0;
     // Bounty star → 1.25x
     if (s.includes("Bounty")) return 1.25;
     return 1.0;
@@ -555,6 +555,7 @@ function App() {
     if (s.includes("goalRed") || s.includes("goalBlue")) return { ox: 0, oy: -50 };
     // Sewer objectives
     if (s.includes("SWR-ball")) return { ox: 0, oy: -30 };
+    if (s.includes("SWR-safe")) return { ox: 0, oy: -50 };
     if (s.includes("SWR-mine")) return { ox: 0, oy: -20 };
     if (s.includes("SWR-breakable")) return { ox: 0, oy: 20 };
     // Sewer fence tiles
@@ -695,6 +696,24 @@ function App() {
         if (tr && bl && ml && mr) { result.add(`${r},${c+1}`); result.add(`${r+1},${c+1}`); }
       }
     }
+    // 3×3 diagonal corner squeeze — flags the centre of a 3×3 block when two
+    // diagonally-opposite corners are walls and the centre cell is empty.
+    // L-shape disqualifier: if either cell orthogonally adjacent to the top corner
+    // wall (pointing toward the centre) is also a wall, the area is an L-shape and
+    // the centre is reachable along the open side → do not flag.
+    for (let r = 0; r < gridH - 2; r++) {
+      for (let c = 0; c < gridW - 2; c++) {
+        if (!isEmpty(r+1, c+1)) continue;
+        // TL=(r,c) + BR=(r+2,c+2): disqualify if cell below TL (r+1,c) or right of TL (r,c+1) is a wall
+        if (isWall(r, c) && isWall(r+2, c+2) && !isWall(r+1, c) && !isWall(r, c+1)) {
+          result.add(`${r+1},${c+1}`);
+        }
+        // TR=(r,c+2) + BL=(r+2,c): disqualify if cell below TR (r+1,c+2) or left of TR (r,c+1) is a wall
+        if (isWall(r, c+2) && isWall(r+2, c) && !isWall(r+1, c+2) && !isWall(r, c+1)) {
+          result.add(`${r+1},${c+1}`);
+        }
+      }
+    }
 
     return result;
   }, [showOTG, grid, gridW, gridH, otgWallOverrides, tiles]);
@@ -798,14 +817,15 @@ function App() {
         if (tsDef.folders?.[key]) {
           const folderPath = tsDef.folderPaths?.[key] ?? `${tsDef.name}/${key}/`;
           const label = displayLabel(key, folderPath);
+          const scopedKey = `${tsDef.name}/${key}`;
           const folderTiles = tsDef.folders[key].map(fn => {
             const t = makeTile(`${folderPath}${fn}`);
-            t.folderKey = key; t.folderLabel = label; t.tilesetName = tsDef.name;
+            t.folderKey = scopedKey; t.folderLabel = label; t.tilesetName = tsDef.name;
             t.codename = `${tsDef.name}_${fn.replace(/\.[^.]+$/, '')}`;
             return t;
           });
           flatTiles.push(...folderTiles);
-          if (isShown) { entries.push({ type: 'folder', key, label, tiles: folderTiles }); tsCount += folderTiles.length; }
+          if (isShown) { entries.push({ type: 'folder', key: scopedKey, label, tiles: folderTiles }); tsCount += folderTiles.length; }
         } else if (tsDef.files?.[key]) {
           const t = makeTile(tsDef.files[key]);
           t.tilesetName = tsDef.name;
@@ -907,9 +927,10 @@ function App() {
         const saved = load(SK.activeTileset, null);
         const name = (saved && data.tilesets?.some(ts => ts.name === saved)) ? saved : firstName;
         setActiveTileset(name);
-        // Init shownTilesets from saved value or default to [activeTileset]
+        // Init shownTilesets: use saved value if it exists, otherwise default to all tilesets
         const allNames = data.tilesets?.map(ts => ts.name) ?? [name];
-        setShownTilesets(prev => prev ?? load("oph_shown_tilesets", allNames));
+        const savedShown = load("oph_shown_tilesets", null);
+        setShownTilesets(savedShown ?? allNames);
       })
       .catch(() => {})
       .finally(() => setTilesLoading(false));
@@ -917,12 +938,12 @@ function App() {
   useEffect(() => { if (activeTileset) save(SK.activeTileset, activeTileset); }, [activeTileset]);
   useEffect(() => { if (shownTilesets) save("oph_shown_tilesets", shownTilesets); }, [shownTilesets]);
   useEffect(() => { save("oph_hidden_atlas_groups", hiddenAtlasGroups); }, [hiddenAtlasGroups]);
-  // Close tileset dropdown on outside click
+  // Close tileset dropdown on outside click (bubble phase so stopPropagation inside the dropdown works)
   useEffect(() => {
     if (!tilesetDropOpen) return;
     const handler = () => setTilesetDropOpen(false);
-    document.addEventListener("mousedown", handler, true);
-    return () => document.removeEventListener("mousedown", handler, true);
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
   }, [tilesetDropOpen]);
 
   // Responsive resize listener
@@ -1067,7 +1088,7 @@ function App() {
     if (id === null) { alert("Atlas tile limit reached (IDs 300–499). Remove some atlas tiles first."); return; }
     const src = `https://raw.githubusercontent.com/She-Fairy/atlas-horizon/main/Resources/${filePath}`;
     const baseName = filePath.split('/').pop().replace(/\.[^.]+$/, '');
-    const codename = atlasTilesetGroup ? `${atlasTilesetGroup}_${baseName}` : baseName;
+    const codename = baseName;
     const tile = { id, src, isDefault: false, isAtlas: true, codename };
     if (atlasTilesetGroup) tile.atlasTilesetGroup = atlasTilesetGroup;
     // Settings inheritance
@@ -1096,7 +1117,7 @@ function App() {
         })();
         if (id === null) return prev;
         const fileBaseName = relPath.split('/').pop().replace(/\.[^.]+$/, '');
-        const tile = { id, src, isDefault: false, isAtlas: true, atlasTilesetGroup: folderName, codename: `${folderName}_${fileBaseName}` };
+        const tile = { id, src, isDefault: false, isAtlas: true, atlasTilesetGroup: folderName, codename: fileBaseName };
         return [...prev, tile];
       });
       // Settings inheritance
@@ -2496,7 +2517,14 @@ function App() {
             return (
               <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
                 <input type="checkbox" checked={isTileRotatable(t)}
-                  onChange={ev => setRotatableMap(prev => ({ ...prev, [t.id]: ev.target.checked }))}
+                  onChange={ev => {
+                    setRotatableMap(prev => ({ ...prev, [t.id]: ev.target.checked }));
+                    if (!ev.target.checked) {
+                      setCardRotations(prev => { const n = {...prev}; delete n[t.id]; return n; });
+                      setCardFlipSteps(prev => { const n = {...prev}; delete n[t.id]; return n; });
+                      setCardFlipModes(prev => { const n = {...prev}; delete n[t.id]; return n; });
+                    }
+                  }}
                   style={{ width: 14, height: 14, accentColor: isRotDefault ? "#4ade80" : C.accent, cursor: "pointer" }} />
                 <span style={{ fontSize: 11, color: rotColor }}>Allow rotation 🔄</span>
               </label>
@@ -3179,7 +3207,7 @@ function App() {
                         </div>
                       )}
                       {rotatable && (
-                        <button onClick={ev => { ev.stopPropagation(); setCardFlipModes(prev => ({ ...prev, [t.id]: (prev[t.id] ?? 'spin') === 'spin' ? 'flip' : 'spin' })); }}
+                        <button onClick={ev => { ev.stopPropagation(); setCardFlipModes(prev => ({ ...prev, [t.id]: (prev[t.id] ?? 'spin') === 'spin' ? 'flip' : 'spin' })); setCardRotations(prev => { const n = {...prev}; delete n[t.id]; return n; }); setCardFlipSteps(prev => { const n = {...prev}; delete n[t.id]; return n; }); }}
                           style={{ position: "absolute", bottom: -6, right: -6, fontSize: 8, padding: "1px 4px", cursor: "pointer", lineHeight: 1.3, fontWeight: 700, fontFamily: "'Inter', sans-serif", zIndex: 7, borderRadius: 4, border: `1px solid ${fMode === 'flip' ? "#9ca3af" : "#7dd3fc"}`, color: fMode === 'flip' ? "#9ca3af" : "#7dd3fc", background: "rgba(0,0,0,0.82)" }}
                           title={fMode === 'flip' ? "Flip mode — click to switch to Spin" : "Spin mode — click to switch to Flip"}>
                           {fMode === 'flip' ? "Flip" : "Spin"}
@@ -3224,9 +3252,9 @@ function App() {
 
       {/* ══ TOP BAR ══════════════════════════════════════════════════ */}
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 14px", height: 50, flexShrink: 0, background: C.panel, borderBottom: `1px solid ${C.border}` }}>
-        <img src="favicon/favicon-32x32.png" alt="Ophelia" style={{ width: 28, height: 28, flexShrink: 0, imageRendering: "auto" }} />
+        <img src="favicon/favicon-32x32.png" alt="Opheliapp" style={{ width: 28, height: 28, flexShrink: 0, imageRendering: "auto" }} />
         <span className="oph-title-text" style={{ fontFamily: "'Lilita One', cursive", fontWeight: 400, fontSize: isMobile ? 15 : 18, letterSpacing: 0.4, whiteSpace: "nowrap", flexShrink: 0, display: "inline-block" }}>
-          Ophelia — Custom Theme Tester
+          Opheliapp — Custom Theme Tester
         </span>
       </div>
 
@@ -3449,14 +3477,14 @@ function App() {
                   const cardSz  = isMobile ? 56 : 64;
                   const cardGap = 5;
 
-                  const RotChevron = ({ rotDeg, flipStep = 0 }) => {
-                    const isFlip = flipStep !== 0;
+                  const RotChevron = ({ rotDeg, flipStep = 0, mode = 'spin' }) => {
+                    const isFlipMode = mode === 'flip';
                     const fx = (flipStep === 1 || flipStep === 2) ? -1 : 1;
                     const fy = (flipStep === 2 || flipStep === 3) ? -1 : 1;
-                    const xform = isFlip ? `scale(${fx}, ${fy})` : `rotate(${rotDeg}deg)`;
+                    const xform = isFlipMode ? `scale(${fx}, ${fy})` : `rotate(${rotDeg}deg)`;
                     return (
                       <div style={{ position: "absolute", inset: 0, zIndex: 4, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
-                        <span style={{ fontSize: 17, lineHeight: 1, display: "inline-block", transform: xform, transition: "transform 0.15s", filter: "drop-shadow(0 1px 3px rgba(0,0,0,0.9))" }}>{isFlip ? "🦭" : "🐬"}</span>
+                        <span style={{ fontSize: 17, lineHeight: 1, display: "inline-block", transform: xform, transition: "transform 0.15s", filter: "drop-shadow(0 1px 3px rgba(0,0,0,0.9))" }}>{isFlipMode ? "🦭" : "🐬"}</span>
                       </div>
                     );
                   };
@@ -3491,10 +3519,10 @@ function App() {
                           {failed ? <span style={{ fontSize: 20 }}>⚠️</span>
                             : <img src={t.blobSrc ?? t.src} alt="" onError={() => markFailed(t.id)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated", transform: imgTransform, transition: "transform 0.15s" }} />}
                         </div>
-                        {rotatable && <RotChevron rotDeg={rotDeg} flipStep={flipStep} />}
+                        {rotatable && <RotChevron rotDeg={rotDeg} flipStep={flipStep} mode={flipMode} />}
                         {/* Spin/Flip toggle button — bottom-right, only on rotatable tiles */}
                         {rotatable && (
-                          <button onClick={e => { e.stopPropagation(); setCardFlipModes(prev => ({ ...prev, [t.id]: (prev[t.id] ?? 'spin') === 'spin' ? 'flip' : 'spin' })); }}
+                          <button onClick={e => { e.stopPropagation(); setCardFlipModes(prev => ({ ...prev, [t.id]: (prev[t.id] ?? 'spin') === 'spin' ? 'flip' : 'spin' })); setCardRotations(prev => { const n = {...prev}; delete n[t.id]; return n; }); setCardFlipSteps(prev => { const n = {...prev}; delete n[t.id]; return n; }); }}
                             style={{ position: "absolute", bottom: -6, right: -6, fontSize: 8, padding: "1px 4px", cursor: "pointer", lineHeight: 1.3, fontWeight: 700, fontFamily: "'Inter', sans-serif", zIndex: 7, borderRadius: 4, border: `1px solid ${flipMode === 'flip' ? "#9ca3af" : "#7dd3fc"}`, color: flipMode === 'flip' ? "#9ca3af" : "#7dd3fc", background: "rgba(0,0,0,0.82)" }}
                             title={flipMode === 'flip' ? "Flip mode — click to switch to Spin" : "Spin mode — click to switch to Flip"}>
                             {flipMode === 'flip' ? "Flip" : "Spin"}
@@ -3506,13 +3534,6 @@ function App() {
                           title={t.codename ?? (isStarred ? "Starred tile — click for info" : "Tile info")}>{isStarred ? "★" : "ⓘ"}</span>
                         <MultLabel t={t} />
                         <TileBadge t={t} />
-                        {onDelete && (
-                          <span onClick={e => { e.stopPropagation(); onDelete(t.id); }}
-                            style={{ position: "absolute", bottom: -7, left: -7, width: 16, height: 16, fontSize: 11,
-                              cursor: "pointer", color: "#f87171", lineHeight: "16px", textAlign: "center", zIndex: 6,
-                              background: "rgba(0,0,0,0.75)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
-                            title="Remove tile">✕</span>
-                        )}
                       </div>
                     );
                   };
@@ -3570,10 +3591,10 @@ function App() {
                     const isStarredErase = starredTiles.includes("erase");
                     return (
                       <div onClick={() => { setEraser(true); setSel(null); setHandMode(false); setEyedropperMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
-                        style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${eraser ? C.danger : C.border}`, background: eraser ? "rgba(248,113,113,0.14)" : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
+                        style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${eraser ? "#dc2626" : C.border}`, background: eraser ? "rgba(220,38,38,0.22)" : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
                         <div style={{ borderRadius: 6, overflow: "hidden" }}>
-                          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: eraser ? "rgba(248,113,113,0.32)" : "rgba(248,113,113,0.14)", padding: "2px 4px" }}>
-                            <span style={{ fontSize: 9, fontWeight: 700, color: eraser ? C.danger : "rgba(248,113,113,0.7)" }}>Erase</span>
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: eraser ? "rgba(220,38,38,0.38)" : "rgba(220,38,38,0.18)", padding: "2px 4px" }}>
+                            <span style={{ fontSize: 9, fontWeight: 700, color: eraser ? "#dc2626" : "rgba(220,38,38,0.8)" }}>Erase</span>
                           </div>
                           <div style={{ height: cardSz - 18, background: C.panelDeep, display: "flex", alignItems: "center", justifyContent: "center" }}>
                             <span style={{ fontSize: 20, lineHeight: 1, opacity: eraser ? 1 : 0.55 }}>🧼</span>
@@ -4421,8 +4442,8 @@ function App() {
                     <span onClick={() => setInfoTool("guides")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
                   </div>
                   <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
-                    <button style={btn(false)} onClick={() => setHotkeysOpen(true)}>Hotkeys</button>
-                    <span onClick={() => setInfoTool("hotkeys")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
+                    <button style={btn(mirrorSettings.allowSwap, owColor, owDim)} onClick={() => setMirrorSettings(p => ({ ...p, allowSwap: !p.allowSwap }))} title="When enabled, painting over occupied cells replaces them instead of picking them up">Block Overwrite</button>
+                    <span onClick={() => setInfoTool("overwrite")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
                   </div>
                   <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
                     <button style={btn(showOffsetCenters, ocColor, ocDim)} onClick={() => setShowOffsetCenters(v => !v)} title="Show a marker at the placement cell of tiles with non-zero offset">Offset Centers</button>
@@ -4448,8 +4469,8 @@ function App() {
                     <span onClick={() => setInfoTool("convert")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
                   </div>
                   <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
-                    <button style={btn(mirrorSettings.allowSwap, owColor, owDim)} onClick={() => setMirrorSettings(p => ({ ...p, allowSwap: !p.allowSwap }))} title="When enabled, painting over occupied cells replaces them instead of picking them up">Block Overwrite</button>
-                    <span onClick={() => setInfoTool("overwrite")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
+                    <button style={btn(false)} onClick={() => setHotkeysOpen(true)}>Hotkeys</button>
+                    <span onClick={() => setInfoTool("hotkeys")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
                   </div>
                 </div>
               </div>
@@ -4486,7 +4507,7 @@ function App() {
         {bottomOpen && (<>
           {/* Row 2: Clear | Map name | Download */}
           <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 8, padding: "3px 14px" }}>
-            <button style={btn(true, C.danger, "rgba(248,113,113,0.18)")}
+            <button style={btn(true, "#dc2626", "rgba(220,38,38,0.25)")}
               onClick={() => { if (confirm("Clear the whole grid?")) setGrid(Array.from({ length: gridH }, () => Array(gridW).fill(null))); }}>
               Clear Map
             </button>
