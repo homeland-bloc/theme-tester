@@ -278,7 +278,7 @@ function App() {
   const [mirrorSettings, setMirrorSettings] = useState({ mirrorSpawns: true, mirrorRotation: true, allowSwap: false });
   const [mirrorSettingsOpen, setMirrorSettingsOpen] = useState(false);
   const [tilesSettingsOpen,  setTilesSettingsOpen]  = useState(false);
-  const [tileCardLightBg,    setTileCardLightBg]    = useState(() => load("oph_tile_card_light_bg", false));
+  const [tileCardLightBg,    setTileCardLightBg]    = useState(() => load("oph_tile_card_light_bg", true));
   const [shortcutPopover,   setShortcutPopover]   = useState(null); // "selectionGroup" | "mirrorGroup" | null
   const [zoom,        setZoom]      = useState(calcFitZoom);
   const [zoomEditing, setZoomEdit]  = useState(false);
@@ -3557,7 +3557,7 @@ function App() {
                         <div style={{ position: "absolute", inset: 0, display: "grid", gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr", gap: 1 }}>
                           {previewTiles.map(t => (
                             <div key={t.id} style={{ display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", ...cardImgBgStyle }}>
-                              <img src={t.blobSrc ?? t.src} alt="" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated", opacity: 0.55 }} />
+                              <img src={t.blobSrc ?? t.src} alt="" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated" }} />
                             </div>
                           ))}
                           {Array.from({ length: Math.max(0, 4 - previewTiles.length) }).map((_, i) => (
@@ -3591,10 +3591,10 @@ function App() {
                     const isStarredErase = starredTiles.includes("erase");
                     return (
                       <div onClick={() => { setEraser(true); setSel(null); setHandMode(false); setEyedropperMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
-                        style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${eraser ? "#ef4444" : C.border}`, background: eraser ? "rgba(239,68,68,0.22)" : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
+                        style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${eraser ? "#f87171" : C.border}`, background: eraser ? "rgba(248,113,113,0.22)" : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
                         <div style={{ borderRadius: 6, overflow: "hidden" }}>
-                          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: eraser ? "rgba(239,68,68,0.38)" : "rgba(239,68,68,0.18)", padding: "2px 4px" }}>
-                            <span style={{ fontSize: 9, fontWeight: 700, color: eraser ? "#ef4444" : "rgba(239,68,68,0.8)" }}>Erase</span>
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: eraser ? "rgba(248,113,113,0.38)" : "rgba(248,113,113,0.18)", padding: "2px 4px" }}>
+                            <span style={{ fontSize: 9, fontWeight: 700, color: eraser ? "#f87171" : "rgba(248,113,113,0.8)" }}>Erase</span>
                           </div>
                           <div style={{ height: cardSz - 18, background: C.panelDeep, display: "flex", alignItems: "center", justifyContent: "center" }}>
                             <span style={{ fontSize: 20, lineHeight: 1, opacity: eraser ? 1 : 0.55 }}>🧼</span>
