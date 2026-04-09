@@ -4508,17 +4508,6 @@ function App() {
             return (
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8, padding: "3px 14px 5px", alignItems: "center" }}>
                 <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1, userSelect: "none" }}>Background</span>
-                <select value={activeBgPreset}
-                  onChange={e => {
-                    const p = BG_PRESETS[e.target.value];
-                    if (!p) return;
-                    pushHistorySnapshot();
-                    applyBg1(p.bg1); applyBg2(p.bg2);
-                  }}
-                  style={{ background: C.panel, color: activeBgPreset ? C.accentBright : C.muted, border: `1px solid ${C.border}`, borderRadius: 5, fontSize: 10, padding: "2px 4px", cursor: "pointer", outline: "none" }}>
-                  <option value="" style={{ color: C.muted }}>Custom</option>
-                  {Object.keys(BG_PRESETS).map(k => <option key={k} value={k} style={{ color: C.text }}>{k}</option>)}
-                </select>
                 <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
                   <span style={{ fontSize: 10, color: C.muted, fontWeight: 600 }}>A</span>
                   <input type="color" value={bg1}
@@ -4550,6 +4539,17 @@ function App() {
                     style={{ width: 62, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 11, padding: "3px 6px", outline: "none" }}
                     spellCheck={false} />
                 </div>
+                <select value={activeBgPreset}
+                  onChange={e => {
+                    const p = BG_PRESETS[e.target.value];
+                    if (!p) return;
+                    pushHistorySnapshot();
+                    applyBg1(p.bg1); applyBg2(p.bg2);
+                  }}
+                  style={{ background: C.panel, color: activeBgPreset ? C.accentBright : C.muted, border: `1px solid ${C.border}`, borderRadius: 5, fontSize: 10, padding: "2px 4px", cursor: "pointer", outline: "none" }}>
+                  <option value="" style={{ color: C.muted }}>Custom</option>
+                  {Object.keys(BG_PRESETS).map(k => <option key={k} value={k} style={{ color: C.text }}>{k}</option>)}
+                </select>
               </div>
             );
           })()}
