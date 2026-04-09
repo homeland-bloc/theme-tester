@@ -121,7 +121,7 @@ const deriveCodename = src => {
     "MSLM-water": "WaterFill", "MSLM-waterBEND": "WaterBend", "MSLM-waterCORNER": "WaterCorner", "MSLM-waterLINE": "WaterLine",
     "MSLM-waterDOUBLEBEND": "WaterDoubleBend", "MSLM-waterDOUBLELINE": "WaterDoubleLine", "MSLM-waterFULL": "WaterFullTile",
     // Mausoleum objectives
-    "MSLM-ball": "MSLMBall", "MSLM-safe": "MSLMSafe", "MSLM-mine": "MSLMMine",
+    "MSLM-ball": "Ball", "MSLM-safe": "Safe", "MSLM-mine": "GemMine",
     // Global water
     "00001011": "GWaterBend", "01111111": "GWaterCorner", "01101011": "GWaterLine", "11111111": "GWaterFill",
     // Global special
@@ -143,7 +143,7 @@ const deriveCodename = src => {
     "SWR-fenceV-TURN2-L": "FenceV-Turn2L", "SWR-fenceV-TURN2-R": "FenceV-Turn2R",
     "SWR-post": "Rope", "SWR-post-H": "RopeH", "SWR-post-H-L": "RopeH-L", "SWR-post-H-R": "RopeH-R",
     "SWR-post-V": "RopeV", "SWR-post-V-H": "RopeV-H", "SWR-post-V-L": "RopeV-L", "SWR-post-V-R": "RopeV-R",
-    "SWR-ball": "Ball", "SWR-mine": "GemMine",
+    "SWR-ball": "Ball", "SWR-safe": "Safe", "SWR-mine": "GemMine",
     "Brawl_Ball": "BrawlBall", "goalRed": "GoalRed", "goalBlue": "GoalBlue",
     // Jumppads
     "B": "BottomJumppad", "BL": "BottomLeftJumppad", "BR": "BottomRightJumppad",
@@ -2421,38 +2421,30 @@ function App() {
             </div>
           </div>
 
-          {/* Tile codename (new property) */}
+          {/* Tile ID */}
           {t.codename && (
             <div style={{ fontSize: 10, color: C.muted, fontFamily: "monospace", wordBreak: "break-all" }}>
               <span style={{ color: C.text }}>ID: </span>{t.codename}
             </div>
           )}
 
-          {/* Tile codename */}
+          {/* Codename — editable for all tile types */}
           {(() => {
-            const codename = deriveCodename(t.src);
-            const customName = tileNames[t.id] ?? "";
-            if (t.isDefault && codename) {
-              return <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            const defaultCodename = t.isDefault
+              ? (deriveCodename(t.src) ?? "")
+              : t.isAtlas
+              ? (t.baseCodename ?? t.codename ?? "")
+              : "";
+            const currentCodename = tileNames[t.id] !== undefined ? tileNames[t.id] : defaultCodename;
+            return (
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Codename</span>
-                <span style={{ fontSize: 12, fontFamily: "monospace", color: C.text }}>{codename}</span>
-              </div>;
-            }
-            if (t.isAtlas) {
-              return <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Codename</span>
-                <span style={{ fontSize: 12, fontFamily: "monospace", color: C.text }}>{t.baseCodename ?? t.codename}</span>
-              </div>;
-            }
-            if (!t.isDefault) {
-              return <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Name</span>
-                <input value={customName} onChange={e => setTileNames(prev => ({ ...prev, [t.id]: e.target.value }))}
-                  placeholder="Enter name…"
+                <input value={currentCodename}
+                  onChange={e => setTileNames(prev => ({ ...prev, [t.id]: e.target.value }))}
+                  placeholder={defaultCodename || "Enter codename…"}
                   style={{ flex: 1, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none" }} />
-              </div>;
-            }
-            return null;
+              </div>
+            );
           })()}
 
           {/* Size multiplier */}
