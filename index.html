@@ -851,7 +851,7 @@ function App() {
   const switchTileset = (newTilesetName) => {
     if (!manifest || newTilesetName === activeTileset) return;
     setActiveTileset(newTilesetName);
-    const tsBg = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" } }[newTilesetName];
+    const tsBg = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" }, Cafe: { bg1: "#AD6B45", bg2: "#B5714A" }, Pharmacy: { bg1: "#288FEF", bg2: "#19A0E8" } }[newTilesetName];
     if (tsBg) { setBg1(tsBg.bg1); setHex1(tsBg.bg1); setBg2(tsBg.bg2); setHex2(tsBg.bg2); save(SK.colors, tsBg); }
   };
 
@@ -863,7 +863,7 @@ function App() {
       if (s.has(name)) { if (s.size <= 1) return cur; s.delete(name); }
       else {
         s.add(name); setActiveTileset(name);
-        const tsBg = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" } }[name];
+        const tsBg = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" }, Cafe: { bg1: "#AD6B45", bg2: "#B5714A" }, Pharmacy: { bg1: "#288FEF", bg2: "#19A0E8" } }[name];
         if (tsBg) { setBg1(tsBg.bg1); setHex1(tsBg.bg1); setBg2(tsBg.bg2); setHex2(tsBg.bg2); save(SK.colors, tsBg); }
       }
       return [...s];
@@ -967,7 +967,7 @@ function App() {
       setBg1(snap.bg1); setHex1(snap.bg1); setBg2(snap.bg2); setHex2(snap.bg2);
       save(SK.colors, { bg1: snap.bg1, bg2: snap.bg2 });
     } else if (snap.tileset != null && snap.tileset !== activeTilesetRef.current) {
-      const tsBg = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" } }[snap.tileset];
+      const tsBg = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" }, Cafe: { bg1: "#AD6B45", bg2: "#B5714A" }, Pharmacy: { bg1: "#288FEF", bg2: "#19A0E8" } }[snap.tileset];
       if (tsBg) { setBg1(tsBg.bg1); setHex1(tsBg.bg1); setBg2(tsBg.bg2); setHex2(tsBg.bg2); save(SK.colors, tsBg); }
     }
   };
@@ -3298,8 +3298,11 @@ function App() {
                                 onClick={e => { e.preventDefault(); toggleTilesetShown(ts.name); }}>
                                 <input type="checkbox" readOnly checked={checked}
                                   style={{ accentColor: C.accent, cursor: "pointer", width: 13, height: 13, pointerEvents: "none" }} />
-                                <span style={{ fontSize: 11, color: checked ? C.accentBright : C.text, fontWeight: checked ? 600 : 400 }}>
-                                  {ts.name}{ts.name === "Sewer" ? " (WIP)" : ""}
+                                <span style={{ display: "flex", flexDirection: "column" }}>
+                                  <span style={{ fontSize: 11, color: checked ? C.accentBright : C.text, fontWeight: checked ? 600 : 400 }}>
+                                    {ts.name}
+                                  </span>
+                                  {ts.creator && <span style={{ fontSize: 9, color: C.muted, fontWeight: 400 }}>by {ts.creator}</span>}
                                 </span>
                               </label>
                             );
@@ -4536,7 +4539,7 @@ function App() {
 
           {/* Row 3: Background colour pickers */}
           {(() => {
-            const BG_PRESETS = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" } };
+            const BG_PRESETS = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" }, Cafe: { bg1: "#AD6B45", bg2: "#B5714A" }, Pharmacy: { bg1: "#288FEF", bg2: "#19A0E8" } };
             const activeBgPreset = Object.keys(BG_PRESETS).find(k => BG_PRESETS[k].bg1.toLowerCase() === bg1.toLowerCase() && BG_PRESETS[k].bg2.toLowerCase() === bg2.toLowerCase()) ?? "";
             return (
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8, padding: "3px 14px 5px", alignItems: "center" }}>
