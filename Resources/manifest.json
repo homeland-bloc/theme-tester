@@ -2,6 +2,7 @@
   "tilesets": [
     {
       "name": "Mausoleum",
+      "creator": "ophelia",
       "order": ["wall1", "wall2", "crate", "barrel", "cactus", "bush", "breakable", "fence", "rope", "water", "objectives"],
       "files": {
         "wall1": "Mausoleum/MSLM-wall.png",
@@ -27,6 +28,7 @@
     },
     {
       "name": "Sewer",
+      "creator": "ophelia",
       "order": ["wall1", "wall2", "crate", "barrel", "cactus", "bush", "breakable", "fence", "rope", "water", "objectives"],
       "files": {
         "wall1": "Sewer/SWR-wall.png",
@@ -48,6 +50,52 @@
         "rope": "Sewer/Rope/",
         "water": "Sewer/Water/",
         "objectives": "Sewer/Objective/"
+      }
+    },
+    {
+      "name": "Cafe",
+      "creator": "bcpk",
+      "order": ["wall1", "wall2", "crate", "barrel", "cactus", "bush", "breakable", "fence", "water"],
+      "files": {
+        "wall1": "Cafe/Wall1.png",
+        "wall2": "Cafe/Wall2.png",
+        "crate": "Cafe/Crate.png",
+        "barrel": "Cafe/Barrel.png",
+        "cactus": "Cafe/Cactus.png",
+        "bush": "Cafe/Bush.png",
+        "breakable": "Cafe/Skull.png"
+      },
+      "folders": {
+        "fence": ["B.png", "BR.png", "L.png", "M.png", "T.png", "TR.png", "V.png"],
+        "water": ["WaterCurve.png", "WaterFill.png", "WaterLine.png", "WaterTwist.png"]
+      },
+      "folderPaths": {
+        "fence": "Cafe/Fence/",
+        "water": "Cafe/Water/"
+      }
+    },
+    {
+      "name": "Pharmacy",
+      "creator": "bcpk",
+      "order": ["wall1", "wall2", "crate", "barrel", "cactus", "bush", "breakable", "fence", "rope", "water"],
+      "files": {
+        "wall1": "Pharmacy/Wall1.png",
+        "wall2": "Pharmacy/Wall2.png",
+        "crate": "Pharmacy/Crate.png",
+        "barrel": "Pharmacy/Barrel.png",
+        "cactus": "Pharmacy/Cactus.png",
+        "bush": "Pharmacy/Bush.png",
+        "breakable": "Pharmacy/Skull.png"
+      },
+      "folders": {
+        "fence": ["1.png", "2.png", "3.png", "4.png", "5.png", "6.png", "7.png", "8.png", "9.png", "10.png"],
+        "rope": ["1.png", "2.png", "3.png", "4.png", "5.png", "6.png", "7.png", "8.png"],
+        "water": ["WaterCurve.png", "WaterFill.png", "WaterLine.png", "WaterTwist.png"]
+      },
+      "folderPaths": {
+        "fence": "Pharmacy/Fence/",
+        "rope": "Pharmacy/Rope/",
+        "water": "Pharmacy/Water/"
       }
     }
   ],
