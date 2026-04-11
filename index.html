@@ -4126,16 +4126,27 @@ function App() {
                 );
                 const st = getTile(selKey);
                 if (!st || !st.src) return null;
-                const isRot = isTileRotatable(st);
-                const rotDeg = cardRotations[selKey] ?? 0;
+                const scCanSpin = isTileRotatable(st);
+                const scCanFlip = isFlipAllowed(st);
+                const scAnyRot  = scCanSpin || scCanFlip;
+                const scRawMode = cardFlipModes[selKey] ?? 'spin';
+                const scMode    = !scAnyRot ? 'spin' : (!scCanFlip ? 'spin' : (!scCanSpin ? 'flip' : scRawMode));
+                const scFlipStep = (scMode === 'flip') ? (cardFlipSteps[selKey] ?? 0) : 0;
+                const scFx = (scFlipStep === 1 || scFlipStep === 2) ? -1 : 1;
+                const scFy = (scFlipStep === 2 || scFlipStep === 3) ? -1 : 1;
+                const scRotDeg = cardRotations[selKey] ?? 0;
+                const scImgTf  = scMode === 'flip' ? `scale(${scFx},${scFy})` : `rotate(${scRotDeg}deg)`;
                 return (
-                  <div onClick={() => { if (isRot) setCardRotations(prev => ({ ...prev, [selKey]: (prev[selKey] ?? 0) + 90 })); }}
-                    style={{ width: 32, height: 32, borderRadius: 6, cursor: isRot ? "pointer" : "default", overflow: "hidden", position: "relative", border: `1px solid ${C.accentBright}`, background: C.accentDim }}
-                    title={isRot ? `${st.label || "Tile"} — click to rotate` : (st.label || "Tile (selected)")}>
-                    <img src={st.blobSrc ?? st.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", transform: `rotate(${rotDeg}deg)`, transition: "transform 0.15s" }} />
-                    {isRot && (
+                  <div onClick={() => {
+                    if (scMode === 'flip' && scCanFlip) { setCardFlipSteps(prev => ({ ...prev, [selKey]: ((prev[selKey] ?? 0) + 1) % 4 })); }
+                    else if (scMode !== 'flip' && scCanSpin) { setCardRotations(prev => ({ ...prev, [selKey]: (prev[selKey] ?? 0) + 90 })); }
+                  }}
+                    style={{ width: 32, height: 32, borderRadius: 6, cursor: scAnyRot ? "pointer" : "default", overflow: "hidden", position: "relative", border: `1px solid ${C.accentBright}`, background: C.accentDim }}
+                    title={scAnyRot ? `${st.label || "Tile"} — click to ${scMode === 'flip' ? 'flip' : 'rotate'}` : (st.label || "Tile (selected)")}>
+                    <img src={st.blobSrc ?? st.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", transform: scImgTf, transition: "transform 0.15s" }} />
+                    {scAnyRot && (
                       <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
-                        <span style={{ fontSize: 13, lineHeight: 1, display: "inline-block", transform: `rotate(${rotDeg}deg)`, transition: "transform 0.15s", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.9))" }}>🐬</span>
+                        <span style={{ fontSize: 13, lineHeight: 1, display: "inline-block", transform: scImgTf, transition: "transform 0.15s", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.9))" }}>{scMode === 'flip' ? "🦭" : "🐬"}</span>
                       </div>
                     )}
                   </div>
@@ -4155,21 +4166,32 @@ function App() {
                     const rt = getTile(rid);
                     if (!rt || !rt.src) return null;
                     const active = sel === rid && !eraser;
-                    const isRot = isTileRotatable(rt);
-                    const rotDeg = cardRotations[rid] ?? 0;
+                    const rcCanSpin = isTileRotatable(rt);
+                    const rcCanFlip = isFlipAllowed(rt);
+                    const rcAnyRot  = rcCanSpin || rcCanFlip;
+                    const rcRawMode = cardFlipModes[rid] ?? 'spin';
+                    const rcMode    = !rcAnyRot ? 'spin' : (!rcCanFlip ? 'spin' : (!rcCanSpin ? 'flip' : rcRawMode));
+                    const rcFlipStep = (rcMode === 'flip') ? (cardFlipSteps[rid] ?? 0) : 0;
+                    const rcFx = (rcFlipStep === 1 || rcFlipStep === 2) ? -1 : 1;
+                    const rcFy = (rcFlipStep === 2 || rcFlipStep === 3) ? -1 : 1;
+                    const rcRotDeg = cardRotations[rid] ?? 0;
+                    const rcImgTf  = rcMode === 'flip' ? `scale(${rcFx},${rcFy})` : `rotate(${rcRotDeg}deg)`;
                     return (
                       <div key={rid}
                         onClick={() => {
-                          if (isRot && sel === rid && !eraser) setCardRotations(prev => ({ ...prev, [rid]: (prev[rid] ?? 0) + 90 }));
+                          if (rcAnyRot && sel === rid && !eraser) {
+                            if (rcMode === 'flip' && rcCanFlip) { setCardFlipSteps(prev => ({ ...prev, [rid]: ((prev[rid] ?? 0) + 1) % 4 })); }
+                            else if (rcMode !== 'flip' && rcCanSpin) { setCardRotations(prev => ({ ...prev, [rid]: (prev[rid] ?? 0) + 90 })); }
+                          }
                           setSel(rid); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set();
                         }}
                         style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", overflow: "hidden", position: "relative",
                           border: `1px solid ${active ? C.accentBright : "rgba(255,255,255,0.25)"}`, background: active ? C.accentDim : C.panelDeep, opacity: 0.75 }}
                         title={`Recent: ${rt.label || `Tile ${rid}`}`}>
-                        <img src={rt.blobSrc ?? rt.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", transform: `rotate(${rotDeg}deg)`, transition: "transform 0.15s" }} />
-                        {isRot && (
+                        <img src={rt.blobSrc ?? rt.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", transform: rcImgTf, transition: "transform 0.15s" }} />
+                        {rcAnyRot && (
                           <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
-                            <span style={{ fontSize: 10, lineHeight: 1, display: "inline-block", transform: `rotate(${rotDeg}deg)`, filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.9))" }}>🐬</span>
+                            <span style={{ fontSize: 10, lineHeight: 1, display: "inline-block", transform: rcImgTf, filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.9))" }}>{rcMode === 'flip' ? "🦭" : "🐬"}</span>
                           </div>
                         )}
                       </div>
@@ -4274,23 +4296,32 @@ function App() {
                     );
                   }
                   const active = sel === sid && !eraser;
-                  const isRot = isTileRotatable(st);
-                  const rotDeg = cardRotations[sid] ?? 0;
+                  const stCanSpin = isTileRotatable(st);
+                  const stCanFlip = isFlipAllowed(st);
+                  const stAnyRot  = stCanSpin || stCanFlip;
+                  const stRawMode = cardFlipModes[sid] ?? 'spin';
+                  const stMode    = !stAnyRot ? 'spin' : (!stCanFlip ? 'spin' : (!stCanSpin ? 'flip' : stRawMode));
+                  const stFlipStep = (stMode === 'flip') ? (cardFlipSteps[sid] ?? 0) : 0;
+                  const stFx = (stFlipStep === 1 || stFlipStep === 2) ? -1 : 1;
+                  const stFy = (stFlipStep === 2 || stFlipStep === 3) ? -1 : 1;
+                  const stRotDeg = cardRotations[sid] ?? 0;
+                  const stImgTf  = stMode === 'flip' ? `scale(${stFx},${stFy})` : `rotate(${stRotDeg}deg)`;
                   return (
                     <div key={sid}
                       onClick={() => {
-                        if (isRot && sel === sid && !eraser) {
-                          setCardRotations(prev => ({ ...prev, [sid]: (prev[sid] ?? 0) + 90 }));
+                        if (stAnyRot && sel === sid && !eraser) {
+                          if (stMode === 'flip' && stCanFlip) { setCardFlipSteps(prev => ({ ...prev, [sid]: ((prev[sid] ?? 0) + 1) % 4 })); }
+                          else if (stMode !== 'flip' && stCanSpin) { setCardRotations(prev => ({ ...prev, [sid]: (prev[sid] ?? 0) + 90 })); }
                         }
                         setSel(sid); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set();
                       }}
                       style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", overflow: "hidden", position: "relative",
                         border: `1px solid ${active ? C.accentBright : C.border}`, background: active ? C.accentDim : C.panelDeep }}
-                      title={isRot ? `${st.label || `Tile ${sid}`} — click to rotate` : (st.label || `Tile ${sid}`)}>
-                      <img src={st.blobSrc ?? st.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", transform: `rotate(${rotDeg}deg)`, transition: "transform 0.15s" }} />
-                      {isRot && (
+                      title={stAnyRot ? `${st.label || `Tile ${sid}`} — click to ${stMode === 'flip' ? 'flip' : 'rotate'}` : (st.label || `Tile ${sid}`)}>
+                      <img src={st.blobSrc ?? st.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", transform: stImgTf, transition: "transform 0.15s" }} />
+                      {stAnyRot && (
                         <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
-                          <span style={{ fontSize: 13, lineHeight: 1, display: "inline-block", transform: `rotate(${rotDeg}deg)`, transition: "transform 0.15s", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.9))" }}>🐬</span>
+                          <span style={{ fontSize: 13, lineHeight: 1, display: "inline-block", transform: stImgTf, transition: "transform 0.15s", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.9))" }}>{stMode === 'flip' ? "🦭" : "🐬"}</span>
                         </div>
                       )}
                     </div>
