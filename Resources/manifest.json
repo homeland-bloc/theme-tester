@@ -67,7 +67,7 @@
       },
       "folders": {
         "fence": ["B.png", "BR.png", "L.png", "M.png", "T.png", "TR.png", "V.png"],
-        "water": ["WaterCurve.png", "WaterFill.png", "WaterLine.png", "WaterTwist.png"]
+        "water": ["WaterCurve.png", "WaterTwist.png", "WaterLine.png", "WaterFill.png"]
       },
       "folderPaths": {
         "fence": "Cafe/Fence/",
