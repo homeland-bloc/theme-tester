@@ -119,7 +119,8 @@ const atlasApiCache = new Map(); // url → resolved data
 // Default per-tile settings: src pattern → property value.
 // Functions like isDefaultRotatable/isDefaultOTGWall read from here.
 const TILE_SETTINGS = {
-  rotatable:    ["/Water/"],   // src substrings → tile is rotatable by default
+  rotatable:    ["/Water/"],             // src substrings → tile is rotatable (spin) by default
+  flippable:    ["/Fence/", "/Rope/"],   // src substrings → tile is flippable by default
   otgPassable:  ["bush", "Bush", "SpeedTile", "SlowTile", "Objective", "Rope/", "Jumppads/", "Teleporters/", "HealPad", "Spawn", "SpawnPoint", "spawn"],
   mirrorOffset: ["Jumppads/", "Teleporters/", "HealPad"],
   bottomRender: ["/Water/", "Jumppads/", "Teleporters/", "HealPad"],
@@ -657,9 +658,10 @@ function App() {
     return isDefaultRotatable(t);
   };
 
+  const isDefaultFlippable = t => !!(t?.src && TILE_SETTINGS.flippable.some(p => t.src.includes(p)));
   const isFlipAllowed = t => {
     if (allowFlipMap[t.id] !== undefined) return allowFlipMap[t.id];
-    return isDefaultRotatable(t); // same default as spinning
+    return isDefaultFlippable(t); // fence/rope flippable by default; water is spin-only
   };
 
   const isDefaultMirrorOffset = t => !!(t?.src && TILE_SETTINGS.mirrorOffset.some(p => t.src.includes(p)));
@@ -971,6 +973,33 @@ function App() {
   useEffect(() => { if (shownTilesets) save("oph_shown_tilesets", shownTilesets); }, [shownTilesets]);
   useEffect(() => { save("oph_allow_mixing", allowTsMixing); }, [allowTsMixing]);
   useEffect(() => { save("oph_hidden_atlas_groups", hiddenAtlasGroups); }, [hiddenAtlasGroups]);
+  // Dynamic starred tiles: keep wall1+bush for shown tilesets, remove them for hidden tilesets.
+  // Non-wall1/bush stars (user-added tiles and tool shortcuts) are always preserved.
+  useEffect(() => {
+    if (!manifest) return;
+    let id = TILESET_ID_START;
+    const allWall1BushIds = new Set();
+    const shownWall1BushIds = [];
+    const shownSet = new Set(shownTilesets ?? []);
+    for (const tsDef of (manifest.tilesets ?? [])) {
+      for (const key of (tsDef.order ?? [])) {
+        if (tsDef.folders?.[key]) tsDef.folders[key].forEach(() => id++);
+        else if (tsDef.files?.[key]) {
+          const tid = id++;
+          if (key === 'wall1' || key === 'bush') {
+            allWall1BushIds.add(tid);
+            if (shownSet.has(tsDef.name)) shownWall1BushIds.push(tid);
+          }
+        }
+      }
+    }
+    setStarredTiles(prev => {
+      const toolStars = prev.filter(s => typeof s === 'string');
+      const otherTileStars = prev.filter(s => typeof s !== 'string' && !allWall1BushIds.has(s));
+      const newStarred = [...shownWall1BushIds, ...otherTileStars, ...toolStars];
+      return JSON.stringify(newStarred) === JSON.stringify(prev) ? prev : newStarred;
+    });
+  }, [manifest, shownTilesets]);
   // Close tileset dropdown on outside click (bubble phase so stopPropagation inside the dropdown works)
   useEffect(() => {
     if (!tilesetDropOpen) return;
@@ -2661,7 +2690,7 @@ function App() {
           {/* Allow flipping */}
           {(() => {
             const curFlip = isFlipAllowed(t);
-            const isFlipDefault = curFlip === isDefaultRotatable(t);
+            const isFlipDefault = curFlip === isDefaultFlippable(t);
             const flipColor = isFlipDefault ? "#4ade80" : C.text;
             return (
               <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
@@ -3544,7 +3573,31 @@ function App() {
                                   if (allowTsMixing) {
                                     toggleTilesetShown(ts.name);
                                   } else {
-                                    // Single-select: switch to only this tileset
+                                    // Single-select: switch to only this tileset, auto-convert board tiles
+                                    if (manifest && activeTileset && ts.name !== activeTileset) {
+                                      const tilesets = manifest.tilesets ?? [];
+                                      let cid = TILESET_ID_START;
+                                      const maps = {};
+                                      for (const tsDef of tilesets) {
+                                        const m = {};
+                                        for (const key of (tsDef.order ?? [])) {
+                                          if (tsDef.folders?.[key]) m[key] = tsDef.folders[key].map(() => cid++);
+                                          else if (tsDef.files?.[key]) m[key] = [cid++];
+                                        }
+                                        maps[tsDef.name] = m;
+                                      }
+                                      const fromMap = maps[activeTileset] ?? {};
+                                      const toMap   = maps[ts.name]      ?? {};
+                                      const idRemap = {};
+                                      for (const key of Object.keys(fromMap)) {
+                                        const oIds = fromMap[key], nIds = toMap[key];
+                                        if (nIds) oIds.forEach((oid, i) => { if (i < nIds.length) idRemap[oid] = nIds[i]; });
+                                      }
+                                      const fromAll = new Set(Object.values(fromMap).flat());
+                                      setGrid(prev => prev.map(row => row.map(id =>
+                                        (id != null && fromAll.has(id) && idRemap[id] !== undefined) ? idRemap[id] : id
+                                      )));
+                                    }
                                     switchTileset(ts.name);
                                     setShownTilesets([ts.name]);
                                     setTilesetDropOpen(false);
