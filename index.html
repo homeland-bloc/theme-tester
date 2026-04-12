@@ -120,7 +120,7 @@ const atlasApiCache = new Map(); // url → resolved data
 // Functions like isDefaultRotatable/isDefaultOTGWall read from here.
 const TILE_SETTINGS = {
   rotatable:    ["/Water/"],             // src substrings → tile is rotatable (spin) by default
-  flippable:    ["/Fence/", "/Rope/"],   // src substrings → tile is flippable by default
+  flippable:    ["/Fence/", "/Rope/", "Halloween/Jumppads/"],   // src substrings → tile is flippable by default
   otgPassable:  ["bush", "Bush", "SpeedTile", "SlowTile", "Objective", "Rope/", "Jumppads/", "Teleporters/", "HealPad", "Spawn", "SpawnPoint", "spawn"],
   mirrorOffset: ["Jumppads/", "Teleporters/", "HealPad"],
   bottomRender: ["/Water/", "Jumppads/", "Teleporters/", "HealPad"],
@@ -611,6 +611,8 @@ function App() {
     if (s.includes("Sewer/Fence/")) return { ox: 0, oy: -30 };
     // Sewer rope tiles
     if (s.includes("Sewer/Rope/")) return { ox: 0, oy: -50 };
+    // Halloween RopeConnects: +50 horizontal offset
+    if (s.includes("Halloween/Rope/RopeConnects")) return { ox: 50, oy: 0 };
     // Bounty star: slight upward offset
     if (s.includes("Bounty")) return { ox: 0, oy: -10 };
     // Mausoleum Wall2: -12 vertical
@@ -904,7 +906,7 @@ function App() {
   const switchTileset = (newTilesetName) => {
     if (!manifest || newTilesetName === activeTileset) return;
     setActiveTileset(newTilesetName);
-    const tsBg = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" }, Cafe: { bg1: "#AD6B45", bg2: "#B5714A" }, Pharmacy: { bg1: "#288FEF", bg2: "#19A0E8" } }[newTilesetName];
+    const tsBg = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" }, Halloween: { bg1: "#3A313E", bg2: "#413643" }, Cafe: { bg1: "#AD6B45", bg2: "#B5714A" }, Pharmacy: { bg1: "#288FEF", bg2: "#19A0E8" } }[newTilesetName];
     if (tsBg) { setBg1(tsBg.bg1); setHex1(tsBg.bg1); setBg2(tsBg.bg2); setHex2(tsBg.bg2); save(SK.colors, tsBg); }
   };
 
@@ -916,7 +918,7 @@ function App() {
       if (s.has(name)) { if (s.size <= 1) return cur; s.delete(name); }
       else {
         s.add(name); setActiveTileset(name);
-        const tsBg = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" }, Cafe: { bg1: "#AD6B45", bg2: "#B5714A" }, Pharmacy: { bg1: "#288FEF", bg2: "#19A0E8" } }[name];
+        const tsBg = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" }, Halloween: { bg1: "#3A313E", bg2: "#413643" }, Cafe: { bg1: "#AD6B45", bg2: "#B5714A" }, Pharmacy: { bg1: "#288FEF", bg2: "#19A0E8" } }[name];
         if (tsBg) { setBg1(tsBg.bg1); setHex1(tsBg.bg1); setBg2(tsBg.bg2); setHex2(tsBg.bg2); save(SK.colors, tsBg); }
       }
       return [...s];
@@ -946,6 +948,18 @@ function App() {
           if (!t.src) return;
           const isBottom = TILE_SETTINGS.bottomRender.some(p => t.src.includes(p));
           if (isBottom && !next[t.id]) {
+            next[t.id] = true; changed = true;
+          }
+        });
+        return changed ? next : prev;
+      });
+      // Auto-shadow on by default for Halloween jumppads and teleporters
+      setAutoShadowTiles(prev => {
+        const next = { ...prev };
+        let changed = false;
+        flatDefaultTiles.forEach(t => {
+          if (!t.src) return;
+          if ((t.src.includes("Halloween/Jumppads/") || t.src.includes("Halloween/Teleporters/")) && !next[t.id]) {
             next[t.id] = true; changed = true;
           }
         });
@@ -1048,7 +1062,7 @@ function App() {
       setBg1(snap.bg1); setHex1(snap.bg1); setBg2(snap.bg2); setHex2(snap.bg2);
       save(SK.colors, { bg1: snap.bg1, bg2: snap.bg2 });
     } else if (snap.tileset != null && snap.tileset !== activeTilesetRef.current) {
-      const tsBg = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" }, Cafe: { bg1: "#AD6B45", bg2: "#B5714A" }, Pharmacy: { bg1: "#288FEF", bg2: "#19A0E8" } }[snap.tileset];
+      const tsBg = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" }, Halloween: { bg1: "#3A313E", bg2: "#413643" }, Cafe: { bg1: "#AD6B45", bg2: "#B5714A" }, Pharmacy: { bg1: "#288FEF", bg2: "#19A0E8" } }[snap.tileset];
       if (tsBg) { setBg1(tsBg.bg1); setHex1(tsBg.bg1); setBg2(tsBg.bg2); setHex2(tsBg.bg2); save(SK.colors, tsBg); }
     }
   };
@@ -4959,7 +4973,7 @@ function App() {
 
           {/* Row 3: Background colour pickers */}
           {(() => {
-            const BG_PRESETS = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" }, Cafe: { bg1: "#AD6B45", bg2: "#B5714A" }, Pharmacy: { bg1: "#288FEF", bg2: "#19A0E8" } };
+            const BG_PRESETS = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" }, Halloween: { bg1: "#3A313E", bg2: "#413643" }, Cafe: { bg1: "#AD6B45", bg2: "#B5714A" }, Pharmacy: { bg1: "#288FEF", bg2: "#19A0E8" } };
             const activeBgPreset = Object.keys(BG_PRESETS).find(k => BG_PRESETS[k].bg1.toLowerCase() === bg1.toLowerCase() && BG_PRESETS[k].bg2.toLowerCase() === bg2.toLowerCase()) ?? "";
             return (
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8, padding: "3px 14px 5px", alignItems: "center" }}>
