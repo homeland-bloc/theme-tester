@@ -115,6 +115,16 @@ const SPACE_TILE_ID    = 998; // special: makes a cell fully transparent
 
 // Module-level cache for GitHub API responses (survives re-renders, not page reload)
 const atlasApiCache = new Map(); // url → resolved data
+// Session-cached Atlas tileset list (fetched once per page load)
+const atlasTilesetsListCache = { pending: null, data: null, error: null };
+// Hardcoded BG colours for Ophelia tilesets (single source of truth)
+const OPHELIA_BG = {
+  Mausoleum: { bg1: "#67717d", bg2: "#6e7986" },
+  Sewer:     { bg1: "#4F594A", bg2: "#586352" },
+  Halloween: { bg1: "#3A313E", bg2: "#413643" },
+  Cafe:      { bg1: "#AD6B45", bg2: "#B5714A" },
+  Pharmacy:  { bg1: "#95a4ae", bg2: "#a2b0b8" },
+};
 
 // Default per-tile settings: src pattern → property value.
 // Functions like isDefaultRotatable/isDefaultOTGWall read from here.
@@ -830,6 +840,13 @@ function App() {
   const [hiddenAtlasGroups, setHiddenAtlasGroups] = useState(() => load("oph_hidden_atlas_groups", []));
   // Tileset dropdown open state
   const [tilesetDropOpen, setTilesetDropOpen] = useState(false);
+  // Atlas tileset list fetched from GitHub API (null = not yet loaded)
+  const [atlasTilesetList, setAtlasTilesetList] = useState(null);
+  const [atlasTilesetError, setAtlasTilesetError] = useState("");
+  // Which Atlas tilesets are shown in the panel (persisted)
+  const [shownAtlasTilesets, setShownAtlasTilesets] = useState(() => load("oph_shown_atlas_tilesets", []));
+  // Cached BG colours extracted from each Atlas tileset's BGLight/BGDark images
+  const [atlasTilesetBgColors, setAtlasTilesetBgColors] = useState(() => load("oph_atlas_ts_bg", {}));
   // Parsed manifest data
   const [manifest, setManifest] = useState(null);
   useEffect(() => { openFolderKeyRef.current = openFolderKey; }, [openFolderKey]);
@@ -942,7 +959,7 @@ function App() {
   const switchTileset = (newTilesetName) => {
     if (!manifest || newTilesetName === activeTileset) return;
     setActiveTileset(newTilesetName);
-    const tsBg = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" }, Halloween: { bg1: "#3A313E", bg2: "#413643" }, Cafe: { bg1: "#AD6B45", bg2: "#B5714A" }, Pharmacy: { bg1: "#95a4ae", bg2: "#a2b0b8" } }[newTilesetName];
+    const tsBg = getTilesetBgColors(newTilesetName);
     if (tsBg) { setBg1(tsBg.bg1); setHex1(tsBg.bg1); setBg2(tsBg.bg2); setHex2(tsBg.bg2); save(SK.colors, tsBg); }
   };
 
@@ -952,7 +969,7 @@ function App() {
     const inSet = cur.includes(name);
     if (inSet && cur.length <= 1) return; // can't deselect the last tileset
     const nextShown = inSet ? cur.filter(n => n !== name) : [...cur, name];
-    const tsBg = !inSet ? { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" }, Halloween: { bg1: "#3A313E", bg2: "#413643" }, Cafe: { bg1: "#AD6B45", bg2: "#B5714A" }, Pharmacy: { bg1: "#95a4ae", bg2: "#a2b0b8" } }[name] : null;
+    const tsBg = !inSet ? getTilesetBgColors(name) : null;
     const newBg1 = tsBg ? tsBg.bg1 : bg1Ref.current;
     const newBg2 = tsBg ? tsBg.bg2 : bg2Ref.current;
     const snap = { grid: gridRef.current, w: gridWRef.current, h: gridHRef.current, tileset: !inSet ? name : activeTilesetRef.current, shownTilesets: nextShown, bg1: newBg1, bg2: newBg2, highlight: [...highlightedCellsRef.current] };
@@ -1034,6 +1051,23 @@ function App() {
   useEffect(() => { if (shownTilesets) save("oph_shown_tilesets", shownTilesets); }, [shownTilesets]);
   useEffect(() => { save("oph_allow_mixing", allowTsMixing); }, [allowTsMixing]);
   useEffect(() => { save("oph_hidden_atlas_groups", hiddenAtlasGroups); }, [hiddenAtlasGroups]);
+  useEffect(() => { try { localStorage.setItem("oph_shown_atlas_tilesets", JSON.stringify(shownAtlasTilesets)); } catch {} }, [shownAtlasTilesets]);
+
+  // Load Atlas tileset list once on mount
+  useEffect(() => {
+    (async () => {
+      try {
+        const list = await fetchAtlasTilesetList();
+        setAtlasTilesetList(list);
+      } catch (err) {
+        const msg = err.message === "rate_limit"
+          ? "GitHub rate limit reached — Atlas tilesets unavailable."
+          : "Failed to load Atlas tilesets from GitHub.";
+        setAtlasTilesetError(msg);
+        setAtlasTilesetList([]);
+      }
+    })();
+  }, []); // eslint-disable-line
   // Dynamic starred tiles: keep wall1+bush for shown tilesets, remove them for hidden tilesets.
   // Non-wall1/bush stars (user-added tiles and tool shortcuts) are always preserved.
   useEffect(() => {
@@ -1123,7 +1157,7 @@ function App() {
       setBg1(snap.bg1); setHex1(snap.bg1); setBg2(snap.bg2); setHex2(snap.bg2);
       save(SK.colors, { bg1: snap.bg1, bg2: snap.bg2 });
     } else if (snap.tileset != null && snap.tileset !== activeTilesetRef.current) {
-      const tsBg = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" }, Halloween: { bg1: "#3A313E", bg2: "#413643" }, Cafe: { bg1: "#AD6B45", bg2: "#B5714A" }, Pharmacy: { bg1: "#95a4ae", bg2: "#a2b0b8" } }[snap.tileset];
+      const tsBg = OPHELIA_BG[snap.tileset];
       if (tsBg) { setBg1(tsBg.bg1); setHex1(tsBg.bg1); setBg2(tsBg.bg2); setHex2(tsBg.bg2); save(SK.colors, tsBg); }
     }
     if (snap.highlight !== undefined) {
@@ -1306,6 +1340,147 @@ function App() {
       setAtlasItems([]);
     } finally {
       setAtlasLoading(false);
+    }
+  };
+
+  // ── Atlas Tileset system ──────────────────────────────────────────
+  // Derive display name and codename prefix from a raw folder name
+  // e.g. "Z_Escape_Room" → displayName "Escape Room", codename "Escape_Room"
+  //      "Escape_Room"   → displayName "Escape Room", codename "Escape_Room"
+  const atlasTilesetMeta = (rawName) => {
+    const stripped = rawName.replace(/^Z_/, "");
+    return { name: rawName, displayName: stripped.replace(/_/g, " "), codename: stripped };
+  };
+
+  // Fetch list of Atlas tileset folders (session-cached)
+  const fetchAtlasTilesetList = async () => {
+    if (atlasTilesetsListCache.data) return atlasTilesetsListCache.data;
+    if (atlasTilesetsListCache.pending) return atlasTilesetsListCache.pending;
+    const excluded = new Set(["Additional", "Global"]);
+    const promise = fetchAtlasDir("").then(items => {
+      if (!Array.isArray(items)) throw new Error("unexpected_response");
+      return items
+        .filter(f => f.type === "dir" && !excluded.has(f.name))
+        .map(f => atlasTilesetMeta(f.name));
+    });
+    atlasTilesetsListCache.pending = promise;
+    try {
+      const result = await promise;
+      atlasTilesetsListCache.data = result;
+      atlasTilesetsListCache.pending = null;
+      return result;
+    } catch (err) {
+      atlasTilesetsListCache.pending = null;
+      throw err;
+    }
+  };
+
+  // Get BG colours for any tileset (Ophelia or Atlas) — single source of truth
+  const getTilesetBgColors = (name) => {
+    if (OPHELIA_BG[name]) return OPHELIA_BG[name];
+    return atlasTilesetBgColors[name] ?? null;
+  };
+
+  // Load and cache BG colours for an Atlas tileset by sampling BGLight/BGDark images
+  const loadAtlasTilesetBgColors = async (tilesetName) => {
+    if (atlasTilesetBgColors[tilesetName]) return atlasTilesetBgColors[tilesetName];
+    const base = `https://raw.githubusercontent.com/She-Fairy/atlas-horizon/main/Resources/${tilesetName}`;
+    const [bg1Val, bg2Val] = await Promise.all([
+      sampleImageCenter(`${base}/BGLight.png`),
+      sampleImageCenter(`${base}/BGDark.png`),
+    ]);
+    const colors = { bg1: bg1Val ?? null, bg2: bg2Val ?? null };
+    setAtlasTilesetBgColors(prev => {
+      const next = { ...prev, [tilesetName]: colors };
+      try { localStorage.setItem("oph_atlas_ts_bg", JSON.stringify(next)); } catch {}
+      return next;
+    });
+    return colors;
+  };
+
+  // Load all tiles for an Atlas tileset into atlasTiles state
+  const ATLAS_SUBFOLDERS = ["Fence", "Rope", "Water", "Gamemode_Specifics"];
+  const ATLAS_TILES_FOLDER = "Tiles";
+  const loadAtlasTileset = async (tilesetName) => {
+    const meta = atlasTilesetMeta(tilesetName);
+    const imageRe = /\.(png|jpg|jpeg|gif|webp|svg|bmp)$/i;
+    const tilesToAdd = []; // { relPath, atlasFolderName, folderLabel, codename }
+
+    try {
+      const rootItems = await fetchAtlasDir(tilesetName);
+      if (!Array.isArray(rootItems)) return;
+
+      // Flat tiles from Tiles/
+      if (rootItems.some(f => f.type === "dir" && f.name === ATLAS_TILES_FOLDER)) {
+        const files = await fetchAtlasDir(`${tilesetName}/${ATLAS_TILES_FOLDER}`);
+        if (Array.isArray(files)) {
+          files.filter(f => f.type === "file" && imageRe.test(f.name)).forEach(f => {
+            const base = f.name.replace(/\.[^.]+$/, "");
+            tilesToAdd.push({
+              relPath: `${tilesetName}/${ATLAS_TILES_FOLDER}/${f.name}`,
+              atlasFolderName: null,
+              folderLabel: null,
+              codename: `${meta.codename}_${base}`,
+            });
+          });
+        }
+      }
+
+      // Folder-based tiles (Fence, Rope, Water, Gamemode_Specifics)
+      for (const sub of ATLAS_SUBFOLDERS) {
+        if (!rootItems.some(f => f.type === "dir" && f.name === sub)) continue;
+        const files = await fetchAtlasDir(`${tilesetName}/${sub}`);
+        if (!Array.isArray(files)) continue;
+        const folderLabel = sub === "Gamemode_Specifics" ? "Objective" : sub;
+        files.filter(f => f.type === "file" && imageRe.test(f.name)).forEach(f => {
+          const base = f.name.replace(/\.[^.]+$/, "");
+          tilesToAdd.push({
+            relPath: `${tilesetName}/${sub}/${f.name}`,
+            atlasFolderName: sub,
+            folderLabel,
+            codename: `${meta.codename}_${base}`,
+          });
+        });
+      }
+
+      if (tilesToAdd.length === 0) return;
+
+      // Batch-add to atlasTiles; skip any already loaded (matched by src)
+      setAtlasTiles(prev => {
+        const srcSet = new Set(prev.map(t => t.src));
+        const usedIds = new Set(prev.map(t => t.id));
+        const newTiles = [];
+        let nextId = ATLAS_ID_START;
+        for (const { relPath, atlasFolderName, folderLabel, codename } of tilesToAdd) {
+          const src = `https://raw.githubusercontent.com/She-Fairy/atlas-horizon/main/Resources/${relPath}`;
+          if (srcSet.has(src)) continue;
+          while (usedIds.has(nextId) && nextId < 500) nextId++;
+          if (nextId >= 500) break;
+          usedIds.add(nextId);
+          const scopedKey = atlasFolderName ? `${tilesetName}/${atlasFolderName}` : null;
+          const tile = {
+            id: nextId++, src,
+            isDefault: false, isAtlas: true,
+            atlasTilesetName: tilesetName,
+            atlasFolderName,
+            folderKey: scopedKey,
+            folderLabel,
+            codename,
+            baseCodename: relPath.split("/").pop().replace(/\.[^.]+$/, ""),
+          };
+          newTiles.push(tile);
+          srcSet.add(src);
+        }
+        if (newTiles.length === 0) return prev;
+        // Apply settings inheritance
+        newTiles.forEach(t => {
+          if (t.atlasFolderName === "Water") setRotatableMap(rm => ({ ...rm, [t.id]: true }));
+          if (t.atlasFolderName === "Gamemode_Specifics") setPriorityTiles(pt => ({ ...pt, [t.id]: true }));
+        });
+        return [...prev, ...newTiles];
+      });
+    } catch (err) {
+      console.warn("Failed to load Atlas tileset:", tilesetName, err);
     }
   };
 
@@ -2996,12 +3171,13 @@ function App() {
     }
 
     // Step 2: full tile list — tileset tiles grouped with collapsible sections
-    const shownNames = new Set(shownTilesets ?? [activeTileset ?? manifest?.tilesets?.[0]?.name]);
-    const tilesetTiles_ = tiles.filter(t => t.id >= TILESET_ID_START && t.id < GLOBAL_ID_START);
-    const userTiles_    = tiles.filter(t => t.id >= USER_ID_START && t.id <= USER_ID_MAX);
-    const globalTiles_  = tiles.filter(t => t.id >= GLOBAL_ID_START && t.id < ATLAS_ID_START);
+    const shownNames     = new Set(shownTilesets ?? [activeTileset ?? manifest?.tilesets?.[0]?.name]);
+    const shownAtlasSet  = new Set(shownAtlasTilesets ?? []);
+    const tilesetTiles_  = tiles.filter(t => t.id >= TILESET_ID_START && t.id < GLOBAL_ID_START);
+    const userTiles_     = tiles.filter(t => t.id >= USER_ID_START && t.id <= USER_ID_MAX);
+    const globalTiles_   = tiles.filter(t => t.id >= GLOBAL_ID_START && t.id < ATLAS_ID_START);
 
-    // Group tileset tiles by tileset name
+    // Group Ophelia tileset tiles by tileset name
     const tsByName = {};
     tilesetTiles_.forEach(t => {
       const name = t.tilesetName ?? "Tileset";
@@ -3009,12 +3185,14 @@ function App() {
       tsByName[name].push(t);
     });
 
+    // Collect all Atlas tileset names that have loaded tiles (for display)
+    const allAtlasTsNames = [...new Set(atlasTiles.map(t => t.atlasTilesetName).filter(Boolean))];
+
     // Collapsible state: shown tilesets open, hidden collapsed by default
-    const [tsCollapsed, setTsCollapsed] = React.useState(() => {
-      const init = {};
-      Object.keys(tsByName).forEach(name => { init[name] = !shownNames.has(name); });
-      return init;
-    });
+    const initCollapsed = {};
+    Object.keys(tsByName).forEach(name => { initCollapsed[name] = !shownNames.has(name); });
+    allAtlasTsNames.forEach(name => { initCollapsed[`atlas_${name}`] = !shownAtlasSet.has(name); });
+    const [tsCollapsed, setTsCollapsed] = React.useState(() => initCollapsed);
 
     const onSelect = id => {
       const s = replaceScrollRef.current?.scrollTop;
@@ -3041,7 +3219,7 @@ function App() {
           </div>
           <div ref={replaceScrollRef} style={{ overflowY: "auto", maxHeight: 320, padding: "2px 0" }}>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(52px, 1fr))", gap: 5 }}>
-              {/* Per-tileset collapsible sections */}
+              {/* Per-Ophelia-tileset collapsible sections */}
               {Object.entries(tsByName).map(([name, tsTs]) => {
                 const isCollapsed = !!tsCollapsed[name];
                 const isShown = shownNames.has(name);
@@ -3050,6 +3228,21 @@ function App() {
                     <CollapsibleSepLine label={name} isCollapsed={isCollapsed} isShown={isShown}
                       onToggle={() => setTsCollapsed(p => ({ ...p, [name]: !p[name] }))} />
                     {!isCollapsed && tsTs.map(t => <RCard key={t.id} t={t} selected={replaceB} onSelect={onSelect} />)}
+                  </React.Fragment>
+                );
+              })}
+              {/* Per-Atlas-tileset collapsible sections */}
+              {allAtlasTsNames.map(atsTsName => {
+                const collKey = `atlas_${atsTsName}`;
+                const isCollapsed = !!tsCollapsed[collKey];
+                const isShown = shownAtlasSet.has(atsTsName);
+                const meta = atlasTilesetMeta(atsTsName);
+                const tsTiles = atlasTiles.filter(t => t.atlasTilesetName === atsTsName);
+                return (
+                  <React.Fragment key={atsTsName}>
+                    <CollapsibleSepLine label={meta.displayName} isCollapsed={isCollapsed} isShown={isShown}
+                      onToggle={() => setTsCollapsed(p => ({ ...p, [collKey]: !p[collKey] }))} />
+                    {!isCollapsed && tsTiles.map(t => <RCard key={t.id} t={t} selected={replaceB} onSelect={onSelect} />)}
                   </React.Fragment>
                 );
               })}
@@ -3265,14 +3458,28 @@ function App() {
   // ── Convert modal — remap tileset tiles on the board ────────────
   const ConvertModal = () => {
     if (!convertOpen) return null;
-    const tilesets = manifest?.tilesets ?? [];
-    const [fromTs, setFromTs] = React.useState(activeTileset ?? tilesets[0]?.name ?? "");
-    const [toTs,   setToTs]   = React.useState(tilesets.find(t => t.name !== fromTs)?.name ?? "");
-    // Build id maps for all tilesets (same logic as the old computeAllTileIds)
-    const buildIdMaps = () => {
+    const opheliaTilesets = manifest?.tilesets ?? [];
+    // Active tilesets from both Ophelia and Atlas panels
+    const shownOphelia = new Set(shownTilesets ?? [activeTileset ?? opheliaTilesets[0]?.name]);
+    const shownAtlas   = new Set(shownAtlasTilesets ?? []);
+    // Build combined list of shown tilesets for From/To dropdowns
+    const shownOpheliaList  = opheliaTilesets.filter(ts => shownOphelia.has(ts.name));
+    const shownAtlasList    = (atlasTilesetList ?? []).filter(a => shownAtlas.has(a.name));
+    const allShownNames     = [
+      ...shownOpheliaList.map(ts => ts.name),
+      ...shownAtlasList.map(a => a.name),
+    ];
+
+    const defaultFrom = activeTileset ?? allShownNames[0] ?? "";
+    const defaultTo   = allShownNames.find(n => n !== defaultFrom) ?? "";
+    const [fromTs, setFromTs] = React.useState(defaultFrom);
+    const [toTs,   setToTs]   = React.useState(defaultTo);
+
+    // Build Ophelia ID maps (key-based, sequential IDs from manifest)
+    const buildOpheliaIdMaps = () => {
       let id = TILESET_ID_START;
       const maps = {};
-      for (const tsDef of tilesets) {
+      for (const tsDef of opheliaTilesets) {
         const m = {};
         for (const key of (tsDef.order ?? [])) {
           if (tsDef.folders?.[key]) m[key] = tsDef.folders[key].map(() => id++);
@@ -3282,19 +3489,54 @@ function App() {
       }
       return maps;
     };
-    const maps = buildIdMaps();
-    const fromMap = maps[fromTs] ?? {};
-    const toMap   = maps[toTs]   ?? {};
+
+    // Build Atlas ID maps (baseCodename-based, from loaded atlasTiles)
+    const buildAtlasCodenameMap = (tsName) => {
+      const m = {};
+      atlasTiles.filter(t => t.atlasTilesetName === tsName).forEach(t => { m[t.baseCodename] = t.id; });
+      return m;
+    };
+
+    // Compute remap
+    const opheliaIdMaps = buildOpheliaIdMaps();
     const idRemap = {};
-    for (const key of Object.keys(fromMap)) {
-      const oIds = fromMap[key], nIds = toMap[key];
-      if (nIds) oIds.forEach((oid, i) => { if (i < nIds.length) idRemap[oid] = nIds[i]; });
+    const fromAll = new Set();
+
+    const fromIsOphelia = !!opheliaIdMaps[fromTs];
+    const toIsOphelia   = !!opheliaIdMaps[toTs];
+
+    if (fromIsOphelia && toIsOphelia) {
+      // Ophelia→Ophelia: key-based remap
+      const fromMap = opheliaIdMaps[fromTs] ?? {};
+      const toMap   = opheliaIdMaps[toTs]   ?? {};
+      Object.values(fromMap).flat().forEach(id => fromAll.add(id));
+      for (const key of Object.keys(fromMap)) {
+        const oIds = fromMap[key], nIds = toMap[key];
+        if (nIds) oIds.forEach((oid, i) => { if (i < nIds.length) idRemap[oid] = nIds[i]; });
+      }
+    } else if (!fromIsOphelia && !toIsOphelia && fromTs && toTs) {
+      // Atlas→Atlas: baseCodename-based remap
+      const fromCodeMap = buildAtlasCodenameMap(fromTs);
+      const toCodeMap   = buildAtlasCodenameMap(toTs);
+      Object.entries(fromCodeMap).forEach(([code, fromId]) => {
+        fromAll.add(fromId);
+        if (toCodeMap[code] !== undefined) idRemap[fromId] = toCodeMap[code];
+      });
+    } else if (fromIsOphelia && !toIsOphelia) {
+      // Ophelia→Atlas: not meaningfully mappable (no matching IDs)
+      const fromMap = opheliaIdMaps[fromTs] ?? {};
+      Object.values(fromMap).flat().forEach(id => fromAll.add(id));
+    } else if (!fromIsOphelia && toIsOphelia) {
+      // Atlas→Ophelia: not meaningfully mappable
+      buildAtlasCodenameMap(fromTs);
+      atlasTiles.filter(t => t.atlasTilesetName === fromTs).forEach(t => fromAll.add(t.id));
     }
-    const fromAll = new Set(Object.values(fromMap).flat());
+
     const boardFromIds = new Set();
     grid.forEach(row => row.forEach(id => { if (id != null && fromAll.has(id)) boardFromIds.add(id); }));
     const unmapped = [...boardFromIds].filter(id => idRemap[id] === undefined);
     const mappable = [...boardFromIds].filter(id => idRemap[id] !== undefined);
+
     const doConvert = () => {
       const newGrid = grid.map(row => row.map(id =>
         (id != null && fromAll.has(id) && idRemap[id] !== undefined) ? idRemap[id] : id
@@ -3302,6 +3544,28 @@ function App() {
       setGrid(newGrid);
       setConvertOpen(false);
     };
+
+    const getDisplayName = (name) => {
+      const atlasDef = atlasTilesetList?.find(a => a.name === name);
+      return atlasDef ? atlasDef.displayName : name;
+    };
+
+    const TsSelect = ({ value, onChange }) => (
+      <select value={value} onChange={e => onChange(e.target.value)}
+        style={{ background: C.panel, color: C.text, border: `1px solid ${C.border}`, borderRadius: 5, fontSize: 11, padding: "3px 6px", cursor: "pointer", outline: "none" }}>
+        {shownOpheliaList.length > 0 && (
+          <optgroup label="Ophelia">
+            {shownOpheliaList.map(ts => <option key={ts.name} value={ts.name}>{ts.name}</option>)}
+          </optgroup>
+        )}
+        {shownAtlasList.length > 0 && (
+          <optgroup label="Atlas">
+            {shownAtlasList.map(a => <option key={a.name} value={a.name}>{a.displayName}</option>)}
+          </optgroup>
+        )}
+      </select>
+    );
+
     return (
       <div className="modal-backdrop" onClick={() => setConvertOpen(false)}>
         <div className="modal-box" style={{ maxWidth: 360 }} onClick={e => e.stopPropagation()}>
@@ -3313,38 +3577,30 @@ function App() {
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
             <div style={{ display: "flex", flexDirection: "column", gap: 3, flex: 1 }}>
               <span style={{ fontSize: 10, color: C.muted }}>From</span>
-              <select value={fromTs} onChange={e => {
-                  const v = e.target.value;
-                  setFromTs(v);
-                  if (v === toTs) {
-                    const alt = tilesets.find(t => t.name !== v);
-                    if (alt) setToTs(alt.name);
-                  }
-                }}
-                style={{ background: C.panel, color: C.text, border: `1px solid ${C.border}`, borderRadius: 5, fontSize: 11, padding: "3px 6px", cursor: "pointer", outline: "none" }}>
-                {tilesets.map(ts => <option key={ts.name} value={ts.name}>{ts.name}</option>)}
-              </select>
+              <TsSelect value={fromTs} onChange={v => {
+                setFromTs(v);
+                if (v === toTs) {
+                  const alt = allShownNames.find(n => n !== v);
+                  if (alt) setToTs(alt);
+                }
+              }} />
             </div>
             <span style={{ color: C.muted, fontSize: 18, marginTop: 14 }}>→</span>
             <div style={{ display: "flex", flexDirection: "column", gap: 3, flex: 1 }}>
               <span style={{ fontSize: 10, color: C.muted }}>To</span>
-              <select value={toTs} onChange={e => {
-                  const v = e.target.value;
-                  setToTs(v);
-                  if (v === fromTs) {
-                    const alt = tilesets.find(t => t.name !== v);
-                    if (alt) setFromTs(alt.name);
-                  }
-                }}
-                style={{ background: C.panel, color: C.text, border: `1px solid ${C.border}`, borderRadius: 5, fontSize: 11, padding: "3px 6px", cursor: "pointer", outline: "none" }}>
-                {tilesets.map(ts => <option key={ts.name} value={ts.name}>{ts.name}</option>)}
-              </select>
+              <TsSelect value={toTs} onChange={v => {
+                setToTs(v);
+                if (v === fromTs) {
+                  const alt = allShownNames.find(n => n !== v);
+                  if (alt) setFromTs(alt);
+                }
+              }} />
             </div>
           </div>
           {fromTs && toTs && fromTs !== toTs && (
             <div style={{ fontSize: 11, color: C.text, background: C.panelAlt ?? "rgba(0,0,0,0.2)", borderRadius: 6, padding: "6px 10px" }}>
               <div>{mappable.length} tile type{mappable.length !== 1 ? "s" : ""} will be converted.</div>
-              {unmapped.length > 0 && <div style={{ color: "#fbbf24" }}>{unmapped.length} type{unmapped.length !== 1 ? "s" : ""} have no match in {toTs} and will stay as-is.</div>}
+              {unmapped.length > 0 && <div style={{ color: "#fbbf24" }}>{unmapped.length} type{unmapped.length !== 1 ? "s" : ""} have no match in {getDisplayName(toTs)} and will stay as-is.</div>}
             </div>
           )}
           <div style={{ display: "flex", gap: 8 }}>
@@ -3695,7 +3951,13 @@ function App() {
               {/* Tileset selector — dropdown with multi-select checkboxes */}
               {manifest?.tilesets?.length > 0 && (() => {
                 const shown = new Set(shownTilesets ?? [activeTileset ?? manifest.tilesets[0]?.name]);
-                const label = ([...shown].join(", ") || "None") + (allowTsMixing && shown.size > 1 ? "..." : "");
+                const shownAtlas = new Set(shownAtlasTilesets ?? []);
+                const totalShown = shown.size + shownAtlas.size;
+                const labelParts = [
+                  ...[...shown],
+                  ...[...shownAtlas].map(n => atlasTilesetList?.find(a => a.name === n)?.displayName ?? n),
+                ];
+                const label = (labelParts.join(", ") || "None") + (allowTsMixing && totalShown > 1 ? "…" : "");
                 return (
                   <div style={{ padding: "4px 8px", borderBottom: `1px solid ${C.border}`, flexShrink: 0, position: "relative" }}>
                     <button
@@ -3705,9 +3967,9 @@ function App() {
                       <span style={{ color: C.muted, fontSize: 9 }}>{tilesetDropOpen ? "▲" : "▼"}</span>
                     </button>
                     {tilesetDropOpen && (() => {
-                      const atlasGroups = [...new Set(atlasTiles.map(t => t.atlasTilesetGroup).filter(Boolean))];
                       return (
-                        <div onMouseDown={e => e.stopPropagation()} style={{ position: "absolute", top: "100%", left: 8, right: 8, background: C.panelDeep, border: `1px solid ${C.border}`, borderRadius: 6, zIndex: 200, padding: "4px 0", boxShadow: "0 4px 16px rgba(0,0,0,0.45)" }}>
+                        <div onMouseDown={e => e.stopPropagation()} style={{ position: "absolute", top: "100%", left: 8, right: 8, background: C.panelDeep, border: `1px solid ${C.border}`, borderRadius: 6, zIndex: 200, padding: "4px 0", maxHeight: 320, overflowY: "auto", boxShadow: "0 4px 16px rgba(0,0,0,0.45)" }}>
+                          {/* ── Ophelia tilesets ── */}
                           {manifest.tilesets.map(ts => {
                             const checked = shown.has(ts.name);
                             return (
@@ -3718,7 +3980,7 @@ function App() {
                                     toggleTilesetShown(ts.name);
                                   } else {
                                     if (ts.name !== activeTileset) {
-                                      // Compute remapped grid
+                                      // Compute remapped grid (auto-convert Ophelia→Ophelia)
                                       let newGrid = gridRef.current;
                                       if (manifest && activeTileset) {
                                         const tilesets = manifest.tilesets ?? [];
@@ -3744,7 +4006,7 @@ function App() {
                                           (id != null && fromAll.has(id) && idRemap[id] !== undefined) ? idRemap[id] : id
                                         ));
                                       }
-                                      const tsBg = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" }, Halloween: { bg1: "#3A313E", bg2: "#413643" }, Cafe: { bg1: "#AD6B45", bg2: "#B5714A" }, Pharmacy: { bg1: "#95a4ae", bg2: "#a2b0b8" } }[ts.name];
+                                      const tsBg = getTilesetBgColors(ts.name);
                                       const newBg1 = tsBg ? tsBg.bg1 : bg1Ref.current;
                                       const newBg2 = tsBg ? tsBg.bg2 : bg2Ref.current;
                                       const snap = { grid: newGrid, w: gridWRef.current, h: gridHRef.current, tileset: ts.name, shownTilesets: [ts.name], bg1: newBg1, bg2: newBg2, highlight: [...highlightedCellsRef.current] };
@@ -3759,6 +4021,7 @@ function App() {
                                       if (tsBg) { setBg1(tsBg.bg1); setHex1(tsBg.bg1); setBg2(tsBg.bg2); setHex2(tsBg.bg2); save(SK.colors, tsBg); }
                                     }
                                     setShownTilesets([ts.name]);
+                                    setShownAtlasTilesets([]);
                                     setTilesetDropOpen(false);
                                   }
                                 }}>
@@ -3773,171 +4036,65 @@ function App() {
                               </label>
                             );
                           })}
-                          {atlasGroups.length > 0 && <>
-                            <div style={{ margin: "3px 8px", height: 1, background: C.border }} />
-                            <div style={{ padding: "2px 10px 3px", fontSize: 9, color: C.muted, textTransform: "uppercase", letterSpacing: 0.6 }}>Atlas</div>
-                            {atlasGroups.map(g => {
-                              const hidden = hiddenAtlasGroups.includes(g);
-                              return (
-                                <label key={g} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", cursor: "pointer", userSelect: "none" }}
-                                  onClick={e => { e.preventDefault(); setHiddenAtlasGroups(prev => hidden ? prev.filter(x => x !== g) : [...prev, g]); }}>
-                                  <input type="checkbox" readOnly checked={!hidden}
-                                    style={{ accentColor: "#a78bfa", cursor: "pointer", width: 13, height: 13, pointerEvents: "none" }} />
-                                  <span style={{ fontSize: 11, color: !hidden ? "#a78bfa" : C.text, fontWeight: !hidden ? 600 : 400 }}>{g}</span>
-                                </label>
-                              );
-                            })}
-                          </>}
+                          {/* ── Atlas tilesets ── */}
+                          <div style={{ margin: "3px 8px", height: 1, background: C.border }} />
+                          <div style={{ padding: "2px 10px 3px", fontSize: 9, color: C.muted, textTransform: "uppercase", letterSpacing: 0.6 }}>Atlas</div>
+                          {atlasTilesetList === null && (
+                            <div style={{ padding: "4px 10px", fontSize: 10, color: C.muted }}>Loading…</div>
+                          )}
+                          {atlasTilesetError && (
+                            <div style={{ padding: "4px 10px", fontSize: 10, color: "#f87171" }}>{atlasTilesetError}</div>
+                          )}
+                          {(atlasTilesetList ?? []).map(atsDef => {
+                            const checked = shownAtlas.has(atsDef.name);
+                            return (
+                              <label key={atsDef.name} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", cursor: "pointer", userSelect: "none" }}
+                                onClick={e => {
+                                  e.preventDefault();
+                                  if (allowTsMixing) {
+                                    // Mixing mode: toggle Atlas tileset
+                                    const adding = !checked;
+                                    if (adding) {
+                                      loadAtlasTileset(atsDef.name);
+                                      const cachedBg = getTilesetBgColors(atsDef.name);
+                                      if (cachedBg) { setBg1(cachedBg.bg1); setHex1(cachedBg.bg1); setBg2(cachedBg.bg2); setHex2(cachedBg.bg2); save(SK.colors, cachedBg); }
+                                      else loadAtlasTilesetBgColors(atsDef.name).then(colors => { if (colors?.bg1) { setBg1(colors.bg1); setHex1(colors.bg1); setBg2(colors.bg2); setHex2(colors.bg2); save(SK.colors, colors); } });
+                                      setActiveTileset(atsDef.name);
+                                      setShownAtlasTilesets(prev => [...prev, atsDef.name]);
+                                    } else {
+                                      const newAtlas = shownAtlasTilesets.filter(n => n !== atsDef.name);
+                                      // Ensure at least one tileset total remains shown
+                                      if (newAtlas.length === 0 && (shownTilesets ?? []).length === 0) return;
+                                      setShownAtlasTilesets(newAtlas);
+                                    }
+                                  } else {
+                                    // Non-mixing mode: select only this Atlas tileset
+                                    if (!checked) {
+                                      loadAtlasTileset(atsDef.name);
+                                      const cachedBg = getTilesetBgColors(atsDef.name);
+                                      if (cachedBg) { setBg1(cachedBg.bg1); setHex1(cachedBg.bg1); setBg2(cachedBg.bg2); setHex2(cachedBg.bg2); save(SK.colors, cachedBg); }
+                                      else loadAtlasTilesetBgColors(atsDef.name).then(colors => { if (colors?.bg1) { setBg1(colors.bg1); setHex1(colors.bg1); setBg2(colors.bg2); setHex2(colors.bg2); save(SK.colors, colors); } });
+                                      setActiveTileset(atsDef.name);
+                                      setShownTilesets([]);
+                                      setShownAtlasTilesets([atsDef.name]);
+                                    }
+                                    setTilesetDropOpen(false);
+                                  }
+                                }}>
+                                <input type="checkbox" readOnly checked={checked}
+                                  style={{ accentColor: "#a78bfa", cursor: "pointer", width: 13, height: 13, pointerEvents: "none" }} />
+                                <span style={{ fontSize: 11, color: checked ? "#a78bfa" : C.text, fontWeight: checked ? 600 : 400 }}>
+                                  {atsDef.displayName}
+                                </span>
+                              </label>
+                            );
+                          })}
                         </div>
                       );
                     })()}
                   </div>
                 );
               })()}
-              {/* Atlas button row */}
-              <div style={{ padding: "4px 8px", borderBottom: `1px solid ${C.border}`, flexShrink: 0, display: "flex", alignItems: "center", gap: 6 }}>
-                <button
-                  onClick={() => { setAtlasOpen(o => !o); if (!atlasOpen && atlasItems === null) navigateAtlas(""); }}
-                  style={{ ...btn(atlasOpen, C.accent, C.accentDim), fontSize: 10, padding: "3px 8px", flex: 1 }}
-                  title="Browse She-Fairy/atlas-horizon tiles">
-                  🗺 Atlas…
-                </button>
-                {atlasTiles.length > 0 && (
-                  <span style={{ fontSize: 9, color: C.muted }}>{atlasTiles.length}</span>
-                )}
-              </div>
-
-              {/* Atlas floating panel */}
-              {atlasOpen && (() => {
-                const isRoot = atlasPath === "";
-                const pathParts = atlasPath ? atlasPath.split('/') : [];
-                const imageExts = /\.(png|jpg|jpeg|gif|webp|svg|bmp)$/i;
-                return (
-                  <div style={{ position: "fixed", top: 80, left: isMobile ? 10 : 250, width: isMobile ? "calc(100vw - 20px)" : 320, maxHeight: 480, background: C.panel, border: `1px solid ${C.border}`, borderRadius: 12, boxShadow: "0 8px 32px rgba(0,0,0,0.75)", zIndex: 3000, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-                    {/* Header */}
-                    <div style={{ padding: "6px 10px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
-                      {!isRoot && (
-                        <button onClick={() => { const up = pathParts.slice(0, -1).join('/'); navigateAtlas(up); }}
-                          style={{ background: "none", border: "none", cursor: "pointer", color: C.accentBright, fontSize: 14, lineHeight: 1, padding: "0 2px" }} title="Go up">←</button>
-                      )}
-                      <span style={{ fontSize: 10, color: C.accent, fontWeight: 700, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        Resources{atlasPath ? ' / ' + pathParts.join(' / ') : ' /'}
-                      </span>
-                      <span style={{ display: "flex", gap: 2, alignItems: "center" }}>
-                        {[16, 24, 36, 48].map(sz => (
-                          <button key={sz} onClick={() => setAtlasIconSize(sz)}
-                            style={{ ...btn(atlasIconSize === sz, C.accent, C.accentDim), fontSize: 8, padding: "1px 4px", minWidth: 0 }}>
-                            {sz}
-                          </button>
-                        ))}
-                      </span>
-                      <button onClick={() => setAtlasOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 16, lineHeight: 1, padding: "0 2px" }}>×</button>
-                    </div>
-                    {/* Add all in folder button (non-root) */}
-                    {!isRoot && atlasItems && atlasItems.length > 0 && (
-                      <div style={{ padding: "4px 8px", borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
-                        <button
-                          onClick={async () => {
-                            const imageFiles = atlasItems.filter(f => f.type === 'file' && imageExts.test(f.name));
-                            if (imageFiles.length === 0) return;
-                            const groupName = pathParts[pathParts.length - 1];
-                            await addAtlasTilesetFolder(groupName, imageFiles);
-                          }}
-                          style={{ ...btn(false, C.soft, "rgba(252,211,77,0.12)"), fontSize: 10, padding: "3px 8px", width: "100%" }}>
-                          + Add all tiles in this folder
-                        </button>
-                      </div>
-                    )}
-                    {/* Error */}
-                    {atlasError && (
-                      <div style={{ padding: "6px 10px", color: "#f87171", fontSize: 11, borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>{atlasError}</div>
-                    )}
-                    {/* Content */}
-                    <div style={{ overflowY: "auto", flex: 1, padding: "4px 0" }}>
-                      {atlasLoading ? (
-                        <div style={{ padding: "12px 10px", color: C.muted, fontSize: 11, textAlign: "center" }}>Loading…</div>
-                      ) : atlasItems === null ? null : atlasItems.length === 0 ? (
-                        <div style={{ padding: "12px 10px", color: C.muted, fontSize: 11, textAlign: "center" }}>Empty folder</div>
-                      ) : atlasItems.map(item => {
-                        const isDir = item.type === 'dir';
-                        const isImg = !isDir && imageExts.test(item.name);
-                        if (isRoot && item.type === 'dir' && (item.name === 'Additional' || item.name === 'Global')) return null;
-                        if (!isDir && !imageExts.test(item.name)) return null;
-                        const relPath = item.path.replace(/^Resources\//, '');
-                        const rawSrc = `https://raw.githubusercontent.com/She-Fairy/atlas-horizon/main/Resources/${relPath}`;
-                        const isBgFile = !isDir && (item.name === 'BGDark.png' || item.name === 'BGLight.png');
-                        const isBgDark = item.name === 'BGDark.png';
-                        if (isBgFile) {
-                          return (
-                            <div key={item.name}
-                              onClick={() => {
-                                (async () => {
-                                  const color = await sampleImageCenter(rawSrc);
-                                  if (!color) return;
-                                  if (isBgDark) {
-                                    setBg2(color); setHex2(color);
-                                    save(SK.colors, { bg1, bg2: color });
-                                  } else {
-                                    setBg1(color); setHex1(color);
-                                    save(SK.colors, { bg1: color, bg2 });
-                                  }
-                                })();
-                              }}
-                              style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 10px", cursor: "pointer", background: "transparent", transition: "background 0.1s" }}
-                              onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,0.07)"}
-                              onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-                              <span style={{ fontSize: 14, lineHeight: 1, flexShrink: 0 }}>🎨</span>
-                              <span style={{ fontSize: 10, color: C.text, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{isBgDark ? "BGDark" : "BGLight"} — set as background</span>
-                            </div>
-                          );
-                        }
-                        const alreadyAdded = atlasTiles.some(t => t.src === rawSrc);
-                        return (
-                          <div key={item.name}
-                            onClick={() => {
-                              if (isDir) {
-                                if (isRoot) {
-                                  // Root folder click: offer "As Group" vs "Individually"
-                                  const choice = confirm(`Add all tiles in "${item.name}" as a group (OK) or browse individually (Cancel)?`);
-                                  if (choice) {
-                                    // As Group: fetch folder then add all
-                                    (async () => {
-                                      try {
-                                        const files = await fetchAtlasDir(relPath);
-                                        addAtlasTilesetFolder(item.name, Array.isArray(files) ? files : []);
-                                      } catch {}
-                                    })();
-                                  } else {
-                                    navigateAtlas(relPath);
-                                  }
-                                } else {
-                                  navigateAtlas(relPath);
-                                }
-                              } else {
-                                if (!alreadyAdded) addAtlasTile(relPath);
-                              }
-                            }}
-                            style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 10px", cursor: "pointer", background: "transparent", transition: "background 0.1s" }}
-                            onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,0.07)"}
-                            onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-                            {isDir ? (
-                              <span style={{ fontSize: 14, lineHeight: 1, flexShrink: 0 }}>📁</span>
-                            ) : (
-                              <div style={{ width: atlasIconSize, height: atlasIconSize, flexShrink: 0, background: C.panelDeep, borderRadius: 3, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                                <img src={rawSrc} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated" }} />
-                              </div>
-                            )}
-                            <span style={{ fontSize: 10, color: C.text, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.name}</span>
-                            {!isDir && alreadyAdded && <span style={{ fontSize: 10, color: "#4ade80", flexShrink: 0 }}>✓</span>}
-                            {isDir && <span style={{ fontSize: 10, color: C.muted, flexShrink: 0 }}>›</span>}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                );
-              })()}
-
               <input ref={fileRef} type="file" accept={ACCEPTED} multiple style={{ display: "none" }}
                 onChange={e => { loadFiles(e.target.files); e.target.value = ""; }} />
               <div style={{ overflowY: "auto", flex: 1, padding: "8px 8px 10px" }}>
@@ -4220,42 +4377,30 @@ function App() {
                           <SectionHeader id="global" label="Global" count={globalEntries.reduce((n, e) => n + (e.tiles?.length ?? 1), 0)} />
                           {!panelCollapsed.global && globalEntries.map(renderEntry)}
                         </>)}
-                      </>);
-                    })()}
-                    {/* 6b. Atlas Explored section */}
-                    {atlasTiles.length > 0 && (() => {
-                      const groups = {};
-                      const ungrouped = [];
-                      atlasTiles.forEach(t => {
-                        if (t.atlasTilesetGroup) {
-                          if (!groups[t.atlasTilesetGroup]) groups[t.atlasTilesetGroup] = [];
-                          groups[t.atlasTilesetGroup].push(t);
-                        } else ungrouped.push(t);
-                      });
-                      return (<>
-                        <div onClick={() => setPanelCollapsed(p => ({ ...p, atlas: !p.atlas }))}
-                          style={{ width: "100%", flexBasis: "100%", flexShrink: 0, display: "flex", alignItems: "center", gap: 4, padding: "3px 2px", cursor: "pointer", userSelect: "none", marginTop: 4 }}>
-                          <span style={{ fontSize: 9, color: C.muted, lineHeight: 1 }}>{panelCollapsed.atlas ? "▶" : "▼"}</span>
-                          <span style={{ fontSize: 9, fontWeight: 700, color: C.accent, textTransform: "uppercase", letterSpacing: 0.8 }}>Atlas Explored</span>
-                          <span style={{ fontSize: 8, color: C.muted, marginLeft: 2 }}>({atlasTiles.length})</span>
-                          <div style={{ flex: 1, height: 1, background: C.border, marginLeft: 4 }} />
-                          <button onClick={e => { e.stopPropagation(); if (confirm("Remove all atlas tiles?")) setAtlasTiles([]); }}
-                            style={{ ...btn(false, C.danger, "rgba(248,113,113,0.14)"), fontSize: 8, padding: "1px 5px" }}>✕ Clear</button>
-                        </div>
-                        {!panelCollapsed.atlas && (<>
-                          {ungrouped.map(t => renderFlatCard(t, { onDelete: id => setAtlasTiles(prev => prev.filter(x => x.id !== id)) }))}
-                          {Object.entries(groups).map(([groupName, gTiles]) => {
-                            if (hiddenAtlasGroups.includes(groupName)) return null;
-                            return (
-                              <React.Fragment key={groupName}>
-                                <div style={{ width: "100%", flexBasis: "100%", flexShrink: 0, marginTop: 4, marginBottom: 2 }}>
-                                  <span style={{ fontSize: 9, color: C.muted, fontWeight: 600 }}>📁 {groupName}</span>
-                                </div>
-                                {gTiles.map(t => renderFlatCard(t, { onDelete: id => setAtlasTiles(prev => prev.filter(x => x.id !== id)) }))}
-                              </React.Fragment>
-                            );
-                          })}
-                        </>)}
+                        {/* ── Per-Atlas-tileset sections (one per shown Atlas tileset) ── */}
+                        {shownAtlasTilesets.map(atsTsName => {
+                          const meta = atlasTilesetMeta(atsTsName);
+                          const tsTiles = atlasTiles.filter(t => t.atlasTilesetName === atsTsName);
+                          const sectionId = `atlas_${atsTsName}`;
+                          const isLoaded = tsTiles.length > 0;
+                          const flatTiles = tsTiles.filter(t => !t.atlasFolderName);
+                          const folderNames = [...new Set(tsTiles.filter(t => t.atlasFolderName).map(t => t.atlasFolderName))];
+                          return (
+                            <React.Fragment key={atsTsName}>
+                              <SectionHeader id={sectionId} label={meta.displayName} count={tsTiles.length} />
+                              {!panelCollapsed[sectionId] && (
+                                isLoaded ? <>
+                                  {flatTiles.map(t => renderFlatCard(t))}
+                                  {folderNames.map(folderName => {
+                                    const fTiles = tsTiles.filter(t => t.atlasFolderName === folderName);
+                                    const fLabel = fTiles[0]?.folderLabel ?? folderName;
+                                    return renderEntry({ type: 'folder', key: `${atsTsName}/${folderName}`, label: fLabel, tiles: fTiles });
+                                  })}
+                                </> : <div style={{ width: "100%", flexBasis: "100%", fontSize: 10, color: C.muted, padding: "4px 2px" }}>Loading tiles…</div>
+                              )}
+                            </React.Fragment>
+                          );
+                        })}
                       </>);
                     })()}
                     {/* Reset All Tile Settings button */}
@@ -5144,8 +5289,12 @@ function App() {
 
           {/* Row 3: Background colour pickers */}
           {(() => {
-            const BG_PRESETS = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" }, Halloween: { bg1: "#3A313E", bg2: "#413643" }, Cafe: { bg1: "#AD6B45", bg2: "#B5714A" }, Pharmacy: { bg1: "#95a4ae", bg2: "#a2b0b8" } };
-            const activeBgPreset = Object.keys(BG_PRESETS).find(k => BG_PRESETS[k].bg1.toLowerCase() === bg1.toLowerCase() && BG_PRESETS[k].bg2.toLowerCase() === bg2.toLowerCase()) ?? "";
+            // Find the active BG preset by matching current colours against all known tilesets
+            const allBgPresets = { ...OPHELIA_BG, ...atlasTilesetBgColors };
+            const activeBgPreset = Object.keys(allBgPresets).find(k => {
+              const p = allBgPresets[k];
+              return p.bg1 && p.bg2 && p.bg1.toLowerCase() === bg1.toLowerCase() && p.bg2.toLowerCase() === bg2.toLowerCase();
+            }) ?? "";
             return (
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8, padding: "3px 14px 5px", alignItems: "center" }}>
                 <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1, userSelect: "none" }}>Background</span>
@@ -5180,17 +5329,34 @@ function App() {
                     style={{ width: 62, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 11, padding: "3px 6px", outline: "none" }}
                     spellCheck={false} />
                 </div>
-                <select value={activeBgPreset}
-                  onChange={e => {
-                    const p = BG_PRESETS[e.target.value];
-                    if (!p) return;
-                    pushHistorySnapshot();
-                    applyBg1(p.bg1); applyBg2(p.bg2);
-                  }}
-                  style={{ background: C.panel, color: activeBgPreset ? C.accentBright : C.muted, border: `1px solid ${C.border}`, borderRadius: 5, fontSize: 10, padding: "2px 4px", cursor: "pointer", outline: "none" }}>
-                  <option value="" style={{ color: C.muted }}>Custom</option>
-                  {Object.keys(BG_PRESETS).map(k => <option key={k} value={k} style={{ color: C.text }}>{k}</option>)}
-                </select>
+                {/* Tileset BG colour selector — Ophelia above divider, Atlas below */}
+                {(() => {
+                  // Atlas tilesets with loaded BG colours
+                  const loadedAtlasBg = (atlasTilesetList ?? []).filter(a => atlasTilesetBgColors[a.name]?.bg1);
+                  return (
+                    <select value={activeBgPreset}
+                      onChange={e => {
+                        const key = e.target.value;
+                        const p = allBgPresets[key];
+                        if (!p || !p.bg1) return;
+                        pushHistorySnapshot();
+                        applyBg1(p.bg1); applyBg2(p.bg2);
+                      }}
+                      style={{ background: C.panel, color: activeBgPreset ? C.accentBright : C.muted, border: `1px solid ${C.border}`, borderRadius: 5, fontSize: 10, padding: "2px 4px", cursor: "pointer", outline: "none" }}>
+                      <option value="" style={{ color: C.muted }}>Custom</option>
+                      <optgroup label="Ophelia">
+                        {Object.keys(OPHELIA_BG).map(k => <option key={k} value={k} style={{ color: C.text }}>{k}</option>)}
+                      </optgroup>
+                      {loadedAtlasBg.length > 0 && (
+                        <optgroup label="Atlas">
+                          {loadedAtlasBg.map(a => (
+                            <option key={a.name} value={a.name} style={{ color: C.text }}>{a.displayName}</option>
+                          ))}
+                        </optgroup>
+                      )}
+                    </select>
+                  );
+                })()}
               </div>
             );
           })()}
