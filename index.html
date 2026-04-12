@@ -1325,8 +1325,11 @@ function App() {
         });
         return n;
       });
-      // Apply flip state from card flip mode
-      const flipMode = cardFlipModesRef.current[tileId] ?? 'spin';
+      // Apply flip state from card flip mode — compute effective mode respecting spin/flip capability
+      const canSpin = tile ? isTileRotatable(tile) : false;
+      const canFlip = tile ? (allowFlipMapRef.current[tileId] !== undefined ? allowFlipMapRef.current[tileId] : isDefaultFlippable(tile)) : false;
+      const rawFMode = cardFlipModesRef.current[tileId] ?? 'spin';
+      const flipMode = !(canSpin || canFlip) ? 'spin' : (!canFlip ? 'spin' : (!canSpin ? 'flip' : rawFMode));
       const flipStep = (flipMode === 'flip') ? (cardFlipStepsRef.current[tileId] ?? 0) : 0;
       setGridFlips(prev => {
         const n = { ...prev };
@@ -1400,7 +1403,10 @@ function App() {
         });
         return n;
       });
-      const flipMode = cardFlipModesRef.current[tileId] ?? 'spin';
+      const canSpinC = tile ? isTileRotatable(tile) : false;
+      const canFlipC = tile ? (allowFlipMapRef.current[tileId] !== undefined ? allowFlipMapRef.current[tileId] : isDefaultFlippable(tile)) : false;
+      const rawFModeC = cardFlipModesRef.current[tileId] ?? 'spin';
+      const flipMode = !(canSpinC || canFlipC) ? 'spin' : (!canFlipC ? 'spin' : (!canSpinC ? 'flip' : rawFModeC));
       const flipStep = (flipMode === 'flip') ? (cardFlipStepsRef.current[tileId] ?? 0) : 0;
       setGridFlips(prev => {
         const n = { ...prev };
@@ -2572,9 +2578,11 @@ function App() {
     const currentMult = getTileMultiplier(t);
     const defaultOff  = getDefaultOffset(t);
     const currentOff  = getTileOffset(t);
-    const [multInput, setMultInput] = React.useState(String(currentMult));
-    const [oxInput,   setOxInput]   = React.useState(String(currentOff.ox));
-    const [oyInput,   setOyInput]   = React.useState(String(currentOff.oy));
+    const defaultCodename_ = t.isDefault ? (deriveCodename(t.src) ?? "") : t.isAtlas ? (t.baseCodename ?? t.codename ?? "") : "";
+    const [multInput,      setMultInput]      = React.useState(String(currentMult));
+    const [oxInput,        setOxInput]        = React.useState(String(currentOff.ox));
+    const [oyInput,        setOyInput]        = React.useState(String(currentOff.oy));
+    const [codenameInput,  setCodenameInput]  = React.useState(tileNames[t.id] !== undefined ? tileNames[t.id] : defaultCodename_);
     const isPriority = !!priorityTiles[t.id];
 
     const commitMult = val => {
@@ -2639,24 +2647,16 @@ function App() {
             </div>
           )}
 
-          {/* Codename — editable for all tile types */}
-          {(() => {
-            const defaultCodename = t.isDefault
-              ? (deriveCodename(t.src) ?? "")
-              : t.isAtlas
-              ? (t.baseCodename ?? t.codename ?? "")
-              : "";
-            const currentCodename = tileNames[t.id] !== undefined ? tileNames[t.id] : defaultCodename;
-            return (
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Codename</span>
-                <input value={currentCodename}
-                  onChange={e => setTileNames(prev => ({ ...prev, [t.id]: e.target.value }))}
-                  placeholder={defaultCodename || "Enter codename…"}
-                  style={{ flex: 1, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none" }} />
-              </div>
-            );
-          })()}
+          {/* Codename — editable for all tile types; uses local state to avoid losing focus on every keystroke */}
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Codename</span>
+            <input value={codenameInput}
+              onChange={e => setCodenameInput(e.target.value)}
+              onBlur={() => setTileNames(prev => ({ ...prev, [t.id]: codenameInput }))}
+              onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
+              placeholder={defaultCodename_ || "Enter codename…"}
+              style={{ flex: 1, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none" }} />
+          </div>
 
           {/* Size multiplier */}
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -3607,7 +3607,18 @@ function App() {
                         <div onMouseDown={e => e.stopPropagation()} style={{ position: "absolute", top: "100%", left: 8, right: 8, background: C.panelDeep, border: `1px solid ${C.border}`, borderRadius: 6, zIndex: 200, padding: "4px 0", boxShadow: "0 4px 16px rgba(0,0,0,0.45)" }}>
                           {/* Allow Tileset Mixing toggle */}
                           <label style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px 4px", cursor: "pointer", userSelect: "none", borderBottom: `1px solid ${C.border}`, marginBottom: 3 }}
-                            onClick={e => { e.preventDefault(); setAllowTsMixing(v => !v); }}>
+                            onClick={e => {
+                              e.preventDefault();
+                              setAllowTsMixing(v => {
+                                const next = !v;
+                                if (!next) {
+                                  // Turning mixing OFF — collapse to just the active tileset
+                                  const active = activeTileset ?? manifest?.tilesets?.[0]?.name;
+                                  if (active) setShownTilesets([active]);
+                                }
+                                return next;
+                              });
+                            }}>
                             <input type="checkbox" readOnly checked={allowTsMixing}
                               style={{ accentColor: C.accent, cursor: "pointer", width: 13, height: 13, pointerEvents: "none" }} />
                             <span style={{ fontSize: 10, color: C.muted }}>Allow Tileset Mixing</span>
