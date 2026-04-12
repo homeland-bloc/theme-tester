@@ -69,7 +69,7 @@
       "folders": {
         "fence":      ["Fence1.png", "Fence2.png", "Fence3.png"],
         "rope":       ["RopeConnects.png", "RopeStandalone.png"],
-        "water":      ["WaterCurve.png", "WaterFill.png", "WaterLine.png", "WaterTwist.png", "WaterBubble1.png", "WaterBubble2.png"],
+        "water":      ["WaterCurve.png", "WaterTwist.png", "WaterLine.png", "WaterFill.png", "WaterBubble1.png", "WaterBubble2.png"],
         "special":    ["SlowTile.png", "SpeedTile.png"],
         "teleporters":["BlueTeleporter.png", "GreenTeleporter.png", "RedTeleporter.png", "YellowTeleporter.png"],
         "jumppads":   ["DiagonalJumppad.png", "StraightJumppad.png"]
@@ -121,7 +121,7 @@
       "folders": {
         "fence": ["1.png", "2.png", "3.png", "4.png", "5.png", "6.png", "7.png", "8.png", "9.png", "10.png"],
         "rope": ["1.png", "2.png", "3.png", "4.png", "5.png", "6.png", "7.png", "8.png"],
-        "water": ["WaterCurve.png", "WaterFill.png", "WaterLine.png", "WaterTwist.png"]
+        "water": ["WaterCurve.png", "WaterTwist.png", "WaterLine.png", "WaterFill.png"]
       },
       "folderPaths": {
         "fence": "Pharmacy/Fence/",
