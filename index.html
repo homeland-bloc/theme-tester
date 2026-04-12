@@ -2641,11 +2641,11 @@ function App() {
           <span style={{ fontSize: 11, color: C.muted, fontWeight: 600 }}>Offsets (%) 📐</span>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Horizontal</span>
-            <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepOx(-0.05)}>−</button>
+            <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepOx(-1)}>−</button>
             <input type="number" value={oxInput} onChange={e => setOxInput(e.target.value)}
               onBlur={() => commitOffset()} onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
               style={{ width: 62, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none", textAlign: "center" }} />
-            <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepOx(+0.05)}>+</button>
+            <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepOx(+1)}>+</button>
             {(() => { const isDefault = currentOff.ox === defaultOff.ox; const greenStyle = isDefault ? { color: "#4ade80", borderColor: "#4ade80", background: "rgba(74,222,128,0.12)" } : {}; return (
               <button style={{ ...btn(false), fontSize: 10, padding: "3px 7px", marginLeft: "auto", ...greenStyle }}
                 disabled={isDefault} title={isDefault ? "Already at default" : "Reset to default"}
@@ -2654,11 +2654,11 @@ function App() {
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Vertical</span>
-            <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepOy(-0.05)}>−</button>
+            <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepOy(-1)}>−</button>
             <input type="number" value={oyInput} onChange={e => setOyInput(e.target.value)}
               onBlur={() => commitOffset()} onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
               style={{ width: 62, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none", textAlign: "center" }} />
-            <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepOy(+0.05)}>+</button>
+            <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepOy(+1)}>+</button>
             {(() => { const isDefault = currentOff.oy === defaultOff.oy; const greenStyle = isDefault ? { color: "#4ade80", borderColor: "#4ade80", background: "rgba(74,222,128,0.12)" } : {}; return (
               <button style={{ ...btn(false), fontSize: 10, padding: "3px 7px", marginLeft: "auto", ...greenStyle }}
                 disabled={isDefault} title={isDefault ? "Already at default" : "Reset to default"}
@@ -4454,11 +4454,21 @@ function App() {
 
                 {/* Checkerboard — single CSS-gradient element, no inter-cell boundaries at fractional zoom */}
                 <div style={{ position: "absolute", left: 0, top: CELL * zoom, width: gridW * CELL * zoom, height: gridH * CELL * zoom, backgroundColor: bg1, backgroundImage: `linear-gradient(45deg,${bg2} 25%,transparent 25%),linear-gradient(-45deg,${bg2} 25%,transparent 25%),linear-gradient(45deg,transparent 75%,${bg2} 75%),linear-gradient(-45deg,transparent 75%,${bg2} 75%)`, backgroundSize: `${2*CELL*zoom}px ${2*CELL*zoom}px`, backgroundPosition: `0 0,0 ${CELL*zoom}px,${CELL*zoom}px ${-CELL*zoom}px,${-CELL*zoom}px 0`, pointerEvents: "none" }} />
-                {/* Per-cell hit targets; space tiles mask the checkerboard with the canvas background */}
+                {/* Space-tile masks — solid C.bg squares rendered below tile passes so overflowing tiles from neighbouring rows paint on top */}
+                {Array.from({ length: gridH }).map((_, r) =>
+                  Array.from({ length: gridW }).map((__, c) =>
+                    grid[r]?.[c] === SPACE_TILE_ID ? (
+                      <div key={`sp${r}-${c}`}
+                        style={{ position: "absolute", left: c * CELL * zoom, top: (r + 1) * CELL * zoom, width: CELL * zoom, height: CELL * zoom, background: C.bg, pointerEvents: "none" }}
+                      />
+                    ) : null
+                  )
+                )}
+                {/* Per-cell hit targets — always transparent so tile images above them receive pointer events correctly */}
                 {Array.from({ length: gridH }).map((_, r) =>
                   Array.from({ length: gridW }).map((__, c) => (
                     <div key={`${r}-${c}`}
-                      style={{ position: "absolute", left: c * CELL * zoom, top: (r + 1) * CELL * zoom, width: CELL * zoom, height: CELL * zoom, background: grid[r]?.[c] === SPACE_TILE_ID ? C.bg : "transparent" }}
+                      style={{ position: "absolute", left: c * CELL * zoom, top: (r + 1) * CELL * zoom, width: CELL * zoom, height: CELL * zoom, background: "transparent" }}
                       onMouseDown={e => onCell(r, c, e)}
                       onMouseMove={e => onCell(r, c, e)}
                     />
