@@ -97,7 +97,7 @@
         "breakable": "Cafe/Skull.png"
       },
       "folders": {
-        "fence": ["B.png", "BR.png", "L.png", "M.png", "T.png", "TR.png", "V.png"],
+        "fence": ["L.png", "M.png", "V.png", "BR.png", "TR.png", "T.png", "B.png"],
         "water": ["WaterCurve.png", "WaterTwist.png", "WaterLine.png", "WaterFill.png"]
       },
       "folderPaths": {

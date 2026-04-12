@@ -119,8 +119,8 @@ const atlasApiCache = new Map(); // url → resolved data
 // Default per-tile settings: src pattern → property value.
 // Functions like isDefaultRotatable/isDefaultOTGWall read from here.
 const TILE_SETTINGS = {
-  rotatable:    ["/Water/"],             // src substrings → tile is rotatable (spin) by default
-  flippable:    ["/Fence/", "/Rope/", "Halloween/Jumppads/"],   // src substrings → tile is flippable by default
+  rotatable:    ["/Water/", "Jumppads/"],  // src substrings → tile is rotatable (spin) by default
+  flippable:    ["/Fence/", "/Rope/"],     // src substrings → tile is flippable by default
   otgPassable:  ["bush", "Bush", "SpeedTile", "SlowTile", "Objective", "Rope/", "Jumppads/", "Teleporters/", "HealPad", "Spawn", "SpawnPoint", "spawn"],
   mirrorOffset: ["Jumppads/", "Teleporters/", "HealPad"],
   bottomRender: ["/Water/", "Jumppads/", "Teleporters/", "HealPad"],
@@ -471,6 +471,7 @@ function App() {
   const bg1Ref   = useRef(bg1);
   const bg2Ref   = useRef(bg2);
   const histIdxRef = useRef(0);
+  const shownTilsetsRef = useRef(null);
   const bgHistTimerRef = useRef(null);
   const mirrorVRef = useRef(false);
   const mirrorHRef = useRef(false);
@@ -552,18 +553,20 @@ function App() {
     `;
   }, [uiTheme]);
   useEffect(() => { save("oph_auto_theme", autoTheme); }, [autoTheme]);
-  // Auto-adapt theme: when on, derive warm/cold from the BG colour temperature
+  // Auto-adapt theme: when on, derive warm/cold from the BG colour temperature.
+  // Uses B>G>R check: blue-dominant palettes map to warm (cool blues → warm UI contrast),
+  // everything else maps to cold.
   useEffect(() => {
     if (!autoTheme) return;
-    const warmth = hex => {
-      if (!hex || hex.length < 6) return 0;
+    const parseRGB = hex => {
+      if (!hex || hex.length < 6) return [128, 128, 128];
       const h = hex.replace('#', '');
-      const r = parseInt(h.slice(0, 2), 16) || 0;
-      const b = parseInt(h.slice(4, 6), 16) || 0;
-      return r - b;
+      return [parseInt(h.slice(0,2),16)||0, parseInt(h.slice(2,4),16)||0, parseInt(h.slice(4,6),16)||0];
     };
-    const avg = (warmth(bg1) + warmth(bg2)) / 2;
-    setUiTheme(avg > 10 ? 'cold' : 'warm');
+    const [r1,g1,b1] = parseRGB(bg1);
+    const [r2,g2,b2] = parseRGB(bg2);
+    const avgR=(r1+r2)/2, avgG=(g1+g2)/2, avgB=(b1+b2)/2;
+    setUiTheme(avgB > avgG && avgG > avgR ? 'warm' : 'cold');
   }, [autoTheme, bg1, bg2]);
   useEffect(() => { save("oph_starred", starredTiles); }, [starredTiles]);
   useEffect(() => { save("oph_recent", recentTileIds); }, [recentTileIds]);
@@ -802,14 +805,16 @@ function App() {
     const isPrio        = !!priorityTiles[t.id];
     const isBottom      = !!bottomTiles[t.id];
     const hasMirrorOff  = isMirrorOffset(t);
-    if (!hasOff && !isPrio && !isBottom && !hasMirrorOff) return null;
+    const hasShadow     = !!autoShadowTiles[t.id];
+    if (!hasOff && !isPrio && !isBottom && !hasMirrorOff && !hasShadow) return null;
     const parts = [];
     if (isPrio)  parts.push("🚨");
     if (isBottom) parts.push("⚓");
     if (hasOff)  parts.push("📐");
     if (hasMirrorOff) parts.push("🌪️");
+    if (hasShadow) parts.push("👻");
     return (
-      <span style={{ position: "absolute", bottom: 2, left: 3, fontSize: 8, fontWeight: 700, color: C.accentBright, background: "rgba(0,0,0,0.65)", borderRadius: 3, padding: "1px 3px", lineHeight: 1.3, pointerEvents: "none" }}>
+      <span style={{ position: "absolute", bottom: -7, left: -7, fontSize: 8, fontWeight: 700, color: C.accentBright, background: "rgba(0,0,0,0.65)", borderRadius: 3, padding: "1px 3px", lineHeight: 1.3, pointerEvents: "none", zIndex: 6 }}>
         {parts.join("")}
       </span>
     );
@@ -826,6 +831,7 @@ function App() {
   // Parsed manifest data
   const [manifest, setManifest] = useState(null);
   useEffect(() => { openFolderKeyRef.current = openFolderKey; }, [openFolderKey]);
+  useEffect(() => { shownTilsetsRef.current = shownTilesets; }, [shownTilesets]);
   // toggleFolder uses ref to read current value — avoids stale-closure reopening after
   // the outside-click mousedown handler closes the panel in the same event cycle.
   const toggleFolder = (key, e) => {
@@ -934,23 +940,31 @@ function App() {
   const switchTileset = (newTilesetName) => {
     if (!manifest || newTilesetName === activeTileset) return;
     setActiveTileset(newTilesetName);
-    const tsBg = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" }, Halloween: { bg1: "#3A313E", bg2: "#413643" }, Cafe: { bg1: "#AD6B45", bg2: "#B5714A" }, Pharmacy: { bg1: "#a9b0b7", bg2: "#b7bec2" } }[newTilesetName];
+    const tsBg = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" }, Halloween: { bg1: "#3A313E", bg2: "#413643" }, Cafe: { bg1: "#AD6B45", bg2: "#B5714A" }, Pharmacy: { bg1: "#95a4ae", bg2: "#a2b0b8" } }[newTilesetName];
     if (tsBg) { setBg1(tsBg.bg1); setHex1(tsBg.bg1); setBg2(tsBg.bg2); setHex2(tsBg.bg2); save(SK.colors, tsBg); }
   };
 
   // Toggle a tileset in the shown set; always keep at least one shown.
   const toggleTilesetShown = (name) => {
-    setShownTilesets(prev => {
-      const cur = prev ?? [activeTileset ?? name];
-      const s = new Set(cur);
-      if (s.has(name)) { if (s.size <= 1) return cur; s.delete(name); }
-      else {
-        s.add(name); setActiveTileset(name);
-        const tsBg = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" }, Halloween: { bg1: "#3A313E", bg2: "#413643" }, Cafe: { bg1: "#AD6B45", bg2: "#B5714A" }, Pharmacy: { bg1: "#a9b0b7", bg2: "#b7bec2" } }[name];
-        if (tsBg) { setBg1(tsBg.bg1); setHex1(tsBg.bg1); setBg2(tsBg.bg2); setHex2(tsBg.bg2); save(SK.colors, tsBg); }
-      }
-      return [...s];
+    const cur = shownTilsetsRef.current ?? [activeTilesetRef.current ?? name];
+    const inSet = cur.includes(name);
+    if (inSet && cur.length <= 1) return; // can't deselect the last tileset
+    const nextShown = inSet ? cur.filter(n => n !== name) : [...cur, name];
+    const tsBg = !inSet ? { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" }, Halloween: { bg1: "#3A313E", bg2: "#413643" }, Cafe: { bg1: "#AD6B45", bg2: "#B5714A" }, Pharmacy: { bg1: "#95a4ae", bg2: "#a2b0b8" } }[name] : null;
+    const newBg1 = tsBg ? tsBg.bg1 : bg1Ref.current;
+    const newBg2 = tsBg ? tsBg.bg2 : bg2Ref.current;
+    const snap = { grid: gridRef.current, w: gridWRef.current, h: gridHRef.current, tileset: !inSet ? name : activeTilesetRef.current, shownTilesets: nextShown, bg1: newBg1, bg2: newBg2, highlight: [...highlightedCellsRef.current] };
+    setHistory(h => {
+      const trimmed = h.slice(0, histIdxRef.current + 1);
+      const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
+      return [...capped, snap];
     });
+    setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
+    setShownTilesets(nextShown);
+    if (!inSet) {
+      setActiveTileset(name);
+      if (tsBg) { setBg1(tsBg.bg1); setHex1(tsBg.bg1); setBg2(tsBg.bg2); setHex2(tsBg.bg2); save(SK.colors, tsBg); }
+    }
   };
 
   // Sync defaultTiles and nextId whenever flatDefaultTiles changes.
@@ -1067,7 +1081,7 @@ function App() {
   const pushBgHistory = useCallback(() => {
     if (bgHistTimerRef.current) clearTimeout(bgHistTimerRef.current);
     bgHistTimerRef.current = setTimeout(() => {
-      const snap = { grid: gridRef.current, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...highlightedCellsRef.current] };
+      const snap = { grid: gridRef.current, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...highlightedCellsRef.current] };
       setHistory(h => {
         const trimmed = h.slice(0, histIdxRef.current + 1);
         const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
@@ -1091,7 +1105,7 @@ function App() {
         setHistory(h => {
           const trimmed = h.slice(0, histIdx + 1);
           const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-          return [...capped, { grid: next, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...highlightedCellsRef.current] }];
+          return [...capped, { grid: next, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...highlightedCellsRef.current] }];
         });
         setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
       }
@@ -1107,13 +1121,17 @@ function App() {
       setBg1(snap.bg1); setHex1(snap.bg1); setBg2(snap.bg2); setHex2(snap.bg2);
       save(SK.colors, { bg1: snap.bg1, bg2: snap.bg2 });
     } else if (snap.tileset != null && snap.tileset !== activeTilesetRef.current) {
-      const tsBg = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" }, Halloween: { bg1: "#3A313E", bg2: "#413643" }, Cafe: { bg1: "#AD6B45", bg2: "#B5714A" }, Pharmacy: { bg1: "#a9b0b7", bg2: "#b7bec2" } }[snap.tileset];
+      const tsBg = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" }, Halloween: { bg1: "#3A313E", bg2: "#413643" }, Cafe: { bg1: "#AD6B45", bg2: "#B5714A" }, Pharmacy: { bg1: "#95a4ae", bg2: "#a2b0b8" } }[snap.tileset];
       if (tsBg) { setBg1(tsBg.bg1); setHex1(tsBg.bg1); setBg2(tsBg.bg2); setHex2(tsBg.bg2); save(SK.colors, tsBg); }
     }
     if (snap.highlight !== undefined) {
       const s = new Set(snap.highlight);
       setHighlightedCells(s);
       highlightedCellsRef.current = s;
+    }
+    if (snap.shownTilesets !== undefined) {
+      setShownTilesets(snap.shownTilesets);
+      shownTilsetsRef.current = snap.shownTilesets;
     }
   };
 
@@ -1134,7 +1152,7 @@ function App() {
   // Push the current grid as a history snapshot (called once on mousedown, before any paint).
   // All cell writes during a drag use skipHistory=true, so the whole drag is one undo step.
   const pushHistorySnapshot = useCallback(() => {
-    const snap = { grid, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1, bg2, highlight: [...highlightedCellsRef.current] };
+    const snap = { grid, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, bg1, bg2, highlight: [...highlightedCellsRef.current] };
     setHistory(h => {
       const trimmed = h.slice(0, histIdx + 1);
       const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
@@ -2874,12 +2892,18 @@ function App() {
             );
           })()}
           {/* Auto shadow */}
-          <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
-            <input type="checkbox" checked={!!autoShadowTiles[t.id]}
-              onChange={ev => setAutoShadowTiles(prev => { const n = { ...prev }; if (ev.target.checked) n[t.id] = true; else delete n[t.id]; return n; })}
-              style={{ width: 14, height: 14, accentColor: C.accent, cursor: "pointer" }} />
-            <span style={{ fontSize: 11, color: C.text }}>Auto shadow 👻</span>
-          </label>
+          {(() => {
+            const shadowOn = !!autoShadowTiles[t.id];
+            const shadowColor = !shadowOn ? "#4ade80" : C.text;
+            return (
+              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
+                <input type="checkbox" checked={shadowOn}
+                  onChange={ev => setAutoShadowTiles(prev => { const n = { ...prev }; if (ev.target.checked) n[t.id] = true; else delete n[t.id]; return n; })}
+                  style={{ width: 14, height: 14, accentColor: C.accent, cursor: "pointer" }} />
+                <span style={{ fontSize: 11, color: shadowColor }}>Auto shadow 👻</span>
+              </label>
+            );
+          })()}
           {/* Starred shortcut */}
           <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
             <input type="checkbox" checked={starredTiles.includes(t.id)}
@@ -3533,7 +3557,7 @@ function App() {
         const allEntries = [...tilesetEntries, ...globalEntries];
         const entry = allEntries.find(e => e.type === 'folder' && e.key === openFolderKey);
         if (!entry) return null;
-        const cardSz = isMobile ? 46 : 56;
+        const cardSz = isMobile ? 56 : 72;
         const cols = 4;
         const panelW = cardSz * cols + 5 * (cols - 1) + 12; // 4 cols + gaps + padding
         const maxH = Math.min(360, window.innerHeight - 32);
@@ -3579,9 +3603,9 @@ function App() {
                         border: `2px solid ${failed ? C.danger : active ? C.accentBright : C.border}`,
                         background: active ? C.accentDim : "transparent",
                         position: "relative", opacity: failed ? 0.55 : 1, overflow: "visible" }}>
-                      <div style={{ position: "absolute", inset: 0, borderRadius: 6, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", ...cardImgBgStyle }}>
+                      <div style={{ position: "absolute", inset: 0, borderRadius: 6, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", background: C.panelDeep }}>
                         {failed ? <span style={{ fontSize: 18 }}>⚠️</span>
-                          : <img src={t.blobSrc ?? t.src} alt="" onError={() => markFailed(t.id)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated", transform: imgTf, transition: "transform 0.15s" }} />}
+                          : <span className={tileCardLightBg ? "tile-img-checker" : undefined}><img src={t.blobSrc ?? t.src} alt="" onError={() => markFailed(t.id)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated", transform: imgTf, transition: "transform 0.15s", display: "block" }} /></span>}
                       </div>
                       {rotatable && (
                         <div style={{ position: "absolute", inset: 0, zIndex: 4, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
@@ -3680,24 +3704,6 @@ function App() {
                       const atlasGroups = [...new Set(atlasTiles.map(t => t.atlasTilesetGroup).filter(Boolean))];
                       return (
                         <div onMouseDown={e => e.stopPropagation()} style={{ position: "absolute", top: "100%", left: 8, right: 8, background: C.panelDeep, border: `1px solid ${C.border}`, borderRadius: 6, zIndex: 200, padding: "4px 0", boxShadow: "0 4px 16px rgba(0,0,0,0.45)" }}>
-                          {/* Allow Tileset Mixing toggle */}
-                          <label style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px 4px", cursor: "pointer", userSelect: "none", borderBottom: `1px solid ${C.border}`, marginBottom: 3 }}
-                            onClick={e => {
-                              e.preventDefault();
-                              setAllowTsMixing(v => {
-                                const next = !v;
-                                if (!next) {
-                                  // Turning mixing OFF — collapse to just the active tileset
-                                  const active = activeTileset ?? manifest?.tilesets?.[0]?.name;
-                                  if (active) setShownTilesets([active]);
-                                }
-                                return next;
-                              });
-                            }}>
-                            <input type="checkbox" readOnly checked={allowTsMixing}
-                              style={{ accentColor: C.accent, cursor: "pointer", width: 13, height: 13, pointerEvents: "none" }} />
-                            <span style={{ fontSize: 10, color: C.muted }}>Allow Tileset Mixing</span>
-                          </label>
                           {manifest.tilesets.map(ts => {
                             const checked = shown.has(ts.name);
                             return (
@@ -3707,32 +3713,47 @@ function App() {
                                   if (allowTsMixing) {
                                     toggleTilesetShown(ts.name);
                                   } else {
-                                    // Single-select: switch to only this tileset, auto-convert board tiles
-                                    if (manifest && activeTileset && ts.name !== activeTileset) {
-                                      const tilesets = manifest.tilesets ?? [];
-                                      let cid = TILESET_ID_START;
-                                      const maps = {};
-                                      for (const tsDef of tilesets) {
-                                        const m = {};
-                                        for (const key of (tsDef.order ?? [])) {
-                                          if (tsDef.folders?.[key]) m[key] = tsDef.folders[key].map(() => cid++);
-                                          else if (tsDef.files?.[key]) m[key] = [cid++];
+                                    if (ts.name !== activeTileset) {
+                                      // Compute remapped grid
+                                      let newGrid = gridRef.current;
+                                      if (manifest && activeTileset) {
+                                        const tilesets = manifest.tilesets ?? [];
+                                        let cid = TILESET_ID_START;
+                                        const maps = {};
+                                        for (const tsDef of tilesets) {
+                                          const m = {};
+                                          for (const key of (tsDef.order ?? [])) {
+                                            if (tsDef.folders?.[key]) m[key] = tsDef.folders[key].map(() => cid++);
+                                            else if (tsDef.files?.[key]) m[key] = [cid++];
+                                          }
+                                          maps[tsDef.name] = m;
                                         }
-                                        maps[tsDef.name] = m;
+                                        const fromMap = maps[activeTileset] ?? {};
+                                        const toMap   = maps[ts.name]      ?? {};
+                                        const idRemap = {};
+                                        for (const key of Object.keys(fromMap)) {
+                                          const oIds = fromMap[key], nIds = toMap[key];
+                                          if (nIds) oIds.forEach((oid, i) => { if (i < nIds.length) idRemap[oid] = nIds[i]; });
+                                        }
+                                        const fromAll = new Set(Object.values(fromMap).flat());
+                                        newGrid = gridRef.current.map(row => row.map(id =>
+                                          (id != null && fromAll.has(id) && idRemap[id] !== undefined) ? idRemap[id] : id
+                                        ));
                                       }
-                                      const fromMap = maps[activeTileset] ?? {};
-                                      const toMap   = maps[ts.name]      ?? {};
-                                      const idRemap = {};
-                                      for (const key of Object.keys(fromMap)) {
-                                        const oIds = fromMap[key], nIds = toMap[key];
-                                        if (nIds) oIds.forEach((oid, i) => { if (i < nIds.length) idRemap[oid] = nIds[i]; });
-                                      }
-                                      const fromAll = new Set(Object.values(fromMap).flat());
-                                      setGrid(prev => prev.map(row => row.map(id =>
-                                        (id != null && fromAll.has(id) && idRemap[id] !== undefined) ? idRemap[id] : id
-                                      )));
+                                      const tsBg = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" }, Halloween: { bg1: "#3A313E", bg2: "#413643" }, Cafe: { bg1: "#AD6B45", bg2: "#B5714A" }, Pharmacy: { bg1: "#95a4ae", bg2: "#a2b0b8" } }[ts.name];
+                                      const newBg1 = tsBg ? tsBg.bg1 : bg1Ref.current;
+                                      const newBg2 = tsBg ? tsBg.bg2 : bg2Ref.current;
+                                      const snap = { grid: newGrid, w: gridWRef.current, h: gridHRef.current, tileset: ts.name, shownTilesets: [ts.name], bg1: newBg1, bg2: newBg2, highlight: [...highlightedCellsRef.current] };
+                                      setHistory(h => {
+                                        const trimmed = h.slice(0, histIdxRef.current + 1);
+                                        const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
+                                        return [...capped, snap];
+                                      });
+                                      setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
+                                      setGridRaw(newGrid);
+                                      setActiveTileset(ts.name);
+                                      if (tsBg) { setBg1(tsBg.bg1); setHex1(tsBg.bg1); setBg2(tsBg.bg2); setHex2(tsBg.bg2); save(SK.colors, tsBg); }
                                     }
-                                    switchTileset(ts.name);
                                     setShownTilesets([ts.name]);
                                     setTilesetDropOpen(false);
                                   }
@@ -3963,9 +3984,9 @@ function App() {
                         }}
                         style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: failed ? "not-allowed" : "pointer", border: `2px solid ${failed ? C.danger : active ? C.accentBright : C.border}`, background: failed ? "rgba(248,113,113,0.08)" : active ? C.accentDim : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", opacity: failed ? 0.55 : 1, position: "relative", overflow: "visible" }}>
                         {/* Inner clipped area for image */}
-                        <div style={{ position: "absolute", inset: 0, borderRadius: 6, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", ...cardImgBgStyle }}>
+                        <div style={{ position: "absolute", inset: 0, borderRadius: 6, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", background: C.panelDeep }}>
                           {failed ? <span style={{ fontSize: 20 }}>⚠️</span>
-                            : <img src={t.blobSrc ?? t.src} alt="" onError={() => markFailed(t.id)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated", transform: imgTransform, transition: "transform 0.15s" }} />}
+                            : <span className={tileCardLightBg ? "tile-img-checker" : undefined}><img src={t.blobSrc ?? t.src} alt="" onError={() => markFailed(t.id)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated", transform: imgTransform, transition: "transform 0.15s", display: "block" }} /></span>}
                         </div>
                         {rotatable && <RotChevron rotDeg={rotDeg} flipStep={flipStep} mode={flipMode} />}
                         {/* Spin/Flip toggle button — only when both spin and flip are enabled */}
@@ -4004,12 +4025,12 @@ function App() {
                         {/* 2×2 preview grid — fills full card, no label strip */}
                         <div style={{ position: "absolute", inset: 0, display: "grid", gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr", gap: 1 }}>
                           {previewTiles.map(t => (
-                            <div key={t.id} style={{ display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", ...cardImgBgStyle }}>
-                              <img src={t.blobSrc ?? t.src} alt="" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated" }} />
+                            <div key={t.id} style={{ display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", background: C.panelDeep }}>
+                              <span className={tileCardLightBg ? "tile-img-checker" : undefined}><img src={t.blobSrc ?? t.src} alt="" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated", display: "block" }} /></span>
                             </div>
                           ))}
                           {Array.from({ length: Math.max(0, 4 - previewTiles.length) }).map((_, i) => (
-                            <div key={`e${i}`} style={{ ...cardImgBgStyle }} />
+                            <div key={`e${i}`} style={{ background: C.panelDeep }} />
                           ))}
                         </div>
                         {/* Chevron — full white, large and tappable */}
@@ -4938,6 +4959,24 @@ function App() {
                   <span style={{ fontSize: 12, color: C.text }}>Light tile background</span>
                 </label>
                 <p style={{ fontSize: 11, color: C.muted, lineHeight: 1.5, margin: 0 }}>Shows a light checkerboard behind tile images, making dark details easier to see.</p>
+                <div style={{ height: 1, background: C.border, margin: "4px 0" }} />
+                <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}
+                  onClick={e => {
+                    e.preventDefault();
+                    setAllowTsMixing(v => {
+                      const next = !v;
+                      if (!next) {
+                        const active = activeTileset ?? manifest?.tilesets?.[0]?.name;
+                        if (active) setShownTilesets([active]);
+                      }
+                      return next;
+                    });
+                  }}>
+                  <input type="checkbox" readOnly checked={allowTsMixing}
+                    style={{ width: 14, height: 14, accentColor: C.accent, cursor: "pointer", flexShrink: 0, pointerEvents: "none" }} />
+                  <span style={{ fontSize: 12, color: C.text }}>Allow Tileset Mixing</span>
+                </label>
+                <p style={{ fontSize: 11, color: C.muted, lineHeight: 1.5, margin: 0 }}>Show tiles from multiple tilesets at once in the tile panel.</p>
               </div>
             </div>
           )}
@@ -5083,7 +5122,7 @@ function App() {
 
           {/* Row 3: Background colour pickers */}
           {(() => {
-            const BG_PRESETS = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" }, Halloween: { bg1: "#3A313E", bg2: "#413643" }, Cafe: { bg1: "#AD6B45", bg2: "#B5714A" }, Pharmacy: { bg1: "#a9b0b7", bg2: "#b7bec2" } };
+            const BG_PRESETS = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" }, Halloween: { bg1: "#3A313E", bg2: "#413643" }, Cafe: { bg1: "#AD6B45", bg2: "#B5714A" }, Pharmacy: { bg1: "#95a4ae", bg2: "#a2b0b8" } };
             const activeBgPreset = Object.keys(BG_PRESETS).find(k => BG_PRESETS[k].bg1.toLowerCase() === bg1.toLowerCase() && BG_PRESETS[k].bg2.toLowerCase() === bg2.toLowerCase()) ?? "";
             return (
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8, padding: "3px 14px 5px", alignItems: "center" }}>
@@ -5164,7 +5203,7 @@ function App() {
             <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1, userSelect: "none" }}>Theme</span>
             <button onClick={() => setAutoTheme(v => !v)}
               style={{ ...btn(autoTheme, C.accent, C.accentDim), fontSize: 11, padding: "3px 12px" }}
-              title="Automatically switch between Warm and Cold theme based on background colour temperature">Auto</button>
+              title="Automatically switch between Warm and Cold theme based on background colour temperature">Auto 🌦️</button>
             {["warm", "cold"].map(th => (
               <button key={th} onClick={() => { setAutoTheme(false); setUiTheme(th); }}
                 style={{ ...btn(!autoTheme && uiTheme === th, !autoTheme && uiTheme === th ? C.accent : undefined, !autoTheme && uiTheme === th ? C.accentDim : undefined), fontSize: 11, padding: "3px 12px", opacity: autoTheme ? 0.45 : 1 }}>
