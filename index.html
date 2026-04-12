@@ -2878,7 +2878,7 @@ function App() {
             <input type="checkbox" checked={!!autoShadowTiles[t.id]}
               onChange={ev => setAutoShadowTiles(prev => { const n = { ...prev }; if (ev.target.checked) n[t.id] = true; else delete n[t.id]; return n; })}
               style={{ width: 14, height: 14, accentColor: C.accent, cursor: "pointer" }} />
-            <span style={{ fontSize: 11, color: C.text }}>Auto shadow 🌑</span>
+            <span style={{ fontSize: 11, color: C.text }}>Auto shadow 👻</span>
           </label>
           {/* Starred shortcut */}
           <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
