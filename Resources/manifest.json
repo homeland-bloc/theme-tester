@@ -2,7 +2,7 @@
   "tilesets": [
     {
       "name": "Mausoleum",
-      "creator": "ophelia",
+      "creator": "Ophelia",
       "order": ["wall1", "wall2", "crate", "barrel", "cactus", "bush", "breakable", "fence", "rope", "water", "objectives"],
       "files": {
         "wall1": "Mausoleum/MSLM-wall.png",
@@ -28,7 +28,7 @@
     },
     {
       "name": "Sewer",
-      "creator": "ophelia",
+      "creator": "Ophelia",
       "order": ["wall1", "wall2", "crate", "barrel", "cactus", "bush", "breakable", "fence", "rope", "water", "objectives"],
       "files": {
         "wall1": "Sewer/SWR-wall.png",

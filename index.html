@@ -106,9 +106,9 @@ const SK = { tiles: "oph_tiles", grid: "oph_grid", colors: "oph_colors", userTil
 const ACCEPTED = "image/png,image/jpeg,image/gif,image/webp,image/svg+xml,image/bmp";
 const MAX_HISTORY = 60;
 // Non-overlapping tile ID ranges — prevents collisions between sections regardless of reordering
-const TILESET_ID_START = 1;   // 001–099: active tileset tiles (Mausoleum wall1=1, etc.)
-const USER_ID_START    = 100; // 100–199: user-uploaded tiles
-const USER_ID_MAX      = 199;
+const TILESET_ID_START = 1;   // 001–199: active tileset tiles (Mausoleum wall1=1, etc.)
+const USER_ID_START    = 500; // 500–699: user-uploaded tiles (moved to avoid overlap with tileset IDs 1-499)
+const USER_ID_MAX      = 699;
 const GLOBAL_ID_START  = 200; // 200–299: global tiles (water, spawns, objectives, etc.)
 const ATLAS_ID_START   = 300; // 300–499: atlas tiles (She-Fairy/atlas-horizon)
 const SPACE_TILE_ID    = 998; // special: makes a cell fully transparent
@@ -411,6 +411,7 @@ function App() {
   const uploadTimerRef = useRef(null);
   // UI theme
   const [uiTheme, setUiTheme] = useState(() => load("oph_theme", "warm"));
+  const [autoTheme, setAutoTheme] = useState(() => load("oph_auto_theme", true));
   // Apply theme to mutable C before any render — Sep/SectionHeader read C at render time
   Object.assign(C, THEMES[uiTheme] || THEMES.warm);
   // Responsive
@@ -471,6 +472,9 @@ function App() {
   const bg2Ref   = useRef(bg2);
   const histIdxRef = useRef(0);
   const bgHistTimerRef = useRef(null);
+  const mirrorVRef = useRef(false);
+  const mirrorHRef = useRef(false);
+  const mirrorDRef = useRef(false);
   useEffect(() => { gridWRef.current = gridW; }, [gridW]);
   useEffect(() => { gridHRef.current = gridH; }, [gridH]);
   useEffect(() => { bg1Ref.current   = bg1;   }, [bg1]);
@@ -487,6 +491,9 @@ function App() {
   useEffect(() => { zoomRef.current         = zoom;          }, [zoom]);
   useEffect(() => { selectionModeRef.current = selectionMode; }, [selectionMode]);
   useEffect(() => { gridRef.current = grid; }, [grid]);
+  useEffect(() => { mirrorVRef.current = mirrorV; }, [mirrorV]);
+  useEffect(() => { mirrorHRef.current = mirrorH; }, [mirrorH]);
+  useEffect(() => { mirrorDRef.current = mirrorD; }, [mirrorD]);
   useEffect(() => { paintingRef.current = painting; }, [painting]);
   useEffect(() => { mirrorOffsetTilesRef.current = mirrorOffsetTiles; }, [mirrorOffsetTiles]);
   useEffect(() => { tileOffsetsRef.current       = tileOffsets;       }, [tileOffsets]);
@@ -544,6 +551,20 @@ function App() {
       .oph-title-text { background: ${titleGrad} !important; -webkit-background-clip: text !important; background-clip: text !important; -webkit-text-fill-color: transparent !important; color: transparent !important; }
     `;
   }, [uiTheme]);
+  useEffect(() => { save("oph_auto_theme", autoTheme); }, [autoTheme]);
+  // Auto-adapt theme: when on, derive warm/cold from the BG colour temperature
+  useEffect(() => {
+    if (!autoTheme) return;
+    const warmth = hex => {
+      if (!hex || hex.length < 6) return 0;
+      const h = hex.replace('#', '');
+      const r = parseInt(h.slice(0, 2), 16) || 0;
+      const b = parseInt(h.slice(4, 6), 16) || 0;
+      return r - b;
+    };
+    const avg = (warmth(bg1) + warmth(bg2)) / 2;
+    setUiTheme(avg > 10 ? 'cold' : 'warm');
+  }, [autoTheme, bg1, bg2]);
   useEffect(() => { save("oph_starred", starredTiles); }, [starredTiles]);
   useEffect(() => { save("oph_recent", recentTileIds); }, [recentTileIds]);
   // Track last 3 selected numeric tile IDs
@@ -913,7 +934,7 @@ function App() {
   const switchTileset = (newTilesetName) => {
     if (!manifest || newTilesetName === activeTileset) return;
     setActiveTileset(newTilesetName);
-    const tsBg = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" }, Halloween: { bg1: "#3A313E", bg2: "#413643" }, Cafe: { bg1: "#AD6B45", bg2: "#B5714A" }, Pharmacy: { bg1: "#288FEF", bg2: "#19A0E8" } }[newTilesetName];
+    const tsBg = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" }, Halloween: { bg1: "#3A313E", bg2: "#413643" }, Cafe: { bg1: "#AD6B45", bg2: "#B5714A" }, Pharmacy: { bg1: "#a9b0b7", bg2: "#b7bec2" } }[newTilesetName];
     if (tsBg) { setBg1(tsBg.bg1); setHex1(tsBg.bg1); setBg2(tsBg.bg2); setHex2(tsBg.bg2); save(SK.colors, tsBg); }
   };
 
@@ -925,7 +946,7 @@ function App() {
       if (s.has(name)) { if (s.size <= 1) return cur; s.delete(name); }
       else {
         s.add(name); setActiveTileset(name);
-        const tsBg = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" }, Halloween: { bg1: "#3A313E", bg2: "#413643" }, Cafe: { bg1: "#AD6B45", bg2: "#B5714A" }, Pharmacy: { bg1: "#288FEF", bg2: "#19A0E8" } }[name];
+        const tsBg = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" }, Halloween: { bg1: "#3A313E", bg2: "#413643" }, Cafe: { bg1: "#AD6B45", bg2: "#B5714A" }, Pharmacy: { bg1: "#a9b0b7", bg2: "#b7bec2" } }[name];
         if (tsBg) { setBg1(tsBg.bg1); setHex1(tsBg.bg1); setBg2(tsBg.bg2); setHex2(tsBg.bg2); save(SK.colors, tsBg); }
       }
       return [...s];
@@ -1046,7 +1067,7 @@ function App() {
   const pushBgHistory = useCallback(() => {
     if (bgHistTimerRef.current) clearTimeout(bgHistTimerRef.current);
     bgHistTimerRef.current = setTimeout(() => {
-      const snap = { grid: gridRef.current, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current };
+      const snap = { grid: gridRef.current, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...highlightedCellsRef.current] };
       setHistory(h => {
         const trimmed = h.slice(0, histIdxRef.current + 1);
         const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
@@ -1070,7 +1091,7 @@ function App() {
         setHistory(h => {
           const trimmed = h.slice(0, histIdx + 1);
           const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-          return [...capped, { grid: next, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current }];
+          return [...capped, { grid: next, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...highlightedCellsRef.current] }];
         });
         setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
       }
@@ -1086,8 +1107,13 @@ function App() {
       setBg1(snap.bg1); setHex1(snap.bg1); setBg2(snap.bg2); setHex2(snap.bg2);
       save(SK.colors, { bg1: snap.bg1, bg2: snap.bg2 });
     } else if (snap.tileset != null && snap.tileset !== activeTilesetRef.current) {
-      const tsBg = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" }, Halloween: { bg1: "#3A313E", bg2: "#413643" }, Cafe: { bg1: "#AD6B45", bg2: "#B5714A" }, Pharmacy: { bg1: "#288FEF", bg2: "#19A0E8" } }[snap.tileset];
+      const tsBg = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" }, Halloween: { bg1: "#3A313E", bg2: "#413643" }, Cafe: { bg1: "#AD6B45", bg2: "#B5714A" }, Pharmacy: { bg1: "#a9b0b7", bg2: "#b7bec2" } }[snap.tileset];
       if (tsBg) { setBg1(tsBg.bg1); setHex1(tsBg.bg1); setBg2(tsBg.bg2); setHex2(tsBg.bg2); save(SK.colors, tsBg); }
+    }
+    if (snap.highlight !== undefined) {
+      const s = new Set(snap.highlight);
+      setHighlightedCells(s);
+      highlightedCellsRef.current = s;
     }
   };
 
@@ -1108,7 +1134,7 @@ function App() {
   // Push the current grid as a history snapshot (called once on mousedown, before any paint).
   // All cell writes during a drag use skipHistory=true, so the whole drag is one undo step.
   const pushHistorySnapshot = useCallback(() => {
-    const snap = { grid, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1, bg2 };
+    const snap = { grid, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1, bg2, highlight: [...highlightedCellsRef.current] };
     setHistory(h => {
       const trimmed = h.slice(0, histIdx + 1);
       const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
@@ -1125,7 +1151,7 @@ function App() {
       const blobSrc = URL.createObjectURL(f); // fast blob URL for immediate rendering
       const r = new FileReader();
       r.onload = e => {
-        if (nextId.current > USER_ID_MAX) { console.warn("User tile limit reached (IDs 100–199)"); return; }
+        if (nextId.current > USER_ID_MAX) { console.warn("User tile limit reached (IDs 500–699)"); return; }
         const id = nextId.current++;
         setUserTiles(prev => [...prev, { id, src: e.target.result, blobSrc }]);
         loaded++;
@@ -1589,6 +1615,8 @@ function App() {
       if (highlightModeRef.current) {
         const key = `${r},${c}`;
         if (highlightedCellsRef.current.has(key) && highlightedCellsRef.current.size > 0) {
+          // Push history snapshot before moving so undo restores position
+          if (pushHistRef.current) pushHistRef.current();
           // Start dragging the highlight region
           isHighlightDraggingRef.current = true;
           highlightDragAnchorCell.current = [r, c];
@@ -1855,12 +1883,28 @@ function App() {
         const offset = highlightDragOffsetRef.current ?? { dr: 0, dc: 0 };
         const { dr, dc } = offset;
         if (dr !== 0 || dc !== 0) {
+          // Compute per-cell mirrored offset so symmetric structures move in opposite directions
+          const anchorCell = highlightDragAnchorCell.current;
+          const [ar, ac] = anchorCell ?? [0, 0];
+          const cR = (gridHRef.current - 1) / 2;
+          const cC = (gridWRef.current - 1) / 2;
+          const anchorRowSign = ar < cR ? -1 : (ar > cR ? 1 : 0);
+          const anchorColSign = ac < cC ? -1 : (ac > cC ? 1 : 0);
+          const getEffectiveDelta = (r, c) => {
+            if (!mirrorVRef.current && !mirrorHRef.current && !mirrorDRef.current) return { dr, dc };
+            const cellRowSign = r < cR ? -1 : (r > cR ? 1 : 0);
+            const cellColSign = c < cC ? -1 : (c > cC ? 1 : 0);
+            const flipRow = (mirrorHRef.current || mirrorDRef.current) && anchorRowSign !== 0 && cellRowSign !== 0 && cellRowSign !== anchorRowSign;
+            const flipCol = (mirrorVRef.current || mirrorDRef.current) && anchorColSign !== 0 && cellColSign !== 0 && cellColSign !== anchorColSign;
+            return { dr: flipRow ? -dr : dr, dc: flipCol ? -dc : dc };
+          };
           // Move grid tiles from old positions to new positions (with rotations and offsets)
           const oldCells = [...highlightedCellsRef.current];
           const newCells = oldCells
             .map(key => {
               const [r, c] = key.split(',').map(Number);
-              return { oldKey: key, newR: r + dr, newC: c + dc };
+              const delta = getEffectiveDelta(r, c);
+              return { oldKey: key, newR: r + delta.dr, newC: c + delta.dc };
             })
             .filter(({ newR, newC }) => newR >= 0 && newR < gridHRef.current && newC >= 0 && newC < gridWRef.current);
 
@@ -1921,6 +1965,12 @@ function App() {
           const newHighlight = new Set(newCells.map(({ newR, newC }) => `${newR},${newC}`));
           setHighlightedCells(newHighlight);
           highlightedCellsRef.current = newHighlight;
+          // Patch the last history snapshot so redo restores the correct highlight positions
+          setHistory(h => {
+            if (h.length === 0) return h;
+            const last = h[h.length - 1];
+            return [...h.slice(0, -1), { ...last, highlight: [...newHighlight] }];
+          });
         }
         isHighlightDraggingRef.current = false;
         highlightDragAnchorCell.current = null;
@@ -2086,6 +2136,8 @@ function App() {
       if (highlightModeRef.current) {
         const key = `${r},${c}`;
         if (highlightedCellsRef.current.has(key) && highlightedCellsRef.current.size > 0) {
+          // Push history snapshot before moving so undo restores position
+          if (pushHistRef.current) pushHistRef.current();
           // Tap on a highlighted cell → start dragging the region
           isHighlightDraggingRef.current = true;
           highlightDragAnchorCell.current = [r, c];
@@ -2251,11 +2303,27 @@ function App() {
           const offset = highlightDragOffsetRef.current ?? { dr: 0, dc: 0 };
           const { dr, dc } = offset;
           if (dr !== 0 || dc !== 0) {
+            // Compute per-cell mirrored offset so symmetric structures move in opposite directions
+            const anchorCell = highlightDragAnchorCell.current;
+            const [ar, ac] = anchorCell ?? [0, 0];
+            const cR = (gridHRef.current - 1) / 2;
+            const cC = (gridWRef.current - 1) / 2;
+            const anchorRowSign = ar < cR ? -1 : (ar > cR ? 1 : 0);
+            const anchorColSign = ac < cC ? -1 : (ac > cC ? 1 : 0);
+            const getEffectiveDelta = (r, c) => {
+              if (!mirrorVRef.current && !mirrorHRef.current && !mirrorDRef.current) return { dr, dc };
+              const cellRowSign = r < cR ? -1 : (r > cR ? 1 : 0);
+              const cellColSign = c < cC ? -1 : (c > cC ? 1 : 0);
+              const flipRow = (mirrorHRef.current || mirrorDRef.current) && anchorRowSign !== 0 && cellRowSign !== 0 && cellRowSign !== anchorRowSign;
+              const flipCol = (mirrorVRef.current || mirrorDRef.current) && anchorColSign !== 0 && cellColSign !== 0 && cellColSign !== anchorColSign;
+              return { dr: flipRow ? -dr : dr, dc: flipCol ? -dc : dc };
+            };
             const oldCells = [...highlightedCellsRef.current];
             const newCells = oldCells
               .map(key => {
                 const [or, oc] = key.split(',').map(Number);
-                return { oldKey: key, newR: or + dr, newC: oc + dc };
+                const delta = getEffectiveDelta(or, oc);
+                return { oldKey: key, newR: or + delta.dr, newC: oc + delta.dc };
               })
               .filter(({ newR, newC }) => newR >= 0 && newR < gridHRef.current && newC >= 0 && newC < gridWRef.current);
             setGridStableRef.current(prev => {
@@ -2271,6 +2339,12 @@ function App() {
             const newHighlight = new Set(newCells.map(({ newR, newC }) => `${newR},${newC}`));
             setHighlightedCells(newHighlight);
             highlightedCellsRef.current = newHighlight;
+            // Patch the last history snapshot so redo restores the correct highlight positions
+            setHistory(h => {
+              if (h.length === 0) return h;
+              const last = h[h.length - 1];
+              return [...h.slice(0, -1), { ...last, highlight: [...newHighlight] }];
+            });
           }
           isHighlightDraggingRef.current = false;
           highlightDragAnchorCell.current = null;
@@ -2396,6 +2470,7 @@ function App() {
         }
         if (e.key === "z" || e.key === "Z") { undo(); }
         if (e.key === "x" || e.key === "X") { redo(); }
+        if (e.key === "o" || e.key === "O") { setMirrorSettings(p => ({ ...p, allowSwap: !p.allowSwap })); }
         if (e.key === "+" || e.key === "=") { e.preventDefault(); changeZoom(ZOOM_STEP); }
         if (e.key === "-") { e.preventDefault(); changeZoom(-ZOOM_STEP); }
       }
@@ -2894,9 +2969,9 @@ function App() {
 
     // Step 2: full tile list — tileset tiles grouped with collapsible sections
     const shownNames = new Set(shownTilesets ?? [activeTileset ?? manifest?.tilesets?.[0]?.name]);
-    const tilesetTiles_ = tiles.filter(t => t.id >= TILESET_ID_START && t.id < USER_ID_START);
-    const userTiles_    = tiles.filter(t => t.id >= USER_ID_START && t.id < GLOBAL_ID_START);
-    const globalTiles_  = tiles.filter(t => t.id >= GLOBAL_ID_START && t.id < 300);
+    const tilesetTiles_ = tiles.filter(t => t.id >= TILESET_ID_START && t.id < GLOBAL_ID_START);
+    const userTiles_    = tiles.filter(t => t.id >= USER_ID_START && t.id <= USER_ID_MAX);
+    const globalTiles_  = tiles.filter(t => t.id >= GLOBAL_ID_START && t.id < ATLAS_ID_START);
 
     // Group tileset tiles by tileset name
     const tsByName = {};
@@ -3002,9 +3077,9 @@ function App() {
       );
     };
 
-    const tilesetTiles_ = tiles.filter(t => t.id >= TILESET_ID_START && t.id < USER_ID_START);
-    const userTiles_    = tiles.filter(t => t.id >= USER_ID_START && t.id < GLOBAL_ID_START);
-    const globalTiles_  = tiles.filter(t => t.id >= GLOBAL_ID_START);
+    const tilesetTiles_ = tiles.filter(t => t.id >= TILESET_ID_START && t.id < GLOBAL_ID_START);
+    const userTiles_    = tiles.filter(t => t.id >= USER_ID_START && t.id <= USER_ID_MAX);
+    const globalTiles_  = tiles.filter(t => t.id >= GLOBAL_ID_START && t.id < ATLAS_ID_START);
 
     return (
       <div className="modal-backdrop" onClick={close}>
@@ -4930,7 +5005,7 @@ function App() {
                     <span onClick={() => setInfoTool("guides")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
                   </div>
                   <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
-                    <button style={btn(mirrorSettings.allowSwap, owColor, owDim)} onClick={() => setMirrorSettings(p => ({ ...p, allowSwap: !p.allowSwap }))} title="When enabled, painting over occupied cells replaces them instead of picking them up">Block Overwrite</button>
+                    <button style={btn(mirrorSettings.allowSwap, owColor, owDim)} onClick={() => setMirrorSettings(p => ({ ...p, allowSwap: !p.allowSwap }))} title="When enabled, painting over occupied cells replaces them instead of picking them up [O]">Block Overwrite</button>
                     <span onClick={() => setInfoTool("overwrite")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
                   </div>
                   <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
@@ -5008,7 +5083,7 @@ function App() {
 
           {/* Row 3: Background colour pickers */}
           {(() => {
-            const BG_PRESETS = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" }, Halloween: { bg1: "#3A313E", bg2: "#413643" }, Cafe: { bg1: "#AD6B45", bg2: "#B5714A" }, Pharmacy: { bg1: "#288FEF", bg2: "#19A0E8" } };
+            const BG_PRESETS = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" }, Halloween: { bg1: "#3A313E", bg2: "#413643" }, Cafe: { bg1: "#AD6B45", bg2: "#B5714A" }, Pharmacy: { bg1: "#a9b0b7", bg2: "#b7bec2" } };
             const activeBgPreset = Object.keys(BG_PRESETS).find(k => BG_PRESETS[k].bg1.toLowerCase() === bg1.toLowerCase() && BG_PRESETS[k].bg2.toLowerCase() === bg2.toLowerCase()) ?? "";
             return (
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8, padding: "3px 14px 5px", alignItems: "center" }}>
@@ -5087,9 +5162,12 @@ function App() {
           {/* Row 5: Theme switcher */}
           <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 14px 6px" }}>
             <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1, userSelect: "none" }}>Theme</span>
+            <button onClick={() => setAutoTheme(v => !v)}
+              style={{ ...btn(autoTheme, C.accent, C.accentDim), fontSize: 11, padding: "3px 12px" }}
+              title="Automatically switch between Warm and Cold theme based on background colour temperature">Auto</button>
             {["warm", "cold"].map(th => (
-              <button key={th} onClick={() => setUiTheme(th)}
-                style={{ ...btn(uiTheme === th, uiTheme === th ? C.accent : undefined, uiTheme === th ? C.accentDim : undefined), fontSize: 11, padding: "3px 12px" }}>
+              <button key={th} onClick={() => { setAutoTheme(false); setUiTheme(th); }}
+                style={{ ...btn(!autoTheme && uiTheme === th, !autoTheme && uiTheme === th ? C.accent : undefined, !autoTheme && uiTheme === th ? C.accentDim : undefined), fontSize: 11, padding: "3px 12px", opacity: autoTheme ? 0.45 : 1 }}>
                 {th === "warm" ? "🔥 Warm" : "❄️ Cold"}
               </button>
             ))}
