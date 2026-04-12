@@ -40,13 +40,13 @@
     /* Checkered transparent background — applied to the exact-size image wrapper inside modals */
     .tile-img-checker {
       display: inline-block;
-      background-color: #bbb;
-      background-image: linear-gradient(45deg, #eee 25%, transparent 25%),
-                        linear-gradient(-45deg, #eee 25%, transparent 25%),
-                        linear-gradient(45deg, transparent 75%, #eee 75%),
-                        linear-gradient(-45deg, transparent 75%, #eee 75%);
-      background-size: 12px 12px;
-      background-position: 0 0, 0 6px, 6px -6px, -6px 0;
+      background-color: #b0b0b0;
+      background-image: linear-gradient(45deg, #d0d0d0 25%, transparent 25%),
+                        linear-gradient(-45deg, #d0d0d0 25%, transparent 25%),
+                        linear-gradient(45deg, transparent 75%, #d0d0d0 75%),
+                        linear-gradient(-45deg, transparent 75%, #d0d0d0 75%);
+      background-size: 8px 8px;
+      background-position: 0 0, 0 4px, 4px -4px, -4px 0;
     }
     .tile-img-checker img { display: block; }
 
@@ -428,6 +428,8 @@ function App() {
 
   const dragRotationRef    = useRef(0); // rotation of tile currently being dragged
   const dragFlipRef        = useRef(0); // flip step of tile currently being dragged
+  const gridRotationsRef   = useRef({}); // always-current gridRotations for drag pickup closures
+  const gridFlipsRef       = useRef({}); // always-current gridFlips for drag pickup closures
   const cardFlipModesRef   = useRef({}); // always-current cardFlipModes for closures
   const cardFlipStepsRef   = useRef({}); // always-current cardFlipSteps for closures
   const mirrorOffsetTilesRef = useRef({});
@@ -1411,6 +1413,8 @@ function App() {
 
   useEffect(() => { paintRef.current        = paintCells;           }, [paintCells]);
   useEffect(() => { cardRotationsRef.current   = cardRotations;        }, [cardRotations]);
+  useEffect(() => { gridRotationsRef.current   = gridRotations;        }, [gridRotations]);
+  useEffect(() => { gridFlipsRef.current       = gridFlips;            }, [gridFlips]);
   useEffect(() => { mirrorSettingsRef.current  = mirrorSettings;       }, [mirrorSettings]);
   useEffect(() => { pushHistRef.current = pushHistorySnapshot;  }, [pushHistorySnapshot]);
 
@@ -1678,10 +1682,10 @@ function App() {
       if (existingId && !eraserRef.current && !mirrorSettingsRef.current.allowSwap) {
         // ── OCCUPIED CELL (non-eraser, block overwrite off): pick up for drag
         const mirrorPositions = getMirrorRef.current ? getMirrorRef.current(r, c) : getMirrorPositions(r, c);
-        // Always preserve the rotation and flip of the picked-up tile
+        // Always preserve the rotation and flip of the picked-up tile (use refs for fresh values in stale closure)
         const pickupTile = getTile(existingId);
-        dragRotationRef.current = gridRotations[`${r},${c}`] ?? 0;
-        dragFlipRef.current = gridFlips[`${r},${c}`] ?? 0;
+        dragRotationRef.current = gridRotationsRef.current[`${r},${c}`] ?? 0;
+        dragFlipRef.current = gridFlipsRef.current[`${r},${c}`] ?? 0;
         setGridRaw(prevGrid => {
           const g = prevGrid.map(row => [...row]);
           mirrorPositions.forEach(([pr, pc]) => { g[pr][pc] = null; });
@@ -2190,9 +2194,9 @@ function App() {
       if (existingId && !eraserRef.current && !mirrorSettingsRef.current.allowSwap) {
         // Pick up for drag (block overwrite off); remove tile and mirror counterparts
         const pickupPositions = getMirrorRef.current ? getMirrorRef.current(r, c) : [[r, c]];
-        // Always preserve the rotation and flip of the picked-up tile
-        dragRotationRef.current = gridRotations[`${r},${c}`] ?? 0;
-        dragFlipRef.current = gridFlips[`${r},${c}`] ?? 0;
+        // Always preserve the rotation and flip of the picked-up tile (use refs for fresh values in stale closure)
+        dragRotationRef.current = gridRotationsRef.current[`${r},${c}`] ?? 0;
+        dragFlipRef.current = gridFlipsRef.current[`${r},${c}`] ?? 0;
         setGridRaw(prev => {
           const g = prev.map(row => [...row]);
           pickupPositions.forEach(([pr, pc]) => { g[pr][pc] = null; });
@@ -3184,7 +3188,7 @@ function App() {
     const toolId = infoTool === "space" ? SPACE_TILE_ID : infoTool;
     const isStarredTool = starredTiles.includes(toolId);
     // These tools have no functional starred shortcut; hide the star checkbox
-    const NON_STARREABLE = new Set(["convert", "hotkeys", "selectionMode", "mirroring"]);
+    const NON_STARREABLE = new Set(["hotkeys", "selectionMode", "mirroring"]);
     return (
       <div className="modal-backdrop" onClick={() => setInfoTool(null)}>
         <div className="modal-box" onClick={e => e.stopPropagation()}>
@@ -3691,7 +3695,7 @@ function App() {
               {/* Tileset selector — dropdown with multi-select checkboxes */}
               {manifest?.tilesets?.length > 0 && (() => {
                 const shown = new Set(shownTilesets ?? [activeTileset ?? manifest.tilesets[0]?.name]);
-                const label = [...shown].join(", ") || "None";
+                const label = ([...shown].join(", ") || "None") + (allowTsMixing && shown.size > 1 ? "..." : "");
                 return (
                   <div style={{ padding: "4px 8px", borderBottom: `1px solid ${C.border}`, flexShrink: 0, position: "relative" }}>
                     <button
@@ -4361,53 +4365,28 @@ function App() {
                 );
               };
               const hasSelected = selKey !== null && !selAlreadyStarred;
-              // Recent tiles: exclude current selection and starred tiles, max 3
-              const visibleRecent = recentTileIds.filter(id => id !== selKey && !starredTiles.includes(id)).slice(0, 3);
+              // Split starred into tool shortcuts (strings) and tile shortcuts (numbers)
+              const starredTools = starredTiles.filter(s => typeof s === "string");
+              const starredTileIds = starredTiles.filter(s => typeof s === "number");
+              // Recent tiles: exclude current selection, starred tiles, and tiles from unshown tilesets
+              const shownTileIdSet = new Set(flatDefaultTiles.map(t => t.id));
+              const visibleRecent = recentTileIds.filter(id => {
+                if (id === selKey || starredTiles.includes(id)) return false;
+                // Exclude tileset tiles (below GLOBAL_ID_START) that aren't in currently shown tilesets
+                if (typeof id === "number" && id < GLOBAL_ID_START && !shownTileIdSet.has(id)) return false;
+                return true;
+              }).slice(0, 3);
               const hasRecent = visibleRecent.length > 0;
-              const hasStarred = starredTiles.length > 0;
+              const hasStarredTools = starredTools.length > 0;
+              const hasStarredTiles = starredTileIds.length > 0;
+              const hasStarred = hasStarredTools || hasStarredTiles;
               if (!hasSelected && !hasRecent && !hasStarred) return null;
               return (
                 <div style={{ display: "flex", flexDirection: "column", gap: 3, padding: "4px 2px", overflowY: "auto", scrollbarWidth: "none", msOverflowStyle: "none" }}>
                   {hasSelected && <SelectedCard />}
-                  {hasSelected && hasRecent && <div style={{ height: 1, background: C.border, margin: "1px 0" }} />}
-                  {hasRecent && visibleRecent.map(rid => {
-                    const rt = getTile(rid);
-                    if (!rt || !rt.src) return null;
-                    const active = sel === rid && !eraser;
-                    const rcCanSpin = isTileRotatable(rt);
-                    const rcCanFlip = isFlipAllowed(rt);
-                    const rcAnyRot  = rcCanSpin || rcCanFlip;
-                    const rcRawMode = cardFlipModes[rid] ?? 'spin';
-                    const rcMode    = !rcAnyRot ? 'spin' : (!rcCanFlip ? 'spin' : (!rcCanSpin ? 'flip' : rcRawMode));
-                    const rcFlipStep = (rcMode === 'flip') ? (cardFlipSteps[rid] ?? 0) : 0;
-                    const rcFx = (rcFlipStep === 1 || rcFlipStep === 2) ? -1 : 1;
-                    const rcFy = (rcFlipStep === 2 || rcFlipStep === 3) ? -1 : 1;
-                    const rcRotDeg = cardRotations[rid] ?? 0;
-                    const rcImgTf  = rcMode === 'flip' ? `scale(${rcFx},${rcFy})` : `rotate(${rcRotDeg}deg)`;
-                    return (
-                      <div key={rid}
-                        onClick={() => {
-                          if (rcAnyRot && sel === rid && !eraser) {
-                            if (rcMode === 'flip' && rcCanFlip) { setCardFlipSteps(prev => ({ ...prev, [rid]: ((prev[rid] ?? 0) + 1) % 4 })); }
-                            else if (rcMode !== 'flip' && rcCanSpin) { setCardRotations(prev => ({ ...prev, [rid]: (prev[rid] ?? 0) + 90 })); }
-                          }
-                          setSel(rid); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set();
-                        }}
-                        style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", overflow: "hidden", position: "relative",
-                          border: `1px solid ${active ? C.accentBright : "rgba(255,255,255,0.25)"}`, background: active ? C.accentDim : C.panelDeep, opacity: 0.75 }}
-                        title={`Recent: ${rt.label || `Tile ${rid}`}`}>
-                        <img src={rt.blobSrc ?? rt.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", transform: rcImgTf, transition: "transform 0.15s" }} />
-                        {rcAnyRot && (
-                          <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
-                            <span style={{ fontSize: 10, lineHeight: 1, display: "inline-block", transform: rcImgTf, filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.9))" }}>{rcMode === 'flip' ? "🦭" : "🐬"}</span>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                  {(hasSelected || hasRecent) && hasStarred && <div style={{ height: 1, background: C.border, margin: "1px 0" }} />}
-                  {starredTiles.map(sid => {
-                  // Erase and Hand shortcuts in the tiles shortcut bar (collapsed strip)
+                  {hasSelected && (hasStarred || hasRecent) && <div style={{ height: 1, background: C.border, margin: "1px 0" }} />}
+                  {/* Tool shortcuts (starred string IDs: erase, hand, eyedropper, highlight, convert, selectionGroup, mirrorGroup) */}
+                  {starredTools.map(sid => {
                   if (sid === "erase") return (
                     <div key="erase" onClick={() => { setEraser(true); setSel(null); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
                       style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
@@ -4424,18 +4403,7 @@ function App() {
                       <span style={{ fontSize: 13 }}>👋</span>
                     </div>
                   );
-                  // Space tile
-                  if (sid === SPACE_TILE_ID) return (
-                    <div key="space" onClick={() => { setSel(SPACE_TILE_ID); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
-                      style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
-                        border: `1px solid ${sel === SPACE_TILE_ID && !eraser ? C.accentBright : C.border}`, background: sel === SPACE_TILE_ID && !eraser ? C.accentDim : "rgba(255,255,255,0.04)" }}
-                      title="Space">
-                      <span style={{ fontSize: 13 }}>🛸</span>
-                    </div>
-                  );
-                  // selectionGroup group card
                   if (sid === "selectionGroup") {
-                    const selActive = selectionMode !== 'single' || false;
                     return (
                       <div key="selectionGroup"
                         onClick={() => setSelectionMode(m => m === 'single' ? 'line' : 'single')}
@@ -4446,7 +4414,6 @@ function App() {
                       </div>
                     );
                   }
-                  // mirrorGroup group card
                   if (sid === "mirrorGroup") {
                     const anyMirror = mirrorV || mirrorH || mirrorD;
                     return (
@@ -4459,7 +4426,6 @@ function App() {
                       </div>
                     );
                   }
-                  // Eyedropper shortcut
                   if (sid === "eyedropper") return (
                     <div key="eyedropper" onClick={() => { setEyedropperMode(v => !v); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
                       style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
@@ -4468,7 +4434,6 @@ function App() {
                       <span style={{ fontSize: 14 }}>🧪</span>
                     </div>
                   );
-                  // Highlight shortcut
                   if (sid === "highlight") return (
                     <div key="highlight" onClick={() => { const on = !highlightMode; setHighlightMode(h => !h); setEraser(false); setHandMode(false); setEyedropperMode(false); if (!on) { setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); } }}
                       style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
@@ -4477,13 +4442,32 @@ function App() {
                       <span style={{ fontSize: 14 }}>🪄</span>
                     </div>
                   );
-                  // Regular tile
+                  if (sid === "convert") return (
+                    <div key="convert" onClick={() => setConvertOpen(true)}
+                      style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+                        border: `1px solid ${C.border}`, background: "rgba(255,255,255,0.04)" }}
+                      title="Convert">
+                      <span style={{ fontSize: 14 }}>🔄</span>
+                    </div>
+                  );
+                  return null;
+                  })}
+                  {/* Separator between tool shortcuts and tile shortcuts */}
+                  {hasStarredTools && hasStarredTiles && <div style={{ height: 1, background: C.border, margin: "1px 0" }} />}
+                  {/* Tile shortcuts (starred numeric IDs: space tile, folders, regular tiles) */}
+                  {starredTileIds.map(sid => {
+                  if (sid === SPACE_TILE_ID) return (
+                    <div key="space" onClick={() => { setSel(SPACE_TILE_ID); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
+                      style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+                        border: `1px solid ${sel === SPACE_TILE_ID && !eraser ? C.accentBright : C.border}`, background: sel === SPACE_TILE_ID && !eraser ? C.accentDim : "rgba(255,255,255,0.04)" }}
+                      title="Space">
+                      <span style={{ fontSize: 13 }}>🛸</span>
+                    </div>
+                  );
                   const st = getTile(sid);
                   if (!st || !st.src) return null;
-                  // Folder mini-card: if tile belongs to a folder, show folder card
                   if (st.folderKey) {
                     const fKey = st.folderKey;
-                    // Find all tiles in the same folder from the tiles array
                     const fTiles = tiles.filter(t => t.folderKey === fKey);
                     const previewTile = fTiles[0];
                     const folderLabel = st.folderLabel || fKey;
@@ -4535,6 +4519,44 @@ function App() {
                     </div>
                   );
                 })}
+                  {/* Separator between starred tiles and recent tiles */}
+                  {hasStarred && hasRecent && <div style={{ height: 1, background: C.border, margin: "1px 0" }} />}
+                  {/* Recent tiles: shown last, after all starred */}
+                  {hasRecent && visibleRecent.map(rid => {
+                    const rt = getTile(rid);
+                    if (!rt || !rt.src) return null;
+                    const active = sel === rid && !eraser;
+                    const rcCanSpin = isTileRotatable(rt);
+                    const rcCanFlip = isFlipAllowed(rt);
+                    const rcAnyRot  = rcCanSpin || rcCanFlip;
+                    const rcRawMode = cardFlipModes[rid] ?? 'spin';
+                    const rcMode    = !rcAnyRot ? 'spin' : (!rcCanFlip ? 'spin' : (!rcCanSpin ? 'flip' : rcRawMode));
+                    const rcFlipStep = (rcMode === 'flip') ? (cardFlipSteps[rid] ?? 0) : 0;
+                    const rcFx = (rcFlipStep === 1 || rcFlipStep === 2) ? -1 : 1;
+                    const rcFy = (rcFlipStep === 2 || rcFlipStep === 3) ? -1 : 1;
+                    const rcRotDeg = cardRotations[rid] ?? 0;
+                    const rcImgTf  = rcMode === 'flip' ? `scale(${rcFx},${rcFy})` : `rotate(${rcRotDeg}deg)`;
+                    return (
+                      <div key={rid}
+                        onClick={() => {
+                          if (rcAnyRot && sel === rid && !eraser) {
+                            if (rcMode === 'flip' && rcCanFlip) { setCardFlipSteps(prev => ({ ...prev, [rid]: ((prev[rid] ?? 0) + 1) % 4 })); }
+                            else if (rcMode !== 'flip' && rcCanSpin) { setCardRotations(prev => ({ ...prev, [rid]: (prev[rid] ?? 0) + 90 })); }
+                          }
+                          setSel(rid); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set();
+                        }}
+                        style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", overflow: "hidden", position: "relative",
+                          border: `1px solid ${active ? C.accentBright : "rgba(255,255,255,0.25)"}`, background: active ? C.accentDim : C.panelDeep, opacity: 0.75 }}
+                        title={`Recent: ${rt.label || `Tile ${rid}`}`}>
+                        <img src={rt.blobSrc ?? rt.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", transform: rcImgTf, transition: "transform 0.15s" }} />
+                        {rcAnyRot && (
+                          <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
+                            <span style={{ fontSize: 10, lineHeight: 1, display: "inline-block", transform: rcImgTf, filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.9))" }}>{rcMode === 'flip' ? "🦭" : "🐬"}</span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               );
             })()}
@@ -5068,7 +5090,7 @@ function App() {
                   </div>
                   <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
                     <button style={btn(false, C.soft, C.softDim)} onClick={() => setConvertOpen(true)} title="Remap tileset tiles on the board">Convert</button>
-                    <span onClick={() => setInfoTool("convert")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
+                    <span onClick={() => setInfoTool("convert")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>{starredTiles.includes("convert") ? "★" : "ⓘ"}</span>
                   </div>
                   <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
                     <button style={btn(false)} onClick={() => setHotkeysOpen(true)}>Hotkeys</button>
