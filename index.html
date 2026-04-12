@@ -488,6 +488,8 @@ function App() {
   const mirrorVRef = useRef(false);
   const mirrorHRef = useRef(false);
   const mirrorDRef = useRef(false);
+  const atlasTilesRef = useRef([]);
+  const lastOpheliaTilesetRef = useRef(null);
   useEffect(() => { gridWRef.current = gridW; }, [gridW]);
   useEffect(() => { gridHRef.current = gridH; }, [gridH]);
   useEffect(() => { bg1Ref.current   = bg1;   }, [bg1]);
@@ -514,6 +516,12 @@ function App() {
   useEffect(() => { cardFlipStepsRef.current     = cardFlipSteps;     }, [cardFlipSteps]);
   useEffect(() => { rotatableMapRef.current      = rotatableMap;      }, [rotatableMap]);
   useEffect(() => { allowFlipMapRef.current      = allowFlipMap;      }, [allowFlipMap]);
+  useEffect(() => { atlasTilesRef.current        = atlasTiles;        }, [atlasTiles]);
+  useEffect(() => {
+    if (activeTileset && manifest?.tilesets?.some(t => t.name === activeTileset)) {
+      lastOpheliaTilesetRef.current = activeTileset;
+    }
+  }, [activeTileset, manifest]);
   useEffect(() => {
     const map = {};
     flatDefaultTiles.forEach(t => { map[t.id] = t; });
@@ -1445,40 +1453,40 @@ function App() {
 
       if (tilesToAdd.length === 0) return;
 
-      // Batch-add to atlasTiles; skip any already loaded (matched by src)
-      setAtlasTiles(prev => {
-        const srcSet = new Set(prev.map(t => t.src));
-        const usedIds = new Set(prev.map(t => t.id));
-        const newTiles = [];
-        let nextId = ATLAS_ID_START;
-        for (const { relPath, atlasFolderName, folderLabel, codename } of tilesToAdd) {
-          const src = `https://raw.githubusercontent.com/She-Fairy/atlas-horizon/main/Resources/${relPath}`;
-          if (srcSet.has(src)) continue;
-          while (usedIds.has(nextId) && nextId < 500) nextId++;
-          if (nextId >= 500) break;
-          usedIds.add(nextId);
-          const scopedKey = atlasFolderName ? `${tilesetName}/${atlasFolderName}` : null;
-          const tile = {
-            id: nextId++, src,
-            isDefault: false, isAtlas: true,
-            atlasTilesetName: tilesetName,
-            atlasFolderName,
-            folderKey: scopedKey,
-            folderLabel,
-            codename,
-            baseCodename: relPath.split("/").pop().replace(/\.[^.]+$/, ""),
-          };
-          newTiles.push(tile);
-          srcSet.add(src);
-        }
-        if (newTiles.length === 0) return prev;
-        // Apply settings inheritance
-        newTiles.forEach(t => {
-          if (t.atlasFolderName === "Water") setRotatableMap(rm => ({ ...rm, [t.id]: true }));
-          if (t.atlasFolderName === "Gamemode_Specifics") setPriorityTiles(pt => ({ ...pt, [t.id]: true }));
-        });
-        return [...prev, ...newTiles];
-      });
+      // Read current state synchronously via ref (avoids calling state setters inside updaters)
+      const currentTiles = atlasTilesRef.current;
+      const srcSet = new Set(currentTiles.map(t => t.src));
+      const usedIds = new Set(currentTiles.map(t => t.id));
+      const newTiles = [];
+      let nextId = ATLAS_ID_START;
+      for (const { relPath, atlasFolderName, folderLabel, codename } of tilesToAdd) {
+        const src = `https://raw.githubusercontent.com/She-Fairy/atlas-horizon/main/Resources/${relPath}`;
+        if (srcSet.has(src)) continue;
+        while (usedIds.has(nextId) && nextId < 500) nextId++;
+        if (nextId >= 500) break;
+        usedIds.add(nextId);
+        const scopedKey = atlasFolderName ? `${tilesetName}/${atlasFolderName}` : null;
+        const tile = {
+          id: nextId++, src,
+          isDefault: false, isAtlas: true,
+          atlasTilesetName: tilesetName,
+          atlasFolderName,
+          folderKey: scopedKey,
+          folderLabel,
+          codename,
+          baseCodename: relPath.split("/").pop().replace(/\.[^.]+$/, ""),
+        };
+        newTiles.push(tile);
+        srcSet.add(src);
+      }
+      if (newTiles.length === 0) return;
+      // Batch-add tiles (separate from settings inheritance calls — never call setters inside updaters)
+      setAtlasTiles(prev => [...prev, ...newTiles]);
+      // Apply settings inheritance as independent state updates
+      const waterIds = newTiles.filter(t => t.atlasFolderName === "Water").map(t => t.id);
+      const objIds   = newTiles.filter(t => t.atlasFolderName === "Gamemode_Specifics").map(t => t.id);
+      if (waterIds.length > 0) setRotatableMap(rm => { const n = { ...rm }; waterIds.forEach(id => { n[id] = true; }); return n; });
+      if (objIds.length > 0)   setPriorityTiles(pt => { const n = { ...pt }; objIds.forEach(id => { n[id] = true; }); return n; });
     } catch (err) {
       console.warn("Failed to load Atlas tileset:", tilesetName, err);
     }
@@ -3459,19 +3467,18 @@ function App() {
   const ConvertModal = () => {
     if (!convertOpen) return null;
     const opheliaTilesets = manifest?.tilesets ?? [];
-    // Active tilesets from both Ophelia and Atlas panels
-    const shownOphelia = new Set(shownTilesets ?? [activeTileset ?? opheliaTilesets[0]?.name]);
-    const shownAtlas   = new Set(shownAtlasTilesets ?? []);
-    // Build combined list of shown tilesets for From/To dropdowns
-    const shownOpheliaList  = opheliaTilesets.filter(ts => shownOphelia.has(ts.name));
-    const shownAtlasList    = (atlasTilesetList ?? []).filter(a => shownAtlas.has(a.name));
-    const allShownNames     = [
-      ...shownOpheliaList.map(ts => ts.name),
-      ...shownAtlasList.map(a => a.name),
+    // Show ALL Ophelia tilesets from manifest, and all Atlas tilesets that have tiles loaded
+    const allOpheliaList = opheliaTilesets;
+    const allAtlasList   = (atlasTilesetList ?? []).filter(a =>
+      atlasTiles.some(t => t.atlasTilesetName === a.name)
+    );
+    const allAvailableNames = [
+      ...allOpheliaList.map(ts => ts.name),
+      ...allAtlasList.map(a => a.name),
     ];
 
-    const defaultFrom = activeTileset ?? allShownNames[0] ?? "";
-    const defaultTo   = allShownNames.find(n => n !== defaultFrom) ?? "";
+    const defaultFrom = activeTileset ?? allAvailableNames[0] ?? "";
+    const defaultTo   = allAvailableNames.find(n => n !== defaultFrom) ?? "";
     const [fromTs, setFromTs] = React.useState(defaultFrom);
     const [toTs,   setToTs]   = React.useState(defaultTo);
 
@@ -3553,14 +3560,14 @@ function App() {
     const TsSelect = ({ value, onChange }) => (
       <select value={value} onChange={e => onChange(e.target.value)}
         style={{ background: C.panel, color: C.text, border: `1px solid ${C.border}`, borderRadius: 5, fontSize: 11, padding: "3px 6px", cursor: "pointer", outline: "none" }}>
-        {shownOpheliaList.length > 0 && (
+        {allOpheliaList.length > 0 && (
           <optgroup label="Ophelia">
-            {shownOpheliaList.map(ts => <option key={ts.name} value={ts.name}>{ts.name}</option>)}
+            {allOpheliaList.map(ts => <option key={ts.name} value={ts.name}>{ts.name}</option>)}
           </optgroup>
         )}
-        {shownAtlasList.length > 0 && (
+        {allAtlasList.length > 0 && (
           <optgroup label="Atlas">
-            {shownAtlasList.map(a => <option key={a.name} value={a.name}>{a.displayName}</option>)}
+            {allAtlasList.map(a => <option key={a.name} value={a.name}>{a.displayName}</option>)}
           </optgroup>
         )}
       </select>
@@ -3580,7 +3587,7 @@ function App() {
               <TsSelect value={fromTs} onChange={v => {
                 setFromTs(v);
                 if (v === toTs) {
-                  const alt = allShownNames.find(n => n !== v);
+                  const alt = allAvailableNames.find(n => n !== v);
                   if (alt) setToTs(alt);
                 }
               }} />
@@ -3591,7 +3598,7 @@ function App() {
               <TsSelect value={toTs} onChange={v => {
                 setToTs(v);
                 if (v === fromTs) {
-                  const alt = allShownNames.find(n => n !== v);
+                  const alt = allAvailableNames.find(n => n !== v);
                   if (alt) setFromTs(alt);
                 }
               }} />
@@ -3950,7 +3957,12 @@ function App() {
               />
               {/* Tileset selector — dropdown with multi-select checkboxes */}
               {manifest?.tilesets?.length > 0 && (() => {
-                const shown = new Set(shownTilesets ?? [activeTileset ?? manifest.tilesets[0]?.name]);
+                // Fallback for shownTilesets must only use Ophelia names, never an Atlas name
+                const opheliaNames = manifest.tilesets.map(ts => ts.name);
+                const shownFallback = (activeTileset && opheliaNames.includes(activeTileset))
+                  ? [activeTileset]
+                  : (opheliaNames.length > 0 ? [opheliaNames[0]] : []);
+                const shown = new Set(shownTilesets ?? shownFallback);
                 const shownAtlas = new Set(shownAtlasTilesets ?? []);
                 const totalShown = shown.size + shownAtlas.size;
                 const labelParts = [
@@ -3981,8 +3993,9 @@ function App() {
                                   } else {
                                     if (ts.name !== activeTileset) {
                                       // Compute remapped grid (auto-convert Ophelia→Ophelia)
+                                      // If currently on an Atlas tileset, use the last known Ophelia tileset as "from"
                                       let newGrid = gridRef.current;
-                                      if (manifest && activeTileset) {
+                                      if (manifest) {
                                         const tilesets = manifest.tilesets ?? [];
                                         let cid = TILESET_ID_START;
                                         const maps = {};
@@ -3994,7 +4007,12 @@ function App() {
                                           }
                                           maps[tsDef.name] = m;
                                         }
-                                        const fromMap = maps[activeTileset] ?? {};
+                                        // Use lastOpheliaTilesetRef when activeTileset is an Atlas tileset
+                                        const isAtlasActive = activeTileset && !maps[activeTileset];
+                                        const fromTsName = isAtlasActive
+                                          ? (lastOpheliaTilesetRef.current ?? tilesets[0]?.name)
+                                          : activeTileset;
+                                        const fromMap = (fromTsName ? maps[fromTsName] : null) ?? {};
                                         const toMap   = maps[ts.name]      ?? {};
                                         const idRemap = {};
                                         for (const key of Object.keys(fromMap)) {
@@ -4349,7 +4367,7 @@ function App() {
                         </div>
                       );
                       return (<>
-                        {/* ── Per-tileset sections (one per shown tileset) ── */}
+                        {/* ── Per-tileset sections (one per shown Ophelia tileset) ── */}
                         {tilesetEntriesPerTs.map(({ name, entries, count }) => {
                           const sectionId = `tileset_${name}`;
                           return entries.length > 0 ? (
@@ -4359,25 +4377,7 @@ function App() {
                             </React.Fragment>
                           ) : null;
                         })}
-                        {/* ── User Uploaded ── */}
-                        {(userTiles.length > 0 || true) && (<>
-                          <SectionHeader id="user" label="User Uploaded" count={userTiles.length} />
-                          {!panelCollapsed.user && (<>
-                            {userTiles.map(t => renderFlatCard(t))}
-                            <div onClick={() => fileRef.current.click()}
-                              style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: "pointer", border: `2px dashed ${C.border}`, background: "rgba(255,255,255,0.03)", overflow: "hidden", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2 }}
-                              title="Upload tiles">
-                              <span style={{ fontSize: 22, color: C.muted, lineHeight: 1, fontWeight: 300 }}>+</span>
-                              <span style={{ fontSize: 9, color: C.muted, textTransform: "uppercase", letterSpacing: 0.8, lineHeight: 1 }}>Upload</span>
-                            </div>
-                          </>)}
-                        </>)}
-                        {/* ── Global ── */}
-                        {globalEntries.length > 0 && (<>
-                          <SectionHeader id="global" label="Global" count={globalEntries.reduce((n, e) => n + (e.tiles?.length ?? 1), 0)} />
-                          {!panelCollapsed.global && globalEntries.map(renderEntry)}
-                        </>)}
-                        {/* ── Per-Atlas-tileset sections (one per shown Atlas tileset) ── */}
+                        {/* ── Per-Atlas-tileset sections (one per shown Atlas tileset, above User Uploaded) ── */}
                         {shownAtlasTilesets.map(atsTsName => {
                           const meta = atlasTilesetMeta(atsTsName);
                           const tsTiles = atlasTiles.filter(t => t.atlasTilesetName === atsTsName);
@@ -4401,6 +4401,24 @@ function App() {
                             </React.Fragment>
                           );
                         })}
+                        {/* ── User Uploaded ── */}
+                        {(userTiles.length > 0 || true) && (<>
+                          <SectionHeader id="user" label="User Uploaded" count={userTiles.length} />
+                          {!panelCollapsed.user && (<>
+                            {userTiles.map(t => renderFlatCard(t))}
+                            <div onClick={() => fileRef.current.click()}
+                              style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: "pointer", border: `2px dashed ${C.border}`, background: "rgba(255,255,255,0.03)", overflow: "hidden", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2 }}
+                              title="Upload tiles">
+                              <span style={{ fontSize: 22, color: C.muted, lineHeight: 1, fontWeight: 300 }}>+</span>
+                              <span style={{ fontSize: 9, color: C.muted, textTransform: "uppercase", letterSpacing: 0.8, lineHeight: 1 }}>Upload</span>
+                            </div>
+                          </>)}
+                        </>)}
+                        {/* ── Global ── */}
+                        {globalEntries.length > 0 && (<>
+                          <SectionHeader id="global" label="Global" count={globalEntries.reduce((n, e) => n + (e.tiles?.length ?? 1), 0)} />
+                          {!panelCollapsed.global && globalEntries.map(renderEntry)}
+                        </>)}
                       </>);
                     })()}
                     {/* Reset All Tile Settings button */}
@@ -5130,14 +5148,23 @@ function App() {
                 <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}
                   onClick={e => {
                     e.preventDefault();
-                    setAllowTsMixing(v => {
-                      const next = !v;
-                      if (!next) {
-                        const active = activeTileset ?? manifest?.tilesets?.[0]?.name;
-                        if (active) setShownTilesets([active]);
+                    const next = !allowTsMixing;
+                    if (!next) {
+                      // Turning mixing OFF: collapse to exactly one tileset, routing to the correct state var
+                      const active = activeTilesetRef.current;
+                      const isAtlas = active && !manifest?.tilesets?.some(ts => ts.name === active);
+                      if (isAtlas) {
+                        // Active is an Atlas tileset — show only it in Atlas state, clear Ophelia
+                        setShownTilesets([]);
+                        setShownAtlasTilesets(active ? [active] : []);
+                      } else {
+                        // Active is an Ophelia tileset (or null) — show only it in Ophelia state, clear Atlas
+                        const fallback = manifest?.tilesets?.[0]?.name;
+                        setShownTilesets(active ? [active] : (fallback ? [fallback] : []));
+                        setShownAtlasTilesets([]);
                       }
-                      return next;
-                    });
+                    }
+                    setAllowTsMixing(next);
                   }}>
                   <input type="checkbox" readOnly checked={allowTsMixing}
                     style={{ width: 14, height: 14, accentColor: C.accent, cursor: "pointer", flexShrink: 0, pointerEvents: "none" }} />
