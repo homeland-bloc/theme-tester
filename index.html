@@ -379,6 +379,8 @@ function App() {
   const [priorityTiles, setPriorityTiles] = useState(() => load(SK.priority, {}));
   // Bottom tiles: rendered in Pass 0 at low z-index (always below normal tiles)
   const [bottomTiles, setBottomTiles] = useState(() => load(SK.bottom, {}));
+  // Per-tile auto shadow: { [id]: bool } — renders a brightness(0) opacity-0.2 copy shifted down 30%
+  const [autoShadowTiles, setAutoShadowTiles] = useState(() => load("oph_auto_shadow", {}));
   // Per-tile offsets: { [id]: { ox: %, oy: % } }  (positive oy = down, positive ox = right)
   const [tileOffsets, setTileOffsets] = useState(() => load(SK.offsets, {}));
   // Per-tile "Allow spinning" toggle: { [id]: bool } — undefined = use default
@@ -503,6 +505,7 @@ function App() {
   useEffect(() => { save(SK.priority,     priorityTiles);   }, [priorityTiles]);
   useEffect(() => { save(SK.offsets,      tileOffsets);     }, [tileOffsets]);
   useEffect(() => { save(SK.bottom,      bottomTiles);     }, [bottomTiles]);
+  useEffect(() => { save("oph_auto_shadow", autoShadowTiles); }, [autoShadowTiles]);
   useEffect(() => { save(SK.rotatable,    rotatableMap);    }, [rotatableMap]);
   useEffect(() => { save("oph_allow_flip", allowFlipMap);   }, [allowFlipMap]);
   useEffect(() => { save(SK.tileRots,     gridRotations);   }, [gridRotations]);
@@ -2757,6 +2760,13 @@ function App() {
               </label>
             );
           })()}
+          {/* Auto shadow */}
+          <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
+            <input type="checkbox" checked={!!autoShadowTiles[t.id]}
+              onChange={ev => setAutoShadowTiles(prev => { const n = { ...prev }; if (ev.target.checked) n[t.id] = true; else delete n[t.id]; return n; })}
+              style={{ width: 14, height: 14, accentColor: C.accent, cursor: "pointer" }} />
+            <span style={{ fontSize: 11, color: C.text }}>Auto shadow 🌑</span>
+          </label>
           {/* Starred shortcut */}
           <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
             <input type="checkbox" checked={starredTiles.includes(t.id)}
@@ -4469,11 +4479,16 @@ function App() {
                     const cellPx = CELL * zoom;
                     const ox = (off.ox / 100) * cellPx;
                     const oy = (off.oy / 100) * cellPx;
-                    return (
-                      <img key={`bot${r}-${c}`} src={t.src} alt="" draggable={false}
-                        style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%) rotate(${rotDeg}deg) scale(${fxB}, ${fyB})`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 1 }}
-                      />
-                    );
+                    const tileImg = <img key={`bot${r}-${c}`} src={t.src} alt="" draggable={false}
+                      style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%) rotate(${rotDeg}deg) scale(${fxB}, ${fyB})`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 1 }}
+                    />;
+                    if (!autoShadowTiles[t.id]) return tileImg;
+                    return [
+                      <img key={`sbot${r}-${c}`} src={t.src} alt="" draggable={false}
+                        style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy + 0.3 * cellPx, width: cellPx * mult, height: "auto", transform: `translateY(-50%) scale(${fxB}, ${fyB})`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 0, filter: "brightness(0)", opacity: 0.2 }}
+                      />,
+                      tileImg,
+                    ];
                   })
                 )}
                 {/* Pass 1: normal tiles (z-index = r + 1 for natural depth), skipping priority and bottom tiles */}
@@ -4491,11 +4506,16 @@ function App() {
                     const cellPx = CELL * zoom;
                     const ox = (off.ox / 100) * cellPx;
                     const oy = (off.oy / 100) * cellPx;
-                    return (
-                      <img key={`t${r}-${c}`} src={t.src} alt="" draggable={false}
-                        style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%) rotate(${rotDeg}deg) scale(${fxN}, ${fyN})`, pointerEvents: "none", imageRendering: "pixelated", zIndex: r + 2 }}
-                      />
-                    );
+                    const tileImg = <img key={`t${r}-${c}`} src={t.src} alt="" draggable={false}
+                      style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%) rotate(${rotDeg}deg) scale(${fxN}, ${fyN})`, pointerEvents: "none", imageRendering: "pixelated", zIndex: r + 2 }}
+                    />;
+                    if (!autoShadowTiles[t.id]) return tileImg;
+                    return [
+                      <img key={`s${r}-${c}`} src={t.src} alt="" draggable={false}
+                        style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy + 0.3 * cellPx, width: cellPx * mult, height: "auto", transform: `translateY(-50%) scale(${fxN}, ${fyN})`, pointerEvents: "none", imageRendering: "pixelated", zIndex: r + 1, filter: "brightness(0)", opacity: 0.2 }}
+                      />,
+                      tileImg,
+                    ];
                   })
                 )}
                 {/* Pass 2: priority tiles — rendered last in DOM, always above every other tile */}
@@ -4512,11 +4532,16 @@ function App() {
                     const cellPx = CELL * zoom;
                     const ox = (off.ox / 100) * cellPx;
                     const oy = (off.oy / 100) * cellPx;
-                    return (
-                      <img key={`prio${r}-${c}`} src={t.src} alt="" draggable={false}
-                        style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%) rotate(${rotDeg}deg) scale(${fxP}, ${fyP})`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 9999 }}
-                      />
-                    );
+                    const tileImg = <img key={`prio${r}-${c}`} src={t.src} alt="" draggable={false}
+                      style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%) rotate(${rotDeg}deg) scale(${fxP}, ${fyP})`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 9999 }}
+                    />;
+                    if (!autoShadowTiles[t.id]) return tileImg;
+                    return [
+                      <img key={`sprio${r}-${c}`} src={t.src} alt="" draggable={false}
+                        style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy + 0.3 * cellPx, width: cellPx * mult, height: "auto", transform: `translateY(-50%) scale(${fxP}, ${fyP})`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 9998, filter: "brightness(0)", opacity: 0.2 }}
+                      />,
+                      tileImg,
+                    ];
                   })
                 )}
 
