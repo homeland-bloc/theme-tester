@@ -467,8 +467,15 @@ function App() {
   const activeTilesetRef = useRef(null);
   const gridWRef = useRef(gridW);
   const gridHRef = useRef(gridH);
+  const bg1Ref   = useRef(bg1);
+  const bg2Ref   = useRef(bg2);
+  const histIdxRef = useRef(0);
+  const bgHistTimerRef = useRef(null);
   useEffect(() => { gridWRef.current = gridW; }, [gridW]);
   useEffect(() => { gridHRef.current = gridH; }, [gridH]);
+  useEffect(() => { bg1Ref.current   = bg1;   }, [bg1]);
+  useEffect(() => { bg2Ref.current   = bg2;   }, [bg2]);
+  useEffect(() => { histIdxRef.current = histIdx; }, [histIdx]);
   useEffect(() => { activeTilesetRef.current = activeTileset ?? null; }, [activeTileset]);
   useEffect(() => { selRef.current          = sel;           }, [sel]);
   useEffect(() => { eraserRef.current       = eraser;        }, [eraser]);
@@ -1033,8 +1040,25 @@ function App() {
   }, []);
 
   const saveColors = (b1, b2) => save(SK.colors, { bg1: b1, bg2: b2 });
-  const applyBg1   = v => { setBg1(v); setHex1(v); saveColors(v, bg2); };
-  const applyBg2   = v => { setBg2(v); setHex2(v); saveColors(bg1, v); };
+
+  // Debounced BG history push — uses refs so the callback always reads the latest values.
+  // 350 ms of quiet after the last applyBg call → one undo step per drag session.
+  const pushBgHistory = useCallback(() => {
+    if (bgHistTimerRef.current) clearTimeout(bgHistTimerRef.current);
+    bgHistTimerRef.current = setTimeout(() => {
+      const snap = { grid: gridRef.current, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current };
+      setHistory(h => {
+        const trimmed = h.slice(0, histIdxRef.current + 1);
+        const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
+        return [...capped, snap];
+      });
+      setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
+      bgHistTimerRef.current = null;
+    }, 350);
+  }, []);
+
+  const applyBg1 = v => { setBg1(v); setHex1(v); saveColors(v, bg2); pushBgHistory(); };
+  const applyBg2 = v => { setBg2(v); setHex2(v); saveColors(bg1, v); pushBgHistory(); };
 
   const markFailed = id => setFailedTiles(prev => new Set([...prev, id]));
 
@@ -1046,7 +1070,7 @@ function App() {
         setHistory(h => {
           const trimmed = h.slice(0, histIdx + 1);
           const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-          return [...capped, { grid: next, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current }];
+          return [...capped, { grid: next, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current }];
         });
         setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
       }
