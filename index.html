@@ -106,9 +106,9 @@ const SK = { tiles: "oph_tiles", grid: "oph_grid", colors: "oph_colors", userTil
 const ACCEPTED = "image/png,image/jpeg,image/gif,image/webp,image/svg+xml,image/bmp";
 const MAX_HISTORY = 60;
 // Non-overlapping tile ID ranges — prevents collisions between sections regardless of reordering
-const TILESET_ID_START = 1;   // 001–099: active tileset tiles (Mausoleum wall1=1, etc.)
-const USER_ID_START    = 100; // 100–199: user-uploaded tiles
-const USER_ID_MAX      = 199;
+const TILESET_ID_START = 1;   // 001–199: active tileset tiles (Mausoleum wall1=1, etc.)
+const USER_ID_START    = 500; // 500–699: user-uploaded tiles (moved to avoid overlap with tileset IDs 1-499)
+const USER_ID_MAX      = 699;
 const GLOBAL_ID_START  = 200; // 200–299: global tiles (water, spawns, objectives, etc.)
 const ATLAS_ID_START   = 300; // 300–499: atlas tiles (She-Fairy/atlas-horizon)
 const SPACE_TILE_ID    = 998; // special: makes a cell fully transparent
@@ -120,7 +120,7 @@ const atlasApiCache = new Map(); // url → resolved data
 // Functions like isDefaultRotatable/isDefaultOTGWall read from here.
 const TILE_SETTINGS = {
   rotatable:    ["/Water/"],             // src substrings → tile is rotatable (spin) by default
-  flippable:    ["/Fence/", "/Rope/"],   // src substrings → tile is flippable by default
+  flippable:    ["/Fence/", "/Rope/", "Halloween/Jumppads/"],   // src substrings → tile is flippable by default
   otgPassable:  ["bush", "Bush", "SpeedTile", "SlowTile", "Objective", "Rope/", "Jumppads/", "Teleporters/", "HealPad", "Spawn", "SpawnPoint", "spawn"],
   mirrorOffset: ["Jumppads/", "Teleporters/", "HealPad"],
   bottomRender: ["/Water/", "Jumppads/", "Teleporters/", "HealPad"],
@@ -379,6 +379,8 @@ function App() {
   const [priorityTiles, setPriorityTiles] = useState(() => load(SK.priority, {}));
   // Bottom tiles: rendered in Pass 0 at low z-index (always below normal tiles)
   const [bottomTiles, setBottomTiles] = useState(() => load(SK.bottom, {}));
+  // Per-tile auto shadow: { [id]: bool } — renders a brightness(0) opacity-0.2 copy shifted down 30%
+  const [autoShadowTiles, setAutoShadowTiles] = useState(() => load("oph_auto_shadow", {}));
   // Per-tile offsets: { [id]: { ox: %, oy: % } }  (positive oy = down, positive ox = right)
   const [tileOffsets, setTileOffsets] = useState(() => load(SK.offsets, {}));
   // Per-tile "Allow spinning" toggle: { [id]: bool } — undefined = use default
@@ -409,6 +411,7 @@ function App() {
   const uploadTimerRef = useRef(null);
   // UI theme
   const [uiTheme, setUiTheme] = useState(() => load("oph_theme", "warm"));
+  const [autoTheme, setAutoTheme] = useState(() => load("oph_auto_theme", true));
   // Apply theme to mutable C before any render — Sep/SectionHeader read C at render time
   Object.assign(C, THEMES[uiTheme] || THEMES.warm);
   // Responsive
@@ -465,8 +468,18 @@ function App() {
   const activeTilesetRef = useRef(null);
   const gridWRef = useRef(gridW);
   const gridHRef = useRef(gridH);
+  const bg1Ref   = useRef(bg1);
+  const bg2Ref   = useRef(bg2);
+  const histIdxRef = useRef(0);
+  const bgHistTimerRef = useRef(null);
+  const mirrorVRef = useRef(false);
+  const mirrorHRef = useRef(false);
+  const mirrorDRef = useRef(false);
   useEffect(() => { gridWRef.current = gridW; }, [gridW]);
   useEffect(() => { gridHRef.current = gridH; }, [gridH]);
+  useEffect(() => { bg1Ref.current   = bg1;   }, [bg1]);
+  useEffect(() => { bg2Ref.current   = bg2;   }, [bg2]);
+  useEffect(() => { histIdxRef.current = histIdx; }, [histIdx]);
   useEffect(() => { activeTilesetRef.current = activeTileset ?? null; }, [activeTileset]);
   useEffect(() => { selRef.current          = sel;           }, [sel]);
   useEffect(() => { eraserRef.current       = eraser;        }, [eraser]);
@@ -478,6 +491,9 @@ function App() {
   useEffect(() => { zoomRef.current         = zoom;          }, [zoom]);
   useEffect(() => { selectionModeRef.current = selectionMode; }, [selectionMode]);
   useEffect(() => { gridRef.current = grid; }, [grid]);
+  useEffect(() => { mirrorVRef.current = mirrorV; }, [mirrorV]);
+  useEffect(() => { mirrorHRef.current = mirrorH; }, [mirrorH]);
+  useEffect(() => { mirrorDRef.current = mirrorD; }, [mirrorD]);
   useEffect(() => { paintingRef.current = painting; }, [painting]);
   useEffect(() => { mirrorOffsetTilesRef.current = mirrorOffsetTiles; }, [mirrorOffsetTiles]);
   useEffect(() => { tileOffsetsRef.current       = tileOffsets;       }, [tileOffsets]);
@@ -503,6 +519,7 @@ function App() {
   useEffect(() => { save(SK.priority,     priorityTiles);   }, [priorityTiles]);
   useEffect(() => { save(SK.offsets,      tileOffsets);     }, [tileOffsets]);
   useEffect(() => { save(SK.bottom,      bottomTiles);     }, [bottomTiles]);
+  useEffect(() => { save("oph_auto_shadow", autoShadowTiles); }, [autoShadowTiles]);
   useEffect(() => { save(SK.rotatable,    rotatableMap);    }, [rotatableMap]);
   useEffect(() => { save("oph_allow_flip", allowFlipMap);   }, [allowFlipMap]);
   useEffect(() => { save(SK.tileRots,     gridRotations);   }, [gridRotations]);
@@ -534,6 +551,20 @@ function App() {
       .oph-title-text { background: ${titleGrad} !important; -webkit-background-clip: text !important; background-clip: text !important; -webkit-text-fill-color: transparent !important; color: transparent !important; }
     `;
   }, [uiTheme]);
+  useEffect(() => { save("oph_auto_theme", autoTheme); }, [autoTheme]);
+  // Auto-adapt theme: when on, derive warm/cold from the BG colour temperature
+  useEffect(() => {
+    if (!autoTheme) return;
+    const warmth = hex => {
+      if (!hex || hex.length < 6) return 0;
+      const h = hex.replace('#', '');
+      const r = parseInt(h.slice(0, 2), 16) || 0;
+      const b = parseInt(h.slice(4, 6), 16) || 0;
+      return r - b;
+    };
+    const avg = (warmth(bg1) + warmth(bg2)) / 2;
+    setUiTheme(avg > 10 ? 'cold' : 'warm');
+  }, [autoTheme, bg1, bg2]);
   useEffect(() => { save("oph_starred", starredTiles); }, [starredTiles]);
   useEffect(() => { save("oph_recent", recentTileIds); }, [recentTileIds]);
   // Track last 3 selected numeric tile IDs
@@ -608,6 +639,8 @@ function App() {
     if (s.includes("Sewer/Fence/")) return { ox: 0, oy: -30 };
     // Sewer rope tiles
     if (s.includes("Sewer/Rope/")) return { ox: 0, oy: -50 };
+    // Halloween RopeConnects: +50 horizontal offset
+    if (s.includes("Halloween/Rope/RopeConnects")) return { ox: 50, oy: 0 };
     // Bounty star: slight upward offset
     if (s.includes("Bounty")) return { ox: 0, oy: -10 };
     // Mausoleum Wall2: -12 vertical
@@ -901,7 +934,7 @@ function App() {
   const switchTileset = (newTilesetName) => {
     if (!manifest || newTilesetName === activeTileset) return;
     setActiveTileset(newTilesetName);
-    const tsBg = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" }, Cafe: { bg1: "#AD6B45", bg2: "#B5714A" }, Pharmacy: { bg1: "#288FEF", bg2: "#19A0E8" } }[newTilesetName];
+    const tsBg = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" }, Halloween: { bg1: "#3A313E", bg2: "#413643" }, Cafe: { bg1: "#AD6B45", bg2: "#B5714A" }, Pharmacy: { bg1: "#a9b0b7", bg2: "#b7bec2" } }[newTilesetName];
     if (tsBg) { setBg1(tsBg.bg1); setHex1(tsBg.bg1); setBg2(tsBg.bg2); setHex2(tsBg.bg2); save(SK.colors, tsBg); }
   };
 
@@ -913,7 +946,7 @@ function App() {
       if (s.has(name)) { if (s.size <= 1) return cur; s.delete(name); }
       else {
         s.add(name); setActiveTileset(name);
-        const tsBg = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" }, Cafe: { bg1: "#AD6B45", bg2: "#B5714A" }, Pharmacy: { bg1: "#288FEF", bg2: "#19A0E8" } }[name];
+        const tsBg = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" }, Halloween: { bg1: "#3A313E", bg2: "#413643" }, Cafe: { bg1: "#AD6B45", bg2: "#B5714A" }, Pharmacy: { bg1: "#a9b0b7", bg2: "#b7bec2" } }[name];
         if (tsBg) { setBg1(tsBg.bg1); setHex1(tsBg.bg1); setBg2(tsBg.bg2); setHex2(tsBg.bg2); save(SK.colors, tsBg); }
       }
       return [...s];
@@ -943,6 +976,18 @@ function App() {
           if (!t.src) return;
           const isBottom = TILE_SETTINGS.bottomRender.some(p => t.src.includes(p));
           if (isBottom && !next[t.id]) {
+            next[t.id] = true; changed = true;
+          }
+        });
+        return changed ? next : prev;
+      });
+      // Auto-shadow on by default for Halloween jumppads and teleporters
+      setAutoShadowTiles(prev => {
+        const next = { ...prev };
+        let changed = false;
+        flatDefaultTiles.forEach(t => {
+          if (!t.src) return;
+          if ((t.src.includes("Halloween/Jumppads/") || t.src.includes("Halloween/Teleporters/")) && !next[t.id]) {
             next[t.id] = true; changed = true;
           }
         });
@@ -1016,8 +1061,25 @@ function App() {
   }, []);
 
   const saveColors = (b1, b2) => save(SK.colors, { bg1: b1, bg2: b2 });
-  const applyBg1   = v => { setBg1(v); setHex1(v); saveColors(v, bg2); };
-  const applyBg2   = v => { setBg2(v); setHex2(v); saveColors(bg1, v); };
+
+  // Debounced BG history push — uses refs so the callback always reads the latest values.
+  // 350 ms of quiet after the last applyBg call → one undo step per drag session.
+  const pushBgHistory = useCallback(() => {
+    if (bgHistTimerRef.current) clearTimeout(bgHistTimerRef.current);
+    bgHistTimerRef.current = setTimeout(() => {
+      const snap = { grid: gridRef.current, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...highlightedCellsRef.current] };
+      setHistory(h => {
+        const trimmed = h.slice(0, histIdxRef.current + 1);
+        const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
+        return [...capped, snap];
+      });
+      setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
+      bgHistTimerRef.current = null;
+    }, 350);
+  }, []);
+
+  const applyBg1 = v => { setBg1(v); setHex1(v); saveColors(v, bg2); pushBgHistory(); };
+  const applyBg2 = v => { setBg2(v); setHex2(v); saveColors(bg1, v); pushBgHistory(); };
 
   const markFailed = id => setFailedTiles(prev => new Set([...prev, id]));
 
@@ -1029,7 +1091,7 @@ function App() {
         setHistory(h => {
           const trimmed = h.slice(0, histIdx + 1);
           const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-          return [...capped, { grid: next, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current }];
+          return [...capped, { grid: next, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...highlightedCellsRef.current] }];
         });
         setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
       }
@@ -1045,8 +1107,13 @@ function App() {
       setBg1(snap.bg1); setHex1(snap.bg1); setBg2(snap.bg2); setHex2(snap.bg2);
       save(SK.colors, { bg1: snap.bg1, bg2: snap.bg2 });
     } else if (snap.tileset != null && snap.tileset !== activeTilesetRef.current) {
-      const tsBg = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" }, Cafe: { bg1: "#AD6B45", bg2: "#B5714A" }, Pharmacy: { bg1: "#288FEF", bg2: "#19A0E8" } }[snap.tileset];
+      const tsBg = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" }, Halloween: { bg1: "#3A313E", bg2: "#413643" }, Cafe: { bg1: "#AD6B45", bg2: "#B5714A" }, Pharmacy: { bg1: "#a9b0b7", bg2: "#b7bec2" } }[snap.tileset];
       if (tsBg) { setBg1(tsBg.bg1); setHex1(tsBg.bg1); setBg2(tsBg.bg2); setHex2(tsBg.bg2); save(SK.colors, tsBg); }
+    }
+    if (snap.highlight !== undefined) {
+      const s = new Set(snap.highlight);
+      setHighlightedCells(s);
+      highlightedCellsRef.current = s;
     }
   };
 
@@ -1067,7 +1134,7 @@ function App() {
   // Push the current grid as a history snapshot (called once on mousedown, before any paint).
   // All cell writes during a drag use skipHistory=true, so the whole drag is one undo step.
   const pushHistorySnapshot = useCallback(() => {
-    const snap = { grid, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1, bg2 };
+    const snap = { grid, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1, bg2, highlight: [...highlightedCellsRef.current] };
     setHistory(h => {
       const trimmed = h.slice(0, histIdx + 1);
       const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
@@ -1084,7 +1151,7 @@ function App() {
       const blobSrc = URL.createObjectURL(f); // fast blob URL for immediate rendering
       const r = new FileReader();
       r.onload = e => {
-        if (nextId.current > USER_ID_MAX) { console.warn("User tile limit reached (IDs 100–199)"); return; }
+        if (nextId.current > USER_ID_MAX) { console.warn("User tile limit reached (IDs 500–699)"); return; }
         const id = nextId.current++;
         setUserTiles(prev => [...prev, { id, src: e.target.result, blobSrc }]);
         loaded++;
@@ -1284,8 +1351,11 @@ function App() {
         });
         return n;
       });
-      // Apply flip state from card flip mode
-      const flipMode = cardFlipModesRef.current[tileId] ?? 'spin';
+      // Apply flip state from card flip mode — compute effective mode respecting spin/flip capability
+      const canSpin = tile ? isTileRotatable(tile) : false;
+      const canFlip = tile ? (allowFlipMapRef.current[tileId] !== undefined ? allowFlipMapRef.current[tileId] : isDefaultFlippable(tile)) : false;
+      const rawFMode = cardFlipModesRef.current[tileId] ?? 'spin';
+      const flipMode = !(canSpin || canFlip) ? 'spin' : (!canFlip ? 'spin' : (!canSpin ? 'flip' : rawFMode));
       const flipStep = (flipMode === 'flip') ? (cardFlipStepsRef.current[tileId] ?? 0) : 0;
       setGridFlips(prev => {
         const n = { ...prev };
@@ -1359,7 +1429,10 @@ function App() {
         });
         return n;
       });
-      const flipMode = cardFlipModesRef.current[tileId] ?? 'spin';
+      const canSpinC = tile ? isTileRotatable(tile) : false;
+      const canFlipC = tile ? (allowFlipMapRef.current[tileId] !== undefined ? allowFlipMapRef.current[tileId] : isDefaultFlippable(tile)) : false;
+      const rawFModeC = cardFlipModesRef.current[tileId] ?? 'spin';
+      const flipMode = !(canSpinC || canFlipC) ? 'spin' : (!canFlipC ? 'spin' : (!canSpinC ? 'flip' : rawFModeC));
       const flipStep = (flipMode === 'flip') ? (cardFlipStepsRef.current[tileId] ?? 0) : 0;
       setGridFlips(prev => {
         const n = { ...prev };
@@ -1542,6 +1615,8 @@ function App() {
       if (highlightModeRef.current) {
         const key = `${r},${c}`;
         if (highlightedCellsRef.current.has(key) && highlightedCellsRef.current.size > 0) {
+          // Push history snapshot before moving so undo restores position
+          if (pushHistRef.current) pushHistRef.current();
           // Start dragging the highlight region
           isHighlightDraggingRef.current = true;
           highlightDragAnchorCell.current = [r, c];
@@ -1808,12 +1883,28 @@ function App() {
         const offset = highlightDragOffsetRef.current ?? { dr: 0, dc: 0 };
         const { dr, dc } = offset;
         if (dr !== 0 || dc !== 0) {
+          // Compute per-cell mirrored offset so symmetric structures move in opposite directions
+          const anchorCell = highlightDragAnchorCell.current;
+          const [ar, ac] = anchorCell ?? [0, 0];
+          const cR = (gridHRef.current - 1) / 2;
+          const cC = (gridWRef.current - 1) / 2;
+          const anchorRowSign = ar < cR ? -1 : (ar > cR ? 1 : 0);
+          const anchorColSign = ac < cC ? -1 : (ac > cC ? 1 : 0);
+          const getEffectiveDelta = (r, c) => {
+            if (!mirrorVRef.current && !mirrorHRef.current && !mirrorDRef.current) return { dr, dc };
+            const cellRowSign = r < cR ? -1 : (r > cR ? 1 : 0);
+            const cellColSign = c < cC ? -1 : (c > cC ? 1 : 0);
+            const flipRow = (mirrorHRef.current || mirrorDRef.current) && anchorRowSign !== 0 && cellRowSign !== 0 && cellRowSign !== anchorRowSign;
+            const flipCol = (mirrorVRef.current || mirrorDRef.current) && anchorColSign !== 0 && cellColSign !== 0 && cellColSign !== anchorColSign;
+            return { dr: flipRow ? -dr : dr, dc: flipCol ? -dc : dc };
+          };
           // Move grid tiles from old positions to new positions (with rotations and offsets)
           const oldCells = [...highlightedCellsRef.current];
           const newCells = oldCells
             .map(key => {
               const [r, c] = key.split(',').map(Number);
-              return { oldKey: key, newR: r + dr, newC: c + dc };
+              const delta = getEffectiveDelta(r, c);
+              return { oldKey: key, newR: r + delta.dr, newC: c + delta.dc };
             })
             .filter(({ newR, newC }) => newR >= 0 && newR < gridHRef.current && newC >= 0 && newC < gridWRef.current);
 
@@ -1874,6 +1965,12 @@ function App() {
           const newHighlight = new Set(newCells.map(({ newR, newC }) => `${newR},${newC}`));
           setHighlightedCells(newHighlight);
           highlightedCellsRef.current = newHighlight;
+          // Patch the last history snapshot so redo restores the correct highlight positions
+          setHistory(h => {
+            if (h.length === 0) return h;
+            const last = h[h.length - 1];
+            return [...h.slice(0, -1), { ...last, highlight: [...newHighlight] }];
+          });
         }
         isHighlightDraggingRef.current = false;
         highlightDragAnchorCell.current = null;
@@ -2039,6 +2136,8 @@ function App() {
       if (highlightModeRef.current) {
         const key = `${r},${c}`;
         if (highlightedCellsRef.current.has(key) && highlightedCellsRef.current.size > 0) {
+          // Push history snapshot before moving so undo restores position
+          if (pushHistRef.current) pushHistRef.current();
           // Tap on a highlighted cell → start dragging the region
           isHighlightDraggingRef.current = true;
           highlightDragAnchorCell.current = [r, c];
@@ -2204,11 +2303,27 @@ function App() {
           const offset = highlightDragOffsetRef.current ?? { dr: 0, dc: 0 };
           const { dr, dc } = offset;
           if (dr !== 0 || dc !== 0) {
+            // Compute per-cell mirrored offset so symmetric structures move in opposite directions
+            const anchorCell = highlightDragAnchorCell.current;
+            const [ar, ac] = anchorCell ?? [0, 0];
+            const cR = (gridHRef.current - 1) / 2;
+            const cC = (gridWRef.current - 1) / 2;
+            const anchorRowSign = ar < cR ? -1 : (ar > cR ? 1 : 0);
+            const anchorColSign = ac < cC ? -1 : (ac > cC ? 1 : 0);
+            const getEffectiveDelta = (r, c) => {
+              if (!mirrorVRef.current && !mirrorHRef.current && !mirrorDRef.current) return { dr, dc };
+              const cellRowSign = r < cR ? -1 : (r > cR ? 1 : 0);
+              const cellColSign = c < cC ? -1 : (c > cC ? 1 : 0);
+              const flipRow = (mirrorHRef.current || mirrorDRef.current) && anchorRowSign !== 0 && cellRowSign !== 0 && cellRowSign !== anchorRowSign;
+              const flipCol = (mirrorVRef.current || mirrorDRef.current) && anchorColSign !== 0 && cellColSign !== 0 && cellColSign !== anchorColSign;
+              return { dr: flipRow ? -dr : dr, dc: flipCol ? -dc : dc };
+            };
             const oldCells = [...highlightedCellsRef.current];
             const newCells = oldCells
               .map(key => {
                 const [or, oc] = key.split(',').map(Number);
-                return { oldKey: key, newR: or + dr, newC: oc + dc };
+                const delta = getEffectiveDelta(or, oc);
+                return { oldKey: key, newR: or + delta.dr, newC: oc + delta.dc };
               })
               .filter(({ newR, newC }) => newR >= 0 && newR < gridHRef.current && newC >= 0 && newC < gridWRef.current);
             setGridStableRef.current(prev => {
@@ -2224,6 +2339,12 @@ function App() {
             const newHighlight = new Set(newCells.map(({ newR, newC }) => `${newR},${newC}`));
             setHighlightedCells(newHighlight);
             highlightedCellsRef.current = newHighlight;
+            // Patch the last history snapshot so redo restores the correct highlight positions
+            setHistory(h => {
+              if (h.length === 0) return h;
+              const last = h[h.length - 1];
+              return [...h.slice(0, -1), { ...last, highlight: [...newHighlight] }];
+            });
           }
           isHighlightDraggingRef.current = false;
           highlightDragAnchorCell.current = null;
@@ -2349,6 +2470,7 @@ function App() {
         }
         if (e.key === "z" || e.key === "Z") { undo(); }
         if (e.key === "x" || e.key === "X") { redo(); }
+        if (e.key === "o" || e.key === "O") { setMirrorSettings(p => ({ ...p, allowSwap: !p.allowSwap })); }
         if (e.key === "+" || e.key === "=") { e.preventDefault(); changeZoom(ZOOM_STEP); }
         if (e.key === "-") { e.preventDefault(); changeZoom(-ZOOM_STEP); }
       }
@@ -2531,9 +2653,11 @@ function App() {
     const currentMult = getTileMultiplier(t);
     const defaultOff  = getDefaultOffset(t);
     const currentOff  = getTileOffset(t);
-    const [multInput, setMultInput] = React.useState(String(currentMult));
-    const [oxInput,   setOxInput]   = React.useState(String(currentOff.ox));
-    const [oyInput,   setOyInput]   = React.useState(String(currentOff.oy));
+    const defaultCodename_ = t.isDefault ? (deriveCodename(t.src) ?? "") : t.isAtlas ? (t.baseCodename ?? t.codename ?? "") : "";
+    const [multInput,      setMultInput]      = React.useState(String(currentMult));
+    const [oxInput,        setOxInput]        = React.useState(String(currentOff.ox));
+    const [oyInput,        setOyInput]        = React.useState(String(currentOff.oy));
+    const [codenameInput,  setCodenameInput]  = React.useState(tileNames[t.id] !== undefined ? tileNames[t.id] : defaultCodename_);
     const isPriority = !!priorityTiles[t.id];
 
     const commitMult = val => {
@@ -2598,24 +2722,16 @@ function App() {
             </div>
           )}
 
-          {/* Codename — editable for all tile types */}
-          {(() => {
-            const defaultCodename = t.isDefault
-              ? (deriveCodename(t.src) ?? "")
-              : t.isAtlas
-              ? (t.baseCodename ?? t.codename ?? "")
-              : "";
-            const currentCodename = tileNames[t.id] !== undefined ? tileNames[t.id] : defaultCodename;
-            return (
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Codename</span>
-                <input value={currentCodename}
-                  onChange={e => setTileNames(prev => ({ ...prev, [t.id]: e.target.value }))}
-                  placeholder={defaultCodename || "Enter codename…"}
-                  style={{ flex: 1, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none" }} />
-              </div>
-            );
-          })()}
+          {/* Codename — editable for all tile types; uses local state to avoid losing focus on every keystroke */}
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Codename</span>
+            <input value={codenameInput}
+              onChange={e => setCodenameInput(e.target.value)}
+              onBlur={() => setTileNames(prev => ({ ...prev, [t.id]: codenameInput }))}
+              onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
+              placeholder={defaultCodename_ || "Enter codename…"}
+              style={{ flex: 1, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none" }} />
+          </div>
 
           {/* Size multiplier */}
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -2638,11 +2754,11 @@ function App() {
           <span style={{ fontSize: 11, color: C.muted, fontWeight: 600 }}>Offsets (%) 📐</span>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Horizontal</span>
-            <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepOx(-0.05)}>−</button>
+            <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepOx(-1)}>−</button>
             <input type="number" value={oxInput} onChange={e => setOxInput(e.target.value)}
               onBlur={() => commitOffset()} onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
               style={{ width: 62, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none", textAlign: "center" }} />
-            <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepOx(+0.05)}>+</button>
+            <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepOx(+1)}>+</button>
             {(() => { const isDefault = currentOff.ox === defaultOff.ox; const greenStyle = isDefault ? { color: "#4ade80", borderColor: "#4ade80", background: "rgba(74,222,128,0.12)" } : {}; return (
               <button style={{ ...btn(false), fontSize: 10, padding: "3px 7px", marginLeft: "auto", ...greenStyle }}
                 disabled={isDefault} title={isDefault ? "Already at default" : "Reset to default"}
@@ -2651,11 +2767,11 @@ function App() {
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Vertical</span>
-            <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepOy(-0.05)}>−</button>
+            <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepOy(-1)}>−</button>
             <input type="number" value={oyInput} onChange={e => setOyInput(e.target.value)}
               onBlur={() => commitOffset()} onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
               style={{ width: 62, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none", textAlign: "center" }} />
-            <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepOy(+0.05)}>+</button>
+            <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepOy(+1)}>+</button>
             {(() => { const isDefault = currentOff.oy === defaultOff.oy; const greenStyle = isDefault ? { color: "#4ade80", borderColor: "#4ade80", background: "rgba(74,222,128,0.12)" } : {}; return (
               <button style={{ ...btn(false), fontSize: 10, padding: "3px 7px", marginLeft: "auto", ...greenStyle }}
                 disabled={isDefault} title={isDefault ? "Already at default" : "Reset to default"}
@@ -2757,6 +2873,13 @@ function App() {
               </label>
             );
           })()}
+          {/* Auto shadow */}
+          <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
+            <input type="checkbox" checked={!!autoShadowTiles[t.id]}
+              onChange={ev => setAutoShadowTiles(prev => { const n = { ...prev }; if (ev.target.checked) n[t.id] = true; else delete n[t.id]; return n; })}
+              style={{ width: 14, height: 14, accentColor: C.accent, cursor: "pointer" }} />
+            <span style={{ fontSize: 11, color: C.text }}>Auto shadow 🌑</span>
+          </label>
           {/* Starred shortcut */}
           <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
             <input type="checkbox" checked={starredTiles.includes(t.id)}
@@ -2846,9 +2969,9 @@ function App() {
 
     // Step 2: full tile list — tileset tiles grouped with collapsible sections
     const shownNames = new Set(shownTilesets ?? [activeTileset ?? manifest?.tilesets?.[0]?.name]);
-    const tilesetTiles_ = tiles.filter(t => t.id >= TILESET_ID_START && t.id < USER_ID_START);
-    const userTiles_    = tiles.filter(t => t.id >= USER_ID_START && t.id < GLOBAL_ID_START);
-    const globalTiles_  = tiles.filter(t => t.id >= GLOBAL_ID_START && t.id < 300);
+    const tilesetTiles_ = tiles.filter(t => t.id >= TILESET_ID_START && t.id < GLOBAL_ID_START);
+    const userTiles_    = tiles.filter(t => t.id >= USER_ID_START && t.id <= USER_ID_MAX);
+    const globalTiles_  = tiles.filter(t => t.id >= GLOBAL_ID_START && t.id < ATLAS_ID_START);
 
     // Group tileset tiles by tileset name
     const tsByName = {};
@@ -2954,9 +3077,9 @@ function App() {
       );
     };
 
-    const tilesetTiles_ = tiles.filter(t => t.id >= TILESET_ID_START && t.id < USER_ID_START);
-    const userTiles_    = tiles.filter(t => t.id >= USER_ID_START && t.id < GLOBAL_ID_START);
-    const globalTiles_  = tiles.filter(t => t.id >= GLOBAL_ID_START);
+    const tilesetTiles_ = tiles.filter(t => t.id >= TILESET_ID_START && t.id < GLOBAL_ID_START);
+    const userTiles_    = tiles.filter(t => t.id >= USER_ID_START && t.id <= USER_ID_MAX);
+    const globalTiles_  = tiles.filter(t => t.id >= GLOBAL_ID_START && t.id < ATLAS_ID_START);
 
     return (
       <div className="modal-backdrop" onClick={close}>
@@ -3559,7 +3682,18 @@ function App() {
                         <div onMouseDown={e => e.stopPropagation()} style={{ position: "absolute", top: "100%", left: 8, right: 8, background: C.panelDeep, border: `1px solid ${C.border}`, borderRadius: 6, zIndex: 200, padding: "4px 0", boxShadow: "0 4px 16px rgba(0,0,0,0.45)" }}>
                           {/* Allow Tileset Mixing toggle */}
                           <label style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px 4px", cursor: "pointer", userSelect: "none", borderBottom: `1px solid ${C.border}`, marginBottom: 3 }}
-                            onClick={e => { e.preventDefault(); setAllowTsMixing(v => !v); }}>
+                            onClick={e => {
+                              e.preventDefault();
+                              setAllowTsMixing(v => {
+                                const next = !v;
+                                if (!next) {
+                                  // Turning mixing OFF — collapse to just the active tileset
+                                  const active = activeTileset ?? manifest?.tilesets?.[0]?.name;
+                                  if (active) setShownTilesets([active]);
+                                }
+                                return next;
+                              });
+                            }}>
                             <input type="checkbox" readOnly checked={allowTsMixing}
                               style={{ accentColor: C.accent, cursor: "pointer", width: 13, height: 13, pointerEvents: "none" }} />
                             <span style={{ fontSize: 10, color: C.muted }}>Allow Tileset Mixing</span>
@@ -4444,11 +4578,21 @@ function App() {
 
                 {/* Checkerboard — single CSS-gradient element, no inter-cell boundaries at fractional zoom */}
                 <div style={{ position: "absolute", left: 0, top: CELL * zoom, width: gridW * CELL * zoom, height: gridH * CELL * zoom, backgroundColor: bg1, backgroundImage: `linear-gradient(45deg,${bg2} 25%,transparent 25%),linear-gradient(-45deg,${bg2} 25%,transparent 25%),linear-gradient(45deg,transparent 75%,${bg2} 75%),linear-gradient(-45deg,transparent 75%,${bg2} 75%)`, backgroundSize: `${2*CELL*zoom}px ${2*CELL*zoom}px`, backgroundPosition: `0 0,0 ${CELL*zoom}px,${CELL*zoom}px ${-CELL*zoom}px,${-CELL*zoom}px 0`, pointerEvents: "none" }} />
-                {/* Per-cell hit targets; space tiles mask the checkerboard with the canvas background */}
+                {/* Space-tile masks — solid C.bg squares rendered below tile passes so overflowing tiles from neighbouring rows paint on top */}
+                {Array.from({ length: gridH }).map((_, r) =>
+                  Array.from({ length: gridW }).map((__, c) =>
+                    grid[r]?.[c] === SPACE_TILE_ID ? (
+                      <div key={`sp${r}-${c}`}
+                        style={{ position: "absolute", left: c * CELL * zoom, top: (r + 1) * CELL * zoom, width: CELL * zoom, height: CELL * zoom, background: C.bg, pointerEvents: "none" }}
+                      />
+                    ) : null
+                  )
+                )}
+                {/* Per-cell hit targets — always transparent so tile images above them receive pointer events correctly */}
                 {Array.from({ length: gridH }).map((_, r) =>
                   Array.from({ length: gridW }).map((__, c) => (
                     <div key={`${r}-${c}`}
-                      style={{ position: "absolute", left: c * CELL * zoom, top: (r + 1) * CELL * zoom, width: CELL * zoom, height: CELL * zoom, background: grid[r]?.[c] === SPACE_TILE_ID ? C.bg : "transparent" }}
+                      style={{ position: "absolute", left: c * CELL * zoom, top: (r + 1) * CELL * zoom, width: CELL * zoom, height: CELL * zoom, background: "transparent" }}
                       onMouseDown={e => onCell(r, c, e)}
                       onMouseMove={e => onCell(r, c, e)}
                     />
@@ -4469,11 +4613,16 @@ function App() {
                     const cellPx = CELL * zoom;
                     const ox = (off.ox / 100) * cellPx;
                     const oy = (off.oy / 100) * cellPx;
-                    return (
-                      <img key={`bot${r}-${c}`} src={t.src} alt="" draggable={false}
-                        style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%) rotate(${rotDeg}deg) scale(${fxB}, ${fyB})`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 1 }}
-                      />
-                    );
+                    const tileImg = <img key={`bot${r}-${c}`} src={t.src} alt="" draggable={false}
+                      style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%) rotate(${rotDeg}deg) scale(${fxB}, ${fyB})`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 1 }}
+                    />;
+                    if (!autoShadowTiles[t.id]) return tileImg;
+                    return [
+                      <img key={`sbot${r}-${c}`} src={t.src} alt="" draggable={false}
+                        style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy + 0.3 * cellPx, width: cellPx * mult, height: "auto", transform: `translateY(-50%) scale(${fxB}, ${fyB})`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 0, filter: "brightness(0)", opacity: 0.2 }}
+                      />,
+                      tileImg,
+                    ];
                   })
                 )}
                 {/* Pass 1: normal tiles (z-index = r + 1 for natural depth), skipping priority and bottom tiles */}
@@ -4491,11 +4640,16 @@ function App() {
                     const cellPx = CELL * zoom;
                     const ox = (off.ox / 100) * cellPx;
                     const oy = (off.oy / 100) * cellPx;
-                    return (
-                      <img key={`t${r}-${c}`} src={t.src} alt="" draggable={false}
-                        style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%) rotate(${rotDeg}deg) scale(${fxN}, ${fyN})`, pointerEvents: "none", imageRendering: "pixelated", zIndex: r + 2 }}
-                      />
-                    );
+                    const tileImg = <img key={`t${r}-${c}`} src={t.src} alt="" draggable={false}
+                      style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%) rotate(${rotDeg}deg) scale(${fxN}, ${fyN})`, pointerEvents: "none", imageRendering: "pixelated", zIndex: r + 2 }}
+                    />;
+                    if (!autoShadowTiles[t.id]) return tileImg;
+                    return [
+                      <img key={`s${r}-${c}`} src={t.src} alt="" draggable={false}
+                        style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy + 0.3 * cellPx, width: cellPx * mult, height: "auto", transform: `translateY(-50%) scale(${fxN}, ${fyN})`, pointerEvents: "none", imageRendering: "pixelated", zIndex: r + 1, filter: "brightness(0)", opacity: 0.2 }}
+                      />,
+                      tileImg,
+                    ];
                   })
                 )}
                 {/* Pass 2: priority tiles — rendered last in DOM, always above every other tile */}
@@ -4512,11 +4666,16 @@ function App() {
                     const cellPx = CELL * zoom;
                     const ox = (off.ox / 100) * cellPx;
                     const oy = (off.oy / 100) * cellPx;
-                    return (
-                      <img key={`prio${r}-${c}`} src={t.src} alt="" draggable={false}
-                        style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%) rotate(${rotDeg}deg) scale(${fxP}, ${fyP})`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 9999 }}
-                      />
-                    );
+                    const tileImg = <img key={`prio${r}-${c}`} src={t.src} alt="" draggable={false}
+                      style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%) rotate(${rotDeg}deg) scale(${fxP}, ${fyP})`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 9999 }}
+                    />;
+                    if (!autoShadowTiles[t.id]) return tileImg;
+                    return [
+                      <img key={`sprio${r}-${c}`} src={t.src} alt="" draggable={false}
+                        style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy + 0.3 * cellPx, width: cellPx * mult, height: "auto", transform: `translateY(-50%) scale(${fxP}, ${fyP})`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 9998, filter: "brightness(0)", opacity: 0.2 }}
+                      />,
+                      tileImg,
+                    ];
                   })
                 )}
 
@@ -4846,7 +5005,7 @@ function App() {
                     <span onClick={() => setInfoTool("guides")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
                   </div>
                   <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
-                    <button style={btn(mirrorSettings.allowSwap, owColor, owDim)} onClick={() => setMirrorSettings(p => ({ ...p, allowSwap: !p.allowSwap }))} title="When enabled, painting over occupied cells replaces them instead of picking them up">Block Overwrite</button>
+                    <button style={btn(mirrorSettings.allowSwap, owColor, owDim)} onClick={() => setMirrorSettings(p => ({ ...p, allowSwap: !p.allowSwap }))} title="When enabled, painting over occupied cells replaces them instead of picking them up [O]">Block Overwrite</button>
                     <span onClick={() => setInfoTool("overwrite")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
                   </div>
                   <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
@@ -4924,7 +5083,7 @@ function App() {
 
           {/* Row 3: Background colour pickers */}
           {(() => {
-            const BG_PRESETS = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" }, Cafe: { bg1: "#AD6B45", bg2: "#B5714A" }, Pharmacy: { bg1: "#288FEF", bg2: "#19A0E8" } };
+            const BG_PRESETS = { Mausoleum: { bg1: "#67717d", bg2: "#6e7986" }, Sewer: { bg1: "#4F594A", bg2: "#586352" }, Halloween: { bg1: "#3A313E", bg2: "#413643" }, Cafe: { bg1: "#AD6B45", bg2: "#B5714A" }, Pharmacy: { bg1: "#a9b0b7", bg2: "#b7bec2" } };
             const activeBgPreset = Object.keys(BG_PRESETS).find(k => BG_PRESETS[k].bg1.toLowerCase() === bg1.toLowerCase() && BG_PRESETS[k].bg2.toLowerCase() === bg2.toLowerCase()) ?? "";
             return (
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8, padding: "3px 14px 5px", alignItems: "center" }}>
@@ -5003,9 +5162,12 @@ function App() {
           {/* Row 5: Theme switcher */}
           <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 14px 6px" }}>
             <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1, userSelect: "none" }}>Theme</span>
+            <button onClick={() => setAutoTheme(v => !v)}
+              style={{ ...btn(autoTheme, C.accent, C.accentDim), fontSize: 11, padding: "3px 12px" }}
+              title="Automatically switch between Warm and Cold theme based on background colour temperature">Auto</button>
             {["warm", "cold"].map(th => (
-              <button key={th} onClick={() => setUiTheme(th)}
-                style={{ ...btn(uiTheme === th, uiTheme === th ? C.accent : undefined, uiTheme === th ? C.accentDim : undefined), fontSize: 11, padding: "3px 12px" }}>
+              <button key={th} onClick={() => { setAutoTheme(false); setUiTheme(th); }}
+                style={{ ...btn(!autoTheme && uiTheme === th, !autoTheme && uiTheme === th ? C.accent : undefined, !autoTheme && uiTheme === th ? C.accentDim : undefined), fontSize: 11, padding: "3px 12px", opacity: autoTheme ? 0.45 : 1 }}>
                 {th === "warm" ? "🔥 Warm" : "❄️ Cold"}
               </button>
             ))}
