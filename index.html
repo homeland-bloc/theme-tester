@@ -1503,10 +1503,15 @@ function App() {
       // Batch-add tiles (separate from settings inheritance calls — never call setters inside updaters)
       setAtlasTiles(prev => [...prev, ...newTiles]);
       // Apply settings inheritance as independent state updates
-      const waterIds = newTiles.filter(t => t.atlasFolderName === "Water").map(t => t.id);
-      const objIds   = newTiles.filter(t => t.atlasFolderName === "Gamemode_Specifics").map(t => t.id);
-      if (waterIds.length > 0) setRotatableMap(rm => { const n = { ...rm }; waterIds.forEach(id => { n[id] = true; }); return n; });
-      if (objIds.length > 0)   setPriorityTiles(pt => { const n = { ...pt }; objIds.forEach(id => { n[id] = true; }); return n; });
+      const waterIds   = newTiles.filter(t => t.atlasFolderName === "Water").map(t => t.id);
+      const objIds     = newTiles.filter(t => t.atlasFolderName === "Gamemode_Specifics").map(t => t.id);
+      const postRIds   = newTiles.filter(t => t.atlasFolderName === "Rope" && /Post_T?R$/i.test(t.baseCodename)).map(t => t.id);
+      if (waterIds.length > 0)  setRotatableMap(rm => { const n = { ...rm }; waterIds.forEach(id => { n[id] = true; }); return n; });
+      if (objIds.length > 0)    setPriorityTiles(pt => { const n = { ...pt }; objIds.forEach(id => { n[id] = true; }); return n; });
+      if (postRIds.length > 0) {
+        setTileMultipliers(tm => { const n = { ...tm }; postRIds.forEach(id => { n[id] = 1.5; }); return n; });
+        setTileOffsets(to => { const n = { ...to }; postRIds.forEach(id => { n[id] = { ...(n[id] ?? {}), ox: 25 }; }); return n; });
+      }
       return [...existingForTs, ...newTiles];
     } catch (err) {
       console.warn("Failed to load Atlas tileset:", tilesetName, err);
@@ -3249,12 +3254,11 @@ function App() {
       requestAnimationFrame(() => { if (replaceScrollRef.current) replaceScrollRef.current.scrollTop = s; });
     };
 
-    const CollapsibleSepLine = ({ label, isCollapsed, onToggle, isShown }) => (
+    const CollapsibleSepLine = ({ label, isCollapsed, onToggle }) => (
       <div onClick={onToggle}
         style={{ gridColumn: "1 / -1", display: "flex", alignItems: "center", gap: 6, margin: "4px 0 2px", cursor: "pointer", userSelect: "none" }}>
         <span style={{ fontSize: 9, color: C.muted, lineHeight: 1 }}>{isCollapsed ? "▶" : "▼"}</span>
-        <span style={{ fontSize: 9, letterSpacing: 1, textTransform: "uppercase", fontWeight: isShown ? 700 : 400, color: isShown ? C.accentBright : C.muted }}>{label}</span>
-        {!isShown && <span style={{ fontSize: 8, color: C.muted }}>(hidden)</span>}
+        <span style={{ fontSize: 9, letterSpacing: 1, textTransform: "uppercase", fontWeight: 700, color: C.accentBright }}>{label}</span>
         <div style={{ height: 1, flex: 1, background: C.border }} />
       </div>
     );
@@ -3268,28 +3272,26 @@ function App() {
           </div>
           <div ref={replaceScrollRef} style={{ overflowY: "auto", maxHeight: 320, padding: "2px 0" }}>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(52px, 1fr))", gap: 5 }}>
-              {/* Per-Ophelia-tileset collapsible sections */}
-              {Object.entries(tsByName).map(([name, tsTs]) => {
+              {/* Per-Ophelia-tileset collapsible sections (only shown tilesets) */}
+              {Object.entries(tsByName).filter(([name]) => shownNames.has(name)).map(([name, tsTs]) => {
                 const isCollapsed = !!tsCollapsed[name];
-                const isShown = shownNames.has(name);
                 return (
                   <React.Fragment key={name}>
-                    <CollapsibleSepLine label={name} isCollapsed={isCollapsed} isShown={isShown}
+                    <CollapsibleSepLine label={name} isCollapsed={isCollapsed}
                       onToggle={() => setTsCollapsed(p => ({ ...p, [name]: !p[name] }))} />
                     {!isCollapsed && tsTs.map(t => <RCard key={t.id} t={t} selected={replaceB} onSelect={onSelect} />)}
                   </React.Fragment>
                 );
               })}
-              {/* Per-Atlas-tileset collapsible sections */}
-              {allAtlasTsNames.map(atsTsName => {
+              {/* Per-Atlas-tileset collapsible sections (only shown tilesets) */}
+              {allAtlasTsNames.filter(atsTsName => shownAtlasSet.has(atsTsName)).map(atsTsName => {
                 const collKey = `atlas_${atsTsName}`;
                 const isCollapsed = !!tsCollapsed[collKey];
-                const isShown = shownAtlasSet.has(atsTsName);
                 const meta = atlasTilesetMeta(atsTsName);
                 const tsTiles = atlasTiles.filter(t => t.atlasTilesetName === atsTsName);
                 return (
                   <React.Fragment key={atsTsName}>
-                    <CollapsibleSepLine label={meta.displayName} isCollapsed={isCollapsed} isShown={isShown}
+                    <CollapsibleSepLine label={meta.displayName} isCollapsed={isCollapsed}
                       onToggle={() => setTsCollapsed(p => ({ ...p, [collKey]: !p[collKey] }))} />
                     {!isCollapsed && tsTiles.map(t => <RCard key={t.id} t={t} selected={replaceB} onSelect={onSelect} />)}
                   </React.Fragment>
@@ -3510,9 +3512,7 @@ function App() {
     const opheliaTilesets = manifest?.tilesets ?? [];
     // Show ALL Ophelia tilesets from manifest, and all Atlas tilesets that have tiles loaded
     const allOpheliaList = opheliaTilesets;
-    const allAtlasList   = (atlasTilesetList ?? []).filter(a =>
-      atlasTiles.some(t => t.atlasTilesetName === a.name)
-    );
+    const allAtlasList   = atlasTilesetList ?? [];
     const allAvailableNames = [
       ...allOpheliaList.map(ts => ts.name),
       ...allAtlasList.map(a => a.name),
@@ -3585,6 +3585,7 @@ function App() {
           ["ball", "Gamemode_Specifics"], ["safe", "Gamemode_Specifics"],
           ["mine", "Gamemode_Specifics"], ["gem", "Gamemode_Specifics"],
           ["obj", "Gamemode_Specifics"], ["skull", "Gamemode_Specifics"],
+          ["breakable", "Gamemode_Specifics"],
         ];
         const folderMatch = FOLDER_PREFIXES.find(([prefix]) => norm.startsWith(prefix));
         if (folderMatch) {
@@ -3652,6 +3653,7 @@ function App() {
         ["ball", "Gamemode_Specifics"], ["safe", "Gamemode_Specifics"],
         ["mine", "Gamemode_Specifics"], ["gem", "Gamemode_Specifics"],
         ["obj", "Gamemode_Specifics"], ["skull", "Gamemode_Specifics"],
+        ["breakable", "Gamemode_Specifics"],
       ];
       const folderIdx = {};
       for (const [key, opheliaIds] of Object.entries(toMap)) {
@@ -4083,7 +4085,7 @@ function App() {
           {tilesOpen && (
             <div style={{ width: isMobile ? 160 : 240, background: C.panelDeep, borderRight: `1px solid ${C.border}`, borderRadius: "8px 0 0 8px", display: "flex", flexDirection: "column", overflow: "hidden", maxHeight: "min(88vh, 700px)" }}>
               <SectionHeader
-                label={`Tiles (${tilesetTileCount + userTiles.length})`}
+                label={`Tiles (${tilesetTileCount + userTiles.length + shownAtlasTilesets.reduce((sum, tsName) => sum + atlasTiles.filter(t => t.atlasTilesetName === tsName).length, 0)})`}
                 open={tilesOpen}
                 onToggle={() => setTilesOpen(o => !o)}
                 right={
@@ -4136,8 +4138,7 @@ function App() {
                                     toggleTilesetShown(ts.name);
                                   } else {
                                     if (ts.name !== activeTileset) {
-                                      // Compute remapped grid (auto-convert Ophelia→Ophelia)
-                                      // If currently on an Atlas tileset, use the last known Ophelia tileset as "from"
+                                      // Compute remapped grid (Ophelia→Ophelia or Atlas→Ophelia cross-system)
                                       let newGrid = gridRef.current;
                                       if (manifest) {
                                         const tilesets = manifest.tilesets ?? [];
@@ -4151,22 +4152,63 @@ function App() {
                                           }
                                           maps[tsDef.name] = m;
                                         }
-                                        // Use lastOpheliaTilesetRef when activeTileset is an Atlas tileset
                                         const isAtlasActive = activeTileset && !maps[activeTileset];
-                                        const fromTsName = isAtlasActive
-                                          ? (lastOpheliaTilesetRef.current ?? tilesets[0]?.name)
-                                          : activeTileset;
-                                        const fromMap = (fromTsName ? maps[fromTsName] : null) ?? {};
-                                        const toMap   = maps[ts.name]      ?? {};
-                                        const idRemap = {};
-                                        for (const key of Object.keys(fromMap)) {
-                                          const oIds = fromMap[key], nIds = toMap[key];
-                                          if (nIds) oIds.forEach((oid, i) => { if (i < nIds.length) idRemap[oid] = nIds[i]; });
+                                        if (isAtlasActive) {
+                                          // Atlas → Ophelia cross-system remap
+                                          const normC = s => s.toLowerCase().replace(/1$/, '') || s.toLowerCase();
+                                          const FOLDER_PFXS = [
+                                            ["fence","Fence"],["rope","Rope"],["water","Water"],
+                                            ["ball","Gamemode_Specifics"],["safe","Gamemode_Specifics"],
+                                            ["mine","Gamemode_Specifics"],["gem","Gamemode_Specifics"],
+                                            ["obj","Gamemode_Specifics"],["skull","Gamemode_Specifics"],
+                                            ["breakable","Gamemode_Specifics"],
+                                          ];
+                                          const atlasTs = atlasTilesRef.current.filter(t => t.atlasTilesetName === activeTileset);
+                                          const toMap = maps[ts.name] ?? {};
+                                          const atlasFlat = atlasTs.filter(t => !t.atlasFolderName);
+                                          const atlasByNorm = {};
+                                          atlasFlat.forEach(t => { const n = normC(t.baseCodename); if (!atlasByNorm[n]) atlasByNorm[n] = t.id; });
+                                          const atlasByFolder = {};
+                                          atlasTs.filter(t => t.atlasFolderName).forEach(t => {
+                                            if (!atlasByFolder[t.atlasFolderName]) atlasByFolder[t.atlasFolderName] = [];
+                                            atlasByFolder[t.atlasFolderName].push(t);
+                                          });
+                                          Object.values(atlasByFolder).forEach(arr => arr.sort((a, b) => a.id - b.id));
+                                          const fromAll = new Set(atlasTs.map(t => t.id));
+                                          const idRemap = {};
+                                          const folderIdx = {};
+                                          for (const [key, opheliaIds] of Object.entries(toMap)) {
+                                            const n = normC(key);
+                                            const atlasId = atlasByNorm[n];
+                                            if (atlasId !== undefined) { opheliaIds.forEach(oid => { idRemap[atlasId] = oid; }); continue; }
+                                            const folderMatch = FOLDER_PFXS.find(([prefix]) => n.startsWith(prefix));
+                                            if (folderMatch) {
+                                              const folderName = folderMatch[1];
+                                              const folderTiles = atlasByFolder[folderName] ?? [];
+                                              const idx = folderIdx[folderName] ?? 0;
+                                              if (idx < folderTiles.length) {
+                                                opheliaIds.forEach(oid => { idRemap[folderTiles[idx].id] = oid; });
+                                                folderIdx[folderName] = idx + 1;
+                                              }
+                                            }
+                                          }
+                                          newGrid = gridRef.current.map(row => row.map(id =>
+                                            (id != null && fromAll.has(id) && idRemap[id] !== undefined) ? idRemap[id] : id
+                                          ));
+                                        } else {
+                                          // Ophelia → Ophelia key-based remap
+                                          const fromMap = (activeTileset ? maps[activeTileset] : null) ?? {};
+                                          const toMap   = maps[ts.name] ?? {};
+                                          const idRemap = {};
+                                          for (const key of Object.keys(fromMap)) {
+                                            const oIds = fromMap[key], nIds = toMap[key];
+                                            if (nIds) oIds.forEach((oid, i) => { if (i < nIds.length) idRemap[oid] = nIds[i]; });
+                                          }
+                                          const fromAll = new Set(Object.values(fromMap).flat());
+                                          newGrid = gridRef.current.map(row => row.map(id =>
+                                            (id != null && fromAll.has(id) && idRemap[id] !== undefined) ? idRemap[id] : id
+                                          ));
                                         }
-                                        const fromAll = new Set(Object.values(fromMap).flat());
-                                        newGrid = gridRef.current.map(row => row.map(id =>
-                                          (id != null && fromAll.has(id) && idRemap[id] !== undefined) ? idRemap[id] : id
-                                        ));
                                       }
                                       const tsBg = getTilesetBgColors(ts.name);
                                       const newBg1 = tsBg ? tsBg.bg1 : bg1Ref.current;
@@ -4241,6 +4283,7 @@ function App() {
                                         ["ball","Gamemode_Specifics"],["safe","Gamemode_Specifics"],
                                         ["mine","Gamemode_Specifics"],["gem","Gamemode_Specifics"],
                                         ["obj","Gamemode_Specifics"],["skull","Gamemode_Specifics"],
+                                        ["breakable","Gamemode_Specifics"],
                                       ];
                                       // Build Ophelia ID maps
                                       const opheliaTsDefs = manifest?.tilesets ?? [];
@@ -4254,10 +4297,11 @@ function App() {
                                         }
                                         opheliaIdMaps[tsDef.name] = m;
                                       }
-                                      // Determine "from" tileset (handle Atlas→Atlas when currently on Atlas)
+                                      // Determine "from" tileset
+                                      // If currently on Ophelia → Ophelia→Atlas; if on Atlas → Atlas→Atlas
                                       const fromIsOphelia = activeTileset && !!opheliaIdMaps[activeTileset];
-                                      const fromTs = fromIsOphelia ? activeTileset : (lastOpheliaTilesetRef.current ?? opheliaTsDefs[0]?.name);
-                                      const fromOphelia = fromTs && !!opheliaIdMaps[fromTs];
+                                      const fromTs = fromIsOphelia ? activeTileset : (activeTileset ?? lastOpheliaTilesetRef.current ?? opheliaTsDefs[0]?.name);
+                                      const fromOphelia = !!opheliaIdMaps[fromTs];
                                       let newGrid = gridRef.current;
                                       if (fromOphelia) {
                                         // Ophelia → Atlas cross-system remap
@@ -4572,11 +4616,11 @@ function App() {
                   ) : (<>
                     {/* ── Section header helper ── */}
                     {(() => {
-                      const SectionHeader = ({ id, label }) => (
+                      const SectionHeader = ({ id, label, count }) => (
                         <div onClick={() => setPanelCollapsed(p => ({ ...p, [id]: !p[id] }))}
                           style={{ width: "100%", flexBasis: "100%", flexShrink: 0, display: "flex", alignItems: "center", gap: 4, padding: "3px 2px", cursor: "pointer", userSelect: "none", marginTop: 4 }}>
                           <span style={{ fontSize: 9, color: C.muted, lineHeight: 1 }}>{panelCollapsed[id] ? "▶" : "▼"}</span>
-                          <span style={{ fontSize: 9, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: 0.8 }}>{label}</span>
+                          <span style={{ fontSize: 9, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: 0.8 }}>{label}{count != null ? ` (${count})` : ''}</span>
                           <div style={{ flex: 1, height: 1, background: C.border, marginLeft: 4 }} />
                         </div>
                       );
