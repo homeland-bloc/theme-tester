@@ -1356,8 +1356,13 @@ function App() {
   // e.g. "Z_Escape_Room" → displayName "Escape Room", codename "Escape_Room"
   //      "Escape_Room"   → displayName "Escape Room", codename "Escape_Room"
   const atlasTilesetMeta = (rawName) => {
+    const isCommunity = rawName.startsWith("Z_");
     const stripped = rawName.replace(/^Z_/, "");
-    return { name: rawName, displayName: stripped.replace(/_/g, " "), codename: stripped };
+    // Split camelCase: "BrawlClub" → "Brawl Club", "UnderwaterTheme" → "Underwater Theme"
+    const camelSplit = stripped.replace(/([a-z0-9])([A-Z])/g, "$1 $2");
+    // Replace underscores with spaces, then remove "Theme" suffix
+    const displayName = camelSplit.replace(/_/g, " ").replace(/ Theme$/, "").trim();
+    return { name: rawName, displayName, codename: stripped, isCommunity };
   };
 
   // Fetch list of Atlas tileset folders (session-cached)
@@ -1409,6 +1414,9 @@ function App() {
   // Load all tiles for an Atlas tileset into atlasTiles state
   const ATLAS_SUBFOLDERS = ["Fence", "Rope", "Water", "Gamemode_Specifics"];
   const ATLAS_TILES_FOLDER = "Tiles";
+  // Canonical order for flat tiles in Tiles/ folder (case-insensitive base name match)
+  const ATLAS_FLAT_ORDER = ["wall", "wall2", "crate", "barrel", "cactus", "bush", "skull", "breakable"];
+  const getAtlasFlatOrder = base => { const i = ATLAS_FLAT_ORDER.indexOf(base.toLowerCase()); return i >= 0 ? i : ATLAS_FLAT_ORDER.length; };
   const loadAtlasTileset = async (tilesetName) => {
     const meta = atlasTilesetMeta(tilesetName);
     const imageRe = /\.(png|jpg|jpeg|gif|webp|svg|bmp)$/i;
@@ -1416,13 +1424,18 @@ function App() {
 
     try {
       const rootItems = await fetchAtlasDir(tilesetName);
-      if (!Array.isArray(rootItems)) return;
+      if (!Array.isArray(rootItems)) return [];
 
-      // Flat tiles from Tiles/
+      // Flat tiles from Tiles/ — sorted by canonical order
       if (rootItems.some(f => f.type === "dir" && f.name === ATLAS_TILES_FOLDER)) {
         const files = await fetchAtlasDir(`${tilesetName}/${ATLAS_TILES_FOLDER}`);
         if (Array.isArray(files)) {
-          files.filter(f => f.type === "file" && imageRe.test(f.name)).forEach(f => {
+          const imageFiles = files.filter(f => f.type === "file" && imageRe.test(f.name));
+          imageFiles.sort((a, b) => {
+            const ba = a.name.replace(/\.[^.]+$/, ""), bb = b.name.replace(/\.[^.]+$/, "");
+            return getAtlasFlatOrder(ba) - getAtlasFlatOrder(bb);
+          });
+          imageFiles.forEach(f => {
             const base = f.name.replace(/\.[^.]+$/, "");
             tilesToAdd.push({
               relPath: `${tilesetName}/${ATLAS_TILES_FOLDER}/${f.name}`,
@@ -1451,10 +1464,11 @@ function App() {
         });
       }
 
-      if (tilesToAdd.length === 0) return;
+      if (tilesToAdd.length === 0) return currentTiles.filter(t => t.atlasTilesetName === tilesetName);
 
       // Read current state synchronously via ref (avoids calling state setters inside updaters)
       const currentTiles = atlasTilesRef.current;
+      const existingForTs = currentTiles.filter(t => t.atlasTilesetName === tilesetName);
       const srcSet = new Set(currentTiles.map(t => t.src));
       const usedIds = new Set(currentTiles.map(t => t.id));
       const newTiles = [];
@@ -1479,7 +1493,7 @@ function App() {
         newTiles.push(tile);
         srcSet.add(src);
       }
-      if (newTiles.length === 0) return;
+      if (newTiles.length === 0) return existingForTs;
       // Batch-add tiles (separate from settings inheritance calls — never call setters inside updaters)
       setAtlasTiles(prev => [...prev, ...newTiles]);
       // Apply settings inheritance as independent state updates
@@ -1487,8 +1501,10 @@ function App() {
       const objIds   = newTiles.filter(t => t.atlasFolderName === "Gamemode_Specifics").map(t => t.id);
       if (waterIds.length > 0) setRotatableMap(rm => { const n = { ...rm }; waterIds.forEach(id => { n[id] = true; }); return n; });
       if (objIds.length > 0)   setPriorityTiles(pt => { const n = { ...pt }; objIds.forEach(id => { n[id] = true; }); return n; });
+      return [...existingForTs, ...newTiles];
     } catch (err) {
       console.warn("Failed to load Atlas tileset:", tilesetName, err);
+      return atlasTilesRef.current.filter(t => t.atlasTilesetName === tilesetName);
     }
   };
 
@@ -2673,6 +2689,7 @@ function App() {
             }
           }
         }
+        if (e.key === "c" || e.key === "C") { setConvertOpen(true); }
         if (e.key === "z" || e.key === "Z") { undo(); }
         if (e.key === "x" || e.key === "X") { redo(); }
         if (e.key === "o" || e.key === "O") { setMirrorSettings(p => ({ ...p, allowSwap: !p.allowSwap })); }
@@ -3497,11 +3514,66 @@ function App() {
       return maps;
     };
 
-    // Build Atlas ID maps (baseCodename-based, from loaded atlasTiles)
+    // Normalize a codename for cross-system matching:
+    // "Wall1"→"wall", "Wall2"→"wall2", "Crate"→"crate", "FenceH"→"fenceh"
+    // Strips trailing "1" so "Wall1" and "Wall" both map to "wall"
+    const normCode = s => s.toLowerCase().replace(/1$/, '') || s.toLowerCase();
+
+    // Build Atlas ID maps (normCode-keyed, from loaded atlasTiles)
     const buildAtlasCodenameMap = (tsName) => {
       const m = {};
-      atlasTiles.filter(t => t.atlasTilesetName === tsName).forEach(t => { m[t.baseCodename] = t.id; });
+      atlasTiles.filter(t => t.atlasTilesetName === tsName).forEach(t => { m[normCode(t.baseCodename)] = t.id; });
       return m;
+    };
+
+    // Cross-system remap builder: Ophelia key-map ↔ Atlas tile list
+    const buildCrossSystemRemap = (opheliaKeyMap, atlasTilesList) => {
+      const remap = {};
+      const fromIds = new Set();
+      // Build lookup: normalizedName → Atlas tile (flat tiles)
+      const atlasFlat = atlasTilesList.filter(t => !t.atlasFolderName);
+      const atlasByNorm = {};
+      atlasFlat.forEach(t => {
+        const norm = normCode(t.baseCodename);
+        if (!atlasByNorm[norm]) atlasByNorm[norm] = t;
+      });
+      // Build folder lookup: folderName → sorted tiles by id
+      const atlasByFolder = {};
+      atlasTilesList.filter(t => t.atlasFolderName).forEach(t => {
+        if (!atlasByFolder[t.atlasFolderName]) atlasByFolder[t.atlasFolderName] = [];
+        atlasByFolder[t.atlasFolderName].push(t);
+      });
+      Object.values(atlasByFolder).forEach(arr => arr.sort((a, b) => a.id - b.id));
+      // Index trackers for folder-based matching
+      const folderIdx = {};
+
+      for (const [key, opheliaIds] of Object.entries(opheliaKeyMap)) {
+        opheliaIds.forEach(oid => fromIds.add(oid));
+        const norm = normCode(key);
+        // Try flat tile match first
+        if (atlasByNorm[norm]) {
+          opheliaIds.forEach(oid => { remap[oid] = atlasByNorm[norm].id; });
+          continue;
+        }
+        // Identify folder type from key prefix (Fence/Rope/Water/objectives)
+        const FOLDER_PREFIXES = [
+          ["fence", "Fence"], ["rope", "Rope"], ["water", "Water"],
+          ["ball", "Gamemode_Specifics"], ["safe", "Gamemode_Specifics"],
+          ["mine", "Gamemode_Specifics"], ["gem", "Gamemode_Specifics"],
+          ["obj", "Gamemode_Specifics"], ["skull", "Gamemode_Specifics"],
+        ];
+        const folderMatch = FOLDER_PREFIXES.find(([prefix]) => norm.startsWith(prefix));
+        if (folderMatch) {
+          const folderName = folderMatch[1];
+          const folderTiles = atlasByFolder[folderName] ?? [];
+          const idx = folderIdx[folderName] ?? 0;
+          if (idx < folderTiles.length) {
+            opheliaIds.forEach(oid => { remap[oid] = folderTiles[idx].id; });
+            folderIdx[folderName] = idx + 1;
+          }
+        }
+      }
+      return { remap, fromIds };
     };
 
     // Compute remap
@@ -3522,7 +3594,7 @@ function App() {
         if (nIds) oIds.forEach((oid, i) => { if (i < nIds.length) idRemap[oid] = nIds[i]; });
       }
     } else if (!fromIsOphelia && !toIsOphelia && fromTs && toTs) {
-      // Atlas→Atlas: baseCodename-based remap
+      // Atlas→Atlas: normCode-based remap (robust across tilesets with slightly different naming)
       const fromCodeMap = buildAtlasCodenameMap(fromTs);
       const toCodeMap   = buildAtlasCodenameMap(toTs);
       Object.entries(fromCodeMap).forEach(([code, fromId]) => {
@@ -3530,13 +3602,52 @@ function App() {
         if (toCodeMap[code] !== undefined) idRemap[fromId] = toCodeMap[code];
       });
     } else if (fromIsOphelia && !toIsOphelia) {
-      // Ophelia→Atlas: not meaningfully mappable (no matching IDs)
+      // Ophelia→Atlas: cross-system match via normalized codenames
       const fromMap = opheliaIdMaps[fromTs] ?? {};
-      Object.values(fromMap).flat().forEach(id => fromAll.add(id));
+      const atlasTs = atlasTiles.filter(t => t.atlasTilesetName === toTs);
+      const { remap, fromIds } = buildCrossSystemRemap(fromMap, atlasTs);
+      fromIds.forEach(id => fromAll.add(id));
+      Object.assign(idRemap, remap);
     } else if (!fromIsOphelia && toIsOphelia) {
-      // Atlas→Ophelia: not meaningfully mappable
-      buildAtlasCodenameMap(fromTs);
-      atlasTiles.filter(t => t.atlasTilesetName === fromTs).forEach(t => fromAll.add(t.id));
+      // Atlas→Ophelia: reverse cross-system match
+      const toMap = opheliaIdMaps[toTs] ?? {};
+      const atlasTs = atlasTiles.filter(t => t.atlasTilesetName === fromTs);
+      atlasTs.forEach(t => fromAll.add(t.id));
+      // Build reverse: Atlas baseCodename → Ophelia key IDs
+      const atlasFlat = atlasTs.filter(t => !t.atlasFolderName);
+      const atlasByNorm = {};
+      atlasFlat.forEach(t => { const n = normCode(t.baseCodename); if (!atlasByNorm[n]) atlasByNorm[n] = t.id; });
+      const atlasByFolder = {};
+      atlasTs.filter(t => t.atlasFolderName).forEach(t => {
+        if (!atlasByFolder[t.atlasFolderName]) atlasByFolder[t.atlasFolderName] = [];
+        atlasByFolder[t.atlasFolderName].push(t);
+      });
+      Object.values(atlasByFolder).forEach(arr => arr.sort((a, b) => a.id - b.id));
+      const FOLDER_PREFIXES = [
+        ["fence", "Fence"], ["rope", "Rope"], ["water", "Water"],
+        ["ball", "Gamemode_Specifics"], ["safe", "Gamemode_Specifics"],
+        ["mine", "Gamemode_Specifics"], ["gem", "Gamemode_Specifics"],
+        ["obj", "Gamemode_Specifics"], ["skull", "Gamemode_Specifics"],
+      ];
+      const folderIdx = {};
+      for (const [key, opheliaIds] of Object.entries(toMap)) {
+        const norm = normCode(key);
+        const atlasId = atlasByNorm[norm];
+        if (atlasId !== undefined) {
+          opheliaIds.forEach(oid => { idRemap[atlasId] = oid; });
+          continue;
+        }
+        const folderMatch = FOLDER_PREFIXES.find(([prefix]) => norm.startsWith(prefix));
+        if (folderMatch) {
+          const folderName = folderMatch[1];
+          const folderTiles = atlasByFolder[folderName] ?? [];
+          const idx = folderIdx[folderName] ?? 0;
+          if (idx < folderTiles.length) {
+            opheliaIds.forEach(oid => { idRemap[folderTiles[idx].id] = oid; });
+            folderIdx[folderName] = idx + 1;
+          }
+        }
+      }
     }
 
     const boardFromIds = new Set();
@@ -3630,6 +3741,7 @@ function App() {
       ["E", "Erase tool"],
       ["W", "Pick (eyedropper) tool"],
       ["R", "Rotate selected tile"],
+      ["C", "Open Convert modal"],
       ["Z / Ctrl+Z", "Undo"],
       ["X / Ctrl+Y", "Redo"],
       ["Escape", "Clear highlight"],
@@ -3820,14 +3932,22 @@ function App() {
 
       {/* ── Folder panel — floating modal anchored near card (Task 4) ── */}
       {openFolderKey && (() => {
-        // Search tileset + global entry lists for the open folder key
-        const allEntries = [...tilesetEntries, ...globalEntries];
+        // Search tileset + global + Atlas entry lists for the open folder key
+        const atlasEntries = shownAtlasTilesets.flatMap(tsName => {
+          const tsTiles = atlasTiles.filter(t => t.atlasTilesetName === tsName);
+          const folderNames = [...new Set(tsTiles.filter(t => t.atlasFolderName).map(t => t.atlasFolderName))];
+          return folderNames.map(folderName => {
+            const fTiles = tsTiles.filter(t => t.atlasFolderName === folderName);
+            return { type: 'folder', key: `${tsName}/${folderName}`, label: fTiles[0]?.folderLabel ?? folderName, tiles: fTiles };
+          });
+        });
+        const allEntries = [...tilesetEntries, ...globalEntries, ...atlasEntries];
         const entry = allEntries.find(e => e.type === 'folder' && e.key === openFolderKey);
         if (!entry) return null;
         const cardSz = isMobile ? 56 : 72;
-        const cols = 4;
-        const panelW = cardSz * cols + 5 * (cols - 1) + 12; // 4 cols + gaps + padding
-        const maxH = Math.min(360, window.innerHeight - 32);
+        const cols = entry.tiles.length > 16 ? 5 : 4; // wider panel for large Atlas folders
+        const panelW = cardSz * cols + 5 * (cols - 1) + 12;
+        const maxH = Math.min(480, window.innerHeight - 32);
         const anchorX = Math.min(folderPanelAnchor.x, window.innerWidth - panelW - 8);
         const anchorY = Math.min(folderPanelAnchor.y, window.innerHeight - maxH - 8);
         return (
@@ -4100,8 +4220,8 @@ function App() {
                                   }
                                 }}>
                                 <input type="checkbox" readOnly checked={checked}
-                                  style={{ accentColor: "#a78bfa", cursor: "pointer", width: 13, height: 13, pointerEvents: "none" }} />
-                                <span style={{ fontSize: 11, color: checked ? "#a78bfa" : C.text, fontWeight: checked ? 600 : 400 }}>
+                                  style={{ accentColor: atsDef.isCommunity ? "#f472b6" : "#a78bfa", cursor: "pointer", width: 13, height: 13, pointerEvents: "none" }} />
+                                <span style={{ fontSize: 11, color: checked ? (atsDef.isCommunity ? "#f472b6" : "#a78bfa") : C.text, fontWeight: checked ? 600 : 400 }}>
                                   {atsDef.displayName}
                                 </span>
                               </label>
@@ -4357,12 +4477,11 @@ function App() {
                   ) : (<>
                     {/* ── Section header helper ── */}
                     {(() => {
-                      const SectionHeader = ({ id, label, count }) => (
+                      const SectionHeader = ({ id, label }) => (
                         <div onClick={() => setPanelCollapsed(p => ({ ...p, [id]: !p[id] }))}
                           style={{ width: "100%", flexBasis: "100%", flexShrink: 0, display: "flex", alignItems: "center", gap: 4, padding: "3px 2px", cursor: "pointer", userSelect: "none", marginTop: 4 }}>
                           <span style={{ fontSize: 9, color: C.muted, lineHeight: 1 }}>{panelCollapsed[id] ? "▶" : "▼"}</span>
                           <span style={{ fontSize: 9, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: 0.8 }}>{label}</span>
-                          {count > 0 && <span style={{ fontSize: 8, color: C.muted, marginLeft: 2 }}>({count})</span>}
                           <div style={{ flex: 1, height: 1, background: C.border, marginLeft: 4 }} />
                         </div>
                       );
@@ -5003,6 +5122,7 @@ function App() {
                 guides: "🧭", offsetCenters: "🎯", replace: "♻️", overwrite: "🧱",
                 otg: "🧩",
                 eyedropper: "🧪", highlight: "🪄",
+                convert: "🔄",
               };
               const toolActionMap = {
                 space: () => { setSel(SPACE_TILE_ID); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); },
@@ -5020,6 +5140,7 @@ function App() {
                 otg: () => setShowOTG(v => !v),
                 eyedropper: () => { setEyedropperMode(v => !v); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); },
                 highlight: () => { const on = !highlightMode; setHighlightMode(h => !h); setEraser(false); setHandMode(false); setEyedropperMode(false); if (!on) { setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); } },
+                convert: () => setConvertOpen(true),
               };
               const toolActiveMap = {
                 space: sel === SPACE_TILE_ID && !eraser,
@@ -5035,6 +5156,7 @@ function App() {
                 otg: showOTG,
                 eyedropper: eyedropperMode,
                 highlight: highlightMode,
+                convert: false,
               };
               const toolColorMap = {
                 space: C.accentBright,
@@ -5043,6 +5165,7 @@ function App() {
                 guides: gColor, offsetCenters: ocColor, replace: C.soft, overwrite: owColor,
                 otg: C.danger,
                 eyedropper: "#84cc16", highlight: "#a78bfa",
+                convert: C.soft,
               };
               // Only show tool-key starred items (not numeric tile IDs)
               // Individual selection/mirror tools collapse into their group cards
