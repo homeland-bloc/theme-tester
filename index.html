@@ -490,6 +490,7 @@ function App() {
   const mirrorDRef = useRef(false);
   const atlasTilesRef = useRef([]);
   const lastOpheliaTilesetRef = useRef(null);
+  const shownAtlasTilesetsRef = useRef([]);
   useEffect(() => { gridWRef.current = gridW; }, [gridW]);
   useEffect(() => { gridHRef.current = gridH; }, [gridH]);
   useEffect(() => { bg1Ref.current   = bg1;   }, [bg1]);
@@ -517,6 +518,7 @@ function App() {
   useEffect(() => { rotatableMapRef.current      = rotatableMap;      }, [rotatableMap]);
   useEffect(() => { allowFlipMapRef.current      = allowFlipMap;      }, [allowFlipMap]);
   useEffect(() => { atlasTilesRef.current        = atlasTiles;        }, [atlasTiles]);
+  useEffect(() => { shownAtlasTilesetsRef.current = shownAtlasTilesets; }, [shownAtlasTilesets]);
   useEffect(() => {
     if (activeTileset && manifest?.tilesets?.some(t => t.name === activeTileset)) {
       lastOpheliaTilesetRef.current = activeTileset;
@@ -980,7 +982,7 @@ function App() {
     const tsBg = !inSet ? getTilesetBgColors(name) : null;
     const newBg1 = tsBg ? tsBg.bg1 : bg1Ref.current;
     const newBg2 = tsBg ? tsBg.bg2 : bg2Ref.current;
-    const snap = { grid: gridRef.current, w: gridWRef.current, h: gridHRef.current, tileset: !inSet ? name : activeTilesetRef.current, shownTilesets: nextShown, bg1: newBg1, bg2: newBg2, highlight: [...highlightedCellsRef.current] };
+    const snap = { grid: gridRef.current, w: gridWRef.current, h: gridHRef.current, tileset: !inSet ? name : activeTilesetRef.current, shownTilesets: nextShown, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1: newBg1, bg2: newBg2, highlight: [...highlightedCellsRef.current] };
     setHistory(h => {
       const trimmed = h.slice(0, histIdxRef.current + 1);
       const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
@@ -1125,7 +1127,7 @@ function App() {
   const pushBgHistory = useCallback(() => {
     if (bgHistTimerRef.current) clearTimeout(bgHistTimerRef.current);
     bgHistTimerRef.current = setTimeout(() => {
-      const snap = { grid: gridRef.current, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...highlightedCellsRef.current] };
+      const snap = { grid: gridRef.current, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...highlightedCellsRef.current] };
       setHistory(h => {
         const trimmed = h.slice(0, histIdxRef.current + 1);
         const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
@@ -1149,7 +1151,7 @@ function App() {
         setHistory(h => {
           const trimmed = h.slice(0, histIdx + 1);
           const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-          return [...capped, { grid: next, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...highlightedCellsRef.current] }];
+          return [...capped, { grid: next, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...highlightedCellsRef.current] }];
         });
         setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
       }
@@ -1177,6 +1179,10 @@ function App() {
       setShownTilesets(snap.shownTilesets);
       shownTilsetsRef.current = snap.shownTilesets;
     }
+    if (snap.shownAtlasTilesets !== undefined) {
+      setShownAtlasTilesets(snap.shownAtlasTilesets);
+      shownAtlasTilesetsRef.current = snap.shownAtlasTilesets;
+    }
   };
 
   const undo = useCallback(() => {
@@ -1196,7 +1202,7 @@ function App() {
   // Push the current grid as a history snapshot (called once on mousedown, before any paint).
   // All cell writes during a drag use skipHistory=true, so the whole drag is one undo step.
   const pushHistorySnapshot = useCallback(() => {
-    const snap = { grid, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, bg1, bg2, highlight: [...highlightedCellsRef.current] };
+    const snap = { grid, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1, bg2, highlight: [...highlightedCellsRef.current] };
     setHistory(h => {
       const trimmed = h.slice(0, histIdx + 1);
       const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
@@ -1464,10 +1470,10 @@ function App() {
         });
       }
 
-      if (tilesToAdd.length === 0) return currentTiles.filter(t => t.atlasTilesetName === tilesetName);
-
       // Read current state synchronously via ref (avoids calling state setters inside updaters)
       const currentTiles = atlasTilesRef.current;
+
+      if (tilesToAdd.length === 0) return currentTiles.filter(t => t.atlasTilesetName === tilesetName);
       const existingForTs = currentTiles.filter(t => t.atlasTilesetName === tilesetName);
       const srcSet = new Set(currentTiles.map(t => t.src));
       const usedIds = new Set(currentTiles.map(t => t.id));
@@ -1787,8 +1793,10 @@ function App() {
     return r >= 0 && r < gridH && c >= 0 && c < gridW ? [r, c] : null;
   };
 
-  // BFS flood fill — returns Set of "r,c" strings matching the origin cell's filled/empty state
-  const bfsFill = useCallback((startR, startC, currentGrid, gW, gH) => {
+  // BFS flood fill — returns Set of "r,c" strings
+  // matchById=false: match all connected filled/empty cells (default behaviour)
+  // matchById=true:  match only cells with the same tile ID as the origin (for highlight+fill and block-overwrite+fill)
+  const bfsFill = useCallback((startR, startC, currentGrid, gW, gH, matchById = false) => {
     const originId = currentGrid[startR]?.[startC] ?? null;
     const originFilled = originId !== null;
     const visited = new Set();
@@ -1802,8 +1810,8 @@ function App() {
         const key = `${nr},${nc}`;
         if (visited.has(key)) continue;
         const cellId = currentGrid[nr]?.[nc] ?? null;
-        const cellFilled = cellId !== null;
-        if (cellFilled === originFilled) {
+        const matches = matchById ? (cellId === originId) : ((cellId !== null) === originFilled);
+        if (matches) {
           visited.add(key);
           queue.push([nr, nc]);
         }
@@ -1846,6 +1854,8 @@ function App() {
           setDragPos({ x: e.clientX, y: e.clientY });
         } else {
           // Paint: add cells to highlighted set
+          // Push snapshot BEFORE painting so undo only undoes the highlight, not the last tile placed
+          if (pushHistRef.current) pushHistRef.current();
           setPainting(true);
           paintingRef.current = true;
           selectionStartRef.current = [r, c];
@@ -1856,7 +1866,8 @@ function App() {
           else if (mode === 'line') setPreviewCells([[r, c]]);
           else if (mode === 'rect') setRectPreview({ r1: r, c1: c, r2: r, c2: c });
           else if (mode === 'fill') {
-            const fillSet = bfsFill(r, c, gridRef.current, gridWRef.current, gridHRef.current);
+            const originId = gridRef.current?.[r]?.[c] ?? null;
+            const fillSet = bfsFill(r, c, gridRef.current, gridWRef.current, gridHRef.current, originId !== null);
             hoveredTilesRef.current = fillSet;
             setPreviewCells([...fillSet].map(k => k.split(',').map(Number)));
           }
@@ -1869,12 +1880,24 @@ function App() {
       const existingId = gridRef.current?.[r]?.[c];
 
       if (existingId && !eraserRef.current && mirrorSettingsRef.current.allowSwap) {
-        // ── BLOCK OVERWRITE ON + OCCUPIED: defer until we know if user drags or taps
-        pendingSwapRef.current = {
-          r, c, existingId, x: e.clientX, y: e.clientY,
-          rot: gridRotations[`${r},${c}`] ?? 0,
-          flip: gridFlips[`${r},${c}`] ?? 0,
-        };
+        if (selectionModeRef.current === 'fill') {
+          // ── BLOCK OVERWRITE + FILL: select entire connected same-tile region ──
+          if (pushHistRef.current) pushHistRef.current();
+          setPainting(true);
+          paintingRef.current = true;
+          selectionStartRef.current = [r, c];
+          selectionEndRef.current   = [r, c];
+          const fillSet = bfsFill(r, c, gridRef.current, gridWRef.current, gridHRef.current, true);
+          hoveredTilesRef.current = fillSet;
+          setPreviewCells([...fillSet].map(k => k.split(',').map(Number)));
+        } else {
+          // ── BLOCK OVERWRITE ON + OCCUPIED: defer until we know if user drags or taps
+          pendingSwapRef.current = {
+            r, c, existingId, x: e.clientX, y: e.clientY,
+            rot: gridRotations[`${r},${c}`] ?? 0,
+            flip: gridFlips[`${r},${c}`] ?? 0,
+          };
+        }
         return;
       }
 
@@ -2129,23 +2152,22 @@ function App() {
             })
             .filter(({ newR, newC }) => newR >= 0 && newR < gridHRef.current && newC >= 0 && newC < gridWRef.current);
 
-          setGridStableRef.current(prev => {
-            const g = prev.map(row => [...row]);
-            // Collect tile data from old positions
-            const tileData = [];
-            oldCells.forEach(key => {
-              const [r, c] = key.split(',').map(Number);
-              tileData.push({ r, c, id: g[r]?.[c] ?? null });
-              g[r][c] = null; // clear old position
-            });
-            // Place at new positions
-            newCells.forEach(({ oldKey, newR, newC }) => {
-              const [r, c] = oldKey.split(',').map(Number);
-              const entry = tileData.find(d => d.r === r && d.c === c);
-              if (entry) g[newR][newC] = entry.id;
-            });
-            return g;
+          // Pre-compute post-drag grid from the current-state ref so we can push it
+          // to history synchronously (React state updater functions run lazily)
+          const preGrid = gridRef.current;
+          const newG = preGrid.map(row => [...row]);
+          const tileData = [];
+          oldCells.forEach(key => {
+            const [r, c] = key.split(',').map(Number);
+            tileData.push({ r, c, id: newG[r]?.[c] ?? null });
+            newG[r][c] = null;
           });
+          newCells.forEach(({ oldKey, newR, newC }) => {
+            const [r, c] = oldKey.split(',').map(Number);
+            const entry = tileData.find(d => d.r === r && d.c === c);
+            if (entry) newG[newR][newC] = entry.id;
+          });
+          setGridStableRef.current(() => newG);
           // Move gridRotations
           setGridRotations(prev => {
             const n = { ...prev };
@@ -2186,12 +2208,14 @@ function App() {
           const newHighlight = new Set(newCells.map(({ newR, newC }) => `${newR},${newC}`));
           setHighlightedCells(newHighlight);
           highlightedCellsRef.current = newHighlight;
-          // Patch the last history snapshot so redo restores the correct highlight positions
+          // Push post-drag snapshot so a single undo restores the pre-drag state (grid + highlight)
+          // The pre-drag snapshot was already pushed at drag mousedown via pushHistRef.current()
           setHistory(h => {
-            if (h.length === 0) return h;
-            const last = h[h.length - 1];
-            return [...h.slice(0, -1), { ...last, highlight: [...newHighlight] }];
+            const trimmed = h.slice(0, histIdxRef.current + 1);
+            const capped = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
+            return [...capped, { grid: newG, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...newHighlight] }];
           });
+          setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
         }
         isHighlightDraggingRef.current = false;
         highlightDragAnchorCell.current = null;
@@ -4147,7 +4171,7 @@ function App() {
                                       const tsBg = getTilesetBgColors(ts.name);
                                       const newBg1 = tsBg ? tsBg.bg1 : bg1Ref.current;
                                       const newBg2 = tsBg ? tsBg.bg2 : bg2Ref.current;
-                                      const snap = { grid: newGrid, w: gridWRef.current, h: gridHRef.current, tileset: ts.name, shownTilesets: [ts.name], bg1: newBg1, bg2: newBg2, highlight: [...highlightedCellsRef.current] };
+                                      const snap = { grid: newGrid, w: gridWRef.current, h: gridHRef.current, tileset: ts.name, shownTilesets: [ts.name], shownAtlasTilesets: [], bg1: newBg1, bg2: newBg2, highlight: [...highlightedCellsRef.current] };
                                       setHistory(h => {
                                         const trimmed = h.slice(0, histIdxRef.current + 1);
                                         const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
@@ -4187,10 +4211,10 @@ function App() {
                             const checked = shownAtlas.has(atsDef.name);
                             return (
                               <label key={atsDef.name} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", cursor: "pointer", userSelect: "none" }}
-                                onClick={e => {
+                                onClick={async e => {
                                   e.preventDefault();
                                   if (allowTsMixing) {
-                                    // Mixing mode: toggle Atlas tileset
+                                    // Mixing mode: toggle Atlas tileset (no auto-convert)
                                     const adding = !checked;
                                     if (adding) {
                                       loadAtlasTileset(atsDef.name);
@@ -4206,13 +4230,84 @@ function App() {
                                       setShownAtlasTilesets(newAtlas);
                                     }
                                   } else {
-                                    // Non-mixing mode: select only this Atlas tileset
+                                    // Non-mixing mode: select only this Atlas tileset, auto-convert board
                                     if (!checked) {
-                                      loadAtlasTileset(atsDef.name);
+                                      // Load Atlas tiles first (await so we have IDs for remap)
+                                      const newAtlasTiles = await loadAtlasTileset(atsDef.name);
+                                      // Build cross-system remap helpers (mirrors ConvertModal logic)
+                                      const normC = s => s.toLowerCase().replace(/1$/, '') || s.toLowerCase();
+                                      const FOLDER_PFXS = [
+                                        ["fence","Fence"],["rope","Rope"],["water","Water"],
+                                        ["ball","Gamemode_Specifics"],["safe","Gamemode_Specifics"],
+                                        ["mine","Gamemode_Specifics"],["gem","Gamemode_Specifics"],
+                                        ["obj","Gamemode_Specifics"],["skull","Gamemode_Specifics"],
+                                      ];
+                                      // Build Ophelia ID maps
+                                      const opheliaTsDefs = manifest?.tilesets ?? [];
+                                      let cid = TILESET_ID_START;
+                                      const opheliaIdMaps = {};
+                                      for (const tsDef of opheliaTsDefs) {
+                                        const m = {};
+                                        for (const key of (tsDef.order ?? [])) {
+                                          if (tsDef.folders?.[key]) m[key] = tsDef.folders[key].map(() => cid++);
+                                          else if (tsDef.files?.[key]) m[key] = [cid++];
+                                        }
+                                        opheliaIdMaps[tsDef.name] = m;
+                                      }
+                                      // Determine "from" tileset (handle Atlas→Atlas when currently on Atlas)
+                                      const fromIsOphelia = activeTileset && !!opheliaIdMaps[activeTileset];
+                                      const fromTs = fromIsOphelia ? activeTileset : (lastOpheliaTilesetRef.current ?? opheliaTsDefs[0]?.name);
+                                      const fromOphelia = fromTs && !!opheliaIdMaps[fromTs];
+                                      let newGrid = gridRef.current;
+                                      if (fromOphelia) {
+                                        // Ophelia → Atlas cross-system remap
+                                        const fromMap = opheliaIdMaps[fromTs] ?? {};
+                                        const atlasFlat = newAtlasTiles.filter(t => !t.atlasFolderName);
+                                        const atlasByNorm = {};
+                                        atlasFlat.forEach(t => { const n = normC(t.baseCodename); if (!atlasByNorm[n]) atlasByNorm[n] = t; });
+                                        const atlasByFolder = {};
+                                        newAtlasTiles.filter(t => t.atlasFolderName).forEach(t => {
+                                          if (!atlasByFolder[t.atlasFolderName]) atlasByFolder[t.atlasFolderName] = [];
+                                          atlasByFolder[t.atlasFolderName].push(t);
+                                        });
+                                        Object.values(atlasByFolder).forEach(arr => arr.sort((a, b) => a.id - b.id));
+                                        const folderIdx = {};
+                                        const idRemap = {};
+                                        const fromAll = new Set();
+                                        for (const [key, opheliaIds] of Object.entries(fromMap)) {
+                                          opheliaIds.forEach(oid => fromAll.add(oid));
+                                          const n = normC(key);
+                                          if (atlasByNorm[n]) { opheliaIds.forEach(oid => { idRemap[oid] = atlasByNorm[n].id; }); continue; }
+                                          const fm = FOLDER_PFXS.find(([p]) => n.startsWith(p));
+                                          if (fm) {
+                                            const ftiles = atlasByFolder[fm[1]] ?? [];
+                                            const idx = folderIdx[fm[1]] ?? 0;
+                                            if (idx < ftiles.length) { opheliaIds.forEach(oid => { idRemap[oid] = ftiles[idx].id; }); folderIdx[fm[1]] = idx + 1; }
+                                          }
+                                        }
+                                        newGrid = gridRef.current.map(row => row.map(id => (id != null && fromAll.has(id) && idRemap[id] !== undefined) ? idRemap[id] : id));
+                                      } else if (!fromOphelia && fromTs) {
+                                        // Atlas → Atlas normCode remap
+                                        const curAtlasTiles = atlasTilesRef.current.filter(t => t.atlasTilesetName === fromTs);
+                                        const fromByNorm = {};
+                                        curAtlasTiles.forEach(t => { fromByNorm[normC(t.baseCodename)] = t.id; });
+                                        const toByNorm = {};
+                                        newAtlasTiles.forEach(t => { toByNorm[normC(t.baseCodename)] = t.id; });
+                                        const fromAll = new Set(curAtlasTiles.map(t => t.id));
+                                        const idRemap = {};
+                                        Object.entries(fromByNorm).forEach(([n, fromId]) => { if (toByNorm[n] !== undefined) idRemap[fromId] = toByNorm[n]; });
+                                        newGrid = gridRef.current.map(row => row.map(id => (id != null && fromAll.has(id) && idRemap[id] !== undefined) ? idRemap[id] : id));
+                                      }
                                       const cachedBg = getTilesetBgColors(atsDef.name);
+                                      const newBg1 = cachedBg ? cachedBg.bg1 : bg1Ref.current;
+                                      const newBg2 = cachedBg ? cachedBg.bg2 : bg2Ref.current;
+                                      const snap = { grid: newGrid, w: gridWRef.current, h: gridHRef.current, tileset: atsDef.name, shownTilesets: [], shownAtlasTilesets: [atsDef.name], bg1: newBg1, bg2: newBg2, highlight: [...highlightedCellsRef.current] };
+                                      setHistory(h => { const trimmed = h.slice(0, histIdxRef.current + 1); const capped = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed; return [...capped, snap]; });
+                                      setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
+                                      setGridRaw(newGrid);
+                                      setActiveTileset(atsDef.name);
                                       if (cachedBg) { setBg1(cachedBg.bg1); setHex1(cachedBg.bg1); setBg2(cachedBg.bg2); setHex2(cachedBg.bg2); save(SK.colors, cachedBg); }
                                       else loadAtlasTilesetBgColors(atsDef.name).then(colors => { if (colors?.bg1) { setBg1(colors.bg1); setHex1(colors.bg1); setBg2(colors.bg2); setHex2(colors.bg2); save(SK.colors, colors); } });
-                                      setActiveTileset(atsDef.name);
                                       setShownTilesets([]);
                                       setShownAtlasTilesets([atsDef.name]);
                                     }
