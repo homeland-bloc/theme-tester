@@ -4138,7 +4138,25 @@ function App() {
                 ];
                 const label = (labelParts.join(", ") || "None") + (allowTsMixing && totalShown > 1 ? "…" : "");
                 return (
-                  <div style={{ padding: "4px 8px", borderBottom: `1px solid ${C.border}`, flexShrink: 0, position: "relative" }}>
+                  <div style={{ borderBottom: `1px solid ${C.border}`, flexShrink: 0, position: "relative" }}>
+                    {/* Allow tileset mixing toggle — always visible above dropdown */}
+                    <label style={{ display: "flex", alignItems: "center", gap: 5, padding: "3px 8px 2px", cursor: "pointer", userSelect: "none" }}
+                      onClick={e => {
+                        e.preventDefault();
+                        const next = !allowTsMixing;
+                        if (!next) {
+                          const active = activeTilesetRef.current;
+                          const isAtlas = active && !manifest?.tilesets?.some(ts => ts.name === active);
+                          if (isAtlas) { setShownTilesets([]); setShownAtlasTilesets(active ? [active] : []); }
+                          else { const fallback = manifest?.tilesets?.[0]?.name; setShownTilesets(active ? [active] : (fallback ? [fallback] : [])); setShownAtlasTilesets([]); }
+                        }
+                        setAllowTsMixing(next);
+                      }}>
+                      <input type="checkbox" readOnly checked={allowTsMixing}
+                        style={{ width: 12, height: 12, accentColor: C.accent, cursor: "pointer", pointerEvents: "none", flexShrink: 0 }} />
+                      <span style={{ fontSize: 10, color: C.muted }}>Allow tileset mixing</span>
+                    </label>
+                    <div style={{ padding: "0 8px 4px" }}>
                     <button
                       onClick={() => setTilesetDropOpen(o => !o)}
                       style={{ width: "100%", background: C.panel, color: C.text, border: `1px solid ${C.border}`, borderRadius: 5, fontSize: 11, fontFamily: "'Inter', sans-serif", padding: "3px 6px", cursor: "pointer", outline: "none", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -4391,6 +4409,7 @@ function App() {
                         </div>
                       );
                     })()}
+                    </div>
                   </div>
                 );
               })()}
@@ -5642,30 +5661,51 @@ function App() {
                 </div>
                 {/* Tileset BG colour selector — Ophelia above divider, Atlas below */}
                 {(() => {
-                  // Atlas tilesets with loaded BG colours
-                  const loadedAtlasBg = (atlasTilesetList ?? []).filter(a => atlasTilesetBgColors[a.name]?.bg1);
+                  const allAtlasBgList = atlasTilesetList ?? [];
+                  const defaultBg = activeTileset ? getTilesetBgColors(activeTileset) : null;
+                  const bgMismatch = !allowTsMixing && defaultBg?.bg1 && activeTileset && (
+                    bg1.toLowerCase() !== defaultBg.bg1.toLowerCase() || bg2.toLowerCase() !== defaultBg.bg2.toLowerCase()
+                  );
+                  const resetDisplayName = activeTileset
+                    ? (allAtlasBgList.find(a => a.name === activeTileset)?.displayName ?? activeTileset)
+                    : null;
                   return (
-                    <select value={activeBgPreset}
-                      onChange={e => {
-                        const key = e.target.value;
-                        const p = allBgPresets[key];
-                        if (!p || !p.bg1) return;
-                        pushHistorySnapshot();
-                        applyBg1(p.bg1); applyBg2(p.bg2);
-                      }}
-                      style={{ background: C.panel, color: activeBgPreset ? C.accentBright : C.muted, border: `1px solid ${C.border}`, borderRadius: 5, fontSize: 10, padding: "2px 4px", cursor: "pointer", outline: "none" }}>
-                      <option value="" style={{ color: C.muted }}>Custom</option>
-                      <optgroup label="Ophelia">
-                        {Object.keys(OPHELIA_BG).map(k => <option key={k} value={k} style={{ color: C.text }}>{k}</option>)}
-                      </optgroup>
-                      {loadedAtlasBg.length > 0 && (
-                        <optgroup label="Atlas">
-                          {loadedAtlasBg.map(a => (
-                            <option key={a.name} value={a.name} style={{ color: C.text }}>{a.displayName}</option>
-                          ))}
+                    <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
+                      <select value={activeBgPreset}
+                        onChange={e => {
+                          const key = e.target.value;
+                          const p = allBgPresets[key];
+                          if (p?.bg1) {
+                            pushHistorySnapshot();
+                            applyBg1(p.bg1); applyBg2(p.bg2);
+                          } else if (key && !OPHELIA_BG[key]) {
+                            // Atlas tileset with BG not loaded yet — load then apply
+                            loadAtlasTilesetBgColors(key).then(colors => {
+                              if (colors?.bg1) { pushHistorySnapshot(); applyBg1(colors.bg1); applyBg2(colors.bg2); }
+                            });
+                          }
+                        }}
+                        style={{ background: C.panel, color: activeBgPreset ? C.accentBright : C.muted, border: `1px solid ${C.border}`, borderRadius: 5, fontSize: 10, padding: "2px 4px", cursor: "pointer", outline: "none" }}>
+                        <option value="" style={{ color: C.muted }}>Custom</option>
+                        <optgroup label="Ophelia">
+                          {Object.keys(OPHELIA_BG).map(k => <option key={k} value={k} style={{ color: C.text }}>{k}</option>)}
                         </optgroup>
+                        {allAtlasBgList.length > 0 && (
+                          <optgroup label="Atlas">
+                            {allAtlasBgList.map(a => (
+                              <option key={a.name} value={a.name} style={{ color: C.text }}>{a.displayName}</option>
+                            ))}
+                          </optgroup>
+                        )}
+                      </select>
+                      {bgMismatch && resetDisplayName && (
+                        <button style={{ ...btn(false), fontSize: 10, padding: "2px 7px", whiteSpace: "nowrap" }}
+                          onClick={() => { pushHistorySnapshot(); applyBg1(defaultBg.bg1); applyBg2(defaultBg.bg2); }}
+                          title={`Reset background colours to ${resetDisplayName} defaults`}>
+                          ↩ {resetDisplayName}
+                        </button>
                       )}
-                    </select>
+                    </div>
                   );
                 })()}
               </div>
