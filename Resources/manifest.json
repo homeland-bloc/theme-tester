@@ -1,6 +1,24 @@
 {
   "tilesets": [
     {
+      "name": "Airport",
+      "creator": "Ophelia",
+      "wip": true,
+      "order": ["wall1", "wall2", "crate", "bush", "water"],
+      "files": {
+        "wall1": "Airport/AIRP-wall.png",
+        "wall2": "Airport/AIRP-wall2.png",
+        "crate": "Airport/AIRP-crate.png",
+        "bush":  "Airport/AIRP-bush.png"
+      },
+      "folders": {
+        "water": ["AIRP-water.png", "AIRP-waterBEND.png", "AIRP-waterCORNER.png", "AIRP-waterDOUBLEBEND.png", "AIRP-waterDOUBLELINE.png", "AIRP-waterFULL.png", "AIRP-waterLINE.png"]
+      },
+      "folderPaths": {
+        "water": "Airport/Water/"
+      }
+    },
+    {
       "name": "Mausoleum",
       "creator": "Ophelia",
       "order": ["wall1", "wall2", "crate", "barrel", "cactus", "bush", "breakable", "fence", "rope", "water", "objectives"],
@@ -55,7 +73,7 @@
     {
       "name": "Halloween",
       "creator": "PumpkinLucy",
-      "order": ["wall1", "wall2", "crate", "barrel", "cactus", "bush", "bushgreen", "breakable", "fence", "rope", "water", "special", "teleporters", "jumppads"],
+      "order": ["wall1", "wall2", "crate", "barrel", "cactus", "bush", "bushgreen", "breakable", "fence", "rope", "water", "special", "teleporters", "jumppads", "objectives"],
       "files": {
         "wall1":    "Halloween/Wall1.png",
         "wall2":    "Halloween/Wall2.png",
@@ -72,7 +90,8 @@
         "water":      ["WaterCurve.png", "WaterTwist.png", "WaterLine.png", "WaterFill.png", "WaterBubble1.png", "WaterBubble2.png"],
         "special":    ["SlowTile.png", "SpeedTile.png"],
         "teleporters":["BlueTeleporter.png", "GreenTeleporter.png", "RedTeleporter.png", "YellowTeleporter.png"],
-        "jumppads":   ["DiagonalJumppad.png", "StraightJumppad.png"]
+        "jumppads":   ["DiagonalJumppad.png", "StraightJumppad.png"],
+        "objectives": ["HeistSafe.png"]
       },
       "folderPaths": {
         "fence":      "Halloween/Fence/",
@@ -80,7 +99,8 @@
         "water":      "Halloween/Water/",
         "special":    "Halloween/Special/",
         "teleporters":"Halloween/Teleporters/",
-        "jumppads":   "Halloween/Jumppads/"
+        "jumppads":   "Halloween/Jumppads/",
+        "objectives": "Halloween/Objectives/"
       }
     },
     {
@@ -134,8 +154,8 @@
     "order": ["water", "spawns", "objectives", "special", "teleporters", "jumppads"],
     "folders": {
       "water": ["00001011.png", "01111111.png", "01101011.png", "11111111.png"],
-      "spawns": ["1.png", "2.png", "5.png", "6.png"],
-      "objectives": ["Bounty.png", "Gem_Grab.png", "Heist.png", "Hot_Zone.png", "Brawl_Ball.png", "goalRed.png", "goalBlue.png"],
+      "spawns": ["1.png", "2.png", "3.png", "4.png", "5.png", "6.png", "7.png", "9.png"],
+      "objectives": ["Bounty.png", "Box.png", "Gem_Grab.png", "Heist.png", "Hot_Zone.png", "Brawl_Ball.png", "goalRed.png", "goalBlue.png"],
       "special": ["Unbreakable.png", "HealPad.png", "SlowTile.png", "Smoke.png", "SpeedTile.png", "Spikes.png"],
       "teleporters": ["Blue.png", "Green.png", "Red.png", "Yellow.png"],
       "jumppads": ["B.png", "BL.png", "BR.png", "L.png", "R.png", "T.png", "TL.png", "TR.png"]
