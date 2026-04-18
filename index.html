@@ -118,6 +118,22 @@ const SPACE_TILE_ID    = 998; // special: makes a cell fully transparent
 const atlasApiCache = new Map(); // url → resolved data
 // Session-cached Atlas tileset list (fetched once per page load)
 const atlasTilesetsListCache = { pending: null, data: null, error: null };
+
+// Pre-bundled Atlas tileset folder names — replaces the GitHub API list call entirely.
+// Excludes "Additional" and "Global" (special/shared resource folders, not tilesets).
+const ATLAS_TILESET_NAMES = [
+  "Aquarium","Arcade","Bandstand","Bazaar","Beach","Biodome","Brawlywood",
+  "Candyland","Castle_Courtyard","Circus","City","Coin_Factory","Deep_Sea",
+  "Desert","Enchanted_Woods","Escape_Room","Fighting_Game","Ghost_Station",
+  "Gift_Shop","Grassy_Field","Hockey","Holiday","Ice_Island","Katana_Kingdom",
+  "Medieval_Manor","Mine","Mortuary","Oasis","Oddities_Shop","Pirate_Ship",
+  "Ranger_Ranch","Retropolis","Robot_Factory","Rooftop","Rumble_Jungle",
+  "Scrapyard","Skating_Bowl","Snowtel","Spongebob","Stadium","Starr_Force",
+  "Starr_Toon","Stranger_Things","Stranger_Things_Forest","Stranger_Things_Lab",
+  "Stranger_Things_Lair","Stunt_Show","Subway_Surfers","Super_City","Super_City_2",
+  "Swamp_of_Love","The_Hub","Tropical_Island","Wasteland","Water_Park","Wild_West",
+  "Z_BrawlClub","Z_CasinoTheme","Z_JurassicTheme","Z_SkyTheme","Z_UnderwaterTheme",
+];
 // In-flight deduplication for loadAtlasTileset — prevents concurrent duplicate loads
 const atlasTilesetLoadInFlight = new Map(); // tilesetName → Promise
 // Hardcoded BG colours for Ophelia tilesets (single source of truth)
@@ -1168,20 +1184,9 @@ function App() {
   useEffect(() => { save("oph_hidden_atlas_groups", hiddenAtlasGroups); }, [hiddenAtlasGroups]);
   useEffect(() => { try { localStorage.setItem("oph_shown_atlas_tilesets", JSON.stringify(shownAtlasTilesets)); } catch {} }, [shownAtlasTilesets]);
 
-  // Load Atlas tileset list once on mount
+  // Load Atlas tileset list on mount (now synchronous — reads from bundled constant, no API call)
   useEffect(() => {
-    (async () => {
-      try {
-        const list = await fetchAtlasTilesetList();
-        setAtlasTilesetList(list);
-      } catch (err) {
-        const msg = err.message === "rate_limit"
-          ? "GitHub rate limit reached — Atlas tilesets unavailable."
-          : "Failed to load Atlas tilesets from GitHub.";
-        setAtlasTilesetError(msg);
-        setAtlasTilesetList([]);
-      }
-    })();
+    setAtlasTilesetList(fetchAtlasTilesetList());
   }, []); // eslint-disable-line
   // Dynamic starred tiles: keep wall1+bush for shown tilesets, remove them for hidden tilesets.
   // Non-wall1/bush stars (user-added tiles and tool shortcuts) are always preserved.
@@ -1508,27 +1513,12 @@ function App() {
     return { name: rawName, displayName, codename: stripped, isCommunity };
   };
 
-  // Fetch list of Atlas tileset folders (session-cached)
-  const fetchAtlasTilesetList = async () => {
+  // Build Atlas tileset list from bundled constant — no API call needed.
+  const fetchAtlasTilesetList = () => {
     if (atlasTilesetsListCache.data) return atlasTilesetsListCache.data;
-    if (atlasTilesetsListCache.pending) return atlasTilesetsListCache.pending;
-    const excluded = new Set(["Additional", "Global"]);
-    const promise = fetchAtlasDir("").then(items => {
-      if (!Array.isArray(items)) throw new Error("unexpected_response");
-      return items
-        .filter(f => f.type === "dir" && !excluded.has(f.name))
-        .map(f => atlasTilesetMeta(f.name));
-    });
-    atlasTilesetsListCache.pending = promise;
-    try {
-      const result = await promise;
-      atlasTilesetsListCache.data = result;
-      atlasTilesetsListCache.pending = null;
-      return result;
-    } catch (err) {
-      atlasTilesetsListCache.pending = null;
-      throw err;
-    }
+    const list = ATLAS_TILESET_NAMES.map(atlasTilesetMeta);
+    atlasTilesetsListCache.data = list;
+    return list;
   };
 
   // Get BG colours for any tileset (Ophelia or Atlas) — single source of truth
