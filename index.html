@@ -305,6 +305,8 @@ function App() {
   const [bg2,         setBg2]       = useState(savedColors.bg2);
   const [hex1,        setHex1]      = useState(savedColors.bg1);
   const [hex2,        setHex2]      = useState(savedColors.bg2);
+  const [customBg,    setCustomBg]  = useState(() => load("oph_custom_bg", savedColors));
+  const [selectedBgPreset, setSelectedBgPreset] = useState(() => load("oph_bg_preset_key", "custom"));
   const [sel,         setSel]       = useState(null);
   const [eraser,      setEraser]    = useState(false);
   const [handMode,    setHandMode]  = useState(false);
@@ -316,6 +318,7 @@ function App() {
   const [mirrorSettingsOpen, setMirrorSettingsOpen] = useState(false);
   const [tilesSettingsOpen,  setTilesSettingsOpen]  = useState(false);
   const [tileCardLightBg,    setTileCardLightBg]    = useState(() => load("oph_tile_card_light_bg", true));
+  const [hideDefaultLabels,  setHideDefaultLabels]  = useState(() => load("oph_hide_default_labels", true));
   const [shortcutPopover,   setShortcutPopover]   = useState(null); // "selectionGroup" | "mirrorGroup" | null
   const [zoom,        setZoom]      = useState(calcFitZoom);
   const [zoomEditing, setZoomEdit]  = useState(false);
@@ -555,6 +558,7 @@ function App() {
   useEffect(() => { save("oph_otg_walls", otgWallOverrides); }, [otgWallOverrides]);
   useEffect(() => { save(SK.tileNames,    tileNames);       }, [tileNames]);
   useEffect(() => { save("oph_tile_card_light_bg", tileCardLightBg); }, [tileCardLightBg]);
+  useEffect(() => { save("oph_hide_default_labels", hideDefaultLabels); }, [hideDefaultLabels]);
   useEffect(() => {
     save("oph_theme", uiTheme);
     document.body.style.background = C.bg;
@@ -623,10 +627,10 @@ function App() {
     if (s.includes("Hot_Zone")) return 7.0;
     // Smoke / poison / gas
     if (s.includes("Smoke")) return 1.65;
-    // Gem mine (MSLM-mine) → 2.3x
-    if (s.includes("MSLM-mine")) return 2.3;
-    // Brawl ball (MSLM-ball) → 1.7x
-    if (s.includes("MSLM-ball")) return 1.7;
+    // Gem mine (MSLM-mine) → 2.2x
+    if (s.includes("MSLM-mine")) return 2.2;
+    // Brawl ball (MSLM-ball) → 1.6x
+    if (s.includes("MSLM-ball")) return 1.6;
     // Sewer objectives
     if (s.includes("SWR-ball")) return 1.5;
     if (s.includes("SWR-mine")) return 2.0;
@@ -636,8 +640,8 @@ function App() {
     if (s.includes("goalRed") || s.includes("goalBlue")) return 7.0;
     // Gem Grab & Heist objectives + Mausoleum safe + Sewer safe → 2x
     if (s.includes("Gem_Grab") || s.includes("Heist") || s.includes("MSLM-safe") || s.includes("SWR-safe")) return 2.0;
-    // Bounty star → 1.25x
-    if (s.includes("Bounty")) return 1.25;
+    // Bounty star → 1.2x
+    if (s.includes("Bounty")) return 1.2;
     return 1.0;
   };
 
@@ -652,31 +656,46 @@ function App() {
     const s = t.src;
     // Jumppads, Teleporters, HealPad: +50% H and +50% V so 2× tile sits centred on a 2×2 area
     if (s.includes("Jumppads/") || s.includes("Teleporters/") || s.includes("HealPad")) return { ox: 50, oy: 50 };
-    // Mausoleum safe: -90 vertical
-    if (s.includes("MSLM-safe")) return { ox: 0, oy: -90 };
-    // Heist objectives: -50 vertical
-    if (s.includes("Heist")) return { ox: 0, oy: -50 };
-    // Goal posts: -50 vertical
+    // Goal posts
     if (s.includes("goalRed") || s.includes("goalBlue")) return { ox: 0, oy: -50 };
+    // Global objectives
+    if (s.includes("Heist")) return { ox: 0, oy: -60 };
+    if (s.includes("Brawl_Ball")) return { ox: 0, oy: -14 };
+    if (s.includes("Bounty")) return { ox: 0, oy: 4 };
+    // Mausoleum objectives
+    if (s.includes("MSLM-safe")) return { ox: 0, oy: -90 };
+    if (s.includes("MSLM-ball")) return { ox: 0, oy: -20 };
+    if (s.includes("MSLM-mine")) return { ox: 0, oy: -20 };
+    // Mausoleum fence
+    if (s.includes("Mausoleum/Fence/")) return { ox: 0, oy: -15 };
+    // Mausoleum rope (MSLM-post*)
+    if (s.includes("MSLM-post")) return { ox: 0, oy: -30 };
+    // Mausoleum wall2 (checked before wall1 since "MSLM-wall" matches both)
+    if (s.includes("MSLM-wall2")) return { ox: 0, oy: -24 };
+    if (s.includes("MSLM-wall") && !s.includes("MSLM-wall2")) return { ox: 0, oy: -12 };
+    if (s.includes("MSLM-crate")) return { ox: 0, oy: -10 };
+    if (s.includes("MSLM-barrel")) return { ox: 0, oy: -12 };
+    if (s.includes("MSLM-cactus")) return { ox: 0, oy: -10 };
+    if (s.includes("MSLM-bush")) return { ox: 0, oy: -10 };
+    if (s.includes("MSLM-break")) return { ox: 0, oy: -8 };
     // Sewer objectives
-    if (s.includes("SWR-ball")) return { ox: 0, oy: -30 };
-    if (s.includes("SWR-safe")) return { ox: 0, oy: -50 };
-    if (s.includes("SWR-mine")) return { ox: 0, oy: -20 };
-    if (s.includes("SWR-breakable")) return { ox: 0, oy: 20 };
-    // Sewer fence tiles
-    if (s.includes("Sewer/Fence/")) return { ox: 0, oy: -30 };
-    // Sewer rope tiles
-    if (s.includes("Sewer/Rope/")) return { ox: 0, oy: -50 };
+    if (s.includes("SWR-ball")) return { ox: 0, oy: -34 };
+    if (s.includes("SWR-safe")) return { ox: 0, oy: -56 };
+    if (s.includes("SWR-mine")) return { ox: 0, oy: -10 };
+    if (s.includes("SWR-breakable")) return { ox: 0, oy: -10 };
+    // Sewer fence
+    if (s.includes("Sewer/Fence/")) return { ox: 0, oy: -40 };
+    // Sewer rope
+    if (s.includes("Sewer/Rope/")) return { ox: 0, oy: -60 };
+    // Sewer wall2 (checked before wall1)
+    if (s.includes("SWR-wall2")) return { ox: 0, oy: -12 };
+    if (s.includes("SWR-wall") && !s.includes("SWR-wall2")) return { ox: 0, oy: -12 };
+    if (s.includes("SWR-crate")) return { ox: 0, oy: -10 };
+    if (s.includes("SWR-barrel")) return { ox: 0, oy: -8 };
+    if (s.includes("SWR-cactus")) return { ox: 0, oy: -12 };
+    if (s.includes("SWR-bush")) return { ox: 0, oy: -10 };
     // Halloween RopeConnects: +50 horizontal offset
     if (s.includes("Halloween/Rope/RopeConnects")) return { ox: 50, oy: 0 };
-    // Bounty star: slight upward offset
-    if (s.includes("Bounty")) return { ox: 0, oy: -10 };
-    // Mausoleum Wall2: -12 vertical
-    if (s.includes("MSLM-wall2")) return { ox: 0, oy: -12 };
-    // Sewer Wall2: -5 vertical
-    if (s.includes("SWR-wall2")) return { ox: 0, oy: -5 };
-    // Mausoleum rope fences (MSLM-post*): -20 vertical
-    if (s.includes("MSLM-post")) return { ox: 0, oy: -20 };
     return { ox: 0, oy: 0 };
   };
 
@@ -816,6 +835,7 @@ function App() {
   const MultLabel = ({ t }) => {
     const mult = getTileMultiplier(t);
     if (mult === 1.0) return null;
+    if (hideDefaultLabels && mult === getDefaultMultiplier(t)) return null;
     return (
       <span style={{ position: "absolute", top: 1, left: 2, fontSize: 7, fontWeight: 700, color: C.accentBright, background: "rgba(0,0,0,0.65)", borderRadius: 3, padding: "1px 3px", lineHeight: 1.3, pointerEvents: "none", zIndex: 5 }}>
         {mult}×
@@ -826,16 +846,19 @@ function App() {
   // Badge label shown at bottom-left of tile cards (priority/offset/mirrorOffset badges, NOT multiplier)
   const TileBadge = ({ t }) => {
     const off    = getTileOffset(t);
-    const hasOff        = off.ox !== 0 || off.oy !== 0;
+    const defOff = getDefaultOffset(t);
+    const hasOff = off.ox !== 0 || off.oy !== 0;
+    const offIsDefault = off.ox === defOff.ox && off.oy === defOff.oy;
+    const showOff       = hasOff && (!hideDefaultLabels || !offIsDefault);
     const isPrio        = !!priorityTiles[t.id];
     const isBottom      = !!bottomTiles[t.id];
     const hasMirrorOff  = isMirrorOffset(t);
     const hasShadow     = !!autoShadowTiles[t.id];
-    if (!hasOff && !isPrio && !isBottom && !hasMirrorOff && !hasShadow) return null;
+    if (!showOff && !isPrio && !isBottom && !hasMirrorOff && !hasShadow) return null;
     const parts = [];
     if (isPrio)  parts.push("🚨");
     if (isBottom) parts.push("⚓");
-    if (hasOff)  parts.push("📐");
+    if (showOff)  parts.push("📐");
     if (hasMirrorOff) parts.push("🌪️");
     if (hasShadow) parts.push("👻");
     return (
@@ -973,7 +996,7 @@ function App() {
     if (!manifest || newTilesetName === activeTileset) return;
     setActiveTileset(newTilesetName);
     const tsBg = getTilesetBgColors(newTilesetName);
-    if (tsBg) { setBg1(tsBg.bg1); setHex1(tsBg.bg1); setBg2(tsBg.bg2); setHex2(tsBg.bg2); save(SK.colors, tsBg); }
+    if (tsBg) applyBgPreset(newTilesetName, tsBg.bg1, tsBg.bg2);
   };
 
   // Toggle a tileset in the shown set; always keep at least one shown.
@@ -995,7 +1018,7 @@ function App() {
     setShownTilesets(nextShown);
     if (!inSet) {
       setActiveTileset(name);
-      if (tsBg) { setBg1(tsBg.bg1); setHex1(tsBg.bg1); setBg2(tsBg.bg2); setHex2(tsBg.bg2); save(SK.colors, tsBg); }
+      if (tsBg) applyBgPreset(name, tsBg.bg1, tsBg.bg2);
     }
   };
 
@@ -1141,8 +1164,23 @@ function App() {
     }, 350);
   }, []);
 
-  const applyBg1 = v => { setBg1(v); setHex1(v); saveColors(v, bg2); pushBgHistory(); };
-  const applyBg2 = v => { setBg2(v); setHex2(v); saveColors(bg1, v); pushBgHistory(); };
+  const applyBg1 = v => {
+    setBg1(v); setHex1(v);
+    setCustomBg(prev => { const n = { ...prev, bg1: v }; save("oph_custom_bg", n); return n; });
+    setSelectedBgPreset("custom"); save("oph_bg_preset_key", "custom");
+    saveColors(v, bg2); pushBgHistory();
+  };
+  const applyBg2 = v => {
+    setBg2(v); setHex2(v);
+    setCustomBg(prev => { const n = { ...prev, bg2: v }; save("oph_custom_bg", n); return n; });
+    setSelectedBgPreset("custom"); save("oph_bg_preset_key", "custom");
+    saveColors(bg1, v); pushBgHistory();
+  };
+  const applyBgPreset = (key, b1, b2) => {
+    setBg1(b1); setBg2(b2); setHex1(b1); setHex2(b2);
+    setSelectedBgPreset(key); save("oph_bg_preset_key", key);
+    saveColors(b1, b2);
+  };
 
   const markFailed = id => setFailedTiles(prev => new Set([...prev, id]));
 
@@ -1169,9 +1207,10 @@ function App() {
     if (snap.bg1 !== undefined) {
       setBg1(snap.bg1); setHex1(snap.bg1); setBg2(snap.bg2); setHex2(snap.bg2);
       save(SK.colors, { bg1: snap.bg1, bg2: snap.bg2 });
+      setSelectedBgPreset("custom"); save("oph_bg_preset_key", "custom");
     } else if (snap.tileset != null && snap.tileset !== activeTilesetRef.current) {
       const tsBg = OPHELIA_BG[snap.tileset];
-      if (tsBg) { setBg1(tsBg.bg1); setHex1(tsBg.bg1); setBg2(tsBg.bg2); setHex2(tsBg.bg2); save(SK.colors, tsBg); }
+      if (tsBg) applyBgPreset(snap.tileset, tsBg.bg1, tsBg.bg2);
     }
     if (snap.highlight !== undefined) {
       const s = new Set(snap.highlight);
@@ -4261,7 +4300,7 @@ function App() {
                                       setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
                                       setGridRaw(newGrid);
                                       setActiveTileset(ts.name);
-                                      if (tsBg) { setBg1(tsBg.bg1); setHex1(tsBg.bg1); setBg2(tsBg.bg2); setHex2(tsBg.bg2); save(SK.colors, tsBg); }
+                                      if (tsBg) applyBgPreset(ts.name, tsBg.bg1, tsBg.bg2);
                                     }
                                     setShownTilesets([ts.name]);
                                     setShownAtlasTilesets([]);
@@ -4300,8 +4339,8 @@ function App() {
                                     if (adding) {
                                       loadAtlasTileset(atsDef.name);
                                       const cachedBg = getTilesetBgColors(atsDef.name);
-                                      if (cachedBg) { setBg1(cachedBg.bg1); setHex1(cachedBg.bg1); setBg2(cachedBg.bg2); setHex2(cachedBg.bg2); save(SK.colors, cachedBg); }
-                                      else loadAtlasTilesetBgColors(atsDef.name).then(colors => { if (colors?.bg1) { setBg1(colors.bg1); setHex1(colors.bg1); setBg2(colors.bg2); setHex2(colors.bg2); save(SK.colors, colors); } });
+                                      if (cachedBg) { applyBgPreset(atsDef.name, cachedBg.bg1, cachedBg.bg2); }
+                                      else { setSelectedBgPreset(atsDef.name); save("oph_bg_preset_key", atsDef.name); loadAtlasTilesetBgColors(atsDef.name).then(colors => { if (colors?.bg1) { setBg1(colors.bg1); setHex1(colors.bg1); setBg2(colors.bg2); setHex2(colors.bg2); save(SK.colors, colors); } }); }
                                       setActiveTileset(atsDef.name);
                                       setShownAtlasTilesets(prev => [...prev, atsDef.name]);
                                     } else {
@@ -4390,8 +4429,8 @@ function App() {
                                       setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
                                       setGridRaw(newGrid);
                                       setActiveTileset(atsDef.name);
-                                      if (cachedBg) { setBg1(cachedBg.bg1); setHex1(cachedBg.bg1); setBg2(cachedBg.bg2); setHex2(cachedBg.bg2); save(SK.colors, cachedBg); }
-                                      else loadAtlasTilesetBgColors(atsDef.name).then(colors => { if (colors?.bg1) { setBg1(colors.bg1); setHex1(colors.bg1); setBg2(colors.bg2); setHex2(colors.bg2); save(SK.colors, colors); } });
+                                      if (cachedBg) { applyBgPreset(atsDef.name, cachedBg.bg1, cachedBg.bg2); }
+                                      else { setSelectedBgPreset(atsDef.name); save("oph_bg_preset_key", atsDef.name); loadAtlasTilesetBgColors(atsDef.name).then(colors => { if (colors?.bg1) { setBg1(colors.bg1); setHex1(colors.bg1); setBg2(colors.bg2); setHex2(colors.bg2); save(SK.colors, colors); } }); }
                                       setShownTilesets([]);
                                       setShownAtlasTilesets([atsDef.name]);
                                     }
@@ -5474,6 +5513,13 @@ function App() {
                   <span style={{ fontSize: 12, color: C.text }}>Allow Tileset Mixing</span>
                 </label>
                 <p style={{ fontSize: 11, color: C.muted, lineHeight: 1.5, margin: 0 }}>Show tiles from multiple tilesets at once in the tile panel.</p>
+                <div style={{ height: 1, background: C.border, margin: "4px 0" }} />
+                <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
+                  <input type="checkbox" checked={hideDefaultLabels} onChange={e => setHideDefaultLabels(e.target.checked)}
+                    style={{ width: 14, height: 14, accentColor: C.accent, cursor: "pointer", flexShrink: 0 }} />
+                  <span style={{ fontSize: 12, color: C.text }}>Hide default tile settings labels</span>
+                </label>
+                <p style={{ fontSize: 11, color: C.muted, lineHeight: 1.5, margin: 0 }}>Hides size and offset badges on tile cards when those values are already the computed defaults. User-customized values are always shown.</p>
               </div>
             </div>
           )}
@@ -5619,12 +5665,7 @@ function App() {
 
           {/* Row 3: Background colour pickers */}
           {(() => {
-            // Find the active BG preset by matching current colours against all known tilesets
             const allBgPresets = { ...OPHELIA_BG, ...atlasTilesetBgColors };
-            const activeBgPreset = Object.keys(allBgPresets).find(k => {
-              const p = allBgPresets[k];
-              return p.bg1 && p.bg2 && p.bg1.toLowerCase() === bg1.toLowerCase() && p.bg2.toLowerCase() === bg2.toLowerCase();
-            }) ?? "";
             return (
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8, padding: "3px 14px 5px", alignItems: "center" }}>
                 <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1, userSelect: "none" }}>Background</span>
@@ -5659,7 +5700,7 @@ function App() {
                     style={{ width: 62, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 11, padding: "3px 6px", outline: "none" }}
                     spellCheck={false} />
                 </div>
-                {/* Tileset BG colour selector — Ophelia above divider, Atlas below */}
+                {/* Tileset BG colour selector — Custom first, then Ophelia, then Atlas */}
                 {(() => {
                   const allAtlasBgList = atlasTilesetList ?? [];
                   const defaultBg = activeTileset ? getTilesetBgColors(activeTileset) : null;
@@ -5671,22 +5712,26 @@ function App() {
                     : null;
                   return (
                     <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
-                      <select value={activeBgPreset}
+                      <select value={selectedBgPreset}
                         onChange={e => {
                           const key = e.target.value;
-                          const p = allBgPresets[key];
-                          if (p?.bg1) {
+                          if (key === "custom") {
                             pushHistorySnapshot();
-                            applyBg1(p.bg1); applyBg2(p.bg2);
-                          } else if (key && !OPHELIA_BG[key]) {
-                            // Atlas tileset with BG not loaded yet — load then apply
-                            loadAtlasTilesetBgColors(key).then(colors => {
-                              if (colors?.bg1) { pushHistorySnapshot(); applyBg1(colors.bg1); applyBg2(colors.bg2); }
-                            });
+                            applyBgPreset("custom", customBg.bg1, customBg.bg2);
+                          } else {
+                            const p = allBgPresets[key];
+                            if (p?.bg1) {
+                              pushHistorySnapshot();
+                              applyBgPreset(key, p.bg1, p.bg2);
+                            } else if (key && !OPHELIA_BG[key]) {
+                              loadAtlasTilesetBgColors(key).then(colors => {
+                                if (colors?.bg1) { pushHistorySnapshot(); applyBgPreset(key, colors.bg1, colors.bg2); }
+                              });
+                            }
                           }
                         }}
-                        style={{ background: C.panel, color: activeBgPreset ? C.accentBright : C.muted, border: `1px solid ${C.border}`, borderRadius: 5, fontSize: 10, padding: "2px 4px", cursor: "pointer", outline: "none" }}>
-                        <option value="" style={{ color: C.muted }}>Custom</option>
+                        style={{ background: C.panel, color: selectedBgPreset !== "custom" ? C.accentBright : C.muted, border: `1px solid ${C.border}`, borderRadius: 5, fontSize: 10, padding: "2px 4px", cursor: "pointer", outline: "none" }}>
+                        <option value="custom" style={{ color: C.muted }}>Custom</option>
                         <optgroup label="Ophelia">
                           {Object.keys(OPHELIA_BG).map(k => <option key={k} value={k} style={{ color: C.text }}>{k}</option>)}
                         </optgroup>
@@ -5700,7 +5745,7 @@ function App() {
                       </select>
                       {bgMismatch && resetDisplayName && (
                         <button style={{ ...btn(false), fontSize: 10, padding: "2px 7px", whiteSpace: "nowrap" }}
-                          onClick={() => { pushHistorySnapshot(); applyBg1(defaultBg.bg1); applyBg2(defaultBg.bg2); }}
+                          onClick={() => { pushHistorySnapshot(); applyBgPreset(activeTileset, defaultBg.bg1, defaultBg.bg2); }}
                           title={`Reset background colours to ${resetDisplayName} defaults`}>
                           ↩ {resetDisplayName}
                         </button>
