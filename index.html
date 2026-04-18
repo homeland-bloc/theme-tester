@@ -2292,7 +2292,7 @@ function App() {
           newCells.forEach(({ oldKey, newR, newC }) => {
             const [r, c] = oldKey.split(',').map(Number);
             const entry = tileData.find(d => d.r === r && d.c === c);
-            if (entry) newG[newR][newC] = entry.id;
+            if (entry && (entry.id !== null || newG[newR][newC] === null)) newG[newR][newC] = entry.id;
           });
           setGridStableRef.current(() => newG);
           // Move gridRotations
@@ -2702,7 +2702,7 @@ function App() {
               const g = prev.map(row => [...row]);
               const tileData = [];
               oldCells.forEach(key => { const [or, oc] = key.split(',').map(Number); tileData.push({ r: or, c: oc, id: g[or]?.[oc] ?? null }); g[or][oc] = null; });
-              newCells.forEach(({ oldKey, newR, newC }) => { const [or, oc] = oldKey.split(',').map(Number); const entry = tileData.find(d => d.r === or && d.c === oc); if (entry) g[newR][newC] = entry.id; });
+              newCells.forEach(({ oldKey, newR, newC }) => { const [or, oc] = oldKey.split(',').map(Number); const entry = tileData.find(d => d.r === or && d.c === oc); if (entry && (entry.id !== null || g[newR][newC] === null)) g[newR][newC] = entry.id; });
               return g;
             });
             setGridRotations(prev => { const n = { ...prev }; const d = {}; oldCells.forEach(k => { d[k] = prev[k]; delete n[k]; }); newCells.forEach(({ oldKey, newR, newC }) => { if (d[oldKey] !== undefined) n[`${newR},${newC}`] = d[oldKey]; }); return n; });
