@@ -1556,7 +1556,10 @@ function App() {
   // Load all tiles for an Atlas tileset into atlasTiles state
   const ATLAS_SUBFOLDERS = ["Fence", "Rope", "Water", "Gamemode_Specifics"];
   const ATLAS_TILES_FOLDER = "Tiles";
-  const ATLAS_WATER_FILES = ["00001011.png", "01111111.png", "01101011.png", "11111111.png"];
+  const ATLAS_WATER_FILES    = ["00001011.png", "01111111.png", "01101011.png", "11111111.png"];
+  const ATLAS_TILES_FILES    = ["Barrel.png", "Bush.png", "Bush2.png", "Cactus.png", "Crate.png", "Skull.png", "Wall.png", "Wall2.png"];
+  const ATLAS_ROPE_FILES     = ["Post.png", "Post_R.png", "Post_T.png", "Post_TR.png"];
+  const ATLAS_GAMEMODE_FILES = ["Brawl_Ball.png", "Gem_Grab.png", "Heist.png"];
   // Canonical order for flat tiles in Tiles/ folder (case-insensitive base name match)
   const ATLAS_FLAT_ORDER = ["wall1", "wall", "wall2", "crate", "barrel", "bush1", "bush", "bush2", "skull", "breakable", "cactus"];
   const getAtlasFlatOrder = base => { const i = ATLAS_FLAT_ORDER.indexOf(base.toLowerCase()); return i >= 0 ? i : ATLAS_FLAT_ORDER.length; };
@@ -1572,41 +1575,34 @@ function App() {
       const rootItems = await fetchAtlasDir(tilesetName);
       if (!Array.isArray(rootItems)) return [];
 
-      // Determine which subdirs are present, then fetch all in parallel
+      // Determine which subdirs are present.
+      // Tiles/Rope/Water/Gamemode_Specifics use hardcoded file lists — no API call needed.
+      // Fence varies per tileset, so it is the only subfolder that still requires a fetch.
       const hasTilesDir = rootItems.some(f => f.type === "dir" && f.name === ATLAS_TILES_FOLDER);
       const presentSubs = ATLAS_SUBFOLDERS.filter(sub => rootItems.some(f => f.type === "dir" && f.name === sub));
-      const [flatFilesResult, ...folderFilesResults] = await Promise.all([
-        hasTilesDir ? fetchAtlasDir(`${tilesetName}/${ATLAS_TILES_FOLDER}`) : Promise.resolve([]),
-        ...presentSubs.map(sub => fetchAtlasDir(`${tilesetName}/${sub}`)),
-      ]);
+      const fenceFiles = presentSubs.includes("Fence")
+        ? (await fetchAtlasDir(`${tilesetName}/Fence`)).filter(f => f.type === "file" && imageRe.test(f.name))
+        : [];
 
-      // Flat tiles from Tiles/ — sorted by canonical order
-      if (Array.isArray(flatFilesResult)) {
-        const imageFiles = flatFilesResult.filter(f => f.type === "file" && imageRe.test(f.name));
-        imageFiles.sort((a, b) => {
-          const ba = a.name.replace(/\.[^.]+$/, ""), bb = b.name.replace(/\.[^.]+$/, "");
-          return getAtlasFlatOrder(ba) - getAtlasFlatOrder(bb);
-        });
-        imageFiles.forEach(f => {
-          const base = f.name.replace(/\.[^.]+$/, "");
-          tilesToAdd.push({ relPath: `${tilesetName}/${ATLAS_TILES_FOLDER}/${f.name}`, atlasFolderName: null, folderLabel: null, codename: `${meta.codename}_${base}` });
+      // Flat tiles from Tiles/ — hardcoded list, sorted by canonical order
+      if (hasTilesDir) {
+        [...ATLAS_TILES_FILES].sort((a, b) => getAtlasFlatOrder(a.replace(/\.[^.]+$/, "")) - getAtlasFlatOrder(b.replace(/\.[^.]+$/, ""))).forEach(filename => {
+          const base = filename.replace(/\.[^.]+$/, "");
+          tilesToAdd.push({ relPath: `${tilesetName}/${ATLAS_TILES_FOLDER}/${filename}`, atlasFolderName: null, folderLabel: null, codename: `${meta.codename}_${base}` });
         });
       }
 
-      // Folder-based tiles (Fence, Rope, Water, Gamemode_Specifics)
-      presentSubs.forEach((sub, i) => {
-        const files = folderFilesResults[i];
-        if (!Array.isArray(files)) return;
+      // Folder-based tiles — hardcoded lists for Rope/Water/Gamemode_Specifics; fetched list for Fence
+      presentSubs.forEach(sub => {
         const folderLabel = sub === "Gamemode_Specifics" ? "Objective" : sub;
-        let filtered = files.filter(f => f.type === "file" && imageRe.test(f.name));
-        if (sub === "Water") {
-          // Only load the 4 canonical water variant files, in specified order
-          const byName = new Map(filtered.map(f => [f.name, f]));
-          filtered = ATLAS_WATER_FILES.map(n => byName.get(n)).filter(Boolean);
-        }
-        filtered.forEach(f => {
-          const base = f.name.replace(/\.[^.]+$/, "");
-          tilesToAdd.push({ relPath: `${tilesetName}/${sub}/${f.name}`, atlasFolderName: sub, folderLabel, codename: `${meta.codename}_${base}` });
+        const filenames = sub === "Fence"             ? fenceFiles.map(f => f.name)
+                        : sub === "Rope"              ? ATLAS_ROPE_FILES
+                        : sub === "Water"             ? ATLAS_WATER_FILES
+                        : sub === "Gamemode_Specifics" ? ATLAS_GAMEMODE_FILES
+                        : [];
+        filenames.forEach(filename => {
+          const base = filename.replace(/\.[^.]+$/, "");
+          tilesToAdd.push({ relPath: `${tilesetName}/${sub}/${filename}`, atlasFolderName: sub, folderLabel, codename: `${meta.codename}_${base}` });
         });
       });
 
