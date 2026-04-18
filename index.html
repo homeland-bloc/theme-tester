@@ -190,6 +190,41 @@ const deriveCodename = src => {
   return map[file] ?? null;
 };
 const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
+
+// ── Palette-based grid serialization ───────────────────────────────────
+// Each tile is identified by a stable codename independent of runtime IDs:
+//   default tiles  → their src path  (e.g. "Resources/Mausoleum/MSLM-wall.png")
+//   atlas tiles    → "a:" + codename (e.g. "a:Arcade_Wall1_wall1")
+//   user tiles     → "u:" + stored id (id is persisted, so it is stable)
+//   space tile     → "space"
+const GRID_FORMAT_VERSION = 2;
+const getTileCodename = tile => {
+  if (!tile) return null;
+  if (tile.id === SPACE_TILE_ID) return "space";
+  if (tile.isAtlas) return "a:" + tile.codename;
+  if (!tile.isDefault) return "u:" + tile.id;
+  return tile.src;
+};
+const resolveCodename = (codename, tiles) => {
+  if (!codename) return null;
+  if (codename === "space") return { id: SPACE_TILE_ID };
+  if (codename.startsWith("u:")) { const uid = parseInt(codename.slice(2), 10); return tiles.find(t => t.id === uid) ?? null; }
+  if (codename.startsWith("a:")) { const cn = codename.slice(2); return tiles.find(t => t.isAtlas && t.codename === cn) ?? null; }
+  return tiles.find(t => t.src === codename) ?? null;
+};
+const encodeGridForStorage = (grid, tiles) => {
+  const tileById = new Map(tiles.map(t => [t.id, t]));
+  const palette = [];
+  const idToIdx = new Map();
+  const getIdx = (id, cn) => { if (!idToIdx.has(id)) { idToIdx.set(id, palette.length + 1); palette.push(cn); } return idToIdx.get(id); };
+  for (const row of grid) for (const id of row) {
+    if (id === null) continue;
+    if (id === SPACE_TILE_ID) { getIdx(id, "space"); continue; }
+    if (!idToIdx.has(id)) { const cn = getTileCodename(tileById.get(id)); if (cn) getIdx(id, cn); }
+  }
+  return { v: GRID_FORMAT_VERSION, palette, grid: grid.map(row => row.map(id => id === null ? null : (idToIdx.get(id) ?? null))) };
+};
+
 // Convert a data URL to a blob URL for faster browser rendering (blob URLs bypass data URI parsing overhead)
 const dataURLtoBlobURL = dataURL => {
   try {
@@ -295,11 +330,25 @@ function App() {
 
   const [gridW, setGridW] = useState(() => load(SK.gridW, GRID_W));
   const [gridH, setGridH] = useState(() => load(SK.gridH, GRID_H));
+  // Holds v2 palette data between component init and tile-load resolution.
+  // Must be declared before the grid useState so the init function can write to it.
+  const pendingGridLoadRef = useRef(null);
   const [grid,        setGridRaw]   = useState(() => {
-    const saved = load(SK.grid, null);
     const gW = load(SK.gridW, GRID_W), gH = load(SK.gridH, GRID_H);
-    if (saved && saved.length === gH && saved[0]?.length === gW) return saved;
-    return Array.from({ length: gH }, () => Array(gW).fill(null));
+    const empty = Array.from({ length: gH }, () => Array(gW).fill(null));
+    const saved = load(SK.grid, null);
+    if (!saved) return empty;
+    if (Array.isArray(saved)) {
+      // v1 format: raw 2D array of tile IDs — use directly, will be re-saved as v2
+      if (saved.length === gH && saved[0]?.length === gW) return saved;
+      return empty;
+    }
+    if (saved.v === GRID_FORMAT_VERSION && Array.isArray(saved.grid)) {
+      // v2 palette format: defer resolution until tiles are loaded
+      pendingGridLoadRef.current = saved;
+      return empty;
+    }
+    return empty;
   });
   const [bg1,         setBg1]       = useState(savedColors.bg1);
   const [bg2,         setBg2]       = useState(savedColors.bg2);
@@ -543,7 +592,11 @@ function App() {
   useEffect(() => { save(SK.atlasTiles,  atlasTiles); }, [atlasTiles]);
   useEffect(() => { save("oph_atlas_icon_size", atlasIconSize); }, [atlasIconSize]);
   useEffect(() => { save("oph_panel_collapsed", panelCollapsed); }, [panelCollapsed]);
-  useEffect(() => { save(SK.grid,         grid);            }, [grid]);
+  useEffect(() => {
+    if (pendingGridLoadRef.current) return; // v2 load in progress — don't overwrite palette data
+    if (tiles.length === 0) return; // default tiles not yet loaded — avoid encoding with empty tile list
+    save(SK.grid, encodeGridForStorage(grid, tiles));
+  }, [grid, tiles]);
   useEffect(() => { save(SK.multipliers,  tileMultipliers); }, [tileMultipliers]);
   useEffect(() => { save(SK.priority,     priorityTiles);   }, [priorityTiles]);
   useEffect(() => { save(SK.offsets,      tileOffsets);     }, [tileOffsets]);
@@ -1083,6 +1136,25 @@ function App() {
       .catch(() => {})
       .finally(() => setTilesLoading(false));
   }, []);
+  // Resolve a v2 palette-format grid once all tiles (including default tiles from the manifest) are loaded.
+  useEffect(() => {
+    if (!pendingGridLoadRef.current || tilesLoading || tiles.length === 0) return;
+    const pending = pendingGridLoadRef.current;
+    pendingGridLoadRef.current = null; // clear before setGridRaw so save effect runs correctly
+    const { palette, grid: indexGrid } = pending;
+    const unresolved = [];
+    const idFromPaletteIdx = [null, ...palette.map(cn => {
+      const tile = resolveCodename(cn, tiles);
+      if (!tile) unresolved.push(cn);
+      return tile?.id ?? null;
+    })];
+    const resolvedGrid = indexGrid.map(row =>
+      row.map(idx => idx == null ? null : (idFromPaletteIdx[idx] ?? null))
+    );
+    setGridRaw(resolvedGrid);
+    if (unresolved.length > 0)
+      console.warn(`[map load] ${unresolved.length} tile(s) could not be resolved (tileset may not be loaded):`, unresolved);
+  }, [tiles, tilesLoading]);
   useEffect(() => { if (activeTileset) save(SK.activeTileset, activeTileset); }, [activeTileset]);
   useEffect(() => { if (shownTilesets) save("oph_shown_tilesets", shownTilesets); }, [shownTilesets]);
   useEffect(() => { save("oph_allow_mixing", allowTsMixing); }, [allowTsMixing]);
