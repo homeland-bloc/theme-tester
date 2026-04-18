@@ -1572,34 +1572,19 @@ function App() {
     const tilesToAdd = []; // { relPath, atlasFolderName, folderLabel, codename }
 
     try {
-      const rootItems = await fetchAtlasDir(tilesetName);
-      if (!Array.isArray(rootItems)) return [];
-
-      // Determine which subdirs are present.
-      // Tiles/Rope/Water/Gamemode_Specifics use hardcoded file lists — no API call needed.
-      // Fence varies per tileset, so it is the only subfolder that still requires a fetch.
-      const hasTilesDir = rootItems.some(f => f.type === "dir" && f.name === ATLAS_TILES_FOLDER);
-      const presentSubs = ATLAS_SUBFOLDERS.filter(sub => rootItems.some(f => f.type === "dir" && f.name === sub));
-      const fenceFiles = presentSubs.includes("Fence")
-        ? (await fetchAtlasDir(`${tilesetName}/Fence`)).filter(f => f.type === "file" && imageRe.test(f.name))
-        : [];
+      // All Atlas tilesets share identical subfolder structure, so no root dir check is needed.
+      // Only Fence requires an API call since its filenames vary per tileset.
+      const fenceFiles = (await fetchAtlasDir(`${tilesetName}/Fence`)).filter(f => f.type === "file" && imageRe.test(f.name));
 
       // Flat tiles from Tiles/ — hardcoded list, sorted by canonical order
-      if (hasTilesDir) {
-        [...ATLAS_TILES_FILES].sort((a, b) => getAtlasFlatOrder(a.replace(/\.[^.]+$/, "")) - getAtlasFlatOrder(b.replace(/\.[^.]+$/, ""))).forEach(filename => {
-          const base = filename.replace(/\.[^.]+$/, "");
-          tilesToAdd.push({ relPath: `${tilesetName}/${ATLAS_TILES_FOLDER}/${filename}`, atlasFolderName: null, folderLabel: null, codename: `${meta.codename}_${base}` });
-        });
-      }
+      [...ATLAS_TILES_FILES].sort((a, b) => getAtlasFlatOrder(a.replace(/\.[^.]+$/, "")) - getAtlasFlatOrder(b.replace(/\.[^.]+$/, ""))).forEach(filename => {
+        const base = filename.replace(/\.[^.]+$/, "");
+        tilesToAdd.push({ relPath: `${tilesetName}/${ATLAS_TILES_FOLDER}/${filename}`, atlasFolderName: null, folderLabel: null, codename: `${meta.codename}_${base}` });
+      });
 
-      // Folder-based tiles — hardcoded lists for Rope/Water/Gamemode_Specifics; fetched list for Fence
-      presentSubs.forEach(sub => {
+      // Folder-based tiles — Fence from API, all others from hardcoded lists
+      [["Fence", fenceFiles.map(f => f.name)], ["Rope", ATLAS_ROPE_FILES], ["Water", ATLAS_WATER_FILES], ["Gamemode_Specifics", ATLAS_GAMEMODE_FILES]].forEach(([sub, filenames]) => {
         const folderLabel = sub === "Gamemode_Specifics" ? "Objective" : sub;
-        const filenames = sub === "Fence"             ? fenceFiles.map(f => f.name)
-                        : sub === "Rope"              ? ATLAS_ROPE_FILES
-                        : sub === "Water"             ? ATLAS_WATER_FILES
-                        : sub === "Gamemode_Specifics" ? ATLAS_GAMEMODE_FILES
-                        : [];
         filenames.forEach(filename => {
           const base = filename.replace(/\.[^.]+$/, "");
           tilesToAdd.push({ relPath: `${tilesetName}/${sub}/${filename}`, atlasFolderName: sub, folderLabel, codename: `${meta.codename}_${base}` });
