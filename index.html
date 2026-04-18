@@ -2275,7 +2275,13 @@ function App() {
             .map(key => {
               const [r, c] = key.split(',').map(Number);
               const delta = getEffectiveDelta(r, c);
-              return { oldKey: key, newR: r + delta.dr, newC: c + delta.dc };
+              const newR = r + delta.dr, newC = c + delta.dc;
+              const crossedV = c !== cC && newC !== cC && (c < cC) !== (newC < cC);
+              const crossedH = r !== cR && newR !== cR && (r < cR) !== (newR < cR);
+              return { oldKey: key, newR, newC,
+                fV: mirrorVRef.current && crossedV,
+                fH: mirrorHRef.current && crossedH,
+                fD: mirrorDRef.current && crossedV && crossedH };
             })
             .filter(({ newR, newC }) => newR >= 0 && newR < gridHRef.current && newC >= 0 && newC < gridWRef.current);
 
@@ -2295,16 +2301,17 @@ function App() {
             if (entry && (entry.id !== null || newG[newR][newC] === null)) newG[newR][newC] = entry.id;
           });
           setGridStableRef.current(() => newG);
-          // Move gridRotations
+          // Move gridRotations, applying mirror transform if tile crossed a mirror axis
           setGridRotations(prev => {
             const n = { ...prev };
             const rot_data = {};
-            oldCells.forEach(key => {
-              rot_data[key] = prev[key];
-              delete n[key];
-            });
-            newCells.forEach(({ oldKey, newR, newC }) => {
-              if (rot_data[oldKey] !== undefined) n[`${newR},${newC}`] = rot_data[oldKey];
+            oldCells.forEach(key => { rot_data[key] = prev[key]; delete n[key]; });
+            const ms = mirrorSettingsRef.current;
+            newCells.forEach(({ oldKey, newR, newC, fV, fH, fD }) => {
+              if (rot_data[oldKey] === undefined) return;
+              const rot = rot_data[oldKey];
+              n[`${newR},${newC}`] = (ms.mirrorRotation && (fV || fH || fD))
+                ? applyRotMirror(rot, fV, fH, fD) : rot;
             });
             return n;
           });
@@ -2695,7 +2702,13 @@ function App() {
               .map(key => {
                 const [or, oc] = key.split(',').map(Number);
                 const delta = getEffectiveDelta(or, oc);
-                return { oldKey: key, newR: or + delta.dr, newC: oc + delta.dc };
+                const newR = or + delta.dr, newC = oc + delta.dc;
+                const crossedV = oc !== cC && newC !== cC && (oc < cC) !== (newC < cC);
+                const crossedH = or !== cR && newR !== cR && (or < cR) !== (newR < cR);
+                return { oldKey: key, newR, newC,
+                  fV: mirrorVRef.current && crossedV,
+                  fH: mirrorHRef.current && crossedH,
+                  fD: mirrorDRef.current && crossedV && crossedH };
               })
               .filter(({ newR, newC }) => newR >= 0 && newR < gridHRef.current && newC >= 0 && newC < gridWRef.current);
             setGridStableRef.current(prev => {
@@ -2705,7 +2718,7 @@ function App() {
               newCells.forEach(({ oldKey, newR, newC }) => { const [or, oc] = oldKey.split(',').map(Number); const entry = tileData.find(d => d.r === or && d.c === oc); if (entry && (entry.id !== null || g[newR][newC] === null)) g[newR][newC] = entry.id; });
               return g;
             });
-            setGridRotations(prev => { const n = { ...prev }; const d = {}; oldCells.forEach(k => { d[k] = prev[k]; delete n[k]; }); newCells.forEach(({ oldKey, newR, newC }) => { if (d[oldKey] !== undefined) n[`${newR},${newC}`] = d[oldKey]; }); return n; });
+            setGridRotations(prev => { const n = { ...prev }; const d = {}; oldCells.forEach(k => { d[k] = prev[k]; delete n[k]; }); const ms = mirrorSettingsRef.current; newCells.forEach(({ oldKey, newR, newC, fV, fH, fD }) => { if (d[oldKey] === undefined) return; const rot = d[oldKey]; n[`${newR},${newC}`] = (ms.mirrorRotation && (fV || fH || fD)) ? applyRotMirror(rot, fV, fH, fD) : rot; }); return n; });
             setGridFlips(prev => { const n = { ...prev }; const d = {}; oldCells.forEach(k => { d[k] = prev[k]; delete n[k]; }); newCells.forEach(({ oldKey, newR, newC }) => { if (d[oldKey] !== undefined) n[`${newR},${newC}`] = d[oldKey]; }); return n; });
             setGridOffsets(prev => { const n = { ...prev }; const d = {}; oldCells.forEach(k => { d[k] = prev[k]; delete n[k]; }); newCells.forEach(({ oldKey, newR, newC }) => { if (d[oldKey] !== undefined) n[`${newR},${newC}`] = d[oldKey]; }); return n; });
             const newHighlight = new Set(newCells.map(({ newR, newC }) => `${newR},${newC}`));
