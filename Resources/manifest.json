@@ -64,7 +64,7 @@
         "bush":  "Airport/AIRP-bush.png"
       },
       "folders": {
-        "water": ["AIRP-water.png", "AIRP-waterBEND.png", "AIRP-waterCORNER.png", "AIRP-waterDOUBLEBEND.png", "AIRP-waterDOUBLELINE.png", "AIRP-waterFULL.png", "AIRP-waterLINE.png"]
+        "water": ["AIRP-waterBEND.png", "AIRP-waterCORNER.png", "AIRP-waterLINE.png", "AIRP-water.png", "AIRP-waterDOUBLEBEND.png", "AIRP-waterDOUBLELINE.png", "AIRP-waterFULL.png"]
       },
       "folderPaths": {
         "water": "Airport/Water/"
