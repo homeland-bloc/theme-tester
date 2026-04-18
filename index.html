@@ -179,7 +179,7 @@ const deriveCodename = src => {
     "MSLM-fence": "Fence1", "MSLM-fenceHORIZONTAL": "Fence2", "MSLM-fenceVERTICAL": "Fence3",
     "MSLM-post1": "Rope1", "MSLM-post2": "Rope2", "MSLM-post3": "Rope3", "MSLM-post4": "Rope4",
     "MSLM-water": "WaterFill", "MSLM-waterBEND": "WaterBend", "MSLM-waterCORNER": "WaterCorner", "MSLM-waterLINE": "WaterLine",
-    "MSLM-waterDOUBLEBEND": "WaterDoubleBend", "MSLM-waterDOUBLELINE": "WaterDoubleLine", "MSLM-waterFULL": "WaterFullTile",
+    "MSLM-waterDOUBLEBEND": "WaterDoubleBend", "MSLM-waterDOUBLELINE": "WaterDoubleLine", "MSLM-waterFULL": "WaterFull",
     // Mausoleum objectives
     "MSLM-ball": "Ball", "MSLM-safe": "Safe", "MSLM-mine": "GemMine",
     // Global water
@@ -203,7 +203,15 @@ const deriveCodename = src => {
     "SWR-fenceV-TURN2-L": "FenceV-Turn2L", "SWR-fenceV-TURN2-R": "FenceV-Turn2R",
     "SWR-post": "Rope", "SWR-post-H": "RopeH", "SWR-post-H-L": "RopeH-L", "SWR-post-H-R": "RopeH-R",
     "SWR-post-V": "RopeV", "SWR-post-V-H": "RopeV-H", "SWR-post-V-L": "RopeV-L", "SWR-post-V-R": "RopeV-R",
+    "SWR-waterBEND": "WaterBend", "SWR-waterCORNER": "WaterCorner", "SWR-waterLINE": "WaterLine",
+    "SWR-water": "WaterFill", "SWR-waterDOUBLEBEND": "WaterDoubleBend", "SWR-waterDOUBLELINE": "WaterDoubleLine", "SWR-waterFULL": "WaterFull",
     "SWR-ball": "Ball", "SWR-safe": "Safe", "SWR-mine": "GemMine",
+    // Airport
+    "AIRP-waterBEND": "WaterBend", "AIRP-waterCORNER": "WaterCorner", "AIRP-waterLINE": "WaterLine",
+    "AIRP-water": "WaterFill", "AIRP-waterDOUBLEBEND": "WaterDoubleBend", "AIRP-waterDOUBLELINE": "WaterDoubleLine", "AIRP-waterFULL": "WaterFull",
+    // Community tilesets water — named by position for cross-tileset compatibility
+    "WaterCurve": "WaterBend", "WaterTwist": "WaterCorner", "WaterLine": "WaterLine", "WaterFill": "WaterFill",
+    "WaterBubble1": "WaterDoubleBend", "WaterBubble2": "WaterDoubleLine",
     "Brawl_Ball": "BrawlBall", "goalRed": "GoalRed", "goalBlue": "GoalBlue",
     // Jumppads
     "B": "BottomJumppad", "BL": "BottomLeftJumppad", "BR": "BottomRightJumppad",
@@ -1578,11 +1586,13 @@ function App() {
       });
 
       // Folder-based tiles — Fence from API, all others from hardcoded lists
+      const ATLAS_WATER_CNS = ["WaterBend", "WaterCorner", "WaterLine", "WaterFill"];
       [["Fence", fenceFiles.map(f => f.name)], ["Rope", ATLAS_ROPE_FILES], ["Water", ATLAS_WATER_FILES], ["Gamemode_Specifics", ATLAS_GAMEMODE_FILES]].forEach(([sub, filenames]) => {
         const folderLabel = sub === "Gamemode_Specifics" ? "Objective" : sub;
-        filenames.forEach(filename => {
+        filenames.forEach((filename, i) => {
           const base = filename.replace(/\.[^.]+$/, "");
-          tilesToAdd.push({ relPath: `${tilesetName}/${sub}/${filename}`, atlasFolderName: sub, folderLabel, codename: `${meta.codename}_${base}` });
+          const baseCodenameOverride = sub === "Water" ? (ATLAS_WATER_CNS[i] ?? null) : null;
+          tilesToAdd.push({ relPath: `${tilesetName}/${sub}/${filename}`, atlasFolderName: sub, folderLabel, codename: `${meta.codename}_${base}`, baseCodenameOverride });
         });
       });
 
@@ -1595,7 +1605,7 @@ function App() {
       const usedIds = new Set(currentTiles.map(t => t.id));
       const newTiles = [];
       let nextId = ATLAS_ID_START;
-      for (const { relPath, atlasFolderName, folderLabel, codename } of tilesToAdd) {
+      for (const { relPath, atlasFolderName, folderLabel, codename, baseCodenameOverride } of tilesToAdd) {
         const src = `https://raw.githubusercontent.com/She-Fairy/atlas-horizon/main/Resources/${relPath}`;
         if (srcSet.has(src)) continue;
         // Skip user tile ID range (500-699) and find next free atlas ID
@@ -1611,7 +1621,7 @@ function App() {
           folderKey: scopedKey,
           folderLabel,
           codename,
-          baseCodename: relPath.split("/").pop().replace(/\.[^.]+$/, ""),
+          baseCodename: baseCodenameOverride ?? relPath.split("/").pop().replace(/\.[^.]+$/, ""),
         };
         newTiles.push(tile);
         srcSet.add(src);
@@ -2275,7 +2285,13 @@ function App() {
             .map(key => {
               const [r, c] = key.split(',').map(Number);
               const delta = getEffectiveDelta(r, c);
-              return { oldKey: key, newR: r + delta.dr, newC: c + delta.dc };
+              const newR = r + delta.dr, newC = c + delta.dc;
+              const crossedV = c !== cC && newC !== cC && (c < cC) !== (newC < cC);
+              const crossedH = r !== cR && newR !== cR && (r < cR) !== (newR < cR);
+              return { oldKey: key, newR, newC,
+                fV: mirrorVRef.current && crossedV,
+                fH: mirrorHRef.current && crossedH,
+                fD: mirrorDRef.current && crossedV && crossedH };
             })
             .filter(({ newR, newC }) => newR >= 0 && newR < gridHRef.current && newC >= 0 && newC < gridWRef.current);
 
@@ -2295,16 +2311,17 @@ function App() {
             if (entry && (entry.id !== null || newG[newR][newC] === null)) newG[newR][newC] = entry.id;
           });
           setGridStableRef.current(() => newG);
-          // Move gridRotations
+          // Move gridRotations, applying mirror transform if tile crossed a mirror axis
           setGridRotations(prev => {
             const n = { ...prev };
             const rot_data = {};
-            oldCells.forEach(key => {
-              rot_data[key] = prev[key];
-              delete n[key];
-            });
-            newCells.forEach(({ oldKey, newR, newC }) => {
-              if (rot_data[oldKey] !== undefined) n[`${newR},${newC}`] = rot_data[oldKey];
+            oldCells.forEach(key => { rot_data[key] = prev[key]; delete n[key]; });
+            const ms = mirrorSettingsRef.current;
+            newCells.forEach(({ oldKey, newR, newC, fV, fH, fD }) => {
+              if (rot_data[oldKey] === undefined) return;
+              const rot = rot_data[oldKey];
+              n[`${newR},${newC}`] = (ms.mirrorRotation && (fV || fH || fD))
+                ? applyRotMirror(rot, fV, fH, fD) : rot;
             });
             return n;
           });
@@ -2695,7 +2712,13 @@ function App() {
               .map(key => {
                 const [or, oc] = key.split(',').map(Number);
                 const delta = getEffectiveDelta(or, oc);
-                return { oldKey: key, newR: or + delta.dr, newC: oc + delta.dc };
+                const newR = or + delta.dr, newC = oc + delta.dc;
+                const crossedV = oc !== cC && newC !== cC && (oc < cC) !== (newC < cC);
+                const crossedH = or !== cR && newR !== cR && (or < cR) !== (newR < cR);
+                return { oldKey: key, newR, newC,
+                  fV: mirrorVRef.current && crossedV,
+                  fH: mirrorHRef.current && crossedH,
+                  fD: mirrorDRef.current && crossedV && crossedH };
               })
               .filter(({ newR, newC }) => newR >= 0 && newR < gridHRef.current && newC >= 0 && newC < gridWRef.current);
             setGridStableRef.current(prev => {
@@ -2705,7 +2728,7 @@ function App() {
               newCells.forEach(({ oldKey, newR, newC }) => { const [or, oc] = oldKey.split(',').map(Number); const entry = tileData.find(d => d.r === or && d.c === oc); if (entry && (entry.id !== null || g[newR][newC] === null)) g[newR][newC] = entry.id; });
               return g;
             });
-            setGridRotations(prev => { const n = { ...prev }; const d = {}; oldCells.forEach(k => { d[k] = prev[k]; delete n[k]; }); newCells.forEach(({ oldKey, newR, newC }) => { if (d[oldKey] !== undefined) n[`${newR},${newC}`] = d[oldKey]; }); return n; });
+            setGridRotations(prev => { const n = { ...prev }; const d = {}; oldCells.forEach(k => { d[k] = prev[k]; delete n[k]; }); const ms = mirrorSettingsRef.current; newCells.forEach(({ oldKey, newR, newC, fV, fH, fD }) => { if (d[oldKey] === undefined) return; const rot = d[oldKey]; n[`${newR},${newC}`] = (ms.mirrorRotation && (fV || fH || fD)) ? applyRotMirror(rot, fV, fH, fD) : rot; }); return n; });
             setGridFlips(prev => { const n = { ...prev }; const d = {}; oldCells.forEach(k => { d[k] = prev[k]; delete n[k]; }); newCells.forEach(({ oldKey, newR, newC }) => { if (d[oldKey] !== undefined) n[`${newR},${newC}`] = d[oldKey]; }); return n; });
             setGridOffsets(prev => { const n = { ...prev }; const d = {}; oldCells.forEach(k => { d[k] = prev[k]; delete n[k]; }); newCells.forEach(({ oldKey, newR, newC }) => { if (d[oldKey] !== undefined) n[`${newR},${newC}`] = d[oldKey]; }); return n; });
             const newHighlight = new Set(newCells.map(({ newR, newC }) => `${newR},${newC}`));
@@ -3649,11 +3672,17 @@ function App() {
     const buildOpheliaIdMaps = () => {
       let id = TILESET_ID_START;
       const maps = {};
+      const WATER_CNS = ["waterbend","watercorner","waterline","waterfill","waterdoublebend","waterdoubleline","waterfull"];
       for (const tsDef of opheliaTilesets) {
         const m = {};
         for (const key of (tsDef.order ?? [])) {
-          if (tsDef.folders?.[key]) m[key] = tsDef.folders[key].map(() => id++);
-          else if (tsDef.files?.[key]) m[key] = [id++];
+          if (tsDef.folders?.[key]) {
+            if (key === "water") {
+              tsDef.folders[key].forEach((_, i) => { m[WATER_CNS[i] ?? `water${i}`] = [id++]; });
+            } else {
+              m[key] = tsDef.folders[key].map(() => id++);
+            }
+          } else if (tsDef.files?.[key]) m[key] = [id++];
         }
         maps[tsDef.name] = m;
       }
@@ -3713,10 +3742,15 @@ function App() {
         if (folderMatch) {
           const folderName = folderMatch[1];
           const folderTiles = atlasByFolder[folderName] ?? [];
-          const idx = folderIdx[folderName] ?? 0;
-          if (idx < folderTiles.length) {
-            opheliaIds.forEach(oid => { remap[oid] = folderTiles[idx].id; });
-            folderIdx[folderName] = idx + 1;
+          const nameMatch = folderTiles.find(t => normCode(t.baseCodename) === norm);
+          if (nameMatch) {
+            opheliaIds.forEach(oid => { remap[oid] = nameMatch.id; });
+          } else {
+            const idx = folderIdx[folderName] ?? 0;
+            if (idx < folderTiles.length) {
+              opheliaIds.forEach(oid => { remap[oid] = folderTiles[idx].id; });
+              folderIdx[folderName] = idx + 1;
+            }
           }
         }
       }
@@ -3789,10 +3823,15 @@ function App() {
         if (folderMatch) {
           const folderName = folderMatch[1];
           const folderTiles = atlasByFolder[folderName] ?? [];
-          const idx = folderIdx[folderName] ?? 0;
-          if (idx < folderTiles.length) {
-            opheliaIds.forEach(oid => { idRemap[folderTiles[idx].id] = oid; });
-            folderIdx[folderName] = idx + 1;
+          const nameMatch = folderTiles.find(t => normCode(t.baseCodename) === norm);
+          if (nameMatch) {
+            opheliaIds.forEach(oid => { idRemap[nameMatch.id] = oid; });
+          } else {
+            const idx = folderIdx[folderName] ?? 0;
+            if (idx < folderTiles.length) {
+              opheliaIds.forEach(oid => { idRemap[folderTiles[idx].id] = oid; });
+              folderIdx[folderName] = idx + 1;
+            }
           }
         }
       }
