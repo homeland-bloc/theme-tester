@@ -1,24 +1,6 @@
 {
   "tilesets": [
     {
-      "name": "Airport",
-      "creator": "Ophelia",
-      "wip": true,
-      "order": ["wall1", "wall2", "crate", "bush", "water"],
-      "files": {
-        "wall1": "Airport/AIRP-wall.png",
-        "wall2": "Airport/AIRP-wall2.png",
-        "crate": "Airport/AIRP-crate.png",
-        "bush":  "Airport/AIRP-bush.png"
-      },
-      "folders": {
-        "water": ["AIRP-water.png", "AIRP-waterBEND.png", "AIRP-waterCORNER.png", "AIRP-waterDOUBLEBEND.png", "AIRP-waterDOUBLELINE.png", "AIRP-waterFULL.png", "AIRP-waterLINE.png"]
-      },
-      "folderPaths": {
-        "water": "Airport/Water/"
-      }
-    },
-    {
       "name": "Mausoleum",
       "creator": "Ophelia",
       "order": ["wall1", "wall2", "crate", "barrel", "cactus", "bush", "breakable", "fence", "rope", "water", "objectives"],
@@ -68,6 +50,24 @@
         "rope": "Sewer/Rope/",
         "water": "Sewer/Water/",
         "objectives": "Sewer/Objective/"
+      }
+    },
+    {
+      "name": "Airport",
+      "creator": "Ophelia",
+      "wip": true,
+      "order": ["wall1", "wall2", "crate", "bush", "water"],
+      "files": {
+        "wall1": "Airport/AIRP-wall.png",
+        "wall2": "Airport/AIRP-wall2.png",
+        "crate": "Airport/AIRP-crate.png",
+        "bush":  "Airport/AIRP-bush.png"
+      },
+      "folders": {
+        "water": ["AIRP-water.png", "AIRP-waterBEND.png", "AIRP-waterCORNER.png", "AIRP-waterDOUBLEBEND.png", "AIRP-waterDOUBLELINE.png", "AIRP-waterFULL.png", "AIRP-waterLINE.png"]
+      },
+      "folderPaths": {
+        "water": "Airport/Water/"
       }
     },
     {

@@ -33,8 +33,10 @@
     #root { height: 100%; height: 100dvh; display: flex; flex-direction: column; overscroll-behavior: none; }
     ::-webkit-scrollbar { width: 8px; height: 8px; }
     ::-webkit-scrollbar-track { background: rgba(0,0,0,0.18); border-radius: 4px; }
-    ::-webkit-scrollbar-thumb { background: rgba(251,146,60,0.55); border-radius: 4px; border: 1px solid rgba(251,146,60,0.2); }
-    ::-webkit-scrollbar-thumb:hover { background: rgba(251,146,60,0.8); }
+    [data-theme="warm"] ::-webkit-scrollbar-thumb { background: rgba(251,146,60,0.55); border-radius: 4px; border: 1px solid rgba(251,146,60,0.2); }
+    [data-theme="warm"] ::-webkit-scrollbar-thumb:hover { background: rgba(251,146,60,0.8); }
+    [data-theme="cold"] ::-webkit-scrollbar-thumb { background: rgba(56,189,248,0.55); border-radius: 4px; border: 1px solid rgba(56,189,248,0.2); }
+    [data-theme="cold"] ::-webkit-scrollbar-thumb:hover { background: rgba(56,189,248,0.85); }
     * { -webkit-tap-highlight-color: transparent; }
 
     /* Checkered transparent background — applied to the exact-size image wrapper inside modals */
@@ -81,10 +83,11 @@
                       : "linear-gradient(90deg,#c45c6a,#fb923c,#fbbf24)";
         var bg  = isC ? "#050e1a" : "#1a0f06";
         document.documentElement.style.background = bg;
+        document.documentElement.setAttribute("data-theme", isC ? "cold" : "warm");
         document.body && (document.body.style.background = bg);
         var s = document.createElement("style");
         s.id = "oph-dyn-style";
-        s.textContent = "html, body { background: "+bg+" !important; } ::-webkit-scrollbar-thumb { background: "+sc+" !important; border-color: "+sb+" !important; } ::-webkit-scrollbar-thumb:hover { background: "+sch+" !important; } .modal-box { background: "+mbg+" !important; border-color: "+mbc+" !important; } .oph-title-text { background: "+tg+" !important; -webkit-background-clip: text !important; background-clip: text !important; -webkit-text-fill-color: transparent !important; color: transparent !important; }";
+        s.textContent = "html, body { background: "+bg+" !important; } .modal-box { background: "+mbg+" !important; border-color: "+mbc+" !important; } .oph-title-text { background: "+tg+" !important; -webkit-background-clip: text !important; background-clip: text !important; -webkit-text-fill-color: transparent !important; color: transparent !important; }";
         document.head.appendChild(s);
       } catch(e) {}
     })();
@@ -635,21 +638,19 @@ function App() {
   useEffect(() => {
     save("oph_theme", uiTheme);
     document.body.style.background = C.bg;
-    // Update dynamic theme styles (scrollbars, modal)
+    // Update dynamic theme styles (modal, title gradient, body background)
     const isC = uiTheme === "cold";
-    const scrollColor = isC ? "rgba(56,189,248,0.55)" : "rgba(251,146,60,0.55)";
-    const scrollColorHover = isC ? "rgba(56,189,248,0.85)" : "rgba(251,146,60,0.8)";
-    const scrollBorder = isC ? "rgba(56,189,248,0.2)" : "rgba(251,146,60,0.2)";
     const modalBg = isC ? "#0a1b2e" : "#2b1a0a";
     const modalBorder = isC ? "rgba(56,189,248,0.22)" : "rgba(251,146,60,0.18)";
+    const bg = isC ? "#050e1a" : "#1a0f06";
+    document.documentElement.setAttribute("data-theme", isC ? "cold" : "warm");
     let dynStyle = document.getElementById("oph-dyn-style");
     if (!dynStyle) { dynStyle = document.createElement("style"); dynStyle.id = "oph-dyn-style"; document.head.appendChild(dynStyle); }
     const titleGrad = isC
       ? "linear-gradient(90deg,#a78bfa,#38bdf8,#34d399)"
       : "linear-gradient(90deg,#c45c6a,#fb923c,#fbbf24)";
     dynStyle.textContent = `
-      ::-webkit-scrollbar-thumb { background: ${scrollColor} !important; border-color: ${scrollBorder} !important; }
-      ::-webkit-scrollbar-thumb:hover { background: ${scrollColorHover} !important; }
+      html, body { background: ${bg} !important; }
       .modal-box { background: ${modalBg} !important; border-color: ${modalBorder} !important; }
       .oph-title-text { background: ${titleGrad} !important; -webkit-background-clip: text !important; background-clip: text !important; -webkit-text-fill-color: transparent !important; color: transparent !important; }
     `;
@@ -958,6 +959,9 @@ function App() {
   const [atlasTilesetList, setAtlasTilesetList] = useState(null);
   const [atlasTilesetError, setAtlasTilesetError] = useState("");
   const [atlasRateLimitHit, setAtlasRateLimitHit] = useState(false);
+  const [gridLoadWarning, setGridLoadWarning] = useState(null); // null or count of unresolved tiles
+  const [clearAtlasOpen, setClearAtlasOpen] = useState(false);
+  const [customBgModalOpen, setCustomBgModalOpen] = useState(false);
   // Which Atlas tilesets are shown in the panel (persisted)
   const [shownAtlasTilesets, setShownAtlasTilesets] = useState(() => load("oph_shown_atlas_tilesets", []));
   // Cached BG colours extracted from each Atlas tileset's BGLight/BGDark images
@@ -1113,40 +1117,23 @@ function App() {
     setDefaultTiles(flatDefaultTiles);
     if (flatDefaultTiles.length > 0) {
       setSel(prev => prev ?? flatDefaultTiles[0].id);
-      setPriorityTiles(prev => {
-        const next = { ...prev };
-        let changed = false;
-        flatDefaultTiles.forEach(t => {
-          if (t.src && TILE_SETTINGS.priority.some(p => t.src.includes(p)) && !next[t.id]) {
-            next[t.id] = true; changed = true;
-          }
+      // Rebuild priority/bottomRender/autoShadow for default tiles from scratch each time the manifest
+      // changes. This prevents stale IDs (from a previous manifest order) lingering in persisted state
+      // and wrongly applying settings to unrelated tiles. Non-default tile entries (atlas IDs ≥ 300,
+      // user IDs 500-699) are preserved as-is since their IDs don't shift with manifest changes.
+      const rebuildDefaultFlags = (prev, matchFn) => {
+        const next = {};
+        Object.entries(prev).forEach(([id, val]) => {
+          const n = Number(id);
+          if (n >= ATLAS_ID_START) next[n] = val; // keep atlas + user tile overrides
         });
-        return changed ? next : prev;
-      });
-      setBottomTiles(prev => {
-        const next = { ...prev };
-        let changed = false;
-        flatDefaultTiles.forEach(t => {
-          if (!t.src) return;
-          const isBottom = TILE_SETTINGS.bottomRender.some(p => t.src.includes(p));
-          if (isBottom && !next[t.id]) {
-            next[t.id] = true; changed = true;
-          }
-        });
-        return changed ? next : prev;
-      });
-      // Auto-shadow on by default for Halloween jumppads and teleporters
-      setAutoShadowTiles(prev => {
-        const next = { ...prev };
-        let changed = false;
-        flatDefaultTiles.forEach(t => {
-          if (!t.src) return;
-          if ((t.src.includes("Halloween/Jumppads/") || t.src.includes("Halloween/Teleporters/")) && !next[t.id]) {
-            next[t.id] = true; changed = true;
-          }
-        });
-        return changed ? next : prev;
-      });
+        flatDefaultTiles.forEach(t => { if (t.src && matchFn(t.src)) next[t.id] = true; });
+        return next;
+      };
+      setPriorityTiles(prev => rebuildDefaultFlags(prev, s => TILE_SETTINGS.priority.some(p => s.includes(p))));
+      setBottomTiles(prev => rebuildDefaultFlags(prev, s => TILE_SETTINGS.bottomRender.some(p => s.includes(p))));
+      setAutoShadowTiles(prev => rebuildDefaultFlags(prev, s =>
+        s.includes("Halloween/Jumppads/") || s.includes("Halloween/Teleporters/")));
     }
   }, [flatDefaultTiles]);
 
@@ -1169,14 +1156,20 @@ function App() {
       .finally(() => setTilesLoading(false));
   }, []);
   // Resolve a v2 palette-format grid once all tiles (including default tiles from the manifest) are loaded.
+  // Guard on flatDefaultTiles.length rather than tiles.length: if the user has atlas tiles persisted in
+  // localStorage, tiles is non-empty from the very first render (before the setDefaultTiles useEffect
+  // runs), so tiles.length === 0 is not a reliable signal that default tiles are available yet.
+  // flatDefaultTiles is computed in the same render that sets tilesLoading=false, so it is always ready.
   useEffect(() => {
-    if (!pendingGridLoadRef.current || tilesLoading || tiles.length === 0) return;
+    if (!pendingGridLoadRef.current || tilesLoading || flatDefaultTiles.length === 0) return;
     const pending = pendingGridLoadRef.current;
     pendingGridLoadRef.current = null; // clear before setGridRaw so save effect runs correctly
     const { palette, grid: indexGrid } = pending;
     const unresolved = [];
+    // Resolve against flatDefaultTiles directly (always current) plus persisted user/atlas tiles.
+    const allTiles = [...flatDefaultTiles, ...userTiles, ...atlasTiles];
     const idFromPaletteIdx = [null, ...palette.map(cn => {
-      const tile = resolveCodename(cn, tiles);
+      const tile = resolveCodename(cn, allTiles);
       if (!tile) unresolved.push(cn);
       return tile?.id ?? null;
     })];
@@ -1184,9 +1177,11 @@ function App() {
       row.map(idx => idx == null ? null : (idFromPaletteIdx[idx] ?? null))
     );
     setGridRaw(resolvedGrid);
-    if (unresolved.length > 0)
-      console.warn(`[map load] ${unresolved.length} tile(s) could not be resolved (tileset may not be loaded):`, unresolved);
-  }, [tiles, tilesLoading]);
+    if (unresolved.length > 0) {
+      console.warn(`[map load] ${unresolved.length} tile(s) could not be resolved:`, unresolved);
+      setGridLoadWarning(unresolved.length);
+    }
+  }, [tiles, tilesLoading, flatDefaultTiles]); // eslint-disable-line
   useEffect(() => { if (activeTileset) save(SK.activeTileset, activeTileset); }, [activeTileset]);
   useEffect(() => { if (shownTilesets) save("oph_shown_tilesets", shownTilesets); }, [shownTilesets]);
   useEffect(() => { save("oph_allow_mixing", allowTsMixing); }, [allowTsMixing]);
@@ -2297,7 +2292,7 @@ function App() {
           newCells.forEach(({ oldKey, newR, newC }) => {
             const [r, c] = oldKey.split(',').map(Number);
             const entry = tileData.find(d => d.r === r && d.c === c);
-            if (entry) newG[newR][newC] = entry.id;
+            if (entry && (entry.id !== null || newG[newR][newC] === null)) newG[newR][newC] = entry.id;
           });
           setGridStableRef.current(() => newG);
           // Move gridRotations
@@ -2707,7 +2702,7 @@ function App() {
               const g = prev.map(row => [...row]);
               const tileData = [];
               oldCells.forEach(key => { const [or, oc] = key.split(',').map(Number); tileData.push({ r: or, c: oc, id: g[or]?.[oc] ?? null }); g[or][oc] = null; });
-              newCells.forEach(({ oldKey, newR, newC }) => { const [or, oc] = oldKey.split(',').map(Number); const entry = tileData.find(d => d.r === or && d.c === oc); if (entry) g[newR][newC] = entry.id; });
+              newCells.forEach(({ oldKey, newR, newC }) => { const [or, oc] = oldKey.split(',').map(Number); const entry = tileData.find(d => d.r === or && d.c === oc); if (entry && (entry.id !== null || g[newR][newC] === null)) g[newR][newC] = entry.id; });
               return g;
             });
             setGridRotations(prev => { const n = { ...prev }; const d = {}; oldCells.forEach(k => { d[k] = prev[k]; delete n[k]; }); newCells.forEach(({ oldKey, newR, newC }) => { if (d[oldKey] !== undefined) n[`${newR},${newC}`] = d[oldKey]; }); return n; });
@@ -3945,11 +3940,61 @@ function App() {
       <ConvertModal />
       <HotkeysModal />
 
+      {/* Grid load warning banner */}
+      {gridLoadWarning && (
+        <div style={{ position: "fixed", bottom: 16, left: "50%", transform: "translateX(-50%)", zIndex: 3000, background: "rgba(30,20,5,0.97)", border: "1px solid rgba(251,191,36,0.5)", borderRadius: 8, padding: "8px 14px", display: "flex", alignItems: "center", gap: 10, boxShadow: "0 4px 20px rgba(0,0,0,0.6)", maxWidth: 420 }}>
+          <span style={{ fontSize: 16 }}>⚠️</span>
+          <span style={{ fontSize: 11, color: "#fef3c7", lineHeight: 1.5, flex: 1 }}>
+            {gridLoadWarning} tile{gridLoadWarning > 1 ? "s" : ""} from your saved map could not be matched to any loaded tile and were cleared. This can happen after a tileset update.
+          </span>
+          <button onClick={() => setGridLoadWarning(null)} style={{ background: "none", border: "none", cursor: "pointer", color: "#fbbf24", fontSize: 16, lineHeight: 1, padding: "0 2px", flexShrink: 0 }}>×</button>
+        </div>
+      )}
+
+      {/* Clear Atlas Cache modal */}
+      {clearAtlasOpen && (
+        <div className="modal-backdrop" onClick={() => setClearAtlasOpen(false)}>
+          <div className="modal-box" style={{ maxWidth: 340 }} onClick={e => e.stopPropagation()}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Clear Atlas Tileset Memory</span>
+              <button onClick={() => setClearAtlasOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18 }}>×</button>
+            </div>
+            <p style={{ fontSize: 11, color: C.muted, lineHeight: 1.5 }}>
+              Removes all Atlas tileset tile data cached in this browser. Atlas tiles currently placed on the map will be erased. The tilesets can be re-added from the tileset dropdown.
+            </p>
+            <p style={{ fontSize: 11, color: "#fbbf24", lineHeight: 1.5 }}>
+              Currently cached: <strong style={{ color: C.text }}>{[...new Set(atlasTiles.map(t => t.atlasTilesetName))].length} tileset(s), {atlasTiles.length} tile(s)</strong>
+            </p>
+            <button
+              disabled={atlasTiles.length === 0}
+              style={{ ...btn(false, C.danger, "rgba(248,113,113,0.14)"), fontSize: 11, opacity: atlasTiles.length === 0 ? 0.45 : 1 }}
+              onClick={() => {
+                if (!confirm(`Clear all Atlas tileset memory (${atlasTiles.length} tiles)? Atlas tiles on the map will be erased. This cannot be undone.`)) return;
+                setAtlasTiles([]);
+                setShownAtlasTilesets([]);
+                setGrid(prev => {
+                  const atlasIds = new Set(atlasTiles.map(t => t.id));
+                  return prev.map(row => row.map(cell => atlasIds.has(cell) ? null : cell));
+                });
+                const cleanObj = obj => { const n = { ...obj }; atlasTiles.forEach(t => delete n[t.id]); return n; };
+                setTileMultipliers(cleanObj); setTileOffsets(cleanObj);
+                setRotatableMap(cleanObj); setAllowFlipMap(cleanObj);
+                setPriorityTiles(cleanObj); setBottomTiles(cleanObj);
+                setTileNames(cleanObj); setMirrorOffsetTiles(cleanObj);
+                setStarredTiles(prev => { const ids = new Set(atlasTiles.map(t => t.id)); return prev.filter(id => !ids.has(id)); });
+                if (atlasTiles.some(t => t.id === sel)) setSel(null);
+                setClearAtlasOpen(false);
+              }}>
+              🗑 Clear All Atlas Memory
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Delete Custom Tiles modal */}
       {deleteCustomOpen && (() => {
         const customTiles = [
           ...userTiles.map(t => ({ ...t, _group: "Uploaded" })),
-          ...atlasTiles.map(t => ({ ...t, _group: "Atlas" })),
         ];
         const allIds = new Set(customTiles.map(t => t.id));
         const allSelected = allIds.size > 0 && [...allIds].every(id => deleteCustomSel.has(id));
@@ -3982,7 +4027,6 @@ function App() {
                     }} style={{ accentColor: C.danger, cursor: "pointer" }} />
                     {(t.blobSrc || t.src) && <img src={t.blobSrc ?? t.src} alt="" style={{ width: 20, height: 20, objectFit: "contain", imageRendering: "pixelated", background: C.panelDeep, borderRadius: 3 }} />}
                     <span style={{ fontSize: 11, color: C.text, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.label || t.codename || `Tile ${t.id}`}</span>
-                    <span style={{ fontSize: 9, color: C.muted, flexShrink: 0 }}>{t._group}</span>
                   </label>
                 ))}
               </div>
@@ -3990,10 +4034,9 @@ function App() {
                 disabled={deleteCustomSel.size === 0}
                 style={{ ...btn(false, C.danger, "rgba(248,113,113,0.14)"), fontSize: 11, opacity: deleteCustomSel.size === 0 ? 0.45 : 1 }}
                 onClick={() => {
-                  if (!confirm(`Delete ${deleteCustomSel.size} tile(s)? This cannot be undone.`)) return;
+                  if (!confirm(`Delete ${deleteCustomSel.size} uploaded tile(s)? This cannot be undone.`)) return;
                   const toDelete = new Set(deleteCustomSel);
                   setUserTiles(prev => prev.filter(t => !toDelete.has(t.id)));
-                  setAtlasTiles(prev => prev.filter(t => !toDelete.has(t.id)));
                   // Remove deleted tiles from the grid
                   setGrid(prev => prev.map(row => row.map(cell => toDelete.has(cell) ? null : cell)));
                   // Clean up per-tile settings for deleted tiles
@@ -4861,11 +4904,19 @@ function App() {
                         ↺ Reset All Tile Settings
                       </button>
                     </div>
-                    {(userTiles.length > 0 || atlasTiles.length > 0) && (
+                    {userTiles.length > 0 && (
                     <div style={{ width: "100%", flexBasis: "100%", flexShrink: 0 }}>
                       <button style={{ ...btn(false, C.danger, "rgba(248,113,113,0.14)"), fontSize: 9, padding: "3px 8px", width: "100%" }}
                         onClick={() => { setDeleteCustomSel(new Set()); setDeleteCustomOpen(true); }}>
-                        🗑 Delete Custom Tiles
+                        🗑 Delete Uploaded Tiles
+                      </button>
+                    </div>
+                    )}
+                    {atlasTiles.length > 0 && (
+                    <div style={{ width: "100%", flexBasis: "100%", flexShrink: 0 }}>
+                      <button style={{ ...btn(false, C.danger, "rgba(248,113,113,0.14)"), fontSize: 9, padding: "3px 8px", width: "100%" }}
+                        onClick={() => setClearAtlasOpen(true)}>
+                        🗑 Clear Atlas Cache
                       </button>
                     </div>
                     )}
@@ -5726,99 +5777,120 @@ function App() {
             <button style={btn(true, C.soft, C.softDim)} onClick={doExport}>Download</button>
           </div>
 
-          {/* Row 3: Background colour pickers */}
+          {/* Row 3: Background colour selector */}
           {(() => {
             const allBgPresets = { ...OPHELIA_BG, ...atlasTilesetBgColors };
+            const allAtlasBgList = atlasTilesetList ?? [];
+            const defaultBg = activeTileset ? getTilesetBgColors(activeTileset) : null;
+            const bgMismatch = !allowTsMixing && defaultBg?.bg1 && activeTileset && (
+              bg1.toLowerCase() !== defaultBg.bg1.toLowerCase() || bg2.toLowerCase() !== defaultBg.bg2.toLowerCase()
+            );
+            const resetDisplayName = activeTileset
+              ? (allAtlasBgList.find(a => a.name === activeTileset)?.displayName ?? activeTileset)
+              : null;
             return (
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8, padding: "3px 14px 5px", alignItems: "center" }}>
                 <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1, userSelect: "none" }}>Background</span>
-                <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                  <span style={{ fontSize: 10, color: C.muted, fontWeight: 600 }}>A</span>
-                  <input type="color" value={bg1}
-                    onPointerDown={() => pushHistorySnapshot()}
-                    onChange={e => applyBg1(e.target.value)}
-                    style={{ width: 26, height: 26, border: "none", borderRadius: 5, cursor: "pointer", padding: 2, background: "none", flexShrink: 0 }} />
-                  <input type="text" value={hex1} maxLength={7}
-                    onFocus={() => pushHistorySnapshot()}
-                    onChange={e => { const v = e.target.value; setHex1(v); if (validHex(v)) applyBg1(v); }}
-                    onBlur={() => { if (!validHex(hex1)) setHex1(bg1); }}
-                    style={{ width: 62, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 11, padding: "3px 6px", outline: "none" }}
-                    spellCheck={false} />
+                {/* Two small colour swatches showing current bg1/bg2 */}
+                <div style={{ display: "flex", alignItems: "center", gap: 3, cursor: "pointer" }}
+                  onClick={() => { if (selectedBgPreset === "custom") setCustomBgModalOpen(true); }}
+                  title={selectedBgPreset === "custom" ? "Edit custom background…" : undefined}>
+                  <div style={{ width: 14, height: 14, borderRadius: 3, background: bg1, border: `1px solid ${C.border}`, flexShrink: 0 }} />
+                  <div style={{ width: 14, height: 14, borderRadius: 3, background: bg2, border: `1px solid ${C.border}`, flexShrink: 0 }} />
                 </div>
-                <button style={{ ...btn(false), fontSize: 10, padding: "3px 9px" }}
-                  onClick={() => { pushHistorySnapshot(); const t1 = bg1, t2 = bg2; applyBg1(t2); applyBg2(t1); }}
-                  title="Swap background colours">
-                  ⇄
-                </button>
-                <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                  <span style={{ fontSize: 10, color: C.muted, fontWeight: 600 }}>B</span>
-                  <input type="color" value={bg2}
-                    onPointerDown={() => pushHistorySnapshot()}
-                    onChange={e => applyBg2(e.target.value)}
-                    style={{ width: 26, height: 26, border: "none", borderRadius: 5, cursor: "pointer", padding: 2, background: "none", flexShrink: 0 }} />
-                  <input type="text" value={hex2} maxLength={7}
-                    onFocus={() => pushHistorySnapshot()}
-                    onChange={e => { const v = e.target.value; setHex2(v); if (validHex(v)) applyBg2(v); }}
-                    onBlur={() => { if (!validHex(hex2)) setHex2(bg2); }}
-                    style={{ width: 62, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 11, padding: "3px 6px", outline: "none" }}
-                    spellCheck={false} />
-                </div>
-                {/* Tileset BG colour selector — Custom first, then Ophelia, then Atlas */}
-                {(() => {
-                  const allAtlasBgList = atlasTilesetList ?? [];
-                  const defaultBg = activeTileset ? getTilesetBgColors(activeTileset) : null;
-                  const bgMismatch = !allowTsMixing && defaultBg?.bg1 && activeTileset && (
-                    bg1.toLowerCase() !== defaultBg.bg1.toLowerCase() || bg2.toLowerCase() !== defaultBg.bg2.toLowerCase()
-                  );
-                  const resetDisplayName = activeTileset
-                    ? (allAtlasBgList.find(a => a.name === activeTileset)?.displayName ?? activeTileset)
-                    : null;
-                  return (
-                    <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
-                      <select value={selectedBgPreset}
-                        onChange={e => {
-                          const key = e.target.value;
-                          if (key === "custom") {
-                            pushHistorySnapshot();
-                            applyBgPreset("custom", customBg.bg1, customBg.bg2);
-                          } else {
-                            const p = allBgPresets[key];
-                            if (p?.bg1) {
-                              pushHistorySnapshot();
-                              applyBgPreset(key, p.bg1, p.bg2);
-                            } else if (key && !OPHELIA_BG[key]) {
-                              loadAtlasTilesetBgColors(key).then(colors => {
-                                if (colors?.bg1) { pushHistorySnapshot(); applyBgPreset(key, colors.bg1, colors.bg2); }
-                              });
-                            }
-                          }
-                        }}
-                        style={{ background: C.panel, color: selectedBgPreset !== "custom" ? C.accentBright : C.muted, border: `1px solid ${C.border}`, borderRadius: 5, fontSize: 10, padding: "2px 4px", cursor: "pointer", outline: "none" }}>
-                        <option value="custom" style={{ color: C.muted }}>Custom</option>
-                        <optgroup label="Ophelia">
-                          {Object.keys(OPHELIA_BG).map(k => <option key={k} value={k} style={{ color: C.text }}>{k}</option>)}
-                        </optgroup>
-                        {allAtlasBgList.length > 0 && (
-                          <optgroup label="Atlas">
-                            {allAtlasBgList.map(a => (
-                              <option key={a.name} value={a.name} style={{ color: C.text }}>{a.displayName}</option>
-                            ))}
-                          </optgroup>
-                        )}
-                      </select>
-                      {bgMismatch && resetDisplayName && (
-                        <button style={{ ...btn(false), fontSize: 10, padding: "2px 7px", whiteSpace: "nowrap" }}
-                          onClick={() => { pushHistorySnapshot(); applyBgPreset(activeTileset, defaultBg.bg1, defaultBg.bg2); }}
-                          title={`Reset background colours to ${resetDisplayName} defaults`}>
-                          ↩ {resetDisplayName}
-                        </button>
-                      )}
-                    </div>
-                  );
-                })()}
+                {/* Preset selector */}
+                <select value={selectedBgPreset}
+                  onChange={e => {
+                    const key = e.target.value;
+                    if (key === "custom") {
+                      applyBgPreset("custom", customBg.bg1, customBg.bg2);
+                      setCustomBgModalOpen(true);
+                    } else {
+                      const p = allBgPresets[key];
+                      if (p?.bg1) {
+                        pushHistorySnapshot();
+                        applyBgPreset(key, p.bg1, p.bg2);
+                      } else if (key && !OPHELIA_BG[key]) {
+                        loadAtlasTilesetBgColors(key).then(colors => {
+                          if (colors?.bg1) { pushHistorySnapshot(); applyBgPreset(key, colors.bg1, colors.bg2); }
+                        });
+                      }
+                    }
+                  }}
+                  style={{ background: C.panel, color: selectedBgPreset === "custom" ? C.accent : C.accentBright, border: `1px solid ${C.border}`, borderRadius: 5, fontSize: 10, padding: "2px 4px", cursor: "pointer", outline: "none", fontStyle: selectedBgPreset === "custom" ? "italic" : "normal" }}>
+                  <option value="custom" style={{ color: C.accent, fontStyle: "italic" }}>✏ Custom…</option>
+                  <optgroup label="Ophelia">
+                    {Object.keys(OPHELIA_BG).map(k => <option key={k} value={k} style={{ color: C.text, fontStyle: "normal" }}>{k}</option>)}
+                  </optgroup>
+                  {allAtlasBgList.length > 0 && (
+                    <optgroup label="Atlas">
+                      {allAtlasBgList.map(a => (
+                        <option key={a.name} value={a.name} style={{ color: C.text, fontStyle: "normal" }}>{a.displayName}</option>
+                      ))}
+                    </optgroup>
+                  )}
+                </select>
+                {selectedBgPreset === "custom" && (
+                  <button style={{ ...btn(false), fontSize: 10, padding: "2px 7px" }}
+                    onClick={() => setCustomBgModalOpen(true)}>
+                    Edit…
+                  </button>
+                )}
+                {bgMismatch && resetDisplayName && (
+                  <button style={{ ...btn(false), fontSize: 10, padding: "2px 7px", whiteSpace: "nowrap" }}
+                    onClick={() => { pushHistorySnapshot(); applyBgPreset(activeTileset, defaultBg.bg1, defaultBg.bg2); }}
+                    title={`Reset background colours to ${resetDisplayName} defaults`}>
+                    ↩ {resetDisplayName}
+                  </button>
+                )}
               </div>
             );
           })()}
+
+          {/* Custom Background modal */}
+          {customBgModalOpen && (
+            <div className="modal-backdrop" onClick={() => setCustomBgModalOpen(false)}>
+              <div className="modal-box" style={{ maxWidth: 280 }} onClick={e => e.stopPropagation()}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Custom Background</span>
+                  <button onClick={() => setCustomBgModalOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18 }}>×</button>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 11, color: C.muted, width: 14, textAlign: "center", fontWeight: 600 }}>A</span>
+                    <input type="color" value={customBg.bg1}
+                      onPointerDown={() => pushHistorySnapshot()}
+                      onChange={e => applyBg1(e.target.value)}
+                      style={{ width: 32, height: 32, border: "none", borderRadius: 5, cursor: "pointer", padding: 2, background: "none", flexShrink: 0 }} />
+                    <input type="text" value={hex1} maxLength={7}
+                      onFocus={() => pushHistorySnapshot()}
+                      onChange={e => { const v = e.target.value; setHex1(v); if (validHex(v)) applyBg1(v); }}
+                      onBlur={() => { if (!validHex(hex1)) setHex1(customBg.bg1); }}
+                      style={{ flex: 1, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 11, padding: "5px 8px", outline: "none" }}
+                      spellCheck={false} />
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "center" }}>
+                    <button style={{ ...btn(false), fontSize: 11, padding: "3px 14px" }}
+                      onClick={() => { pushHistorySnapshot(); applyBg1(customBg.bg2); applyBg2(customBg.bg1); }}
+                      title="Swap colours">⇄ Swap</button>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 11, color: C.muted, width: 14, textAlign: "center", fontWeight: 600 }}>B</span>
+                    <input type="color" value={customBg.bg2}
+                      onPointerDown={() => pushHistorySnapshot()}
+                      onChange={e => applyBg2(e.target.value)}
+                      style={{ width: 32, height: 32, border: "none", borderRadius: 5, cursor: "pointer", padding: 2, background: "none", flexShrink: 0 }} />
+                    <input type="text" value={hex2} maxLength={7}
+                      onFocus={() => pushHistorySnapshot()}
+                      onChange={e => { const v = e.target.value; setHex2(v); if (validHex(v)) applyBg2(v); }}
+                      onBlur={() => { if (!validHex(hex2)) setHex2(customBg.bg2); }}
+                      style={{ flex: 1, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 11, padding: "5px 8px", outline: "none" }}
+                      spellCheck={false} />
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Row 4: Map size */}
           <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 14px" }}>
