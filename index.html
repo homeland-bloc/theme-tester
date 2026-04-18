@@ -110,13 +110,16 @@ const TILESET_ID_START = 1;   // 001–199: active tileset tiles (Mausoleum wall
 const USER_ID_START    = 500; // 500–699: user-uploaded tiles (moved to avoid overlap with tileset IDs 1-499)
 const USER_ID_MAX      = 699;
 const GLOBAL_ID_START  = 200; // 200–299: global tiles (water, spawns, objectives, etc.)
-const ATLAS_ID_START   = 300; // 300–499: atlas tiles (She-Fairy/atlas-horizon)
+const ATLAS_ID_START   = 300; // 300–499 (and 700–9999): atlas tiles (She-Fairy/atlas-horizon)
+const ATLAS_ID_MAX     = 9999; // upper bound for atlas tile IDs (skips user range 500-699)
 const SPACE_TILE_ID    = 998; // special: makes a cell fully transparent
 
 // Module-level cache for GitHub API responses (survives re-renders, not page reload)
 const atlasApiCache = new Map(); // url → resolved data
 // Session-cached Atlas tileset list (fetched once per page load)
 const atlasTilesetsListCache = { pending: null, data: null, error: null };
+// In-flight deduplication for loadAtlasTileset — prevents concurrent duplicate loads
+const atlasTilesetLoadInFlight = new Map(); // tilesetName → Promise
 // Hardcoded BG colours for Ophelia tilesets (single source of truth)
 const OPHELIA_BG = {
   Mausoleum: { bg1: "#67717d", bg2: "#6e7986" },
@@ -1215,20 +1218,33 @@ function App() {
     const imageFiles = [...files].filter(f => f.type.startsWith("image/"));
     if (!imageFiles.length) return;
     let loaded = 0;
+    const MAX_TILE_DIM = 256; // scale down large images to cap at this dimension
     imageFiles.forEach(f => {
-      const blobSrc = URL.createObjectURL(f); // fast blob URL for immediate rendering
       const r = new FileReader();
       r.onload = e => {
         if (nextId.current > USER_ID_MAX) { console.warn("User tile limit reached (IDs 500–699)"); return; }
         const id = nextId.current++;
-        setUserTiles(prev => [...prev, { id, src: e.target.result, blobSrc }]);
-        loaded++;
-        if (loaded === imageFiles.length) {
-          // Flash notification
-          setUploadFlash(imageFiles.length);
-          if (uploadTimerRef.current) clearTimeout(uploadTimerRef.current);
-          uploadTimerRef.current = setTimeout(() => setUploadFlash(0), 2500);
-        }
+        const img = new Image();
+        img.onload = () => {
+          const scale = Math.min(1, MAX_TILE_DIM / Math.max(img.width, img.height, 1));
+          const w = Math.max(1, Math.round(img.width * scale));
+          const h = Math.max(1, Math.round(img.height * scale));
+          const canvas = document.createElement('canvas');
+          canvas.width = w; canvas.height = h;
+          canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+          const scaledDataUrl = canvas.toDataURL('image/png');
+          canvas.toBlob(blob => {
+            const blobSrc = URL.createObjectURL(blob);
+            setUserTiles(prev => [...prev, { id, src: scaledDataUrl, blobSrc }]);
+            loaded++;
+            if (loaded === imageFiles.length) {
+              setUploadFlash(imageFiles.length);
+              if (uploadTimerRef.current) clearTimeout(uploadTimerRef.current);
+              uploadTimerRef.current = setTimeout(() => setUploadFlash(0), 2500);
+            }
+          }, 'image/png');
+        };
+        img.src = e.target.result;
       };
       r.readAsDataURL(f);
     });
@@ -1244,7 +1260,10 @@ function App() {
   // ── Atlas helpers ─────────────────────────────────────────────────
   const nextAtlasId = () => {
     const used = new Set(atlasTiles.map(t => t.id));
-    for (let id = ATLAS_ID_START; id < 500; id++) { if (!used.has(id)) return id; }
+    for (let id = ATLAS_ID_START; id <= ATLAS_ID_MAX; id++) {
+      if (id >= USER_ID_START && id <= USER_ID_MAX) continue; // skip user tile range
+      if (!used.has(id)) return id;
+    }
     return null; // full
   };
 
@@ -1421,9 +1440,12 @@ function App() {
   const ATLAS_SUBFOLDERS = ["Fence", "Rope", "Water", "Gamemode_Specifics"];
   const ATLAS_TILES_FOLDER = "Tiles";
   // Canonical order for flat tiles in Tiles/ folder (case-insensitive base name match)
-  const ATLAS_FLAT_ORDER = ["wall", "wall2", "crate", "barrel", "cactus", "bush", "skull", "breakable"];
+  const ATLAS_FLAT_ORDER = ["wall1", "wall", "wall2", "crate", "barrel", "bush1", "bush", "bush2", "skull", "breakable", "cactus"];
   const getAtlasFlatOrder = base => { const i = ATLAS_FLAT_ORDER.indexOf(base.toLowerCase()); return i >= 0 ? i : ATLAS_FLAT_ORDER.length; };
   const loadAtlasTileset = async (tilesetName) => {
+    // Deduplicate concurrent loads of the same tileset
+    if (atlasTilesetLoadInFlight.has(tilesetName)) return atlasTilesetLoadInFlight.get(tilesetName);
+    const promise = (async () => {
     const meta = atlasTilesetMeta(tilesetName);
     const imageRe = /\.(png|jpg|jpeg|gif|webp|svg|bmp)$/i;
     const tilesToAdd = []; // { relPath, atlasFolderName, folderLabel, codename }
@@ -1432,43 +1454,37 @@ function App() {
       const rootItems = await fetchAtlasDir(tilesetName);
       if (!Array.isArray(rootItems)) return [];
 
+      // Determine which subdirs are present, then fetch all in parallel
+      const hasTilesDir = rootItems.some(f => f.type === "dir" && f.name === ATLAS_TILES_FOLDER);
+      const presentSubs = ATLAS_SUBFOLDERS.filter(sub => rootItems.some(f => f.type === "dir" && f.name === sub));
+      const [flatFilesResult, ...folderFilesResults] = await Promise.all([
+        hasTilesDir ? fetchAtlasDir(`${tilesetName}/${ATLAS_TILES_FOLDER}`) : Promise.resolve([]),
+        ...presentSubs.map(sub => fetchAtlasDir(`${tilesetName}/${sub}`)),
+      ]);
+
       // Flat tiles from Tiles/ — sorted by canonical order
-      if (rootItems.some(f => f.type === "dir" && f.name === ATLAS_TILES_FOLDER)) {
-        const files = await fetchAtlasDir(`${tilesetName}/${ATLAS_TILES_FOLDER}`);
-        if (Array.isArray(files)) {
-          const imageFiles = files.filter(f => f.type === "file" && imageRe.test(f.name));
-          imageFiles.sort((a, b) => {
-            const ba = a.name.replace(/\.[^.]+$/, ""), bb = b.name.replace(/\.[^.]+$/, "");
-            return getAtlasFlatOrder(ba) - getAtlasFlatOrder(bb);
-          });
-          imageFiles.forEach(f => {
-            const base = f.name.replace(/\.[^.]+$/, "");
-            tilesToAdd.push({
-              relPath: `${tilesetName}/${ATLAS_TILES_FOLDER}/${f.name}`,
-              atlasFolderName: null,
-              folderLabel: null,
-              codename: `${meta.codename}_${base}`,
-            });
-          });
-        }
+      if (Array.isArray(flatFilesResult)) {
+        const imageFiles = flatFilesResult.filter(f => f.type === "file" && imageRe.test(f.name));
+        imageFiles.sort((a, b) => {
+          const ba = a.name.replace(/\.[^.]+$/, ""), bb = b.name.replace(/\.[^.]+$/, "");
+          return getAtlasFlatOrder(ba) - getAtlasFlatOrder(bb);
+        });
+        imageFiles.forEach(f => {
+          const base = f.name.replace(/\.[^.]+$/, "");
+          tilesToAdd.push({ relPath: `${tilesetName}/${ATLAS_TILES_FOLDER}/${f.name}`, atlasFolderName: null, folderLabel: null, codename: `${meta.codename}_${base}` });
+        });
       }
 
       // Folder-based tiles (Fence, Rope, Water, Gamemode_Specifics)
-      for (const sub of ATLAS_SUBFOLDERS) {
-        if (!rootItems.some(f => f.type === "dir" && f.name === sub)) continue;
-        const files = await fetchAtlasDir(`${tilesetName}/${sub}`);
-        if (!Array.isArray(files)) continue;
+      presentSubs.forEach((sub, i) => {
+        const files = folderFilesResults[i];
+        if (!Array.isArray(files)) return;
         const folderLabel = sub === "Gamemode_Specifics" ? "Objective" : sub;
         files.filter(f => f.type === "file" && imageRe.test(f.name)).forEach(f => {
           const base = f.name.replace(/\.[^.]+$/, "");
-          tilesToAdd.push({
-            relPath: `${tilesetName}/${sub}/${f.name}`,
-            atlasFolderName: sub,
-            folderLabel,
-            codename: `${meta.codename}_${base}`,
-          });
+          tilesToAdd.push({ relPath: `${tilesetName}/${sub}/${f.name}`, atlasFolderName: sub, folderLabel, codename: `${meta.codename}_${base}` });
         });
-      }
+      });
 
       // Read current state synchronously via ref (avoids calling state setters inside updaters)
       const currentTiles = atlasTilesRef.current;
@@ -1482,8 +1498,9 @@ function App() {
       for (const { relPath, atlasFolderName, folderLabel, codename } of tilesToAdd) {
         const src = `https://raw.githubusercontent.com/She-Fairy/atlas-horizon/main/Resources/${relPath}`;
         if (srcSet.has(src)) continue;
-        while (usedIds.has(nextId) && nextId < 500) nextId++;
-        if (nextId >= 500) break;
+        // Skip user tile ID range (500-699) and find next free atlas ID
+        while ((usedIds.has(nextId) || (nextId >= USER_ID_START && nextId <= USER_ID_MAX)) && nextId <= ATLAS_ID_MAX) nextId++;
+        if (nextId > ATLAS_ID_MAX) break;
         usedIds.add(nextId);
         const scopedKey = atlasFolderName ? `${tilesetName}/${atlasFolderName}` : null;
         const tile = {
@@ -1517,6 +1534,10 @@ function App() {
       console.warn("Failed to load Atlas tileset:", tilesetName, err);
       return atlasTilesRef.current.filter(t => t.atlasTilesetName === tilesetName);
     }
+    })();
+    atlasTilesetLoadInFlight.set(tilesetName, promise);
+    promise.finally(() => atlasTilesetLoadInFlight.delete(tilesetName));
+    return promise;
   };
 
   // Returns [pos] — just positions (used by existing drag/drop code)
@@ -3574,9 +3595,10 @@ function App() {
       for (const [key, opheliaIds] of Object.entries(opheliaKeyMap)) {
         opheliaIds.forEach(oid => fromIds.add(oid));
         const norm = normCode(key);
-        // Try flat tile match first
-        if (atlasByNorm[norm]) {
-          opheliaIds.forEach(oid => { remap[oid] = atlasByNorm[norm].id; });
+        // Try flat tile match first (with skull/breakable alias)
+        const flatMatch = atlasByNorm[norm] ?? atlasByNorm[norm === 'breakable' ? 'skull' : norm === 'skull' ? 'breakable' : ''];
+        if (flatMatch) {
+          opheliaIds.forEach(oid => { remap[oid] = flatMatch.id; });
           continue;
         }
         // Identify folder type from key prefix (Fence/Rope/Water/objectives)
@@ -3585,7 +3607,6 @@ function App() {
           ["ball", "Gamemode_Specifics"], ["safe", "Gamemode_Specifics"],
           ["mine", "Gamemode_Specifics"], ["gem", "Gamemode_Specifics"],
           ["obj", "Gamemode_Specifics"], ["skull", "Gamemode_Specifics"],
-          ["breakable", "Gamemode_Specifics"],
         ];
         const folderMatch = FOLDER_PREFIXES.find(([prefix]) => norm.startsWith(prefix));
         if (folderMatch) {
@@ -3653,12 +3674,12 @@ function App() {
         ["ball", "Gamemode_Specifics"], ["safe", "Gamemode_Specifics"],
         ["mine", "Gamemode_Specifics"], ["gem", "Gamemode_Specifics"],
         ["obj", "Gamemode_Specifics"], ["skull", "Gamemode_Specifics"],
-        ["breakable", "Gamemode_Specifics"],
       ];
       const folderIdx = {};
       for (const [key, opheliaIds] of Object.entries(toMap)) {
         const norm = normCode(key);
-        const atlasId = atlasByNorm[norm];
+        const aliasNorm = norm === 'breakable' ? 'skull' : norm === 'skull' ? 'breakable' : null;
+        const atlasId = atlasByNorm[norm] ?? (aliasNorm != null ? atlasByNorm[aliasNorm] : undefined);
         if (atlasId !== undefined) {
           opheliaIds.forEach(oid => { idRemap[atlasId] = oid; });
           continue;
@@ -4161,7 +4182,6 @@ function App() {
                                             ["ball","Gamemode_Specifics"],["safe","Gamemode_Specifics"],
                                             ["mine","Gamemode_Specifics"],["gem","Gamemode_Specifics"],
                                             ["obj","Gamemode_Specifics"],["skull","Gamemode_Specifics"],
-                                            ["breakable","Gamemode_Specifics"],
                                           ];
                                           const atlasTs = atlasTilesRef.current.filter(t => t.atlasTilesetName === activeTileset);
                                           const toMap = maps[ts.name] ?? {};
@@ -4179,7 +4199,8 @@ function App() {
                                           const folderIdx = {};
                                           for (const [key, opheliaIds] of Object.entries(toMap)) {
                                             const n = normC(key);
-                                            const atlasId = atlasByNorm[n];
+                                            const aliasN2 = n === 'breakable' ? 'skull' : n === 'skull' ? 'breakable' : null;
+                                            const atlasId = atlasByNorm[n] ?? (aliasN2 != null ? atlasByNorm[aliasN2] : undefined);
                                             if (atlasId !== undefined) { opheliaIds.forEach(oid => { idRemap[atlasId] = oid; }); continue; }
                                             const folderMatch = FOLDER_PFXS.find(([prefix]) => n.startsWith(prefix));
                                             if (folderMatch) {
@@ -4283,7 +4304,6 @@ function App() {
                                         ["ball","Gamemode_Specifics"],["safe","Gamemode_Specifics"],
                                         ["mine","Gamemode_Specifics"],["gem","Gamemode_Specifics"],
                                         ["obj","Gamemode_Specifics"],["skull","Gamemode_Specifics"],
-                                        ["breakable","Gamemode_Specifics"],
                                       ];
                                       // Build Ophelia ID maps
                                       const opheliaTsDefs = manifest?.tilesets ?? [];
@@ -4321,7 +4341,9 @@ function App() {
                                         for (const [key, opheliaIds] of Object.entries(fromMap)) {
                                           opheliaIds.forEach(oid => fromAll.add(oid));
                                           const n = normC(key);
-                                          if (atlasByNorm[n]) { opheliaIds.forEach(oid => { idRemap[oid] = atlasByNorm[n].id; }); continue; }
+                                          const aliasN = n === 'breakable' ? 'skull' : n === 'skull' ? 'breakable' : null;
+                                          const flatM = atlasByNorm[n] ?? (aliasN ? atlasByNorm[aliasN] : undefined);
+                                          if (flatM) { opheliaIds.forEach(oid => { idRemap[oid] = flatM.id; }); continue; }
                                           const fm = FOLDER_PFXS.find(([p]) => n.startsWith(p));
                                           if (fm) {
                                             const ftiles = atlasByFolder[fm[1]] ?? [];
@@ -5077,12 +5099,12 @@ function App() {
                     const cellPx = CELL * zoom;
                     const ox = (off.ox / 100) * cellPx;
                     const oy = (off.oy / 100) * cellPx;
-                    const tileImg = <img key={`bot${r}-${c}`} src={t.src} alt="" draggable={false}
+                    const tileImg = <img key={`bot${r}-${c}`} src={t.blobSrc ?? t.src} alt="" draggable={false}
                       style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%) rotate(${rotDeg}deg) scale(${fxB}, ${fyB})`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 1 }}
                     />;
                     if (!autoShadowTiles[t.id]) return tileImg;
                     return [
-                      <img key={`sbot${r}-${c}`} src={t.src} alt="" draggable={false}
+                      <img key={`sbot${r}-${c}`} src={t.blobSrc ?? t.src} alt="" draggable={false}
                         style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy + 0.3 * cellPx, width: cellPx * mult, height: "auto", transform: `translateY(-50%) scale(${fxB}, ${fyB})`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 0, filter: "brightness(0)", opacity: 0.2 }}
                       />,
                       tileImg,
@@ -5104,12 +5126,12 @@ function App() {
                     const cellPx = CELL * zoom;
                     const ox = (off.ox / 100) * cellPx;
                     const oy = (off.oy / 100) * cellPx;
-                    const tileImg = <img key={`t${r}-${c}`} src={t.src} alt="" draggable={false}
+                    const tileImg = <img key={`t${r}-${c}`} src={t.blobSrc ?? t.src} alt="" draggable={false}
                       style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%) rotate(${rotDeg}deg) scale(${fxN}, ${fyN})`, pointerEvents: "none", imageRendering: "pixelated", zIndex: r + 2 }}
                     />;
                     if (!autoShadowTiles[t.id]) return tileImg;
                     return [
-                      <img key={`s${r}-${c}`} src={t.src} alt="" draggable={false}
+                      <img key={`s${r}-${c}`} src={t.blobSrc ?? t.src} alt="" draggable={false}
                         style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy + 0.3 * cellPx, width: cellPx * mult, height: "auto", transform: `translateY(-50%) scale(${fxN}, ${fyN})`, pointerEvents: "none", imageRendering: "pixelated", zIndex: r + 1, filter: "brightness(0)", opacity: 0.2 }}
                       />,
                       tileImg,
@@ -5130,12 +5152,12 @@ function App() {
                     const cellPx = CELL * zoom;
                     const ox = (off.ox / 100) * cellPx;
                     const oy = (off.oy / 100) * cellPx;
-                    const tileImg = <img key={`prio${r}-${c}`} src={t.src} alt="" draggable={false}
+                    const tileImg = <img key={`prio${r}-${c}`} src={t.blobSrc ?? t.src} alt="" draggable={false}
                       style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%) rotate(${rotDeg}deg) scale(${fxP}, ${fyP})`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 9999 }}
                     />;
                     if (!autoShadowTiles[t.id]) return tileImg;
                     return [
-                      <img key={`sprio${r}-${c}`} src={t.src} alt="" draggable={false}
+                      <img key={`sprio${r}-${c}`} src={t.blobSrc ?? t.src} alt="" draggable={false}
                         style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy + 0.3 * cellPx, width: cellPx * mult, height: "auto", transform: `translateY(-50%) scale(${fxP}, ${fyP})`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 9998, filter: "brightness(0)", opacity: 0.2 }}
                       />,
                       tileImg,
