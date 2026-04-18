@@ -1169,14 +1169,20 @@ function App() {
       .finally(() => setTilesLoading(false));
   }, []);
   // Resolve a v2 palette-format grid once all tiles (including default tiles from the manifest) are loaded.
+  // Guard on flatDefaultTiles.length rather than tiles.length: if the user has atlas tiles persisted in
+  // localStorage, tiles is non-empty from the very first render (before the setDefaultTiles useEffect
+  // runs), so tiles.length === 0 is not a reliable signal that default tiles are available yet.
+  // flatDefaultTiles is computed in the same render that sets tilesLoading=false, so it is always ready.
   useEffect(() => {
-    if (!pendingGridLoadRef.current || tilesLoading || tiles.length === 0) return;
+    if (!pendingGridLoadRef.current || tilesLoading || flatDefaultTiles.length === 0) return;
     const pending = pendingGridLoadRef.current;
     pendingGridLoadRef.current = null; // clear before setGridRaw so save effect runs correctly
     const { palette, grid: indexGrid } = pending;
     const unresolved = [];
+    // Resolve against flatDefaultTiles directly (always current) plus persisted user/atlas tiles.
+    const allTiles = [...flatDefaultTiles, ...userTiles, ...atlasTiles];
     const idFromPaletteIdx = [null, ...palette.map(cn => {
-      const tile = resolveCodename(cn, tiles);
+      const tile = resolveCodename(cn, allTiles);
       if (!tile) unresolved.push(cn);
       return tile?.id ?? null;
     })];
@@ -1185,8 +1191,8 @@ function App() {
     );
     setGridRaw(resolvedGrid);
     if (unresolved.length > 0)
-      console.warn(`[map load] ${unresolved.length} tile(s) could not be resolved (tileset may not be loaded):`, unresolved);
-  }, [tiles, tilesLoading]);
+      console.warn(`[map load] ${unresolved.length} tile(s) could not be resolved:`, unresolved);
+  }, [tiles, tilesLoading, flatDefaultTiles]); // eslint-disable-line
   useEffect(() => { if (activeTileset) save(SK.activeTileset, activeTileset); }, [activeTileset]);
   useEffect(() => { if (shownTilesets) save("oph_shown_tilesets", shownTilesets); }, [shownTilesets]);
   useEffect(() => { save("oph_allow_mixing", allowTsMixing); }, [allowTsMixing]);
