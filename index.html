@@ -1882,12 +1882,18 @@ function App() {
             getMirror(r, c).forEach(pos => mirroredCells.push(pos));
           }
         });
-        setHighlightedCells(prev => {
-          const next = new Set(prev);
-          mirroredCells.forEach(([r, c]) => next.add(`${r},${c}`));
-          highlightedCellsRef.current = next;
-          return next;
+        // Build final highlight synchronously so we can push it to history right away
+        const finalHighlight = new Set(highlightedCellsRef.current);
+        mirroredCells.forEach(([r, c]) => finalHighlight.add(`${r},${c}`));
+        setHighlightedCells(finalHighlight);
+        highlightedCellsRef.current = finalHighlight;
+        // Push AFTER state so undo restores the pre-selection state (tile stays, highlight clears)
+        setHistory(h => {
+          const trimmed = h.slice(0, histIdxRef.current + 1);
+          const capped = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
+          return [...capped, { grid: gridRef.current, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...finalHighlight], rots: gridRotationsRef.current, flips: gridFlipsRef.current }];
         });
+        setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
       }
       setRectPreview(null);
       setPreviewCells(null);
@@ -1991,8 +1997,6 @@ function App() {
       if (highlightModeRef.current) {
         const key = `${r},${c}`;
         if (highlightedCellsRef.current.has(key) && highlightedCellsRef.current.size > 0) {
-          // Push history snapshot before moving so undo restores position
-          if (pushHistRef.current) pushHistRef.current();
           // Start dragging the highlight region
           isHighlightDraggingRef.current = true;
           highlightDragAnchorCell.current = [r, c];
@@ -2001,8 +2005,6 @@ function App() {
           setDragPos({ x: e.clientX, y: e.clientY });
         } else {
           // Paint: add cells to highlighted set
-          // Push snapshot BEFORE painting so undo only undoes the highlight, not the last tile placed
-          if (pushHistRef.current) pushHistRef.current();
           setPainting(true);
           paintingRef.current = true;
           selectionStartRef.current = [r, c];
@@ -2320,7 +2322,7 @@ function App() {
             const entry = tileData.find(d => d.r === r && d.c === c);
             if (entry && (entry.id !== null || newG[newR][newC] === null)) newG[newR][newC] = entry.id;
           });
-          setGridStableRef.current(() => newG);
+          setGridStableRef.current(() => newG, true);
           // Precompute post-drag rotations/flips synchronously (refs not yet updated by useEffect)
           // Fixes: tiles with implicit rot=0 not being mirrored when crossing mirror axis
           const ms = mirrorSettingsRef.current;
@@ -2535,8 +2537,6 @@ function App() {
       if (highlightModeRef.current) {
         const key = `${r},${c}`;
         if (highlightedCellsRef.current.has(key) && highlightedCellsRef.current.size > 0) {
-          // Push history snapshot before moving so undo restores position
-          if (pushHistRef.current) pushHistRef.current();
           // Tap on a highlighted cell → start dragging the region
           isHighlightDraggingRef.current = true;
           highlightDragAnchorCell.current = [r, c];
@@ -2556,7 +2556,8 @@ function App() {
           else if (mode === 'fill') {
             const bfs = bfsFillRef.current;
             if (bfs) {
-              const fillSet = bfs(r, c, gridRef.current, gridWRef.current, gridHRef.current);
+              const originId = gridRef.current?.[r]?.[c] ?? null;
+              const fillSet = bfs(r, c, gridRef.current, gridWRef.current, gridHRef.current, originId !== null);
               hoveredTilesRef.current = fillSet;
               setPreviewCells([...fillSet].map(k => k.split(',').map(Number)));
             }
@@ -2731,13 +2732,13 @@ function App() {
                   fD: mirrorDRef.current && crossedV && crossedH };
               })
               .filter(({ newR, newC }) => newR >= 0 && newR < gridHRef.current && newC >= 0 && newC < gridWRef.current);
-            setGridStableRef.current(prev => {
-              const g = prev.map(row => [...row]);
-              const tileData = [];
-              oldCells.forEach(key => { const [or, oc] = key.split(',').map(Number); tileData.push({ r: or, c: oc, id: g[or]?.[oc] ?? null }); g[or][oc] = null; });
-              newCells.forEach(({ oldKey, newR, newC }) => { const [or, oc] = oldKey.split(',').map(Number); const entry = tileData.find(d => d.r === or && d.c === oc); if (entry && (entry.id !== null || g[newR][newC] === null)) g[newR][newC] = entry.id; });
-              return g;
-            });
+            // Precompute new grid synchronously so we can push it to history in one shot
+            const tPreGrid = gridRef.current;
+            const tNewG = tPreGrid.map(row => [...row]);
+            const tTileData = [];
+            oldCells.forEach(key => { const [or, oc] = key.split(',').map(Number); tTileData.push({ r: or, c: oc, id: tNewG[or]?.[oc] ?? null }); tNewG[or][oc] = null; });
+            newCells.forEach(({ oldKey, newR, newC }) => { const [or, oc] = oldKey.split(',').map(Number); const entry = tTileData.find(d => d.r === or && d.c === oc); if (entry && (entry.id !== null || tNewG[newR][newC] === null)) tNewG[newR][newC] = entry.id; });
+            setGridStableRef.current(() => tNewG, true);
             const tms = mirrorSettingsRef.current;
             const tPostRots = { ...gridRotationsRef.current };
             const tRotData = {};
@@ -2755,12 +2756,13 @@ function App() {
             const newHighlight = new Set(newCells.map(({ newR, newC }) => `${newR},${newC}`));
             setHighlightedCells(newHighlight);
             highlightedCellsRef.current = newHighlight;
-            // Patch the last history snapshot so redo restores the correct highlight + rotation state
+            // Push post-drag snapshot so a single undo restores the pre-drag state (tiles + highlight)
             setHistory(h => {
-              if (h.length === 0) return h;
-              const last = h[h.length - 1];
-              return [...h.slice(0, -1), { ...last, highlight: [...newHighlight], rots: tPostRots, flips: tPostFlips }];
+              const trimmed = h.slice(0, histIdxRef.current + 1);
+              const capped = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
+              return [...capped, { grid: tNewG, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...newHighlight], rots: tPostRots, flips: tPostFlips }];
             });
+            setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
           }
           isHighlightDraggingRef.current = false;
           highlightDragAnchorCell.current = null;
@@ -5479,12 +5481,29 @@ function App() {
                 {highlightedCells.size > 0 && (() => {
                   const cellPx = CELL * zoom;
                   const { dr, dc } = highlightDragOffset ?? { dr: 0, dc: 0 };
+                  const dragging = dr !== 0 || dc !== 0;
+                  // Compute per-cell mirrored delta during drag so the mirror side moves opposite direction
+                  const anchorCell = highlightDragAnchorCell.current;
+                  const [ar, ac] = anchorCell ?? [0, 0];
+                  const hcR = (gridH - 1) / 2;
+                  const hcC = (gridW - 1) / 2;
+                  const anchorRowSign = ar < hcR ? -1 : (ar > hcR ? 1 : 0);
+                  const anchorColSign = ac < hcC ? -1 : (ac > hcC ? 1 : 0);
                   return (
                     <svg style={{ position: "absolute", left: 0, top: CELL * zoom, width: gW, height: gH, pointerEvents: "none", zIndex: 204, overflow: "visible" }}>
                       {[...highlightedCells].map(key => {
                         const [origR, origC] = key.split(",").map(Number);
-                        const r = origR + dr;
-                        const c = origC + dc;
+                        let effDr = dr, effDc = dc;
+                        if (dragging && (mirrorV || mirrorH || mirrorD)) {
+                          const cellRowSign = origR < hcR ? -1 : (origR > hcR ? 1 : 0);
+                          const cellColSign = origC < hcC ? -1 : (origC > hcC ? 1 : 0);
+                          const flipRow = (mirrorH || mirrorD) && anchorRowSign !== 0 && cellRowSign !== 0 && cellRowSign !== anchorRowSign;
+                          const flipCol = (mirrorV || mirrorD) && anchorColSign !== 0 && cellColSign !== 0 && cellColSign !== anchorColSign;
+                          effDr = flipRow ? -dr : dr;
+                          effDc = flipCol ? -dc : dc;
+                        }
+                        const r = origR + effDr;
+                        const c = origC + effDc;
                         if (r < 0 || r >= gridH || c < 0 || c >= gridW) return null;
                         return (
                           <rect key={key}
