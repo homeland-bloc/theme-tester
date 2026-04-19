@@ -1103,7 +1103,7 @@ function App() {
     const nextActive = !inSet ? name :
       (nextShown.length > 0 ? activeTilesetRef.current :
         (shownAtlasTilesetsRef.current?.[0] ?? activeTilesetRef.current));
-    const snap = { grid: gridRef.current, w: gridWRef.current, h: gridHRef.current, tileset: nextActive, shownTilesets: nextShown, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1: newBg1, bg2: newBg2, highlight: [...highlightedCellsRef.current] };
+    const snap = { grid: gridRef.current, w: gridWRef.current, h: gridHRef.current, tileset: nextActive, shownTilesets: nextShown, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1: newBg1, bg2: newBg2, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current };
     setHistory(h => {
       const trimmed = h.slice(0, histIdxRef.current + 1);
       const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
@@ -1249,7 +1249,7 @@ function App() {
   const pushBgHistory = useCallback(() => {
     if (bgHistTimerRef.current) clearTimeout(bgHistTimerRef.current);
     bgHistTimerRef.current = setTimeout(() => {
-      const snap = { grid: gridRef.current, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...highlightedCellsRef.current] };
+      const snap = { grid: gridRef.current, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current };
       setHistory(h => {
         const trimmed = h.slice(0, histIdxRef.current + 1);
         const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
@@ -1288,7 +1288,7 @@ function App() {
         setHistory(h => {
           const trimmed = h.slice(0, histIdx + 1);
           const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-          return [...capped, { grid: next, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...highlightedCellsRef.current] }];
+          return [...capped, { grid: next, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current }];
         });
         setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
       }
@@ -1321,6 +1321,14 @@ function App() {
       setShownAtlasTilesets(snap.shownAtlasTilesets);
       shownAtlasTilesetsRef.current = snap.shownAtlasTilesets;
     }
+    if (snap.rots !== undefined) {
+      setGridRotations(snap.rots);
+      gridRotationsRef.current = snap.rots;
+    }
+    if (snap.flips !== undefined) {
+      setGridFlips(snap.flips);
+      gridFlipsRef.current = snap.flips;
+    }
   };
 
   const undo = useCallback(() => {
@@ -1340,7 +1348,7 @@ function App() {
   // Push the current grid as a history snapshot (called once on mousedown, before any paint).
   // All cell writes during a drag use skipHistory=true, so the whole drag is one undo step.
   const pushHistorySnapshot = useCallback(() => {
-    const snap = { grid, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1, bg2, highlight: [...highlightedCellsRef.current] };
+    const snap = { grid, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1, bg2, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current };
     setHistory(h => {
       const trimmed = h.slice(0, histIdx + 1);
       const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
@@ -1575,9 +1583,11 @@ function App() {
     const tilesToAdd = []; // { relPath, atlasFolderName, folderLabel, codename }
 
     try {
-      // All Atlas tilesets share identical subfolder structure, so no root dir check is needed.
-      // Only Fence requires an API call since its filenames vary per tileset.
-      const fenceFiles = (await fetchAtlasDir(`${tilesetName}/Fence`)).filter(f => f.type === "file" && imageRe.test(f.name));
+      // Fence and Rope require API calls since their filenames vary per tileset.
+      const [fenceFiles, ropeFiles] = await Promise.all([
+        fetchAtlasDir(`${tilesetName}/Fence`).then(f => f.filter(x => x.type === "file" && imageRe.test(x.name))),
+        fetchAtlasDir(`${tilesetName}/Rope`).then(f => f.filter(x => x.type === "file" && imageRe.test(x.name))),
+      ]);
 
       // Flat tiles from Tiles/ — hardcoded list, sorted by canonical order
       [...ATLAS_TILES_FILES].sort((a, b) => getAtlasFlatOrder(a.replace(/\.[^.]+$/, "")) - getAtlasFlatOrder(b.replace(/\.[^.]+$/, ""))).forEach(filename => {
@@ -1585,9 +1595,9 @@ function App() {
         tilesToAdd.push({ relPath: `${tilesetName}/${ATLAS_TILES_FOLDER}/${filename}`, atlasFolderName: null, folderLabel: null, codename: `${meta.codename}_${base}` });
       });
 
-      // Folder-based tiles — Fence from API, all others from hardcoded lists
+      // Folder-based tiles — Fence and Rope from API, Water and Gamemode from hardcoded lists
       const ATLAS_WATER_CNS = ["WaterBend", "WaterCorner", "WaterLine", "WaterFill"];
-      [["Fence", fenceFiles.map(f => f.name)], ["Rope", ATLAS_ROPE_FILES], ["Water", ATLAS_WATER_FILES], ["Gamemode_Specifics", ATLAS_GAMEMODE_FILES]].forEach(([sub, filenames]) => {
+      [["Fence", fenceFiles.map(f => f.name)], ["Rope", ropeFiles.map(f => f.name)], ["Water", ATLAS_WATER_FILES], ["Gamemode_Specifics", ATLAS_GAMEMODE_FILES]].forEach(([sub, filenames]) => {
         const folderLabel = sub === "Gamemode_Specifics" ? "Objective" : sub;
         filenames.forEach((filename, i) => {
           const base = filename.replace(/\.[^.]+$/, "");
@@ -2311,30 +2321,30 @@ function App() {
             if (entry && (entry.id !== null || newG[newR][newC] === null)) newG[newR][newC] = entry.id;
           });
           setGridStableRef.current(() => newG);
-          // Move gridRotations, applying mirror transform if tile crossed a mirror axis
-          setGridRotations(prev => {
-            const n = { ...prev };
-            const rot_data = {};
-            oldCells.forEach(key => { rot_data[key] = prev[key]; delete n[key]; });
-            const ms = mirrorSettingsRef.current;
-            newCells.forEach(({ oldKey, newR, newC, fV, fH, fD }) => {
-              if (rot_data[oldKey] === undefined) return;
-              const rot = rot_data[oldKey];
-              n[`${newR},${newC}`] = (ms.mirrorRotation && (fV || fH || fD))
-                ? applyRotMirror(rot, fV, fH, fD) : rot;
-            });
-            return n;
+          // Precompute post-drag rotations/flips synchronously (refs not yet updated by useEffect)
+          // Fixes: tiles with implicit rot=0 not being mirrored when crossing mirror axis
+          const ms = mirrorSettingsRef.current;
+          const postDragRots = { ...gridRotationsRef.current };
+          const rot_data = {};
+          oldCells.forEach(key => { rot_data[key] = postDragRots[key]; delete postDragRots[key]; });
+          newCells.forEach(({ oldKey, newR, newC, fV, fH, fD }) => {
+            const rawRot = rot_data[oldKey];
+            const needsMirror = ms.mirrorRotation && (fV || fH || fD);
+            if (rawRot === undefined && !needsMirror) return;
+            const newRot = needsMirror ? applyRotMirror(rawRot ?? 0, fV, fH, fD) : (rawRot ?? 0);
+            if (newRot !== 0) postDragRots[`${newR},${newC}`] = newRot;
           });
+          setGridRotations(postDragRots);
+          gridRotationsRef.current = postDragRots;
           // Move gridFlips
-          setGridFlips(prev => {
-            const n = { ...prev };
-            const flip_data = {};
-            oldCells.forEach(key => { flip_data[key] = prev[key]; delete n[key]; });
-            newCells.forEach(({ oldKey, newR, newC }) => {
-              if (flip_data[oldKey] !== undefined) n[`${newR},${newC}`] = flip_data[oldKey];
-            });
-            return n;
+          const postDragFlips = { ...gridFlipsRef.current };
+          const flip_data = {};
+          oldCells.forEach(key => { flip_data[key] = postDragFlips[key]; delete postDragFlips[key]; });
+          newCells.forEach(({ oldKey, newR, newC }) => {
+            if (flip_data[oldKey] !== undefined) postDragFlips[`${newR},${newC}`] = flip_data[oldKey];
           });
+          setGridFlips(postDragFlips);
+          gridFlipsRef.current = postDragFlips;
           // Move gridOffsets
           setGridOffsets(prev => {
             const n = { ...prev };
@@ -2357,7 +2367,7 @@ function App() {
           setHistory(h => {
             const trimmed = h.slice(0, histIdxRef.current + 1);
             const capped = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-            return [...capped, { grid: newG, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...newHighlight] }];
+            return [...capped, { grid: newG, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...newHighlight], rots: postDragRots, flips: postDragFlips }];
           });
           setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
         }
@@ -2728,17 +2738,28 @@ function App() {
               newCells.forEach(({ oldKey, newR, newC }) => { const [or, oc] = oldKey.split(',').map(Number); const entry = tileData.find(d => d.r === or && d.c === oc); if (entry && (entry.id !== null || g[newR][newC] === null)) g[newR][newC] = entry.id; });
               return g;
             });
-            setGridRotations(prev => { const n = { ...prev }; const d = {}; oldCells.forEach(k => { d[k] = prev[k]; delete n[k]; }); const ms = mirrorSettingsRef.current; newCells.forEach(({ oldKey, newR, newC, fV, fH, fD }) => { if (d[oldKey] === undefined) return; const rot = d[oldKey]; n[`${newR},${newC}`] = (ms.mirrorRotation && (fV || fH || fD)) ? applyRotMirror(rot, fV, fH, fD) : rot; }); return n; });
-            setGridFlips(prev => { const n = { ...prev }; const d = {}; oldCells.forEach(k => { d[k] = prev[k]; delete n[k]; }); newCells.forEach(({ oldKey, newR, newC }) => { if (d[oldKey] !== undefined) n[`${newR},${newC}`] = d[oldKey]; }); return n; });
+            const tms = mirrorSettingsRef.current;
+            const tPostRots = { ...gridRotationsRef.current };
+            const tRotData = {};
+            oldCells.forEach(k => { tRotData[k] = tPostRots[k]; delete tPostRots[k]; });
+            newCells.forEach(({ oldKey, newR, newC, fV, fH, fD }) => { const raw = tRotData[oldKey]; const nm = tms.mirrorRotation && (fV || fH || fD); if (raw === undefined && !nm) return; const nr = nm ? applyRotMirror(raw ?? 0, fV, fH, fD) : (raw ?? 0); if (nr !== 0) tPostRots[`${newR},${newC}`] = nr; });
+            setGridRotations(tPostRots);
+            gridRotationsRef.current = tPostRots;
+            const tPostFlips = { ...gridFlipsRef.current };
+            const tFlipData = {};
+            oldCells.forEach(k => { tFlipData[k] = tPostFlips[k]; delete tPostFlips[k]; });
+            newCells.forEach(({ oldKey, newR, newC }) => { if (tFlipData[oldKey] !== undefined) tPostFlips[`${newR},${newC}`] = tFlipData[oldKey]; });
+            setGridFlips(tPostFlips);
+            gridFlipsRef.current = tPostFlips;
             setGridOffsets(prev => { const n = { ...prev }; const d = {}; oldCells.forEach(k => { d[k] = prev[k]; delete n[k]; }); newCells.forEach(({ oldKey, newR, newC }) => { if (d[oldKey] !== undefined) n[`${newR},${newC}`] = d[oldKey]; }); return n; });
             const newHighlight = new Set(newCells.map(({ newR, newC }) => `${newR},${newC}`));
             setHighlightedCells(newHighlight);
             highlightedCellsRef.current = newHighlight;
-            // Patch the last history snapshot so redo restores the correct highlight positions
+            // Patch the last history snapshot so redo restores the correct highlight + rotation state
             setHistory(h => {
               if (h.length === 0) return h;
               const last = h[h.length - 1];
-              return [...h.slice(0, -1), { ...last, highlight: [...newHighlight] }];
+              return [...h.slice(0, -1), { ...last, highlight: [...newHighlight], rots: tPostRots, flips: tPostFlips }];
             });
           }
           isHighlightDraggingRef.current = false;
@@ -4441,7 +4462,7 @@ function App() {
                                       const tsBg = getTilesetBgColors(ts.name);
                                       const newBg1 = tsBg ? tsBg.bg1 : bg1Ref.current;
                                       const newBg2 = tsBg ? tsBg.bg2 : bg2Ref.current;
-                                      const snap = { grid: newGrid, w: gridWRef.current, h: gridHRef.current, tileset: ts.name, shownTilesets: [ts.name], shownAtlasTilesets: [], bg1: newBg1, bg2: newBg2, highlight: [...highlightedCellsRef.current] };
+                                      const snap = { grid: newGrid, w: gridWRef.current, h: gridHRef.current, tileset: ts.name, shownTilesets: [ts.name], shownAtlasTilesets: [], bg1: newBg1, bg2: newBg2, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current };
                                       setHistory(h => {
                                         const trimmed = h.slice(0, histIdxRef.current + 1);
                                         const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
@@ -4575,7 +4596,7 @@ function App() {
                                       const cachedBg = getTilesetBgColors(atsDef.name);
                                       const newBg1 = cachedBg ? cachedBg.bg1 : bg1Ref.current;
                                       const newBg2 = cachedBg ? cachedBg.bg2 : bg2Ref.current;
-                                      const snap = { grid: newGrid, w: gridWRef.current, h: gridHRef.current, tileset: atsDef.name, shownTilesets: [], shownAtlasTilesets: [atsDef.name], bg1: newBg1, bg2: newBg2, highlight: [...highlightedCellsRef.current] };
+                                      const snap = { grid: newGrid, w: gridWRef.current, h: gridHRef.current, tileset: atsDef.name, shownTilesets: [], shownAtlasTilesets: [atsDef.name], bg1: newBg1, bg2: newBg2, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current };
                                       setHistory(h => { const trimmed = h.slice(0, histIdxRef.current + 1); const capped = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed; return [...capped, snap]; });
                                       setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
                                       setGridRaw(newGrid);
