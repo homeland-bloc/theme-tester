@@ -1103,7 +1103,7 @@ function App() {
     const nextActive = !inSet ? name :
       (nextShown.length > 0 ? activeTilesetRef.current :
         (shownAtlasTilesetsRef.current?.[0] ?? activeTilesetRef.current));
-    const snap = { grid: gridRef.current, w: gridWRef.current, h: gridHRef.current, tileset: nextActive, shownTilesets: nextShown, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1: newBg1, bg2: newBg2, highlight: [...highlightedCellsRef.current] };
+    const snap = { grid: gridRef.current, w: gridWRef.current, h: gridHRef.current, tileset: nextActive, shownTilesets: nextShown, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1: newBg1, bg2: newBg2, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current };
     setHistory(h => {
       const trimmed = h.slice(0, histIdxRef.current + 1);
       const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
@@ -1249,7 +1249,7 @@ function App() {
   const pushBgHistory = useCallback(() => {
     if (bgHistTimerRef.current) clearTimeout(bgHistTimerRef.current);
     bgHistTimerRef.current = setTimeout(() => {
-      const snap = { grid: gridRef.current, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...highlightedCellsRef.current] };
+      const snap = { grid: gridRef.current, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current };
       setHistory(h => {
         const trimmed = h.slice(0, histIdxRef.current + 1);
         const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
@@ -1288,7 +1288,7 @@ function App() {
         setHistory(h => {
           const trimmed = h.slice(0, histIdx + 1);
           const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-          return [...capped, { grid: next, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...highlightedCellsRef.current] }];
+          return [...capped, { grid: next, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current }];
         });
         setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
       }
@@ -1321,6 +1321,14 @@ function App() {
       setShownAtlasTilesets(snap.shownAtlasTilesets);
       shownAtlasTilesetsRef.current = snap.shownAtlasTilesets;
     }
+    if (snap.rots !== undefined) {
+      setGridRotations(snap.rots);
+      gridRotationsRef.current = snap.rots;
+    }
+    if (snap.flips !== undefined) {
+      setGridFlips(snap.flips);
+      gridFlipsRef.current = snap.flips;
+    }
   };
 
   const undo = useCallback(() => {
@@ -1340,7 +1348,7 @@ function App() {
   // Push the current grid as a history snapshot (called once on mousedown, before any paint).
   // All cell writes during a drag use skipHistory=true, so the whole drag is one undo step.
   const pushHistorySnapshot = useCallback(() => {
-    const snap = { grid, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1, bg2, highlight: [...highlightedCellsRef.current] };
+    const snap = { grid, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1, bg2, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current };
     setHistory(h => {
       const trimmed = h.slice(0, histIdx + 1);
       const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
@@ -1562,6 +1570,8 @@ function App() {
   const ATLAS_WATER_FILES    = ["00001011.png", "01111111.png", "01101011.png", "11111111.png"];
   const ATLAS_TILES_FILES    = ["Barrel.png", "Bush.png", "Bush2.png", "Cactus.png", "Crate.png", "Skull.png", "Wall.png", "Wall2.png"];
   const ATLAS_ROPE_FILES     = ["Post.png", "Post_R.png", "Post_T.png", "Post_TR.png"];
+  const ATLAS_FENCE_SIMPLE_FILES  = ["Fence.png", "Horizontal.png", "Vertical.png"];
+  const ATLAS_FENCE_COMPLEX_FILES = ["0001.png", "0010.png", "0011.png", "0100.png", "0101.png", "1000.png", "1001.png", "1010.png", "1100.png", "Fence.png"];
   const ATLAS_GAMEMODE_FILES = ["Brawl_Ball.png", "Gem_Grab.png", "Heist.png"];
   // Canonical order for flat tiles in Tiles/ folder (case-insensitive base name match)
   const ATLAS_FLAT_ORDER = ["wall1", "wall", "wall2", "crate", "barrel", "bush1", "bush", "bush2", "skull", "breakable", "cactus"];
@@ -1575,9 +1585,11 @@ function App() {
     const tilesToAdd = []; // { relPath, atlasFolderName, folderLabel, codename }
 
     try {
-      // All Atlas tilesets share identical subfolder structure, so no root dir check is needed.
-      // Only Fence requires an API call since its filenames vary per tileset.
-      const fenceFiles = (await fetchAtlasDir(`${tilesetName}/Fence`)).filter(f => f.type === "file" && imageRe.test(f.name));
+      // Probe for fence variant: simple (Fence/Horizontal/Vertical) vs complex (binary-named files).
+      // A single HEAD request to Horizontal.png is enough — no GitHub API needed.
+      const rawBase = "https://raw.githubusercontent.com/She-Fairy/atlas-horizon/main/Resources";
+      const fenceProbe = await fetch(`${rawBase}/${tilesetName}/Fence/Horizontal.png`, { method: "HEAD" });
+      const fenceFilenames = fenceProbe.ok ? ATLAS_FENCE_SIMPLE_FILES : ATLAS_FENCE_COMPLEX_FILES;
 
       // Flat tiles from Tiles/ — hardcoded list, sorted by canonical order
       [...ATLAS_TILES_FILES].sort((a, b) => getAtlasFlatOrder(a.replace(/\.[^.]+$/, "")) - getAtlasFlatOrder(b.replace(/\.[^.]+$/, ""))).forEach(filename => {
@@ -1585,9 +1597,9 @@ function App() {
         tilesToAdd.push({ relPath: `${tilesetName}/${ATLAS_TILES_FOLDER}/${filename}`, atlasFolderName: null, folderLabel: null, codename: `${meta.codename}_${base}` });
       });
 
-      // Folder-based tiles — Fence from API, all others from hardcoded lists
+      // Folder-based tiles — all hardcoded (Fence variant detected via probe, Rope always 4 posts)
       const ATLAS_WATER_CNS = ["WaterBend", "WaterCorner", "WaterLine", "WaterFill"];
-      [["Fence", fenceFiles.map(f => f.name)], ["Rope", ATLAS_ROPE_FILES], ["Water", ATLAS_WATER_FILES], ["Gamemode_Specifics", ATLAS_GAMEMODE_FILES]].forEach(([sub, filenames]) => {
+      [["Fence", fenceFilenames], ["Rope", ATLAS_ROPE_FILES], ["Water", ATLAS_WATER_FILES], ["Gamemode_Specifics", ATLAS_GAMEMODE_FILES]].forEach(([sub, filenames]) => {
         const folderLabel = sub === "Gamemode_Specifics" ? "Objective" : sub;
         filenames.forEach((filename, i) => {
           const base = filename.replace(/\.[^.]+$/, "");
@@ -1872,12 +1884,18 @@ function App() {
             getMirror(r, c).forEach(pos => mirroredCells.push(pos));
           }
         });
-        setHighlightedCells(prev => {
-          const next = new Set(prev);
-          mirroredCells.forEach(([r, c]) => next.add(`${r},${c}`));
-          highlightedCellsRef.current = next;
-          return next;
+        // Build final highlight synchronously so we can push it to history right away
+        const finalHighlight = new Set(highlightedCellsRef.current);
+        mirroredCells.forEach(([r, c]) => finalHighlight.add(`${r},${c}`));
+        setHighlightedCells(finalHighlight);
+        highlightedCellsRef.current = finalHighlight;
+        // Push AFTER state so undo restores the pre-selection state (tile stays, highlight clears)
+        setHistory(h => {
+          const trimmed = h.slice(0, histIdxRef.current + 1);
+          const capped = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
+          return [...capped, { grid: gridRef.current, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...finalHighlight], rots: gridRotationsRef.current, flips: gridFlipsRef.current }];
         });
+        setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
       }
       setRectPreview(null);
       setPreviewCells(null);
@@ -1981,8 +1999,6 @@ function App() {
       if (highlightModeRef.current) {
         const key = `${r},${c}`;
         if (highlightedCellsRef.current.has(key) && highlightedCellsRef.current.size > 0) {
-          // Push history snapshot before moving so undo restores position
-          if (pushHistRef.current) pushHistRef.current();
           // Start dragging the highlight region
           isHighlightDraggingRef.current = true;
           highlightDragAnchorCell.current = [r, c];
@@ -1991,8 +2007,6 @@ function App() {
           setDragPos({ x: e.clientX, y: e.clientY });
         } else {
           // Paint: add cells to highlighted set
-          // Push snapshot BEFORE painting so undo only undoes the highlight, not the last tile placed
-          if (pushHistRef.current) pushHistRef.current();
           setPainting(true);
           paintingRef.current = true;
           selectionStartRef.current = [r, c];
@@ -2310,31 +2324,31 @@ function App() {
             const entry = tileData.find(d => d.r === r && d.c === c);
             if (entry && (entry.id !== null || newG[newR][newC] === null)) newG[newR][newC] = entry.id;
           });
-          setGridStableRef.current(() => newG);
-          // Move gridRotations, applying mirror transform if tile crossed a mirror axis
-          setGridRotations(prev => {
-            const n = { ...prev };
-            const rot_data = {};
-            oldCells.forEach(key => { rot_data[key] = prev[key]; delete n[key]; });
-            const ms = mirrorSettingsRef.current;
-            newCells.forEach(({ oldKey, newR, newC, fV, fH, fD }) => {
-              if (rot_data[oldKey] === undefined) return;
-              const rot = rot_data[oldKey];
-              n[`${newR},${newC}`] = (ms.mirrorRotation && (fV || fH || fD))
-                ? applyRotMirror(rot, fV, fH, fD) : rot;
-            });
-            return n;
+          setGridStableRef.current(() => newG, true);
+          // Precompute post-drag rotations/flips synchronously (refs not yet updated by useEffect)
+          // Fixes: tiles with implicit rot=0 not being mirrored when crossing mirror axis
+          const ms = mirrorSettingsRef.current;
+          const postDragRots = { ...gridRotationsRef.current };
+          const rot_data = {};
+          oldCells.forEach(key => { rot_data[key] = postDragRots[key]; delete postDragRots[key]; });
+          newCells.forEach(({ oldKey, newR, newC, fV, fH, fD }) => {
+            const rawRot = rot_data[oldKey];
+            const needsMirror = ms.mirrorRotation && (fV || fH || fD);
+            if (rawRot === undefined && !needsMirror) return;
+            const newRot = needsMirror ? applyRotMirror(rawRot ?? 0, fV, fH, fD) : (rawRot ?? 0);
+            if (newRot !== 0) postDragRots[`${newR},${newC}`] = newRot;
           });
+          setGridRotations(postDragRots);
+          gridRotationsRef.current = postDragRots;
           // Move gridFlips
-          setGridFlips(prev => {
-            const n = { ...prev };
-            const flip_data = {};
-            oldCells.forEach(key => { flip_data[key] = prev[key]; delete n[key]; });
-            newCells.forEach(({ oldKey, newR, newC }) => {
-              if (flip_data[oldKey] !== undefined) n[`${newR},${newC}`] = flip_data[oldKey];
-            });
-            return n;
+          const postDragFlips = { ...gridFlipsRef.current };
+          const flip_data = {};
+          oldCells.forEach(key => { flip_data[key] = postDragFlips[key]; delete postDragFlips[key]; });
+          newCells.forEach(({ oldKey, newR, newC }) => {
+            if (flip_data[oldKey] !== undefined) postDragFlips[`${newR},${newC}`] = flip_data[oldKey];
           });
+          setGridFlips(postDragFlips);
+          gridFlipsRef.current = postDragFlips;
           // Move gridOffsets
           setGridOffsets(prev => {
             const n = { ...prev };
@@ -2357,7 +2371,7 @@ function App() {
           setHistory(h => {
             const trimmed = h.slice(0, histIdxRef.current + 1);
             const capped = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-            return [...capped, { grid: newG, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...newHighlight] }];
+            return [...capped, { grid: newG, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...newHighlight], rots: postDragRots, flips: postDragFlips }];
           });
           setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
         }
@@ -2525,8 +2539,6 @@ function App() {
       if (highlightModeRef.current) {
         const key = `${r},${c}`;
         if (highlightedCellsRef.current.has(key) && highlightedCellsRef.current.size > 0) {
-          // Push history snapshot before moving so undo restores position
-          if (pushHistRef.current) pushHistRef.current();
           // Tap on a highlighted cell → start dragging the region
           isHighlightDraggingRef.current = true;
           highlightDragAnchorCell.current = [r, c];
@@ -2546,7 +2558,8 @@ function App() {
           else if (mode === 'fill') {
             const bfs = bfsFillRef.current;
             if (bfs) {
-              const fillSet = bfs(r, c, gridRef.current, gridWRef.current, gridHRef.current);
+              const originId = gridRef.current?.[r]?.[c] ?? null;
+              const fillSet = bfs(r, c, gridRef.current, gridWRef.current, gridHRef.current, originId !== null);
               hoveredTilesRef.current = fillSet;
               setPreviewCells([...fillSet].map(k => k.split(',').map(Number)));
             }
@@ -2721,25 +2734,37 @@ function App() {
                   fD: mirrorDRef.current && crossedV && crossedH };
               })
               .filter(({ newR, newC }) => newR >= 0 && newR < gridHRef.current && newC >= 0 && newC < gridWRef.current);
-            setGridStableRef.current(prev => {
-              const g = prev.map(row => [...row]);
-              const tileData = [];
-              oldCells.forEach(key => { const [or, oc] = key.split(',').map(Number); tileData.push({ r: or, c: oc, id: g[or]?.[oc] ?? null }); g[or][oc] = null; });
-              newCells.forEach(({ oldKey, newR, newC }) => { const [or, oc] = oldKey.split(',').map(Number); const entry = tileData.find(d => d.r === or && d.c === oc); if (entry && (entry.id !== null || g[newR][newC] === null)) g[newR][newC] = entry.id; });
-              return g;
-            });
-            setGridRotations(prev => { const n = { ...prev }; const d = {}; oldCells.forEach(k => { d[k] = prev[k]; delete n[k]; }); const ms = mirrorSettingsRef.current; newCells.forEach(({ oldKey, newR, newC, fV, fH, fD }) => { if (d[oldKey] === undefined) return; const rot = d[oldKey]; n[`${newR},${newC}`] = (ms.mirrorRotation && (fV || fH || fD)) ? applyRotMirror(rot, fV, fH, fD) : rot; }); return n; });
-            setGridFlips(prev => { const n = { ...prev }; const d = {}; oldCells.forEach(k => { d[k] = prev[k]; delete n[k]; }); newCells.forEach(({ oldKey, newR, newC }) => { if (d[oldKey] !== undefined) n[`${newR},${newC}`] = d[oldKey]; }); return n; });
+            // Precompute new grid synchronously so we can push it to history in one shot
+            const tPreGrid = gridRef.current;
+            const tNewG = tPreGrid.map(row => [...row]);
+            const tTileData = [];
+            oldCells.forEach(key => { const [or, oc] = key.split(',').map(Number); tTileData.push({ r: or, c: oc, id: tNewG[or]?.[oc] ?? null }); tNewG[or][oc] = null; });
+            newCells.forEach(({ oldKey, newR, newC }) => { const [or, oc] = oldKey.split(',').map(Number); const entry = tTileData.find(d => d.r === or && d.c === oc); if (entry && (entry.id !== null || tNewG[newR][newC] === null)) tNewG[newR][newC] = entry.id; });
+            setGridStableRef.current(() => tNewG, true);
+            const tms = mirrorSettingsRef.current;
+            const tPostRots = { ...gridRotationsRef.current };
+            const tRotData = {};
+            oldCells.forEach(k => { tRotData[k] = tPostRots[k]; delete tPostRots[k]; });
+            newCells.forEach(({ oldKey, newR, newC, fV, fH, fD }) => { const raw = tRotData[oldKey]; const nm = tms.mirrorRotation && (fV || fH || fD); if (raw === undefined && !nm) return; const nr = nm ? applyRotMirror(raw ?? 0, fV, fH, fD) : (raw ?? 0); if (nr !== 0) tPostRots[`${newR},${newC}`] = nr; });
+            setGridRotations(tPostRots);
+            gridRotationsRef.current = tPostRots;
+            const tPostFlips = { ...gridFlipsRef.current };
+            const tFlipData = {};
+            oldCells.forEach(k => { tFlipData[k] = tPostFlips[k]; delete tPostFlips[k]; });
+            newCells.forEach(({ oldKey, newR, newC }) => { if (tFlipData[oldKey] !== undefined) tPostFlips[`${newR},${newC}`] = tFlipData[oldKey]; });
+            setGridFlips(tPostFlips);
+            gridFlipsRef.current = tPostFlips;
             setGridOffsets(prev => { const n = { ...prev }; const d = {}; oldCells.forEach(k => { d[k] = prev[k]; delete n[k]; }); newCells.forEach(({ oldKey, newR, newC }) => { if (d[oldKey] !== undefined) n[`${newR},${newC}`] = d[oldKey]; }); return n; });
             const newHighlight = new Set(newCells.map(({ newR, newC }) => `${newR},${newC}`));
             setHighlightedCells(newHighlight);
             highlightedCellsRef.current = newHighlight;
-            // Patch the last history snapshot so redo restores the correct highlight positions
+            // Push post-drag snapshot so a single undo restores the pre-drag state (tiles + highlight)
             setHistory(h => {
-              if (h.length === 0) return h;
-              const last = h[h.length - 1];
-              return [...h.slice(0, -1), { ...last, highlight: [...newHighlight] }];
+              const trimmed = h.slice(0, histIdxRef.current + 1);
+              const capped = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
+              return [...capped, { grid: tNewG, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...newHighlight], rots: tPostRots, flips: tPostFlips }];
             });
+            setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
           }
           isHighlightDraggingRef.current = false;
           highlightDragAnchorCell.current = null;
@@ -4441,7 +4466,7 @@ function App() {
                                       const tsBg = getTilesetBgColors(ts.name);
                                       const newBg1 = tsBg ? tsBg.bg1 : bg1Ref.current;
                                       const newBg2 = tsBg ? tsBg.bg2 : bg2Ref.current;
-                                      const snap = { grid: newGrid, w: gridWRef.current, h: gridHRef.current, tileset: ts.name, shownTilesets: [ts.name], shownAtlasTilesets: [], bg1: newBg1, bg2: newBg2, highlight: [...highlightedCellsRef.current] };
+                                      const snap = { grid: newGrid, w: gridWRef.current, h: gridHRef.current, tileset: ts.name, shownTilesets: [ts.name], shownAtlasTilesets: [], bg1: newBg1, bg2: newBg2, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current };
                                       setHistory(h => {
                                         const trimmed = h.slice(0, histIdxRef.current + 1);
                                         const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
@@ -4575,7 +4600,7 @@ function App() {
                                       const cachedBg = getTilesetBgColors(atsDef.name);
                                       const newBg1 = cachedBg ? cachedBg.bg1 : bg1Ref.current;
                                       const newBg2 = cachedBg ? cachedBg.bg2 : bg2Ref.current;
-                                      const snap = { grid: newGrid, w: gridWRef.current, h: gridHRef.current, tileset: atsDef.name, shownTilesets: [], shownAtlasTilesets: [atsDef.name], bg1: newBg1, bg2: newBg2, highlight: [...highlightedCellsRef.current] };
+                                      const snap = { grid: newGrid, w: gridWRef.current, h: gridHRef.current, tileset: atsDef.name, shownTilesets: [], shownAtlasTilesets: [atsDef.name], bg1: newBg1, bg2: newBg2, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current };
                                       setHistory(h => { const trimmed = h.slice(0, histIdxRef.current + 1); const capped = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed; return [...capped, snap]; });
                                       setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
                                       setGridRaw(newGrid);
@@ -5458,12 +5483,29 @@ function App() {
                 {highlightedCells.size > 0 && (() => {
                   const cellPx = CELL * zoom;
                   const { dr, dc } = highlightDragOffset ?? { dr: 0, dc: 0 };
+                  const dragging = dr !== 0 || dc !== 0;
+                  // Compute per-cell mirrored delta during drag so the mirror side moves opposite direction
+                  const anchorCell = highlightDragAnchorCell.current;
+                  const [ar, ac] = anchorCell ?? [0, 0];
+                  const hcR = (gridH - 1) / 2;
+                  const hcC = (gridW - 1) / 2;
+                  const anchorRowSign = ar < hcR ? -1 : (ar > hcR ? 1 : 0);
+                  const anchorColSign = ac < hcC ? -1 : (ac > hcC ? 1 : 0);
                   return (
                     <svg style={{ position: "absolute", left: 0, top: CELL * zoom, width: gW, height: gH, pointerEvents: "none", zIndex: 204, overflow: "visible" }}>
                       {[...highlightedCells].map(key => {
                         const [origR, origC] = key.split(",").map(Number);
-                        const r = origR + dr;
-                        const c = origC + dc;
+                        let effDr = dr, effDc = dc;
+                        if (dragging && (mirrorV || mirrorH || mirrorD)) {
+                          const cellRowSign = origR < hcR ? -1 : (origR > hcR ? 1 : 0);
+                          const cellColSign = origC < hcC ? -1 : (origC > hcC ? 1 : 0);
+                          const flipRow = (mirrorH || mirrorD) && anchorRowSign !== 0 && cellRowSign !== 0 && cellRowSign !== anchorRowSign;
+                          const flipCol = (mirrorV || mirrorD) && anchorColSign !== 0 && cellColSign !== 0 && cellColSign !== anchorColSign;
+                          effDr = flipRow ? -dr : dr;
+                          effDc = flipCol ? -dc : dc;
+                        }
+                        const r = origR + effDr;
+                        const c = origC + effDc;
                         if (r < 0 || r >= gridH || c < 0 || c >= gridW) return null;
                         return (
                           <rect key={key}
