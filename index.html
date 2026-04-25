@@ -698,6 +698,8 @@ function App() {
     const s = t.src;
     // Spawns
     if (s.includes("Spawns/")) return 1.65;
+    // Airport crate → 1.05×
+    if (s.includes("AIRP-crate")) return 1.05;
     // Barrel: Sewer 1.05×, Mausoleum/default 1.1×
     if (s.includes("SWR-barrel")) return 1.05;
     if (s.includes("barrel") || s.includes("MSLM-barrel")) return 1.1;
@@ -724,6 +726,8 @@ function App() {
     if (s.includes("Gem_Grab") || s.includes("Heist") || s.includes("MSLM-safe") || s.includes("SWR-safe")) return 2.0;
     // Bounty star → 1.2x
     if (s.includes("Bounty")) return 1.2;
+    // Atlas Post_R / Post_TR rope tiles → 1.5×
+    if (s.includes("/Rope/Post_R") || s.includes("/Rope/Post_TR")) return 1.5;
     return 1.0;
   };
 
@@ -749,10 +753,18 @@ function App() {
     if (s.includes("MSLM-ball")) return { ox: 0, oy: -20 };
     if (s.includes("MSLM-mine")) return { ox: 0, oy: -20 };
     // Airport (wall2 must be checked before wall since "AIRP-wall" matches both)
-    if (s.includes("AIRP-wall2")) return { ox: 0, oy: -20 };
-    if (s.includes("AIRP-wall"))  return { ox: 0, oy: -4 };
-    if (s.includes("AIRP-crate")) return { ox: 0, oy: -10 };
-    if (s.includes("AIRP-bush"))  return { ox: 0, oy: -10 };
+    if (s.includes("AIRP-wall2"))  return { ox: 0, oy: -20 };
+    if (s.includes("AIRP-wall"))   return { ox: 0, oy: -4 };
+    if (s.includes("AIRP-crate"))  return { ox: 0, oy: -4 };
+    if (s.includes("AIRP-cactus")) return { ox: 0, oy: -10 };
+    if (s.includes("AIRP-bush"))   return { ox: 0, oy: -10 };
+    // Airport fence (AIRP-fence-V checked before generic fence path)
+    if (s.includes("AIRP-fence-V"))    return { ox: 0, oy: -84 };
+    if (s.includes("Airport/Fence/"))  return { ox: 0, oy: -40 };
+    // Airport rope
+    if (s.includes("Airport/Rope/"))   return { ox: 0, oy: -44 };
+    // Atlas Post_R / Post_TR rope tiles
+    if (s.includes("/Rope/Post_R") || s.includes("/Rope/Post_TR")) return { ox: 25, oy: 0 };
     // Mausoleum fence
     if (s.includes("Mausoleum/Fence/")) return { ox: 0, oy: -15 };
     // Mausoleum rope (MSLM-post*)
@@ -1644,13 +1656,8 @@ function App() {
       // Apply settings inheritance as independent state updates
       const waterIds   = newTiles.filter(t => t.atlasFolderName === "Water").map(t => t.id);
       const objIds     = newTiles.filter(t => t.atlasFolderName === "Gamemode_Specifics").map(t => t.id);
-      const postRIds   = newTiles.filter(t => t.atlasFolderName === "Rope" && /Post_T?R$/i.test(t.baseCodename)).map(t => t.id);
       if (waterIds.length > 0)  setRotatableMap(rm => { const n = { ...rm }; waterIds.forEach(id => { n[id] = true; }); return n; });
       if (objIds.length > 0)    setPriorityTiles(pt => { const n = { ...pt }; objIds.forEach(id => { n[id] = true; }); return n; });
-      if (postRIds.length > 0) {
-        setTileMultipliers(tm => { const n = { ...tm }; postRIds.forEach(id => { n[id] = 1.5; }); return n; });
-        setTileOffsets(to => { const n = { ...to }; postRIds.forEach(id => { n[id] = { ...(n[id] ?? {}), ox: 25 }; }); return n; });
-      }
       return [...existingForTs, ...newTiles];
     } catch (err) {
       if (err.message === "rate_limit") setAtlasRateLimitHit(true);
