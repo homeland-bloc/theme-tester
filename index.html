@@ -116,6 +116,7 @@ const GLOBAL_ID_START  = 200; // 200–299: global tiles (water, spawns, objecti
 const ATLAS_ID_START   = 300; // 300–499 (and 700–9999): atlas tiles (She-Fairy/atlas-horizon)
 const ATLAS_ID_MAX     = 9999; // upper bound for atlas tile IDs (skips user range 500-699)
 const SPACE_TILE_ID    = 998; // special: makes a cell fully transparent
+const REPLACE_ERASE_ID = -1;  // sentinel: replace-with-empty in the Replace modal
 
 // Module-level cache for GitHub API responses (survives re-renders, not page reload)
 const atlasApiCache = new Map(); // url → resolved data
@@ -415,6 +416,9 @@ function App() {
   const highlightDragAnchorCell = useRef(null); // [r,c] of the cell where drag started
   const highlightModeRef = useRef(false);
   const eyedropperModeRef = useRef(false);
+  const [rotateMode, setRotateMode] = useState(false);
+  const rotateModeRef = useRef(false);
+  const rotatePendingCellRef = useRef(null);
   const [rectPreview,   setRectPreview]   = useState(null);     // {r1,c1,r2,c2} during rect drag
   const [previewCells,  setPreviewCells]  = useState(null);     // [[r,c],...] during single/line drag
   // Drag-to-move
@@ -461,6 +465,8 @@ function App() {
   const [replaceStep, setReplaceStep] = useState(1); // 1=pick tile on map, 2=pick replacement
   const [replaceA,    setReplaceA]  = useState(null);
   const [replaceB,    setReplaceB]  = useState(null);
+  const [deleteConfirmId, setDeleteConfirmId] = useState(null);
+  const [historyModalOpen, setHistoryModalOpen] = useState(false);
   // OTG (One Tile Gap) detection
   const [showOTG,          setShowOTG]          = useState(false);
   const [otgOpen,          setOtgOpen]          = useState(false);
@@ -552,6 +558,7 @@ function App() {
   const hoveredTilesRef   = useRef(new Set()); // accumulated "r,c" strings for line mode
   const commitOnUpRef     = useRef(null);     // commitSelectionOnMouseUp
   const pushHistRef       = useRef(null);     // pushHistorySnapshot
+  const histLabelRef      = useRef("Draw");   // label for next history snapshot
   const dragTileRef       = useRef(null);     // mirrors dragTile for event-handler closures
   const isDraggingRef     = useRef(false);    // true while a tile is being drag-moved
   const setGridStableRef  = useRef(null);     // always-current setGrid for touch handler closures
@@ -588,6 +595,7 @@ function App() {
   useEffect(() => { handModeRef.current     = handMode;      }, [handMode]);
   useEffect(() => { eyedropperModeRef.current = eyedropperMode; }, [eyedropperMode]);
   useEffect(() => { highlightModeRef.current = highlightMode; }, [highlightMode]);
+  useEffect(() => { rotateModeRef.current = rotateMode; }, [rotateMode]);
   useEffect(() => { highlightedCellsRef.current = highlightedCells; }, [highlightedCells]);
   useEffect(() => { highlightDragOffsetRef.current = highlightDragOffset; }, [highlightDragOffset]);
   useEffect(() => { zoomRef.current         = zoom;          }, [zoom]);
@@ -698,6 +706,8 @@ function App() {
     const s = t.src;
     // Spawns
     if (s.includes("Spawns/")) return 1.65;
+    // Airport crate → 1.05×
+    if (s.includes("AIRP-crate")) return 1.05;
     // Barrel: Sewer 1.05×, Mausoleum/default 1.1×
     if (s.includes("SWR-barrel")) return 1.05;
     if (s.includes("barrel") || s.includes("MSLM-barrel")) return 1.1;
@@ -724,6 +734,8 @@ function App() {
     if (s.includes("Gem_Grab") || s.includes("Heist") || s.includes("MSLM-safe") || s.includes("SWR-safe")) return 2.0;
     // Bounty star → 1.2x
     if (s.includes("Bounty")) return 1.2;
+    // Atlas Post_R / Post_TR rope tiles → 1.5×
+    if (s.includes("/Rope/Post_R") || s.includes("/Rope/Post_TR")) return 1.5;
     return 1.0;
   };
 
@@ -749,10 +761,18 @@ function App() {
     if (s.includes("MSLM-ball")) return { ox: 0, oy: -20 };
     if (s.includes("MSLM-mine")) return { ox: 0, oy: -20 };
     // Airport (wall2 must be checked before wall since "AIRP-wall" matches both)
-    if (s.includes("AIRP-wall2")) return { ox: 0, oy: -20 };
-    if (s.includes("AIRP-wall"))  return { ox: 0, oy: -4 };
-    if (s.includes("AIRP-crate")) return { ox: 0, oy: -10 };
-    if (s.includes("AIRP-bush"))  return { ox: 0, oy: -10 };
+    if (s.includes("AIRP-wall2"))  return { ox: 0, oy: -20 };
+    if (s.includes("AIRP-wall"))   return { ox: 0, oy: -4 };
+    if (s.includes("AIRP-crate"))  return { ox: 0, oy: -4 };
+    if (s.includes("AIRP-cactus")) return { ox: 0, oy: -10 };
+    if (s.includes("AIRP-bush"))   return { ox: 0, oy: -10 };
+    // Airport fence (AIRP-fence-V checked before generic fence path)
+    if (s.includes("AIRP-fence-V"))    return { ox: 0, oy: -84 };
+    if (s.includes("Airport/Fence/"))  return { ox: 0, oy: -40 };
+    // Airport rope
+    if (s.includes("Airport/Rope/"))   return { ox: 0, oy: -44 };
+    // Atlas Post_R / Post_TR rope tiles
+    if (s.includes("/Rope/Post_R") || s.includes("/Rope/Post_TR")) return { ox: 25, oy: 0 };
     // Mausoleum fence
     if (s.includes("Mausoleum/Fence/")) return { ox: 0, oy: -15 };
     // Mausoleum rope (MSLM-post*)
@@ -1348,7 +1368,9 @@ function App() {
   // Push the current grid as a history snapshot (called once on mousedown, before any paint).
   // All cell writes during a drag use skipHistory=true, so the whole drag is one undo step.
   const pushHistorySnapshot = useCallback(() => {
-    const snap = { grid, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1, bg2, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current };
+    const label = histLabelRef.current || "Draw";
+    histLabelRef.current = "Draw";
+    const snap = { grid, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1, bg2, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current, label };
     setHistory(h => {
       const trimmed = h.slice(0, histIdx + 1);
       const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
@@ -1644,13 +1666,8 @@ function App() {
       // Apply settings inheritance as independent state updates
       const waterIds   = newTiles.filter(t => t.atlasFolderName === "Water").map(t => t.id);
       const objIds     = newTiles.filter(t => t.atlasFolderName === "Gamemode_Specifics").map(t => t.id);
-      const postRIds   = newTiles.filter(t => t.atlasFolderName === "Rope" && /Post_T?R$/i.test(t.baseCodename)).map(t => t.id);
       if (waterIds.length > 0)  setRotatableMap(rm => { const n = { ...rm }; waterIds.forEach(id => { n[id] = true; }); return n; });
       if (objIds.length > 0)    setPriorityTiles(pt => { const n = { ...pt }; objIds.forEach(id => { n[id] = true; }); return n; });
-      if (postRIds.length > 0) {
-        setTileMultipliers(tm => { const n = { ...tm }; postRIds.forEach(id => { n[id] = 1.5; }); return n; });
-        setTileOffsets(to => { const n = { ...to }; postRIds.forEach(id => { n[id] = { ...(n[id] ?? {}), ox: 25 }; }); return n; });
-      }
       return [...existingForTs, ...newTiles];
     } catch (err) {
       if (err.message === "rate_limit") setAtlasRateLimitHit(true);
@@ -1979,6 +1996,11 @@ function App() {
 
   const onCell = (r, c, e) => {
     if (handModeRef.current) return; // hand mode: let native scroll handle panning
+    if (rotateModeRef.current) {
+      // rotate mode: record clicked cell for click-vs-drag detection; panning handled at container level
+      if (e.type === "mousedown") { e.preventDefault(); rotatePendingCellRef.current = [r, c]; }
+      return;
+    }
     if (e.type === "mousedown") {
       e.preventDefault(); // prevent native browser drag + text selection
 
@@ -2098,7 +2120,8 @@ function App() {
       else if (mode === 'line') setPreviewCells([[r, c]]);
       else if (mode === 'rect') setRectPreview({ r1: r, c1: c, r2: r, c2: c });
       else if (mode === 'fill') {
-        const fillSet = bfsFill(r, c, gridRef.current, gridWRef.current, gridHRef.current);
+        const hasCell = gridRef.current?.[r]?.[c] != null;
+        const fillSet = bfsFill(r, c, gridRef.current, gridWRef.current, gridHRef.current, hasCell);
         hoveredTilesRef.current = fillSet;
         setPreviewCells([...fillSet].map(k => k.split(',').map(Number)));
       }
@@ -2619,7 +2642,8 @@ function App() {
       else if (mode === 'fill') {
         const bfs = bfsFillRef.current;
         if (bfs) {
-          const fillSet = bfs(r, c, gridRef.current, gridWRef.current, gridHRef.current);
+          const hasCell = gridRef.current?.[r]?.[c] != null;
+          const fillSet = bfs(r, c, gridRef.current, gridWRef.current, gridHRef.current, hasCell);
           hoveredTilesRef.current = fillSet;
           setPreviewCells([...fillSet].map(k => k.split(',').map(Number)));
         }
@@ -2868,8 +2892,8 @@ function App() {
           setHighlightedCells(new Set());
           highlightedCellsRef.current = new Set();
         }
-        if (e.key === "e" || e.key === "E") { setEraser(true); setSel(null); setHandMode(false); setEyedropperMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }
-        if (e.key === "w" || e.key === "W") { setEyedropperMode(true); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }
+        if (e.key === "e" || e.key === "E") { setEraser(true); setSel(null); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }
+        if (e.key === "w" || e.key === "W") { setEyedropperMode(true); setEraser(false); setHandMode(false); setRotateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }
         if (e.key === "r" || e.key === "R") {
           const id = selRef.current;
           if (id != null) {
@@ -2939,6 +2963,14 @@ function App() {
   };
 
   // ── Replace A → B ─────────────────────────────────────────────────
+  const tileDisplayName = id => {
+    if (id == null) return "?";
+    if (id === SPACE_TILE_ID) return "Space";
+    if (id === REPLACE_ERASE_ID) return "Empty";
+    const t = getTile(id);
+    return (t ? (t.isSpace ? "Space" : deriveCodename(t.src)) : null) || `#${id}`;
+  };
+
   const doReplace = () => {
     if (replaceA == null || replaceB == null) return;
     // Count synchronously before setGrid (updater is async in React 18)
@@ -2949,11 +2981,37 @@ function App() {
       replaceMsgTimerRef.current = setTimeout(() => setReplaceMsg(""), 2500);
       return;
     }
-    setGrid(prev => prev.map(row => row.map(id => id === replaceA ? replaceB : id)));
-    const tileA = getTile(replaceA); const tileB = getTile(replaceB);
-    const nameA = (tileA?.isSpace ? "Space" : deriveCodename(tileA?.src)) || (tileA ? `#${replaceA}` : "?");
-    const nameB = (tileB?.isSpace ? "Space" : deriveCodename(tileB?.src)) || (tileB ? `#${replaceB}` : "?");
+    const dest = replaceB === REPLACE_ERASE_ID ? null : replaceB;
+    const nameA = tileDisplayName(replaceA);
+    const nameB = tileDisplayName(replaceB);
+    histLabelRef.current = `Replace ${nameA} → ${nameB}`;
+    pushHistRef.current?.();
+    setGrid(prev => prev.map(row => row.map(id => id === replaceA ? dest : id)));
     setReplaceMsg(`✓ Replaced ${count} × ${nameA} → ${nameB}`);
+    if (replaceMsgTimerRef.current) clearTimeout(replaceMsgTimerRef.current);
+    replaceMsgTimerRef.current = setTimeout(() => {
+      setReplaceMsg("");
+      setReplaceOpen(false); setReplaceStep(1); setReplaceA(null); setReplaceB(null);
+    }, 2000);
+  };
+
+  const doSwap = () => {
+    if (replaceA == null || replaceB == null) return;
+    if (replaceB === REPLACE_ERASE_ID) return;
+    const countA = grid.reduce((s, row) => s + row.filter(id => id === replaceA).length, 0);
+    const countB = grid.reduce((s, row) => s + row.filter(id => id === replaceB).length, 0);
+    if (countA === 0 && countB === 0) {
+      setReplaceMsg("⚠ Neither tile found on the map.");
+      if (replaceMsgTimerRef.current) clearTimeout(replaceMsgTimerRef.current);
+      replaceMsgTimerRef.current = setTimeout(() => setReplaceMsg(""), 2500);
+      return;
+    }
+    const nameA = tileDisplayName(replaceA);
+    const nameB = tileDisplayName(replaceB);
+    histLabelRef.current = `Swap ${nameA} ↔ ${nameB}`;
+    pushHistRef.current?.();
+    setGrid(prev => prev.map(row => row.map(id => id === replaceA ? replaceB : id === replaceB ? replaceA : id)));
+    setReplaceMsg(`✓ Swapped ${nameA} ↔ ${nameB}`);
     if (replaceMsgTimerRef.current) clearTimeout(replaceMsgTimerRef.current);
     replaceMsgTimerRef.current = setTimeout(() => {
       setReplaceMsg("");
@@ -3124,11 +3182,11 @@ function App() {
     );
 
     return (
-      <div className="modal-backdrop" onClick={() => setInfoTile(null)}>
+      <div className="modal-backdrop" onClick={() => { setInfoTile(null); setDeleteConfirmId(null); }}>
         <div className="modal-box" onClick={e => e.stopPropagation()}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Tile info</span>
-            <button onClick={() => setInfoTile(null)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
+            <button onClick={() => { setInfoTile(null); setDeleteConfirmId(null); }} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
           </div>
           <div style={{ background: C.panelDeep, borderRadius: 8, padding: 12, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 120 }}>
             <div className="tile-img-checker" style={{ borderRadius: 4, overflow: "hidden" }}>
@@ -3164,8 +3222,8 @@ function App() {
               onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
               style={{ width: 62, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none", textAlign: "center" }} />
             <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepMult(+0.05)}>+</button>
-            {(() => { const isDefault = currentMult === defaultMult; const greenStyle = isDefault ? { color: "#4ade80", borderColor: "#4ade80", background: "rgba(74,222,128,0.12)" } : {}; return (
-              <button style={{ ...btn(false), fontSize: 10, padding: "3px 7px", marginLeft: "auto", ...greenStyle }}
+            {(() => { const isDefault = currentMult === defaultMult; const stl = isDefault ? { color: "#4ade80", borderColor: "#4ade80", background: "rgba(74,222,128,0.12)" } : { color: "#f97316", borderColor: "#f97316", background: "rgba(249,115,22,0.12)" }; return (
+              <button style={{ ...btn(false), fontSize: 10, padding: "3px 7px", marginLeft: "auto", ...stl }}
                 disabled={isDefault} title={isDefault ? "Already at default" : "Reset to default"}
                 onClick={() => { setTileMultipliers(prev => { const n = {...prev}; delete n[t.id]; return n; }); setMultInput(String(defaultMult)); }}>Reset</button>
             ); })()}
@@ -3180,8 +3238,8 @@ function App() {
               onBlur={() => commitOffset()} onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
               style={{ width: 62, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none", textAlign: "center" }} />
             <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepOx(+1)}>+</button>
-            {(() => { const isDefault = currentOff.ox === defaultOff.ox; const greenStyle = isDefault ? { color: "#4ade80", borderColor: "#4ade80", background: "rgba(74,222,128,0.12)" } : {}; return (
-              <button style={{ ...btn(false), fontSize: 10, padding: "3px 7px", marginLeft: "auto", ...greenStyle }}
+            {(() => { const isDefault = currentOff.ox === defaultOff.ox; const stl = isDefault ? { color: "#4ade80", borderColor: "#4ade80", background: "rgba(74,222,128,0.12)" } : { color: "#f97316", borderColor: "#f97316", background: "rgba(249,115,22,0.12)" }; return (
+              <button style={{ ...btn(false), fontSize: 10, padding: "3px 7px", marginLeft: "auto", ...stl }}
                 disabled={isDefault} title={isDefault ? "Already at default" : "Reset to default"}
                 onClick={() => { setOxInput(String(defaultOff.ox)); setTileOffsets(prev => { const n = {...prev}; const o = {...(prev[t.id] ?? {}), ox: defaultOff.ox}; n[t.id] = o; return n; }); }}>Reset</button>
             ); })()}
@@ -3193,8 +3251,8 @@ function App() {
               onBlur={() => commitOffset()} onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
               style={{ width: 62, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none", textAlign: "center" }} />
             <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepOy(+1)}>+</button>
-            {(() => { const isDefault = currentOff.oy === defaultOff.oy; const greenStyle = isDefault ? { color: "#4ade80", borderColor: "#4ade80", background: "rgba(74,222,128,0.12)" } : {}; return (
-              <button style={{ ...btn(false), fontSize: 10, padding: "3px 7px", marginLeft: "auto", ...greenStyle }}
+            {(() => { const isDefault = currentOff.oy === defaultOff.oy; const stl = isDefault ? { color: "#4ade80", borderColor: "#4ade80", background: "rgba(74,222,128,0.12)" } : { color: "#f97316", borderColor: "#f97316", background: "rgba(249,115,22,0.12)" }; return (
+              <button style={{ ...btn(false), fontSize: 10, padding: "3px 7px", marginLeft: "auto", ...stl }}
                 disabled={isDefault} title={isDefault ? "Already at default" : "Reset to default"}
                 onClick={() => { setOyInput(String(defaultOff.oy)); setTileOffsets(prev => { const n = {...prev}; const o = {...(prev[t.id] ?? {}), oy: defaultOff.oy}; n[t.id] = o; return n; }); }}>Reset</button>
             ); })()}
@@ -3204,7 +3262,7 @@ function App() {
           {(() => {
             const curSpin = isTileRotatable(t);
             const isSpinDefault = curSpin === isDefaultRotatable(t);
-            const spinColor = isSpinDefault ? "#4ade80" : C.text;
+            const spinColor = isSpinDefault ? "#4ade80" : "#f97316";
             return (
               <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
                 <input type="checkbox" checked={curSpin}
@@ -3219,7 +3277,7 @@ function App() {
                       }
                     }
                   }}
-                  style={{ width: 14, height: 14, accentColor: isSpinDefault ? "#4ade80" : C.accent, cursor: "pointer" }} />
+                  style={{ width: 14, height: 14, accentColor: isSpinDefault ? "#4ade80" : "#f97316", cursor: "pointer" }} />
                 <span style={{ fontSize: 11, color: spinColor }}>Allow spinning 🐬</span>
               </label>
             );
@@ -3228,7 +3286,7 @@ function App() {
           {(() => {
             const curFlip = isFlipAllowed(t);
             const isFlipDefault = curFlip === isDefaultFlippable(t);
-            const flipColor = isFlipDefault ? "#4ade80" : C.text;
+            const flipColor = isFlipDefault ? "#4ade80" : "#f97316";
             return (
               <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
                 <input type="checkbox" checked={curFlip}
@@ -3237,12 +3295,12 @@ function App() {
                     if (!ev.target.checked) {
                       setCardFlipSteps(prev => { const n = {...prev}; delete n[t.id]; return n; });
                       // If flip mode was active but flip is now off, reset to spin
-                      if ((cardFlipModes[t.id] ?? 'spin') === 'flip') {
+                      if ((cardFlipModes[t.id] ?? 'flip') === 'flip') {
                         setCardFlipModes(prev => { const n = {...prev}; delete n[t.id]; return n; });
                       }
                     }
                   }}
-                  style={{ width: 14, height: 14, accentColor: isFlipDefault ? "#4ade80" : C.accent, cursor: "pointer" }} />
+                  style={{ width: 14, height: 14, accentColor: isFlipDefault ? "#4ade80" : "#f97316", cursor: "pointer" }} />
                 <span style={{ fontSize: 11, color: flipColor }}>Allow flipping 🦭</span>
               </label>
             );
@@ -3250,12 +3308,12 @@ function App() {
           {/* Allow mirror offset */}
           {(() => {
             const isMirrorOffDefault = isMirrorOffset(t) === isDefaultMirrorOffset(t);
-            const moColor = isMirrorOffDefault ? "#4ade80" : C.text;
+            const moColor = isMirrorOffDefault ? "#4ade80" : "#f97316";
             return (
               <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
                 <input type="checkbox" checked={isMirrorOffset(t)}
                   onChange={ev => setMirrorOffsetTiles(prev => ({ ...prev, [t.id]: ev.target.checked }))}
-                  style={{ width: 14, height: 14, accentColor: isMirrorOffDefault ? "#4ade80" : C.accent, cursor: "pointer" }} />
+                  style={{ width: 14, height: 14, accentColor: isMirrorOffDefault ? "#4ade80" : "#f97316", cursor: "pointer" }} />
                 <span style={{ fontSize: 11, color: moColor }}>Allow mirror offset 🌪️</span>
               </label>
             );
@@ -3264,7 +3322,7 @@ function App() {
           {(() => {
             const topDefault = !!(t.src && TILE_SETTINGS.priority.some(p => t.src.includes(p)));
             const isTopDefault = isPriority === topDefault;
-            const topColor = isTopDefault ? "#4ade80" : C.text;
+            const topColor = isTopDefault ? "#4ade80" : "#f97316";
             return (
               <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
                 <input type="checkbox" checked={isPriority}
@@ -3272,7 +3330,7 @@ function App() {
                     setPriorityTiles(prev => { const n = { ...prev }; if (ev.target.checked) n[t.id] = true; else delete n[t.id]; return n; });
                     if (ev.target.checked) setBottomTiles(prev => { const n = { ...prev }; delete n[t.id]; return n; });
                   }}
-                  style={{ width: 14, height: 14, accentColor: isTopDefault ? "#4ade80" : C.accent, cursor: "pointer" }} />
+                  style={{ width: 14, height: 14, accentColor: isTopDefault ? "#4ade80" : "#f97316", cursor: "pointer" }} />
                 <span style={{ fontSize: 11, color: topColor }}>Always render on top 🚨</span>
               </label>
             );
@@ -3281,7 +3339,7 @@ function App() {
           {(() => {
             const bottomDefault = !!(t.src && TILE_SETTINGS.bottomRender.some(p => t.src.includes(p)));
             const isBottomDefault = !!bottomTiles[t.id] === bottomDefault;
-            const botColor = isBottomDefault ? "#4ade80" : C.text;
+            const botColor = isBottomDefault ? "#4ade80" : "#f97316";
             return (
               <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
                 <input type="checkbox" checked={!!bottomTiles[t.id]}
@@ -3289,7 +3347,7 @@ function App() {
                     setBottomTiles(prev => { const n = { ...prev }; if (ev.target.checked) n[t.id] = true; else delete n[t.id]; return n; });
                     if (ev.target.checked) setPriorityTiles(prev => { const n = { ...prev }; delete n[t.id]; return n; });
                   }}
-                  style={{ width: 14, height: 14, accentColor: isBottomDefault ? "#4ade80" : C.accent, cursor: "pointer" }} />
+                  style={{ width: 14, height: 14, accentColor: isBottomDefault ? "#4ade80" : "#f97316", cursor: "pointer" }} />
                 <span style={{ fontSize: 11, color: botColor }}>Always render on bottom ⚓</span>
               </label>
             );
@@ -3297,12 +3355,12 @@ function App() {
           {/* Auto shadow */}
           {(() => {
             const shadowOn = !!autoShadowTiles[t.id];
-            const shadowColor = !shadowOn ? "#4ade80" : C.text;
+            const shadowColor = !shadowOn ? "#4ade80" : "#f97316";
             return (
               <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
                 <input type="checkbox" checked={shadowOn}
                   onChange={ev => setAutoShadowTiles(prev => { const n = { ...prev }; if (ev.target.checked) n[t.id] = true; else delete n[t.id]; return n; })}
-                  style={{ width: 14, height: 14, accentColor: C.accent, cursor: "pointer" }} />
+                  style={{ width: 14, height: 14, accentColor: !shadowOn ? "#4ade80" : "#f97316", cursor: "pointer" }} />
                 <span style={{ fontSize: 11, color: shadowColor }}>Auto shadow 👻</span>
               </label>
             );
@@ -3316,8 +3374,19 @@ function App() {
           </label>
 
           {!t.isDefault && (
-            <button style={{ ...btn(false, C.danger, "rgba(248,113,113,0.14)"), width: "100%", justifyContent: "center" }}
-              onClick={() => deleteTile(t.id)}>Delete tile</button>
+            deleteConfirmId === t.id ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 5, padding: "6px 0" }}>
+                <span style={{ fontSize: 11, color: C.danger, textAlign: "center" }}>Delete this tile from the panel?</span>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button style={{ ...btn(false), flex: 1, fontSize: 11 }} onClick={() => setDeleteConfirmId(null)}>Cancel</button>
+                  <button style={{ ...btn(true, C.danger, "rgba(248,113,113,0.18)"), flex: 1, fontSize: 11 }}
+                    onClick={() => { setDeleteConfirmId(null); deleteTile(t.id); }}>Delete</button>
+                </div>
+              </div>
+            ) : (
+              <button style={{ ...btn(false, C.danger, "rgba(248,113,113,0.14)"), width: "100%", justifyContent: "center" }}
+                onClick={() => setDeleteConfirmId(t.id)}>Delete tile</button>
+            )
           )}
           {t.isDefault && (
             <p style={{ fontSize: 11, color: C.muted, textAlign: "center" }}>Default tile — cannot be deleted.</p>
@@ -3370,6 +3439,9 @@ function App() {
       grid.forEach(row => row.forEach(id => { if (id != null) idsOnMap.add(id); }));
       const tilesOnMap = tiles.filter(t => idsOnMap.has(t.id));
       const spaceOnMap = idsOnMap.has(SPACE_TILE_ID);
+      // Ghost tile IDs: on the map but no tile object (deleted)
+      const ghostIds = [...idsOnMap].filter(id => id !== SPACE_TILE_ID && !getTile(id));
+      const isEmpty = tilesOnMap.length === 0 && !spaceOnMap && ghostIds.length === 0;
       return (
         <div className="modal-backdrop" onClick={close}>
           <div className="modal-box" style={{ maxWidth: 380 }} onClick={e => e.stopPropagation()}>
@@ -3377,11 +3449,24 @@ function App() {
               <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Replace — which tile?</span>
               <button onClick={close} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18 }}>×</button>
             </div>
-            {tilesOnMap.length === 0 && !spaceOnMap ? (
+            {isEmpty ? (
               <p style={{ fontSize: 12, color: C.muted, textAlign: "center", padding: "12px 0" }}>No tiles on map</p>
             ) : (
               <div style={{ overflowY: "auto", maxHeight: 300 }}>
-                <TileGridBox tileList={tilesOnMap} selected={replaceA} onSelect={setReplaceA} includeSpace={spaceOnMap} />
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(52px, 1fr))", gap: 5 }}>
+                  {tilesOnMap.map(t => <RCard key={t.id} t={t} selected={replaceA} onSelect={setReplaceA} />)}
+                  {spaceOnMap && <RCard key="space" t={null} selected={replaceA} onSelect={setReplaceA} isSpace />}
+                  {ghostIds.map(id => (
+                    <div key={`ghost${id}`} onClick={() => setReplaceA(id)}
+                      style={{ cursor: "pointer", borderRadius: 6, overflow: "hidden", aspectRatio: "1",
+                        border: `2px solid ${replaceA === id ? "#f97316" : C.border}`,
+                        background: replaceA === id ? "rgba(249,115,22,0.15)" : "rgba(249,115,22,0.05)",
+                        display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2 }}>
+                      <span style={{ fontSize: 20, lineHeight: 1 }}>⚠️</span>
+                      <span style={{ fontSize: 8, color: "#f97316", lineHeight: 1 }}>ghost</span>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
             <div style={{ display: "flex", gap: 8 }}>
@@ -3442,6 +3527,17 @@ function App() {
           </div>
           <div ref={replaceScrollRef} style={{ overflowY: "auto", maxHeight: 320, padding: "2px 0" }}>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(52px, 1fr))", gap: 5 }}>
+              {/* Empty (erase) card at the top */}
+              <SepLine label="Special" />
+              <div onClick={() => onSelect(REPLACE_ERASE_ID)}
+                style={{ cursor: "pointer", borderRadius: 6, overflow: "hidden", aspectRatio: "1",
+                  border: `2px solid ${replaceB === REPLACE_ERASE_ID ? "#ef4444" : C.border}`,
+                  background: replaceB === REPLACE_ERASE_ID ? "rgba(239,68,68,0.18)" : "transparent",
+                  display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 1 }}>
+                <span style={{ fontSize: 18, lineHeight: 1 }}>🗑️</span>
+                <span style={{ fontSize: 8, color: replaceB === REPLACE_ERASE_ID ? "#ef4444" : C.muted, lineHeight: 1 }}>empty</span>
+              </div>
+              <RCard key="space" t={null} selected={replaceB} onSelect={onSelect} isSpace />
               {/* Per-Ophelia-tileset collapsible sections (only shown tilesets) */}
               {Object.entries(tsByName).filter(([name]) => shownNames.has(name)).map(([name, tsTs]) => {
                 const isCollapsed = !!tsCollapsed[name];
@@ -3471,8 +3567,6 @@ function App() {
               {userTiles_.map(t => <RCard key={t.id} t={t} selected={replaceB} onSelect={onSelect} />)}
               {globalTiles_.length > 0 && <SepLine label="Global" />}
               {globalTiles_.map(t => <RCard key={t.id} t={t} selected={replaceB} onSelect={onSelect} />)}
-              <SepLine label="Special" />
-              <RCard key="space" t={null} selected={replaceB} onSelect={onSelect} isSpace />
             </div>
           </div>
           {replaceMsg ? (
@@ -3482,6 +3576,8 @@ function App() {
           ) : (
             <div style={{ display: "flex", gap: 8 }}>
               <button style={{ ...btn(false), flex: 1 }} onClick={() => { setReplaceStep(1); setReplaceB(null); }}>← Back</button>
+              <button style={{ ...btn(replaceB != null && replaceB !== REPLACE_ERASE_ID, C.accent, C.accentDim) }}
+                disabled={replaceB == null || replaceB === REPLACE_ERASE_ID} onClick={doSwap}>Swap all</button>
               <button style={{ ...btn(replaceB != null, C.accent, C.accentDim), flex: 1 }}
                 disabled={replaceB == null} onClick={doReplace}>Replace all</button>
             </div>
@@ -3548,6 +3644,40 @@ function App() {
     );
   };
 
+  // ── History modal ─────────────────────────────────────────────────
+  const HistoryModal = () => {
+    if (!historyModalOpen) return null;
+    const close = () => setHistoryModalOpen(false);
+    return (
+      <div className="modal-backdrop" onClick={close}>
+        <div className="modal-box" style={{ maxWidth: 340 }} onClick={e => e.stopPropagation()}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Action History</span>
+            <button onClick={close} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18 }}>×</button>
+          </div>
+          <div style={{ overflowY: "auto", maxHeight: 340, display: "flex", flexDirection: "column", gap: 3, padding: "4px 0" }}>
+            {history.map((snap, i) => {
+              const isCurrent = i === histIdx;
+              const label = i === 0 ? (snap.label || "Initial state") : (snap.label || "Draw");
+              return (
+                <div key={i} onClick={() => { restoreSnap(snap); setHistIdx(i); close(); }}
+                  style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 8px", borderRadius: 6, cursor: "pointer",
+                    background: isCurrent ? "rgba(37,99,235,0.18)" : "transparent",
+                    border: `1px solid ${isCurrent ? "rgba(37,99,235,0.5)" : C.border}`,
+                    transition: "background 0.1s" }}>
+                  <span style={{ fontSize: 10, color: isCurrent ? C.accentBright : C.muted, minWidth: 20, textAlign: "right", flexShrink: 0 }}>#{i + 1}</span>
+                  <span style={{ fontSize: 11, color: isCurrent ? C.accentBright : C.text, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
+                  {isCurrent && <span style={{ fontSize: 9, color: C.accentBright, background: "rgba(37,99,235,0.25)", borderRadius: 4, padding: "1px 5px" }}>current</span>}
+                </div>
+              );
+            })}
+          </div>
+          <p style={{ fontSize: 10, color: C.muted, textAlign: "center", margin: "4px 0 0" }}>Click any entry to jump to that state</p>
+        </div>
+      </div>
+    );
+  };
+
   // ── Failed tile warning modal ─────────────────────────────────────
   const FailedTileModal = () => {
     if (!failedWarning) return null;
@@ -3594,6 +3724,7 @@ function App() {
       selectionMode: { label: "Selection Mode", icon: "🖌️", color: C.accent, desc: "Controls how tiles are placed on the grid. Single: freehand paint. Line: draw a straight line between two points. Rectangle: fill a rectangular area. Fill: flood-fill all connected empty cells.", iconColor: null },
       mirroring: { label: "Mirroring", icon: "🪞", color: C.pale, desc: "Mirrors every paint action across one or more axes. Horizontal mirrors left↔right. Vertical mirrors top↔bottom. Diagonal applies a 180° point reflection. All three can be combined.", iconColor: null },
       convert: { label: "Convert", icon: "🔄", color: C.soft, desc: "Remaps tiles on the board from one tileset to another by matching tile names. Tiles with no equivalent in the target tileset are left as-is.", iconColor: null },
+      rotate: { label: "Rotate", icon: "🌀", color: "#2563eb", desc: "Click a rotatable tile on the map to rotate it one step. Spinning tiles (water, jumppads) cycle through 4 rotation steps; flippable tiles (fence, rope) cycle through 4 flip states. Non-rotatable tiles are skipped. Drag to pan the canvas like the Hand tool. If cells are highlighted, clicking anywhere rotates all rotatable tiles in the highlighted region.", iconColor: null },
       hotkeys: { label: "Hotkeys", icon: "⌨️", color: C.text, desc: "Keyboard shortcuts: E = Erase, W = Eyedropper, R = Rotate selected tile, Z = Undo, X = Redo, Ctrl+Z = Undo, Ctrl+Y = Redo, Escape = Clear highlight.", iconColor: null },
     };
     const def = toolDefs[infoTool];
@@ -3998,6 +4129,7 @@ function App() {
       <InfoModal />
       <ReplaceModal />
       <OTGSettingsModal />
+      <HistoryModal />
       <FailedTileModal />
       <ToolInfoModal />
       <MemoryModal />
@@ -4358,10 +4490,10 @@ function App() {
                         e.preventDefault();
                         const next = !allowTsMixing;
                         if (!next) {
-                          const firstShown = shownTilsetsRef.current?.[0] ?? shownAtlasTilesetsRef.current?.[0] ?? activeTilesetRef.current;
+                          const firstShown = activeTilesetRef.current ?? shownTilsetsRef.current?.[0] ?? shownAtlasTilesetsRef.current?.[0];
                           const isAtlas = firstShown && !manifest?.tilesets?.some(ts => ts.name === firstShown);
                           if (isAtlas) { setShownTilesets([]); setShownAtlasTilesets(firstShown ? [firstShown] : []); }
-                          else { const fallback = manifest?.tilesets?.[0]?.name; setShownTilesets(firstShown ? [firstShown] : (fallback ? [fallback] : [])); setShownAtlasTilesets([]); }
+                          else { setShownTilesets(firstShown ? [firstShown] : []); setShownAtlasTilesets([]); }
                         }
                         setAllowTsMixing(next);
                       }}>
@@ -4753,7 +4885,7 @@ function App() {
                   {(() => {
                     const isStarredErase = starredTiles.includes("erase");
                     return (
-                      <div onClick={() => { setEraser(true); setSel(null); setHandMode(false); setEyedropperMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
+                      <div onClick={() => { setEraser(true); setSel(null); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${eraser ? "#f87171" : C.border}`, background: eraser ? "rgba(248,113,113,0.22)" : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
                         <div style={{ borderRadius: 6, overflow: "hidden" }}>
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: eraser ? "rgba(248,113,113,0.38)" : "rgba(248,113,113,0.18)", padding: "2px 4px" }}>
@@ -4773,7 +4905,7 @@ function App() {
                   {(() => {
                     const isStarredHand = starredTiles.includes("hand");
                     return (
-                      <div onClick={() => { setHandMode(h => !h); setEraser(false); setSel(null); setEyedropperMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
+                      <div onClick={() => { setHandMode(h => !h); setEraser(false); setSel(null); setRotateMode(false); setEyedropperMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${handMode ? "#fbbf24" : C.border}`, background: handMode ? "rgba(251,191,36,0.14)" : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
                         <div style={{ borderRadius: 6, overflow: "hidden" }}>
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: handMode ? "rgba(251,191,36,0.28)" : "rgba(251,191,36,0.08)", padding: "2px 4px" }}>
@@ -4793,7 +4925,7 @@ function App() {
                   {(() => {
                     const isStarredEyedropper = starredTiles.includes("eyedropper");
                     return (
-                      <div onClick={() => { setEyedropperMode(prev => !prev); setEraser(false); setHandMode(false); if (!eyedropperMode) setSel(null); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
+                      <div onClick={() => { setEyedropperMode(prev => !prev); setEraser(false); setHandMode(false); setRotateMode(false); if (!eyedropperMode) setSel(null); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${eyedropperMode ? "#84cc16" : C.border}`, background: eyedropperMode ? "rgba(132,204,22,0.15)" : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
                         <div style={{ borderRadius: 6, overflow: "hidden" }}>
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: eyedropperMode ? "rgba(132,204,22,0.22)" : "rgba(132,204,22,0.08)", padding: "2px 4px" }}>
@@ -4814,7 +4946,7 @@ function App() {
                     const isStarredSpace = starredTiles.includes(SPACE_TILE_ID);
                     const spaceActive = sel === SPACE_TILE_ID && !eraser;
                     return (
-                      <div onClick={() => { setSel(SPACE_TILE_ID); setEraser(false); setHandMode(false); setEyedropperMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
+                      <div onClick={() => { setSel(SPACE_TILE_ID); setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer",
                           border: `2px solid ${spaceActive ? "#60a5fa" : C.border}`,
                           background: spaceActive ? "rgba(96,165,250,0.15)" : "rgba(255,255,255,0.03)",
@@ -4834,11 +4966,37 @@ function App() {
                       </div>
                     );
                   })()}
-                  {/* 1e. Highlight */}
+                  {/* 1e. Rotate */}
+                  {(() => {
+                    const isStarredRotate = starredTiles.includes("rotate");
+                    return (
+                      <div onClick={() => { setRotateMode(r => !r); setEraser(false); setHandMode(false); setEyedropperMode(false); }}
+                        style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer",
+                          border: `2px solid ${rotateMode ? "#2563eb" : C.border}`,
+                          background: rotateMode ? "rgba(37,99,235,0.15)" : "rgba(255,255,255,0.03)",
+                          transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
+                        <div style={{ borderRadius: 6, overflow: "hidden" }}>
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "center",
+                            background: rotateMode ? "rgba(37,99,235,0.28)" : "rgba(37,99,235,0.08)", padding: "2px 4px" }}>
+                            <span style={{ fontSize: 9, fontWeight: 700, color: rotateMode ? "#2563eb" : C.muted }}>Rotate</span>
+                          </div>
+                          <div style={{ height: cardSz - 18, background: C.panelDeep, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                            <span style={{ fontSize: 20, lineHeight: 1, opacity: rotateMode ? 1 : 0.55 }}>🌀</span>
+                          </div>
+                        </div>
+                        <span onClick={e => { e.stopPropagation(); setInfoTool("rotate"); }}
+                          style={{ position: "absolute", top: -7, right: -7, width: 18, height: 18, fontSize: 15, cursor: "pointer",
+                            color: "rgba(255,255,255,0.85)", lineHeight: "18px", textAlign: "center",
+                            zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
+                          title={isStarredRotate ? "Starred — click for info" : "Rotate info"}>{isStarredRotate ? "★" : "ⓘ"}</span>
+                      </div>
+                    );
+                  })()}
+                  {/* 1f. Highlight */}
                   {(() => {
                     const isStarredHighlight = starredTiles.includes("highlight");
                     return (
-                      <div onClick={() => { const turningOn = !highlightMode; setHighlightMode(h => !h); setEraser(false); setHandMode(false); setEyedropperMode(false); if (turningOn) { setSel(null); } else { setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); } }}
+                      <div onClick={() => { const turningOn = !highlightMode; setHighlightMode(h => !h); setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); if (turningOn) { setSel(null); } else { setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); } }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer",
                           border: `2px solid ${highlightMode ? "#a78bfa" : C.border}`,
                           background: highlightMode ? "rgba(167,139,250,0.15)" : "rgba(255,255,255,0.03)",
@@ -4996,7 +5154,7 @@ function App() {
             {/* Shortcut bar — selected tile + starred, when panel is collapsed */}
             {!tilesOpen && (() => {
               // Determine current selection key for dedup check
-              const selKey = eraser ? "erase" : handMode ? "hand" : eyedropperMode ? "eyedropper" : highlightMode ? "highlight" : sel;
+              const selKey = eraser ? "erase" : handMode ? "hand" : rotateMode ? "rotate" : eyedropperMode ? "eyedropper" : highlightMode ? "highlight" : sel;
               const selAlreadyStarred = selKey !== null && starredTiles.includes(selKey);
               // Render a mini-card for the currently selected item (if not already starred)
               const SelectedCard = () => {
@@ -5019,6 +5177,11 @@ function App() {
                 if (selKey === "highlight") return (
                   <div style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", border: `1px solid #a78bfa`, background: "rgba(167,139,250,0.22)" }} title="Highlight (selected)">
                     <span style={{ fontSize: 14 }}>🪄</span>
+                  </div>
+                );
+                if (selKey === "rotate") return (
+                  <div style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", border: `1px solid #2563eb`, background: "rgba(37,99,235,0.22)" }} title="Rotate (selected)">
+                    <span style={{ fontSize: 14 }}>🌀</span>
                   </div>
                 );
                 if (selKey === SPACE_TILE_ID) return (
@@ -5078,7 +5241,7 @@ function App() {
                   {/* Tool shortcuts (starred string IDs: erase, hand, eyedropper, highlight, convert, selectionGroup, mirrorGroup) */}
                   {starredTools.map(sid => {
                   if (sid === "erase") return (
-                    <div key="erase" onClick={() => { setEraser(true); setSel(null); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
+                    <div key="erase" onClick={() => { setEraser(true); setSel(null); setHandMode(false); setRotateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
                       style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
                         border: `1px solid ${eraser ? C.danger : C.border}`, background: eraser ? "rgba(248,113,113,0.22)" : "rgba(255,255,255,0.04)" }}
                       title="Erase">
@@ -5086,7 +5249,7 @@ function App() {
                     </div>
                   );
                   if (sid === "hand") return (
-                    <div key="hand" onClick={() => { setHandMode(h => !h); setEraser(false); setSel(null); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
+                    <div key="hand" onClick={() => { setHandMode(h => !h); setEraser(false); setSel(null); setRotateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
                       style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
                         border: `1px solid ${handMode ? "#fbbf24" : C.border}`, background: handMode ? "rgba(251,191,36,0.14)" : "rgba(255,255,255,0.04)" }}
                       title="Hand">
@@ -5117,7 +5280,7 @@ function App() {
                     );
                   }
                   if (sid === "eyedropper") return (
-                    <div key="eyedropper" onClick={() => { setEyedropperMode(v => !v); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
+                    <div key="eyedropper" onClick={() => { setEyedropperMode(v => !v); setEraser(false); setHandMode(false); setRotateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
                       style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
                         border: `1px solid ${eyedropperMode ? "#84cc16" : C.border}`, background: eyedropperMode ? "rgba(132,204,22,0.22)" : "rgba(255,255,255,0.04)" }}
                       title="Eyedropper">
@@ -5125,11 +5288,19 @@ function App() {
                     </div>
                   );
                   if (sid === "highlight") return (
-                    <div key="highlight" onClick={() => { const on = !highlightMode; setHighlightMode(h => !h); setEraser(false); setHandMode(false); setEyedropperMode(false); if (!on) { setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); } }}
+                    <div key="highlight" onClick={() => { const on = !highlightMode; setHighlightMode(h => !h); setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); if (!on) { setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); } }}
                       style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
                         border: `1px solid ${highlightMode ? "#a78bfa" : C.border}`, background: highlightMode ? "rgba(167,139,250,0.22)" : "rgba(255,255,255,0.04)" }}
                       title="Highlight">
                       <span style={{ fontSize: 14 }}>🪄</span>
+                    </div>
+                  );
+                  if (sid === "rotate") return (
+                    <div key="rotate" onClick={() => { setRotateMode(r => !r); setEraser(false); setHandMode(false); setHighlightMode(false); setEyedropperMode(false); }}
+                      style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+                        border: `1px solid ${rotateMode ? "#2563eb" : C.border}`, background: rotateMode ? "rgba(37,99,235,0.22)" : "rgba(255,255,255,0.04)" }}
+                      title="Rotate">
+                      <span style={{ fontSize: 14 }}>🌀</span>
                     </div>
                   );
                   return null;
@@ -5253,23 +5424,66 @@ function App() {
 
         {/* ── CANVAS ───────────────────────────────────────────────── */}
           <div ref={scrollRef}
-            style={{ flex: 1, minWidth: 0, height: "100%", overflow: "auto", background: C.bg, cursor: handMode ? "grab" : (dragTile || highlightDragOffset ? "grabbing" : eyedropperMode ? "cell" : highlightMode ? "copy" : "crosshair") }}
+            style={{ flex: 1, minWidth: 0, height: "100%", overflow: "auto", background: C.bg, cursor: handMode ? "grab" : rotateMode ? "cell" : (dragTile || highlightDragOffset ? "grabbing" : eyedropperMode ? "cell" : highlightMode ? "copy" : "crosshair") }}
             onWheel={onWheel}
             onMouseDown={e => {
-              if (!handModeRef.current || isDraggingRef.current) return;
-              // PC hand-mode: drag to pan
+              const wantsHand   = handModeRef.current   && !isDraggingRef.current;
+              const wantsRotate = rotateModeRef.current && !isDraggingRef.current;
+              if (!wantsHand && !wantsRotate) return;
               const el = scrollRef.current;
               const startX = e.clientX, startY = e.clientY;
               const startScrollLeft = el.scrollLeft, startScrollTop = el.scrollTop;
+              const pendingCell = wantsRotate ? rotatePendingCellRef.current : null;
+              let didDrag = false;
               el.style.cursor = "grabbing";
               const onMove = ev => {
-                el.scrollLeft = startScrollLeft - (ev.clientX - startX);
-                el.scrollTop  = startScrollTop  - (ev.clientY - startY);
+                if (!didDrag && (Math.abs(ev.clientX - startX) > 4 || Math.abs(ev.clientY - startY) > 4)) didDrag = true;
+                if (wantsHand || didDrag) {
+                  el.scrollLeft = startScrollLeft - (ev.clientX - startX);
+                  el.scrollTop  = startScrollTop  - (ev.clientY - startY);
+                }
               };
               const onUp = () => {
                 el.style.cursor = "";
                 document.removeEventListener('mousemove', onMove);
                 document.removeEventListener('mouseup',   onUp);
+                if (wantsRotate && !didDrag) {
+                  const highlighted = highlightedCellsRef.current;
+                  const cellsToProcess = highlighted.size > 0
+                    ? [...highlighted].map(k => k.split(',').map(Number))
+                    : (pendingCell ? [pendingCell] : []);
+                  if (cellsToProcess.length > 0) {
+                    const newRots  = { ...gridRotationsRef.current };
+                    const newFlips = { ...gridFlipsRef.current };
+                    let changed = false;
+                    for (const [r, c] of cellsToProcess) {
+                      const id = gridRef.current?.[r]?.[c];
+                      if (id == null) continue;
+                      const tile = allTilesByIdRef.current[id];
+                      if (!tile) continue;
+                      const canSpin = rotatableMapRef.current[id] !== undefined ? rotatableMapRef.current[id] : !!(tile.src && TILE_SETTINGS.rotatable.some(p => tile.src.includes(p)));
+                      const canFlip = allowFlipMapRef.current[id] !== undefined ? allowFlipMapRef.current[id] : !!(tile.src && TILE_SETTINGS.flippable.some(p => tile.src.includes(p)));
+                      if (!canSpin && !canFlip) continue;
+                      if (canSpin) {
+                        const cur = newRots[`${r},${c}`] ?? 0;
+                        const next = (cur + 1) % 4;
+                        if (next === 0) delete newRots[`${r},${c}`]; else newRots[`${r},${c}`] = next;
+                      } else {
+                        const cur = newFlips[`${r},${c}`] ?? 0;
+                        const next = (cur + 1) % 4;
+                        if (next === 0) delete newFlips[`${r},${c}`]; else newFlips[`${r},${c}`] = next;
+                      }
+                      changed = true;
+                    }
+                    if (changed) {
+                      setGridRotations(newRots); gridRotationsRef.current = newRots;
+                      setGridFlips(newFlips);    gridFlipsRef.current = newFlips;
+                      histLabelRef.current = "Rotate";
+                      pushHistRef.current?.();
+                    }
+                  }
+                }
+                rotatePendingCellRef.current = null;
               };
               document.addEventListener('mousemove', onMove);
               document.addEventListener('mouseup',   onUp);
@@ -5403,6 +5617,45 @@ function App() {
                     ];
                   })
                 )}
+
+                {/* Rotate mode badges — 🐬 on spinnable tiles, 🦭 on flip-only tiles */}
+                {rotateMode && (() => {
+                  const cellPx = CELL * zoom;
+                  const fontSize = Math.max(8, Math.min(14, cellPx * 0.38));
+                  const badges = [];
+                  grid.forEach((row, r) => row.forEach((id, c) => {
+                    if (!id) return;
+                    const t = getTile(id);
+                    if (!t || t.isSpace) return;
+                    const canSpin = rotatableMapRef.current[t.id] !== undefined ? rotatableMapRef.current[t.id] : isDefaultRotatable(t);
+                    const canFlip = allowFlipMapRef.current[t.id] !== undefined ? allowFlipMapRef.current[t.id] : isDefaultFlippable(t);
+                    if (!canSpin && !canFlip) return;
+                    const inHighlight = highlightedCells.size > 0 && highlightedCells.has(`${r},${c}`);
+                    badges.push(
+                      <div key={`rbadge${r}-${c}`} style={{ position: "absolute", left: c * cellPx, top: (r + 1) * cellPx, width: cellPx, height: cellPx, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none", zIndex: 10002 }}>
+                        <span style={{ fontSize, lineHeight: 1, opacity: inHighlight ? 1 : 0.65, filter: inHighlight ? "drop-shadow(0 0 3px rgba(37,99,235,0.9))" : "none" }}>{canSpin ? "🐬" : "🦭"}</span>
+                      </div>
+                    );
+                  }));
+                  return badges;
+                })()}
+
+                {/* Ghost tile warning overlay — ⚠️ on cells with deleted tile IDs */}
+                {(() => {
+                  const cellPx = CELL * zoom;
+                  const fontSize = Math.max(10, Math.min(18, cellPx * 0.45));
+                  const warnings = [];
+                  grid.forEach((row, r) => row.forEach((id, c) => {
+                    if (id == null || id === SPACE_TILE_ID) return;
+                    if (getTile(id)) return;
+                    warnings.push(
+                      <div key={`ghost${r}-${c}`} style={{ position: "absolute", left: c * cellPx, top: (r + 1) * cellPx, width: cellPx, height: cellPx, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none", zIndex: 10003, background: "rgba(249,115,22,0.18)", borderRadius: 2 }}>
+                        <span style={{ fontSize, lineHeight: 1 }}>⚠️</span>
+                      </div>
+                    );
+                  }));
+                  return warnings.length > 0 ? warnings : null;
+                })()}
 
                 {/* Selection preview overlay + drag target cell highlight */}
                 {(previewCells || rectPreview || dragTargetCell) && (() => {
@@ -5538,7 +5791,7 @@ function App() {
                 mirrorV: "H", mirrorH: "V", mirrorD: "D",
                 guides: "🧭", offsetCenters: "🎯", replace: "♻️", overwrite: "🧱",
                 otg: "🧩",
-                eyedropper: "🧪", highlight: "🪄",
+                eyedropper: "🧪", highlight: "🪄", rotate: "🌀",
                 convert: "🔄",
               };
               const toolActionMap = {
@@ -5556,7 +5809,8 @@ function App() {
                 overwrite: () => setMirrorSettings(p => ({ ...p, allowSwap: !p.allowSwap })),
                 otg: () => setShowOTG(v => !v),
                 eyedropper: () => { setEyedropperMode(v => !v); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); },
-                highlight: () => { const on = !highlightMode; setHighlightMode(h => !h); setEraser(false); setHandMode(false); setEyedropperMode(false); if (!on) { setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); } },
+                highlight: () => { const on = !highlightMode; setHighlightMode(h => !h); setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); if (!on) { setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); } },
+                rotate: () => { setRotateMode(r => !r); setEraser(false); setHandMode(false); setHighlightMode(false); setEyedropperMode(false); },
                 convert: () => setConvertOpen(true),
               };
               const toolActiveMap = {
@@ -5573,6 +5827,7 @@ function App() {
                 otg: showOTG,
                 eyedropper: eyedropperMode,
                 highlight: highlightMode,
+                rotate: rotateMode,
                 convert: false,
               };
               const toolColorMap = {
@@ -5581,7 +5836,7 @@ function App() {
                 mirrorV: C.pale, mirrorH: C.soft, mirrorD: C.accentBright,
                 guides: gColor, offsetCenters: ocColor, replace: C.soft, overwrite: owColor,
                 otg: C.danger,
-                eyedropper: "#84cc16", highlight: "#a78bfa",
+                eyedropper: "#84cc16", highlight: "#a78bfa", rotate: "#2563eb",
                 convert: C.soft,
               };
               // Only show tool-key starred items (not numeric tile IDs)
@@ -5690,14 +5945,13 @@ function App() {
                     e.preventDefault();
                     const next = !allowTsMixing;
                     if (!next) {
-                      const firstShown = shownTilsetsRef.current?.[0] ?? shownAtlasTilesetsRef.current?.[0] ?? activeTilesetRef.current;
+                      const firstShown = activeTilesetRef.current ?? shownTilsetsRef.current?.[0] ?? shownAtlasTilesetsRef.current?.[0];
                       const isAtlas = firstShown && !manifest?.tilesets?.some(ts => ts.name === firstShown);
                       if (isAtlas) {
                         setShownTilesets([]);
                         setShownAtlasTilesets(firstShown ? [firstShown] : []);
                       } else {
-                        const fallback = manifest?.tilesets?.[0]?.name;
-                        setShownTilesets(firstShown ? [firstShown] : (fallback ? [fallback] : []));
+                        setShownTilesets(firstShown ? [firstShown] : []);
                         setShownAtlasTilesets([]);
                       }
                     }
@@ -5845,12 +6099,15 @@ function App() {
 
         {/* Rows 2-3: foldable */}
         {bottomOpen && (<>
-          {/* Row 2: Clear | Map name | Download */}
+          {/* Row 2: Clear | History | Map name | Download */}
           <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 8, padding: "3px 14px" }}>
             <button style={btn(true, "#ef4444", "rgba(239,68,68,0.25)")}
-              onClick={() => { if (confirm("Clear the whole grid?")) setGrid(Array.from({ length: gridH }, () => Array(gridW).fill(null))); }}>
+              onClick={() => { if (confirm("Clear the whole grid?")) { histLabelRef.current = "Clear Map"; pushHistorySnapshot(); setGrid(Array.from({ length: gridH }, () => Array(gridW).fill(null))); } }}>
               Clear Map
             </button>
+            <button style={{ ...btn(true, C.accent, C.accentDim), fontSize: 13, padding: "3px 7px" }}
+              title={`History (${histIdx + 1}/${history.length})`}
+              onClick={() => setHistoryModalOpen(true)}>📋</button>
             <input type="text" value={mapName} onChange={e => setMapName(e.target.value)}
               placeholder="map name…"
               style={{ width: 180, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 6, color: C.text, fontFamily: "'Inter', sans-serif", fontSize: 11, padding: "4px 8px", outline: "none" }}
@@ -5889,11 +6146,12 @@ function App() {
                     } else {
                       const p = allBgPresets[key];
                       if (p?.bg1) {
+                        histLabelRef.current = "Background";
                         pushHistorySnapshot();
                         applyBgPreset(key, p.bg1, p.bg2);
                       } else if (key && !OPHELIA_BG[key]) {
                         loadAtlasTilesetBgColors(key).then(colors => {
-                          if (colors?.bg1) { pushHistorySnapshot(); applyBgPreset(key, colors.bg1, colors.bg2); }
+                          if (colors?.bg1) { histLabelRef.current = "Background"; pushHistorySnapshot(); applyBgPreset(key, colors.bg1, colors.bg2); }
                         });
                       }
                     }
