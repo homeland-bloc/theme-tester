@@ -116,6 +116,7 @@ const GLOBAL_ID_START  = 200; // 200–299: global tiles (water, spawns, objecti
 const ATLAS_ID_START   = 300; // 300–499 (and 700–9999): atlas tiles (She-Fairy/atlas-horizon)
 const ATLAS_ID_MAX     = 9999; // upper bound for atlas tile IDs (skips user range 500-699)
 const SPACE_TILE_ID    = 998; // special: makes a cell fully transparent
+const REPLACE_ERASE_ID = -1;  // sentinel: replace-with-empty in the Replace modal
 
 // Module-level cache for GitHub API responses (survives re-renders, not page reload)
 const atlasApiCache = new Map(); // url → resolved data
@@ -464,6 +465,8 @@ function App() {
   const [replaceStep, setReplaceStep] = useState(1); // 1=pick tile on map, 2=pick replacement
   const [replaceA,    setReplaceA]  = useState(null);
   const [replaceB,    setReplaceB]  = useState(null);
+  const [deleteConfirmId, setDeleteConfirmId] = useState(null);
+  const [historyModalOpen, setHistoryModalOpen] = useState(false);
   // OTG (One Tile Gap) detection
   const [showOTG,          setShowOTG]          = useState(false);
   const [otgOpen,          setOtgOpen]          = useState(false);
@@ -555,6 +558,7 @@ function App() {
   const hoveredTilesRef   = useRef(new Set()); // accumulated "r,c" strings for line mode
   const commitOnUpRef     = useRef(null);     // commitSelectionOnMouseUp
   const pushHistRef       = useRef(null);     // pushHistorySnapshot
+  const histLabelRef      = useRef("Draw");   // label for next history snapshot
   const dragTileRef       = useRef(null);     // mirrors dragTile for event-handler closures
   const isDraggingRef     = useRef(false);    // true while a tile is being drag-moved
   const setGridStableRef  = useRef(null);     // always-current setGrid for touch handler closures
@@ -1364,7 +1368,9 @@ function App() {
   // Push the current grid as a history snapshot (called once on mousedown, before any paint).
   // All cell writes during a drag use skipHistory=true, so the whole drag is one undo step.
   const pushHistorySnapshot = useCallback(() => {
-    const snap = { grid, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1, bg2, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current };
+    const label = histLabelRef.current || "Draw";
+    histLabelRef.current = "Draw";
+    const snap = { grid, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1, bg2, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current, label };
     setHistory(h => {
       const trimmed = h.slice(0, histIdx + 1);
       const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
@@ -2114,7 +2120,8 @@ function App() {
       else if (mode === 'line') setPreviewCells([[r, c]]);
       else if (mode === 'rect') setRectPreview({ r1: r, c1: c, r2: r, c2: c });
       else if (mode === 'fill') {
-        const fillSet = bfsFill(r, c, gridRef.current, gridWRef.current, gridHRef.current);
+        const hasCell = gridRef.current?.[r]?.[c] != null;
+        const fillSet = bfsFill(r, c, gridRef.current, gridWRef.current, gridHRef.current, hasCell);
         hoveredTilesRef.current = fillSet;
         setPreviewCells([...fillSet].map(k => k.split(',').map(Number)));
       }
@@ -2635,7 +2642,8 @@ function App() {
       else if (mode === 'fill') {
         const bfs = bfsFillRef.current;
         if (bfs) {
-          const fillSet = bfs(r, c, gridRef.current, gridWRef.current, gridHRef.current);
+          const hasCell = gridRef.current?.[r]?.[c] != null;
+          const fillSet = bfs(r, c, gridRef.current, gridWRef.current, gridHRef.current, hasCell);
           hoveredTilesRef.current = fillSet;
           setPreviewCells([...fillSet].map(k => k.split(',').map(Number)));
         }
@@ -2955,6 +2963,14 @@ function App() {
   };
 
   // ── Replace A → B ─────────────────────────────────────────────────
+  const tileDisplayName = id => {
+    if (id == null) return "?";
+    if (id === SPACE_TILE_ID) return "Space";
+    if (id === REPLACE_ERASE_ID) return "Empty";
+    const t = getTile(id);
+    return (t ? (t.isSpace ? "Space" : deriveCodename(t.src)) : null) || `#${id}`;
+  };
+
   const doReplace = () => {
     if (replaceA == null || replaceB == null) return;
     // Count synchronously before setGrid (updater is async in React 18)
@@ -2965,11 +2981,37 @@ function App() {
       replaceMsgTimerRef.current = setTimeout(() => setReplaceMsg(""), 2500);
       return;
     }
-    setGrid(prev => prev.map(row => row.map(id => id === replaceA ? replaceB : id)));
-    const tileA = getTile(replaceA); const tileB = getTile(replaceB);
-    const nameA = (tileA?.isSpace ? "Space" : deriveCodename(tileA?.src)) || (tileA ? `#${replaceA}` : "?");
-    const nameB = (tileB?.isSpace ? "Space" : deriveCodename(tileB?.src)) || (tileB ? `#${replaceB}` : "?");
+    const dest = replaceB === REPLACE_ERASE_ID ? null : replaceB;
+    const nameA = tileDisplayName(replaceA);
+    const nameB = tileDisplayName(replaceB);
+    histLabelRef.current = `Replace ${nameA} → ${nameB}`;
+    pushHistRef.current?.();
+    setGrid(prev => prev.map(row => row.map(id => id === replaceA ? dest : id)));
     setReplaceMsg(`✓ Replaced ${count} × ${nameA} → ${nameB}`);
+    if (replaceMsgTimerRef.current) clearTimeout(replaceMsgTimerRef.current);
+    replaceMsgTimerRef.current = setTimeout(() => {
+      setReplaceMsg("");
+      setReplaceOpen(false); setReplaceStep(1); setReplaceA(null); setReplaceB(null);
+    }, 2000);
+  };
+
+  const doSwap = () => {
+    if (replaceA == null || replaceB == null) return;
+    if (replaceB === REPLACE_ERASE_ID) return;
+    const countA = grid.reduce((s, row) => s + row.filter(id => id === replaceA).length, 0);
+    const countB = grid.reduce((s, row) => s + row.filter(id => id === replaceB).length, 0);
+    if (countA === 0 && countB === 0) {
+      setReplaceMsg("⚠ Neither tile found on the map.");
+      if (replaceMsgTimerRef.current) clearTimeout(replaceMsgTimerRef.current);
+      replaceMsgTimerRef.current = setTimeout(() => setReplaceMsg(""), 2500);
+      return;
+    }
+    const nameA = tileDisplayName(replaceA);
+    const nameB = tileDisplayName(replaceB);
+    histLabelRef.current = `Swap ${nameA} ↔ ${nameB}`;
+    pushHistRef.current?.();
+    setGrid(prev => prev.map(row => row.map(id => id === replaceA ? replaceB : id === replaceB ? replaceA : id)));
+    setReplaceMsg(`✓ Swapped ${nameA} ↔ ${nameB}`);
     if (replaceMsgTimerRef.current) clearTimeout(replaceMsgTimerRef.current);
     replaceMsgTimerRef.current = setTimeout(() => {
       setReplaceMsg("");
@@ -3140,11 +3182,11 @@ function App() {
     );
 
     return (
-      <div className="modal-backdrop" onClick={() => setInfoTile(null)}>
+      <div className="modal-backdrop" onClick={() => { setInfoTile(null); setDeleteConfirmId(null); }}>
         <div className="modal-box" onClick={e => e.stopPropagation()}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Tile info</span>
-            <button onClick={() => setInfoTile(null)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
+            <button onClick={() => { setInfoTile(null); setDeleteConfirmId(null); }} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
           </div>
           <div style={{ background: C.panelDeep, borderRadius: 8, padding: 12, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 120 }}>
             <div className="tile-img-checker" style={{ borderRadius: 4, overflow: "hidden" }}>
@@ -3332,8 +3374,19 @@ function App() {
           </label>
 
           {!t.isDefault && (
-            <button style={{ ...btn(false, C.danger, "rgba(248,113,113,0.14)"), width: "100%", justifyContent: "center" }}
-              onClick={() => deleteTile(t.id)}>Delete tile</button>
+            deleteConfirmId === t.id ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 5, padding: "6px 0" }}>
+                <span style={{ fontSize: 11, color: C.danger, textAlign: "center" }}>Delete this tile from the panel?</span>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button style={{ ...btn(false), flex: 1, fontSize: 11 }} onClick={() => setDeleteConfirmId(null)}>Cancel</button>
+                  <button style={{ ...btn(true, C.danger, "rgba(248,113,113,0.18)"), flex: 1, fontSize: 11 }}
+                    onClick={() => { setDeleteConfirmId(null); deleteTile(t.id); }}>Delete</button>
+                </div>
+              </div>
+            ) : (
+              <button style={{ ...btn(false, C.danger, "rgba(248,113,113,0.14)"), width: "100%", justifyContent: "center" }}
+                onClick={() => setDeleteConfirmId(t.id)}>Delete tile</button>
+            )
           )}
           {t.isDefault && (
             <p style={{ fontSize: 11, color: C.muted, textAlign: "center" }}>Default tile — cannot be deleted.</p>
@@ -3386,6 +3439,9 @@ function App() {
       grid.forEach(row => row.forEach(id => { if (id != null) idsOnMap.add(id); }));
       const tilesOnMap = tiles.filter(t => idsOnMap.has(t.id));
       const spaceOnMap = idsOnMap.has(SPACE_TILE_ID);
+      // Ghost tile IDs: on the map but no tile object (deleted)
+      const ghostIds = [...idsOnMap].filter(id => id !== SPACE_TILE_ID && !getTile(id));
+      const isEmpty = tilesOnMap.length === 0 && !spaceOnMap && ghostIds.length === 0;
       return (
         <div className="modal-backdrop" onClick={close}>
           <div className="modal-box" style={{ maxWidth: 380 }} onClick={e => e.stopPropagation()}>
@@ -3393,11 +3449,24 @@ function App() {
               <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Replace — which tile?</span>
               <button onClick={close} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18 }}>×</button>
             </div>
-            {tilesOnMap.length === 0 && !spaceOnMap ? (
+            {isEmpty ? (
               <p style={{ fontSize: 12, color: C.muted, textAlign: "center", padding: "12px 0" }}>No tiles on map</p>
             ) : (
               <div style={{ overflowY: "auto", maxHeight: 300 }}>
-                <TileGridBox tileList={tilesOnMap} selected={replaceA} onSelect={setReplaceA} includeSpace={spaceOnMap} />
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(52px, 1fr))", gap: 5 }}>
+                  {tilesOnMap.map(t => <RCard key={t.id} t={t} selected={replaceA} onSelect={setReplaceA} />)}
+                  {spaceOnMap && <RCard key="space" t={null} selected={replaceA} onSelect={setReplaceA} isSpace />}
+                  {ghostIds.map(id => (
+                    <div key={`ghost${id}`} onClick={() => setReplaceA(id)}
+                      style={{ cursor: "pointer", borderRadius: 6, overflow: "hidden", aspectRatio: "1",
+                        border: `2px solid ${replaceA === id ? "#f97316" : C.border}`,
+                        background: replaceA === id ? "rgba(249,115,22,0.15)" : "rgba(249,115,22,0.05)",
+                        display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2 }}>
+                      <span style={{ fontSize: 20, lineHeight: 1 }}>⚠️</span>
+                      <span style={{ fontSize: 8, color: "#f97316", lineHeight: 1 }}>ghost</span>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
             <div style={{ display: "flex", gap: 8 }}>
@@ -3458,6 +3527,17 @@ function App() {
           </div>
           <div ref={replaceScrollRef} style={{ overflowY: "auto", maxHeight: 320, padding: "2px 0" }}>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(52px, 1fr))", gap: 5 }}>
+              {/* Empty (erase) card at the top */}
+              <SepLine label="Special" />
+              <div onClick={() => onSelect(REPLACE_ERASE_ID)}
+                style={{ cursor: "pointer", borderRadius: 6, overflow: "hidden", aspectRatio: "1",
+                  border: `2px solid ${replaceB === REPLACE_ERASE_ID ? "#ef4444" : C.border}`,
+                  background: replaceB === REPLACE_ERASE_ID ? "rgba(239,68,68,0.18)" : "transparent",
+                  display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 1 }}>
+                <span style={{ fontSize: 18, lineHeight: 1 }}>🗑️</span>
+                <span style={{ fontSize: 8, color: replaceB === REPLACE_ERASE_ID ? "#ef4444" : C.muted, lineHeight: 1 }}>empty</span>
+              </div>
+              <RCard key="space" t={null} selected={replaceB} onSelect={onSelect} isSpace />
               {/* Per-Ophelia-tileset collapsible sections (only shown tilesets) */}
               {Object.entries(tsByName).filter(([name]) => shownNames.has(name)).map(([name, tsTs]) => {
                 const isCollapsed = !!tsCollapsed[name];
@@ -3487,8 +3567,6 @@ function App() {
               {userTiles_.map(t => <RCard key={t.id} t={t} selected={replaceB} onSelect={onSelect} />)}
               {globalTiles_.length > 0 && <SepLine label="Global" />}
               {globalTiles_.map(t => <RCard key={t.id} t={t} selected={replaceB} onSelect={onSelect} />)}
-              <SepLine label="Special" />
-              <RCard key="space" t={null} selected={replaceB} onSelect={onSelect} isSpace />
             </div>
           </div>
           {replaceMsg ? (
@@ -3498,6 +3576,8 @@ function App() {
           ) : (
             <div style={{ display: "flex", gap: 8 }}>
               <button style={{ ...btn(false), flex: 1 }} onClick={() => { setReplaceStep(1); setReplaceB(null); }}>← Back</button>
+              <button style={{ ...btn(replaceB != null && replaceB !== REPLACE_ERASE_ID, C.accent, C.accentDim) }}
+                disabled={replaceB == null || replaceB === REPLACE_ERASE_ID} onClick={doSwap}>Swap all</button>
               <button style={{ ...btn(replaceB != null, C.accent, C.accentDim), flex: 1 }}
                 disabled={replaceB == null} onClick={doReplace}>Replace all</button>
             </div>
@@ -3559,6 +3639,40 @@ function App() {
             <button style={{ ...btn(false), flex: 1 }} onClick={() => setOtgWallOverrides({})}>Reset defaults</button>
             <button style={{ ...btn(true, C.accent, C.accentDim), flex: 1 }} onClick={close}>Done</button>
           </div>
+        </div>
+      </div>
+    );
+  };
+
+  // ── History modal ─────────────────────────────────────────────────
+  const HistoryModal = () => {
+    if (!historyModalOpen) return null;
+    const close = () => setHistoryModalOpen(false);
+    return (
+      <div className="modal-backdrop" onClick={close}>
+        <div className="modal-box" style={{ maxWidth: 340 }} onClick={e => e.stopPropagation()}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Action History</span>
+            <button onClick={close} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18 }}>×</button>
+          </div>
+          <div style={{ overflowY: "auto", maxHeight: 340, display: "flex", flexDirection: "column", gap: 3, padding: "4px 0" }}>
+            {history.map((snap, i) => {
+              const isCurrent = i === histIdx;
+              const label = i === 0 ? (snap.label || "Initial state") : (snap.label || "Draw");
+              return (
+                <div key={i} onClick={() => { restoreSnap(snap); setHistIdx(i); close(); }}
+                  style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 8px", borderRadius: 6, cursor: "pointer",
+                    background: isCurrent ? "rgba(37,99,235,0.18)" : "transparent",
+                    border: `1px solid ${isCurrent ? "rgba(37,99,235,0.5)" : C.border}`,
+                    transition: "background 0.1s" }}>
+                  <span style={{ fontSize: 10, color: isCurrent ? C.accentBright : C.muted, minWidth: 20, textAlign: "right", flexShrink: 0 }}>#{i + 1}</span>
+                  <span style={{ fontSize: 11, color: isCurrent ? C.accentBright : C.text, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
+                  {isCurrent && <span style={{ fontSize: 9, color: C.accentBright, background: "rgba(37,99,235,0.25)", borderRadius: 4, padding: "1px 5px" }}>current</span>}
+                </div>
+              );
+            })}
+          </div>
+          <p style={{ fontSize: 10, color: C.muted, textAlign: "center", margin: "4px 0 0" }}>Click any entry to jump to that state</p>
         </div>
       </div>
     );
@@ -4015,6 +4129,7 @@ function App() {
       <InfoModal />
       <ReplaceModal />
       <OTGSettingsModal />
+      <HistoryModal />
       <FailedTileModal />
       <ToolInfoModal />
       <MemoryModal />
@@ -5363,6 +5478,7 @@ function App() {
                     if (changed) {
                       setGridRotations(newRots); gridRotationsRef.current = newRots;
                       setGridFlips(newFlips);    gridFlipsRef.current = newFlips;
+                      histLabelRef.current = "Rotate";
                       pushHistRef.current?.();
                     }
                   }
@@ -5522,6 +5638,23 @@ function App() {
                     );
                   }));
                   return badges;
+                })()}
+
+                {/* Ghost tile warning overlay — ⚠️ on cells with deleted tile IDs */}
+                {(() => {
+                  const cellPx = CELL * zoom;
+                  const fontSize = Math.max(10, Math.min(18, cellPx * 0.45));
+                  const warnings = [];
+                  grid.forEach((row, r) => row.forEach((id, c) => {
+                    if (id == null || id === SPACE_TILE_ID) return;
+                    if (getTile(id)) return;
+                    warnings.push(
+                      <div key={`ghost${r}-${c}`} style={{ position: "absolute", left: c * cellPx, top: (r + 1) * cellPx, width: cellPx, height: cellPx, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none", zIndex: 10003, background: "rgba(249,115,22,0.18)", borderRadius: 2 }}>
+                        <span style={{ fontSize, lineHeight: 1 }}>⚠️</span>
+                      </div>
+                    );
+                  }));
+                  return warnings.length > 0 ? warnings : null;
                 })()}
 
                 {/* Selection preview overlay + drag target cell highlight */}
@@ -5966,12 +6099,15 @@ function App() {
 
         {/* Rows 2-3: foldable */}
         {bottomOpen && (<>
-          {/* Row 2: Clear | Map name | Download */}
+          {/* Row 2: Clear | History | Map name | Download */}
           <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 8, padding: "3px 14px" }}>
             <button style={btn(true, "#ef4444", "rgba(239,68,68,0.25)")}
-              onClick={() => { if (confirm("Clear the whole grid?")) setGrid(Array.from({ length: gridH }, () => Array(gridW).fill(null))); }}>
+              onClick={() => { if (confirm("Clear the whole grid?")) { histLabelRef.current = "Clear Map"; pushHistorySnapshot(); setGrid(Array.from({ length: gridH }, () => Array(gridW).fill(null))); } }}>
               Clear Map
             </button>
+            <button style={{ ...btn(true, C.accent, C.accentDim), fontSize: 13, padding: "3px 7px" }}
+              title={`History (${histIdx + 1}/${history.length})`}
+              onClick={() => setHistoryModalOpen(true)}>📋</button>
             <input type="text" value={mapName} onChange={e => setMapName(e.target.value)}
               placeholder="map name…"
               style={{ width: 180, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 6, color: C.text, fontFamily: "'Inter', sans-serif", fontSize: 11, padding: "4px 8px", outline: "none" }}
@@ -6010,11 +6146,12 @@ function App() {
                     } else {
                       const p = allBgPresets[key];
                       if (p?.bg1) {
+                        histLabelRef.current = "Background";
                         pushHistorySnapshot();
                         applyBgPreset(key, p.bg1, p.bg2);
                       } else if (key && !OPHELIA_BG[key]) {
                         loadAtlasTilesetBgColors(key).then(colors => {
-                          if (colors?.bg1) { pushHistorySnapshot(); applyBgPreset(key, colors.bg1, colors.bg2); }
+                          if (colors?.bg1) { histLabelRef.current = "Background"; pushHistorySnapshot(); applyBgPreset(key, colors.bg1, colors.bg2); }
                         });
                       }
                     }
