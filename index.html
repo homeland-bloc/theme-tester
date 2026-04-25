@@ -1570,6 +1570,8 @@ function App() {
   const ATLAS_WATER_FILES    = ["00001011.png", "01111111.png", "01101011.png", "11111111.png"];
   const ATLAS_TILES_FILES    = ["Barrel.png", "Bush.png", "Bush2.png", "Cactus.png", "Crate.png", "Skull.png", "Wall.png", "Wall2.png"];
   const ATLAS_ROPE_FILES     = ["Post.png", "Post_R.png", "Post_T.png", "Post_TR.png"];
+  const ATLAS_FENCE_SIMPLE_FILES  = ["Fence.png", "Horizontal.png", "Vertical.png"];
+  const ATLAS_FENCE_COMPLEX_FILES = ["0001.png", "0010.png", "0011.png", "0100.png", "0101.png", "1000.png", "1001.png", "1010.png", "1100.png", "Fence.png"];
   const ATLAS_GAMEMODE_FILES = ["Brawl_Ball.png", "Gem_Grab.png", "Heist.png"];
   // Canonical order for flat tiles in Tiles/ folder (case-insensitive base name match)
   const ATLAS_FLAT_ORDER = ["wall1", "wall", "wall2", "crate", "barrel", "bush1", "bush", "bush2", "skull", "breakable", "cactus"];
@@ -1583,11 +1585,11 @@ function App() {
     const tilesToAdd = []; // { relPath, atlasFolderName, folderLabel, codename }
 
     try {
-      // Fence and Rope require API calls since their filenames vary per tileset.
-      const [fenceFiles, ropeFiles] = await Promise.all([
-        fetchAtlasDir(`${tilesetName}/Fence`).then(f => f.filter(x => x.type === "file" && imageRe.test(x.name))),
-        fetchAtlasDir(`${tilesetName}/Rope`).then(f => f.filter(x => x.type === "file" && imageRe.test(x.name))),
-      ]);
+      // Probe for fence variant: simple (Fence/Horizontal/Vertical) vs complex (binary-named files).
+      // A single HEAD request to Horizontal.png is enough — no GitHub API needed.
+      const rawBase = "https://raw.githubusercontent.com/She-Fairy/atlas-horizon/main/Resources";
+      const fenceProbe = await fetch(`${rawBase}/${tilesetName}/Fence/Horizontal.png`, { method: "HEAD" });
+      const fenceFilenames = fenceProbe.ok ? ATLAS_FENCE_SIMPLE_FILES : ATLAS_FENCE_COMPLEX_FILES;
 
       // Flat tiles from Tiles/ — hardcoded list, sorted by canonical order
       [...ATLAS_TILES_FILES].sort((a, b) => getAtlasFlatOrder(a.replace(/\.[^.]+$/, "")) - getAtlasFlatOrder(b.replace(/\.[^.]+$/, ""))).forEach(filename => {
@@ -1595,9 +1597,9 @@ function App() {
         tilesToAdd.push({ relPath: `${tilesetName}/${ATLAS_TILES_FOLDER}/${filename}`, atlasFolderName: null, folderLabel: null, codename: `${meta.codename}_${base}` });
       });
 
-      // Folder-based tiles — Fence and Rope from API, Water and Gamemode from hardcoded lists
+      // Folder-based tiles — all hardcoded (Fence variant detected via probe, Rope always 4 posts)
       const ATLAS_WATER_CNS = ["WaterBend", "WaterCorner", "WaterLine", "WaterFill"];
-      [["Fence", fenceFiles.map(f => f.name)], ["Rope", ropeFiles.map(f => f.name)], ["Water", ATLAS_WATER_FILES], ["Gamemode_Specifics", ATLAS_GAMEMODE_FILES]].forEach(([sub, filenames]) => {
+      [["Fence", fenceFilenames], ["Rope", ATLAS_ROPE_FILES], ["Water", ATLAS_WATER_FILES], ["Gamemode_Specifics", ATLAS_GAMEMODE_FILES]].forEach(([sub, filenames]) => {
         const folderLabel = sub === "Gamemode_Specifics" ? "Objective" : sub;
         filenames.forEach((filename, i) => {
           const base = filename.replace(/\.[^.]+$/, "");
