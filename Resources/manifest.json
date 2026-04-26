@@ -68,7 +68,7 @@
       },
       "folders": {
         "fence": ["AIRP-fence-H.png", "AIRP-fence-V.png", "AIRP-fence-TURN.png", "AIRP-fence-TURN2.png", "AIRP-fenceBLOCK.png"],
-        "rope":  ["AIRP-post.png", "AIRP-post-H.png", "AIRP-post-H-L.png", "AIRP-post-H-R.png", "AIRP-post-V.png", "AIRP-post-V-H.png", "AIRP-post-V-L.png", "AIRP-post-V-R.png"],
+        "rope":  ["AIRP-post.png", "AIRP-post-H.png", "AIRP-post-H-R.png", "AIRP-post-V.png", "AIRP-post-V-H.png", "AIRP-post-V-R.png"],
         "water": ["AIRP-waterBEND.png", "AIRP-waterCORNER.png", "AIRP-waterLINE.png", "AIRP-water.png", "AIRP-waterDOUBLEBEND.png", "AIRP-waterDOUBLELINE.png", "AIRP-waterFULL.png"]
       },
       "folderPaths": {

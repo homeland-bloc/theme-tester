@@ -735,6 +735,8 @@ function App() {
     if (s.includes("Brawl_Ball")) return 1.5;
     // Goal posts → 7x
     if (s.includes("goalRed") || s.includes("goalBlue")) return 7.0;
+    // Halloween Heist safe → 2.2x (checked before generic Heist)
+    if (s.includes("HeistSafe")) return 2.2;
     // Gem Grab & Heist objectives + Mausoleum safe + Sewer safe → 2x
     if (s.includes("Gem_Grab") || s.includes("Heist") || s.includes("MSLM-safe") || s.includes("SWR-safe")) return 2.0;
     // Bounty star → 1.2x
@@ -757,6 +759,8 @@ function App() {
     if (s.includes("Jumppads/") || s.includes("Teleporters/") || s.includes("HealPad")) return { ox: 50, oy: 50 };
     // Goal posts
     if (s.includes("goalRed") || s.includes("goalBlue")) return { ox: 0, oy: -50 };
+    // Halloween Heist safe (checked before generic Heist)
+    if (s.includes("HeistSafe")) return { ox: 0, oy: -42 };
     // Global objectives
     if (s.includes("Heist")) return { ox: 0, oy: -60 };
     if (s.includes("Brawl_Ball")) return { ox: 0, oy: -14 };
