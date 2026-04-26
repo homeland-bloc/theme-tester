@@ -116,6 +116,7 @@ const GLOBAL_ID_START  = 200; // 200–299: global tiles (water, spawns, objecti
 const ATLAS_ID_START   = 300; // 300–499 (and 700–9999): atlas tiles (She-Fairy/atlas-horizon)
 const ATLAS_ID_MAX     = 9999; // upper bound for atlas tile IDs (skips user range 500-699)
 const SPACE_TILE_ID    = 998; // special: makes a cell fully transparent
+const WARN_TILE_ID     = 997; // special: places a warning-marker ghost tile
 const REPLACE_ERASE_ID = -1;  // sentinel: replace-with-empty in the Replace modal
 
 // Module-level cache for GitHub API responses (survives re-renders, not page reload)
@@ -407,6 +408,9 @@ function App() {
   const [painting,    setPainting]  = useState(false);
   const [selectionMode, setSelectionMode] = useState('single'); // 'single' | 'line' | 'rect' | 'fill'
   const [eyedropperMode, setEyedropperMode] = useState(false); // eyedropper pick tool
+  const [exploreMode, setExploreMode] = useState(false);
+  const exploreModeRef = useRef(false);
+  const [explorePicker, setExplorePicker] = useState(null); // { r, c, siblings, x, y, forHighlight }
   const [highlightMode, setHighlightMode] = useState(false);
   const [highlightedCells, setHighlightedCells] = useState(new Set()); // Set of "r,c" strings
   const highlightedCellsRef = useRef(new Set()); // mirror for closures
@@ -596,6 +600,7 @@ function App() {
   useEffect(() => { eyedropperModeRef.current = eyedropperMode; }, [eyedropperMode]);
   useEffect(() => { highlightModeRef.current = highlightMode; }, [highlightMode]);
   useEffect(() => { rotateModeRef.current = rotateMode; }, [rotateMode]);
+  useEffect(() => { exploreModeRef.current = exploreMode; }, [exploreMode]);
   useEffect(() => { highlightedCellsRef.current = highlightedCells; }, [highlightedCells]);
   useEffect(() => { highlightDragOffsetRef.current = highlightDragOffset; }, [highlightDragOffset]);
   useEffect(() => { zoomRef.current         = zoom;          }, [zoom]);
@@ -2186,6 +2191,14 @@ function App() {
   const SPACE_TILE = { id: SPACE_TILE_ID, src: null, label: "Space", isSpace: true };
   const getTile = id => id === SPACE_TILE_ID ? SPACE_TILE : tiles.find(t => t.id === id);
 
+  // Returns a stable folder key for grouping tiles that share a folder, or null for non-folder tiles.
+  const getTileFolderKey = t => {
+    if (!t || t.isSpace) return null;
+    if (t.folderKey) return t.folderKey;                    // tileset + global folder tiles
+    if (t.atlasTilesetGroup) return `atlas_${t.atlasTilesetGroup}`; // atlas folder tiles
+    return null;
+  };
+
   // Returns { ox, oy } override if the tile has mirror offset enabled and flags indicate a flip, else undefined.
   const computeMirrorOffsetOverride = (tileId, fV, fH, fD) => {
     const tile = getTile(tileId);
@@ -2892,8 +2905,8 @@ function App() {
           setHighlightedCells(new Set());
           highlightedCellsRef.current = new Set();
         }
-        if (e.key === "e" || e.key === "E") { setEraser(true); setSel(null); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }
-        if (e.key === "w" || e.key === "W") { setEyedropperMode(true); setEraser(false); setHandMode(false); setRotateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }
+        if (e.key === "e" || e.key === "E") { setEraser(true); setSel(null); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }
+        if (e.key === "w" || e.key === "W") { setEyedropperMode(true); setEraser(false); setHandMode(false); setRotateMode(false); setExploreMode(false); setExplorePicker(null); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }
         if (e.key === "r" || e.key === "R") {
           const id = selRef.current;
           if (id != null) {
@@ -3527,15 +3540,20 @@ function App() {
           </div>
           <div ref={replaceScrollRef} style={{ overflowY: "auto", maxHeight: 320, padding: "2px 0" }}>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(52px, 1fr))", gap: 5 }}>
-              {/* Empty (erase) card at the top */}
+              {/* Empty (erase) card at the top — styled like the Erase essentials tool */}
               <SepLine label="Special" />
               <div onClick={() => onSelect(REPLACE_ERASE_ID)}
                 style={{ cursor: "pointer", borderRadius: 6, overflow: "hidden", aspectRatio: "1",
-                  border: `2px solid ${replaceB === REPLACE_ERASE_ID ? "#ef4444" : C.border}`,
-                  background: replaceB === REPLACE_ERASE_ID ? "rgba(239,68,68,0.18)" : "transparent",
-                  display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 1 }}>
-                <span style={{ fontSize: 18, lineHeight: 1 }}>🗑️</span>
-                <span style={{ fontSize: 8, color: replaceB === REPLACE_ERASE_ID ? "#ef4444" : C.muted, lineHeight: 1 }}>empty</span>
+                  border: `2px solid ${replaceB === REPLACE_ERASE_ID ? "#f87171" : C.border}`,
+                  background: "rgba(255,255,255,0.03)",
+                  display: "flex", flexDirection: "column" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "center",
+                  background: replaceB === REPLACE_ERASE_ID ? "rgba(248,113,113,0.38)" : "rgba(248,113,113,0.18)", padding: "2px 4px" }}>
+                  <span style={{ fontSize: 9, fontWeight: 700, color: replaceB === REPLACE_ERASE_ID ? "#f87171" : "rgba(248,113,113,0.8)" }}>Erase</span>
+                </div>
+                <div style={{ flex: 1, background: C.panelDeep, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <span style={{ fontSize: 18, lineHeight: 1, opacity: replaceB === REPLACE_ERASE_ID ? 1 : 0.55 }}>🧼</span>
+                </div>
               </div>
               <RCard key="space" t={null} selected={replaceB} onSelect={onSelect} isSpace />
               {/* Per-Ophelia-tileset collapsible sections (only shown tilesets) */}
@@ -3658,21 +3676,26 @@ function App() {
           <div style={{ overflowY: "auto", maxHeight: 340, display: "flex", flexDirection: "column", gap: 3, padding: "4px 0" }}>
             {history.map((snap, i) => {
               const isCurrent = i === histIdx;
-              const label = i === 0 ? (snap.label || "Initial state") : (snap.label || "Draw");
+              const isInitial = i === 0;
+              const label = isInitial ? "Initial state" : (snap.label || "Draw");
               return (
-                <div key={i} onClick={() => { restoreSnap(snap); setHistIdx(i); close(); }}
-                  style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 8px", borderRadius: 6, cursor: "pointer",
+                <div key={i}
+                  onClick={isInitial ? undefined : () => { restoreSnap(snap); setHistIdx(i); close(); }}
+                  style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 8px", borderRadius: 6,
+                    cursor: isInitial ? "default" : "pointer",
                     background: isCurrent ? "rgba(37,99,235,0.18)" : "transparent",
                     border: `1px solid ${isCurrent ? "rgba(37,99,235,0.5)" : C.border}`,
+                    opacity: isInitial && !isCurrent ? 0.5 : 1,
                     transition: "background 0.1s" }}>
-                  <span style={{ fontSize: 10, color: isCurrent ? C.accentBright : C.muted, minWidth: 20, textAlign: "right", flexShrink: 0 }}>#{i + 1}</span>
+                  <span style={{ fontSize: 10, color: isCurrent ? C.accentBright : C.muted, minWidth: 20, textAlign: "right", flexShrink: 0 }}>#{i}</span>
                   <span style={{ fontSize: 11, color: isCurrent ? C.accentBright : C.text, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
                   {isCurrent && <span style={{ fontSize: 9, color: C.accentBright, background: "rgba(37,99,235,0.25)", borderRadius: 4, padding: "1px 5px" }}>current</span>}
+                  {isInitial && !isCurrent && <span style={{ fontSize: 9, color: C.muted, background: "rgba(255,255,255,0.06)", borderRadius: 4, padding: "1px 5px" }}>initial</span>}
                 </div>
               );
             })}
           </div>
-          <p style={{ fontSize: 10, color: C.muted, textAlign: "center", margin: "4px 0 0" }}>Click any entry to jump to that state</p>
+          <p style={{ fontSize: 10, color: C.muted, textAlign: "center", margin: "4px 0 0" }}>Click any entry to jump to that state (#0 = initial)</p>
         </div>
       </div>
     );
@@ -3707,7 +3730,7 @@ function App() {
       erase: { label: "Erase", icon: "🧼", color: C.danger, desc: "Removes tiles from cells. Click or drag across cells to erase.", iconColor: null },
       hand:  { label: "Hand", icon: "👋", color: "#fbbf24", desc: "Drag to pan the map canvas. On mobile, swipe to scroll.", iconColor: null },
       space: { label: "Space", icon: "🛸", color: "#60a5fa", desc: "Places an invisible space tile, making the cell fully transparent in the exported map.", iconColor: null },
-      eyedropper: { label: "Pick (Eyedropper)", icon: "🧪", color: "#84cc16", desc: "Click a cell on the map to pick up its tile as the active selection. The tile becomes your current painting tile.", iconColor: null },
+      eyedropper: { label: "Pick (Eyedropper)", icon: "🧪", color: "#39ff14", desc: "Click a cell on the map to pick up its tile as the active selection. The tile becomes your current painting tile.", iconColor: null },
       single: { label: "Single", icon: "S", color: C.accent, desc: "Freehand paint mode. Click or drag to place tiles one cell at a time.", iconColor: C.accent },
       line:   { label: "Line", icon: "L", color: C.accent, desc: "Line draw mode. Click a start cell and drag to an end cell — tiles are placed in a straight line between them.", iconColor: C.accent },
       rect:   { label: "Rectangle", icon: "R", color: C.accent, desc: "Rectangle fill mode. Click and drag to define a bounding box — all cells inside are filled with the selected tile.", iconColor: C.accent },
@@ -4806,9 +4829,9 @@ function App() {
                               setCardRotations(prev => ({ ...prev, [t.id]: (prev[t.id] ?? 0) + 90 }));
                             }
                           }
-                          setSel(t.id); setEraser(false); setHandMode(false); setEyedropperMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set();
+                          setSel(t.id); setEraser(false); setHandMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set();
                         }}
-                        style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: failed ? "not-allowed" : "pointer", border: `2px solid ${failed ? C.danger : active ? C.accentBright : C.border}`, background: failed ? "rgba(248,113,113,0.08)" : active ? C.accentDim : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", opacity: failed ? 0.55 : 1, position: "relative", overflow: "visible" }}>
+                        style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: failed ? "not-allowed" : "pointer", border: `${active ? 3 : 2}px solid ${failed ? C.danger : active ? C.accentBright : C.border}`, boxShadow: active ? `0 0 0 1px ${C.accentBright}44` : "none", background: failed ? "rgba(248,113,113,0.08)" : active ? C.accentDim : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s, box-shadow 0.12s", opacity: failed ? 0.55 : 1, position: "relative", overflow: "visible" }}>
                         {/* Inner clipped area for image */}
                         <div style={{ position: "absolute", inset: 0, borderRadius: 6, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", background: C.panelDeep }}>
                           {failed ? <span style={{ fontSize: 20 }}>⚠️</span>
@@ -4885,7 +4908,7 @@ function App() {
                   {(() => {
                     const isStarredErase = starredTiles.includes("erase");
                     return (
-                      <div onClick={() => { setEraser(true); setSel(null); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
+                      <div onClick={() => { setEraser(true); setSel(null); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${eraser ? "#f87171" : C.border}`, background: eraser ? "rgba(248,113,113,0.22)" : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
                         <div style={{ borderRadius: 6, overflow: "hidden" }}>
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: eraser ? "rgba(248,113,113,0.38)" : "rgba(248,113,113,0.18)", padding: "2px 4px" }}>
@@ -4901,11 +4924,28 @@ function App() {
                       </div>
                     );
                   })()}
+                  {/* 1a-w. Warning marker tile */}
+                  {(() => {
+                    const warnActive = sel === WARN_TILE_ID && !eraser;
+                    return (
+                      <div onClick={() => { setSel(WARN_TILE_ID); setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
+                        style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${warnActive ? "#f97316" : C.border}`, background: warnActive ? "rgba(249,115,22,0.18)" : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
+                        <div style={{ borderRadius: 6, overflow: "hidden" }}>
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: warnActive ? "rgba(249,115,22,0.38)" : "rgba(249,115,22,0.12)", padding: "2px 4px" }}>
+                            <span style={{ fontSize: 9, fontWeight: 700, color: warnActive ? "#f97316" : "rgba(249,115,22,0.7)" }}>Warn</span>
+                          </div>
+                          <div style={{ height: cardSz - 18, background: C.panelDeep, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                            <span style={{ fontSize: 20, lineHeight: 1, opacity: warnActive ? 1 : 0.55 }}>⚠️</span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
                   {/* 1b. Hand (pan) */}
                   {(() => {
                     const isStarredHand = starredTiles.includes("hand");
                     return (
-                      <div onClick={() => { setHandMode(h => !h); setEraser(false); setSel(null); setRotateMode(false); setEyedropperMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
+                      <div onClick={() => { setHandMode(h => !h); setEraser(false); setSel(null); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${handMode ? "#fbbf24" : C.border}`, background: handMode ? "rgba(251,191,36,0.14)" : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
                         <div style={{ borderRadius: 6, overflow: "hidden" }}>
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: handMode ? "rgba(251,191,36,0.28)" : "rgba(251,191,36,0.08)", padding: "2px 4px" }}>
@@ -4921,15 +4961,35 @@ function App() {
                       </div>
                     );
                   })()}
+                  {/* 1b-x. Explore */}
+                  {(() => {
+                    const exploreHint = !exploreMode && highlightMode && highlightedCells.size > 0;
+                    const exploreColor = "#9ADF1C"; // blend of Hand yellow and Pick lime
+                    const exploreBorderColor = exploreMode ? exploreColor : exploreHint ? "#8acc00" : C.border;
+                    const exploreBgColor = exploreMode ? "rgba(154,223,28,0.15)" : exploreHint ? "rgba(154,223,28,0.1)" : "rgba(255,255,255,0.03)";
+                    return (
+                      <div onClick={() => { const turningOn = !exploreMode; setExploreMode(v => !v); setEraser(false); setHandMode(false); setEyedropperMode(false); setRotateMode(false); if (turningOn) { setSel(null); setExplorePicker(null); } }}
+                        style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${exploreBorderColor}`, background: exploreBgColor, transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
+                        <div style={{ borderRadius: 6, overflow: "hidden" }}>
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: exploreMode ? `rgba(154,223,28,0.28)` : `rgba(154,223,28,0.08)`, padding: "2px 4px" }}>
+                            <span style={{ fontSize: 9, fontWeight: 700, color: exploreMode ? exploreColor : C.muted }}>Explore</span>
+                          </div>
+                          <div style={{ height: cardSz - 18, background: C.panelDeep, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                            <span style={{ fontSize: 20, lineHeight: 1, opacity: (exploreMode || exploreHint) ? 1 : 0.55 }}>🌻</span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
                   {/* 1c. Eyedropper */}
                   {(() => {
                     const isStarredEyedropper = starredTiles.includes("eyedropper");
                     return (
-                      <div onClick={() => { setEyedropperMode(prev => !prev); setEraser(false); setHandMode(false); setRotateMode(false); if (!eyedropperMode) setSel(null); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
-                        style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${eyedropperMode ? "#84cc16" : C.border}`, background: eyedropperMode ? "rgba(132,204,22,0.15)" : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
+                      <div onClick={() => { setEyedropperMode(prev => !prev); setEraser(false); setHandMode(false); setRotateMode(false); setExploreMode(false); setExplorePicker(null); if (!eyedropperMode) setSel(null); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
+                        style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${eyedropperMode ? "#39ff14" : C.border}`, background: eyedropperMode ? "rgba(57,255,20,0.15)" : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
                         <div style={{ borderRadius: 6, overflow: "hidden" }}>
-                          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: eyedropperMode ? "rgba(132,204,22,0.22)" : "rgba(132,204,22,0.08)", padding: "2px 4px" }}>
-                            <span style={{ fontSize: 9, fontWeight: 700, color: eyedropperMode ? "#84cc16" : C.muted }}>Pick</span>
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: eyedropperMode ? "rgba(57,255,20,0.22)" : "rgba(57,255,20,0.08)", padding: "2px 4px" }}>
+                            <span style={{ fontSize: 9, fontWeight: 700, color: eyedropperMode ? "#39ff14" : C.muted }}>Pick</span>
                           </div>
                           <div style={{ height: cardSz - 18, background: C.panelDeep, display: "flex", alignItems: "center", justifyContent: "center" }}>
                             <span style={{ fontSize: 20, lineHeight: 1, opacity: eyedropperMode ? 1 : 0.55 }}>🧪</span>
@@ -4946,7 +5006,7 @@ function App() {
                     const isStarredSpace = starredTiles.includes(SPACE_TILE_ID);
                     const spaceActive = sel === SPACE_TILE_ID && !eraser;
                     return (
-                      <div onClick={() => { setSel(SPACE_TILE_ID); setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
+                      <div onClick={() => { setSel(SPACE_TILE_ID); setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer",
                           border: `2px solid ${spaceActive ? "#60a5fa" : C.border}`,
                           background: spaceActive ? "rgba(96,165,250,0.15)" : "rgba(255,255,255,0.03)",
@@ -4969,19 +5029,24 @@ function App() {
                   {/* 1e. Rotate */}
                   {(() => {
                     const isStarredRotate = starredTiles.includes("rotate");
+                    const rotateHint = !rotateMode && highlightMode && highlightedCells.size > 0;
+                    const rotateBorderColor = rotateMode ? "#2563eb" : rotateHint ? "#7c3aed" : C.border;
+                    const rotateBgColor = rotateMode ? "rgba(37,99,235,0.15)" : rotateHint ? "rgba(124,58,237,0.1)" : "rgba(255,255,255,0.03)";
+                    const rotateHeaderBg = rotateMode ? "rgba(37,99,235,0.28)" : rotateHint ? "rgba(124,58,237,0.18)" : "rgba(37,99,235,0.08)";
+                    const rotateLabelColor = rotateMode ? "#2563eb" : rotateHint ? "#a78bfa" : C.muted;
                     return (
-                      <div onClick={() => { setRotateMode(r => !r); setEraser(false); setHandMode(false); setEyedropperMode(false); }}
+                      <div onClick={() => { const turningOn = !rotateMode; setRotateMode(r => !r); setEraser(false); setHandMode(false); setEyedropperMode(false); setExploreMode(false); if (turningOn) setSel(null); }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer",
-                          border: `2px solid ${rotateMode ? "#2563eb" : C.border}`,
-                          background: rotateMode ? "rgba(37,99,235,0.15)" : "rgba(255,255,255,0.03)",
+                          border: `2px solid ${rotateBorderColor}`,
+                          background: rotateBgColor,
                           transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
                         <div style={{ borderRadius: 6, overflow: "hidden" }}>
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "center",
-                            background: rotateMode ? "rgba(37,99,235,0.28)" : "rgba(37,99,235,0.08)", padding: "2px 4px" }}>
-                            <span style={{ fontSize: 9, fontWeight: 700, color: rotateMode ? "#2563eb" : C.muted }}>Rotate</span>
+                            background: rotateHeaderBg, padding: "2px 4px" }}>
+                            <span style={{ fontSize: 9, fontWeight: 700, color: rotateLabelColor }}>Rotate</span>
                           </div>
                           <div style={{ height: cardSz - 18, background: C.panelDeep, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                            <span style={{ fontSize: 20, lineHeight: 1, opacity: rotateMode ? 1 : 0.55 }}>🌀</span>
+                            <span style={{ fontSize: 20, lineHeight: 1, opacity: (rotateMode || rotateHint) ? 1 : 0.55 }}>🌀</span>
                           </div>
                         </div>
                         <span onClick={e => { e.stopPropagation(); setInfoTool("rotate"); }}
@@ -4996,7 +5061,7 @@ function App() {
                   {(() => {
                     const isStarredHighlight = starredTiles.includes("highlight");
                     return (
-                      <div onClick={() => { const turningOn = !highlightMode; setHighlightMode(h => !h); setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); if (turningOn) { setSel(null); } else { setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); } }}
+                      <div onClick={() => { const turningOn = !highlightMode; setHighlightMode(h => !h); setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); if (turningOn) { setSel(null); } else { setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); } }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer",
                           border: `2px solid ${highlightMode ? "#a78bfa" : C.border}`,
                           background: highlightMode ? "rgba(167,139,250,0.15)" : "rgba(255,255,255,0.03)",
@@ -5154,7 +5219,7 @@ function App() {
             {/* Shortcut bar — selected tile + starred, when panel is collapsed */}
             {!tilesOpen && (() => {
               // Determine current selection key for dedup check
-              const selKey = eraser ? "erase" : handMode ? "hand" : rotateMode ? "rotate" : eyedropperMode ? "eyedropper" : highlightMode ? "highlight" : sel;
+              const selKey = eraser ? "erase" : handMode ? "hand" : rotateMode ? "rotate" : exploreMode ? "explore" : eyedropperMode ? "eyedropper" : highlightMode ? "highlight" : sel;
               const selAlreadyStarred = selKey !== null && starredTiles.includes(selKey);
               // Render a mini-card for the currently selected item (if not already starred)
               const SelectedCard = () => {
@@ -5170,7 +5235,7 @@ function App() {
                   </div>
                 );
                 if (selKey === "eyedropper") return (
-                  <div style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", border: `1px solid #84cc16`, background: "rgba(132,204,22,0.22)" }} title="Eyedropper (selected)">
+                  <div style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", border: `1px solid #39ff14`, background: "rgba(57,255,20,0.22)" }} title="Eyedropper (selected)">
                     <span style={{ fontSize: 14 }}>🧪</span>
                   </div>
                 );
@@ -5184,9 +5249,19 @@ function App() {
                     <span style={{ fontSize: 14 }}>🌀</span>
                   </div>
                 );
+                if (selKey === "explore") return (
+                  <div style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", border: `1px solid #9ADF1C`, background: "rgba(154,223,28,0.22)" }} title="Explore (selected)">
+                    <span style={{ fontSize: 14 }}>🌻</span>
+                  </div>
+                );
                 if (selKey === SPACE_TILE_ID) return (
                   <div style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", border: `1px solid ${C.accentBright}`, background: C.accentDim }} title="Space (selected)">
                     <span style={{ fontSize: 13 }}>🛸</span>
+                  </div>
+                );
+                if (selKey === WARN_TILE_ID) return (
+                  <div style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", border: `1px solid #f97316`, background: "rgba(249,115,22,0.18)" }} title="Warning marker (selected)">
+                    <span style={{ fontSize: 14 }}>⚠️</span>
                   </div>
                 );
                 const st = getTile(selKey);
@@ -5282,7 +5357,7 @@ function App() {
                   if (sid === "eyedropper") return (
                     <div key="eyedropper" onClick={() => { setEyedropperMode(v => !v); setEraser(false); setHandMode(false); setRotateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
                       style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
-                        border: `1px solid ${eyedropperMode ? "#84cc16" : C.border}`, background: eyedropperMode ? "rgba(132,204,22,0.22)" : "rgba(255,255,255,0.04)" }}
+                        border: `1px solid ${eyedropperMode ? "#39ff14" : C.border}`, background: eyedropperMode ? "rgba(57,255,20,0.22)" : "rgba(255,255,255,0.04)" }}
                       title="Eyedropper">
                       <span style={{ fontSize: 14 }}>🧪</span>
                     </div>
@@ -5449,10 +5524,21 @@ function App() {
                 document.removeEventListener('mouseup',   onUp);
                 if (wantsRotate && !didDrag) {
                   const highlighted = highlightedCellsRef.current;
-                  const cellsToProcess = highlighted.size > 0
+                  const seedCells = highlighted.size > 0
                     ? [...highlighted].map(k => k.split(',').map(Number))
                     : (pendingCell ? [pendingCell] : []);
-                  if (cellsToProcess.length > 0) {
+                  if (seedCells.length > 0) {
+                    // Expand seed cells with their mirror positions (deduped)
+                    const seen = new Set(seedCells.map(([r, c]) => `${r},${c}`));
+                    const cellsToProcess = [...seedCells];
+                    if (getMirrorRef.current) {
+                      for (const [r, c] of seedCells) {
+                        for (const [mr, mc] of getMirrorRef.current(r, c)) {
+                          const k = `${mr},${mc}`;
+                          if (!seen.has(k)) { seen.add(k); cellsToProcess.push([mr, mc]); }
+                        }
+                      }
+                    }
                     const newRots  = { ...gridRotationsRef.current };
                     const newFlips = { ...gridFlipsRef.current };
                     let changed = false;
@@ -5657,6 +5743,82 @@ function App() {
                   return warnings.length > 0 ? warnings : null;
                 })()}
 
+                {/* Explore mode chevrons — ▸ on folder tiles */}
+                {exploreMode && (() => {
+                  const cellPx = CELL * zoom;
+                  const arrowSz = Math.max(10, Math.min(20, cellPx * 0.45));
+                  const elems = [];
+                  grid.forEach((row, r) => row.forEach((id, c) => {
+                    if (!id || id === SPACE_TILE_ID || id === WARN_TILE_ID) return;
+                    const t = getTile(id);
+                    if (!t || t.isSpace) return;
+                    const fKey = getTileFolderKey(t);
+                    if (!fKey) return;
+                    const siblings = tiles.filter(x => getTileFolderKey(x) === fKey);
+                    if (siblings.length <= 1) return;
+                    const inHighlight = highlightedCells.size > 0 && highlightedCells.has(`${r},${c}`);
+                    if (highlightedCells.size > 0 && !inHighlight) return;
+                    elems.push(
+                      <div key={`exp${r}-${c}`}
+                        onClick={e => { e.stopPropagation(); setExplorePicker({ r, c, siblings, x: e.clientX, y: e.clientY, forHighlight: inHighlight && highlightedCells.size > 1, fKey }); }}
+                        style={{ position: "absolute", left: c * cellPx, top: (r + 1) * cellPx, width: cellPx, height: cellPx,
+                          display: "flex", alignItems: "center", justifyContent: "center",
+                          cursor: "pointer", zIndex: 10004,
+                          background: inHighlight ? "rgba(154,223,28,0.18)" : "rgba(154,223,28,0.08)" }}>
+                        <span style={{ fontSize: arrowSz, lineHeight: 1, color: "#9ADF1C", fontWeight: 700, filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.9))" }}>▸</span>
+                      </div>
+                    );
+                  }));
+                  return elems.length > 0 ? elems : null;
+                })()}
+
+                {/* Explore picker popup */}
+                {explorePicker && (() => {
+                  const { r, c, siblings, x, y, forHighlight, fKey } = explorePicker;
+                  const applyExplore = targetId => {
+                    histLabelRef.current = "Explore";
+                    pushHistRef.current?.();
+                    if (forHighlight) {
+                      setGrid(prev => prev.map((row, ri) => row.map((id, ci) => {
+                        if (!highlightedCellsRef.current.has(`${ri},${ci}`)) return id;
+                        const t2 = getTile(id);
+                        if (!t2 || getTileFolderKey(t2) !== fKey) return id;
+                        return targetId;
+                      })));
+                    } else {
+                      const mirrorPositions = getMirrorRef.current ? getMirrorRef.current(r, c) : [[r, c]];
+                      setGrid(prev => prev.map((row, ri) => row.map((id, ci) =>
+                        mirrorPositions.some(([mr, mc]) => mr === ri && mc === ci) ? targetId : id
+                      )));
+                    }
+                    setExplorePicker(null);
+                  };
+                  const MAX_W = 220;
+                  const vx = Math.min(x + 8, window.innerWidth - MAX_W - 8);
+                  const vy = Math.min(y + 8, window.innerHeight - 200);
+                  return (
+                    <div style={{ position: "fixed", left: 0, top: 0, width: "100vw", height: "100vh", zIndex: 20000, pointerEvents: "auto" }}
+                      onClick={() => setExplorePicker(null)}>
+                      <div style={{ position: "fixed", left: vx, top: vy, background: "rgba(22,22,30,0.97)", border: `1px solid #9ADF1C`, borderRadius: 10, padding: 8, maxWidth: MAX_W, boxShadow: "0 4px 24px rgba(0,0,0,0.7)", zIndex: 20001, pointerEvents: "auto" }}
+                        onClick={e => e.stopPropagation()}>
+                        <div style={{ fontSize: 9, fontWeight: 700, color: "#9ADF1C", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>
+                          {forHighlight ? "Apply to highlighted" : "Pick variant"} {siblings[0]?.folderLabel ? `— ${siblings[0].folderLabel}` : ""}
+                        </div>
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(40px, 1fr))", gap: 4 }}>
+                          {siblings.map(t => (
+                            <div key={t.id} onClick={() => applyExplore(t.id)}
+                              style={{ cursor: "pointer", borderRadius: 5, overflow: "hidden", aspectRatio: "1",
+                                border: `2px solid ${t.id === grid[r]?.[c] ? "#9ADF1C" : "rgba(154,223,28,0.3)"}`,
+                                background: t.id === grid[r]?.[c] ? "rgba(154,223,28,0.2)" : "rgba(255,255,255,0.04)" }}>
+                              <img src={t.blobSrc ?? t.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated" }} />
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+
                 {/* Selection preview overlay + drag target cell highlight */}
                 {(previewCells || rectPreview || dragTargetCell) && (() => {
                   const pFill   = eraser ? "rgba(239,68,68,0.22)"  : "rgba(255,255,255,0.22)";
@@ -5836,7 +5998,7 @@ function App() {
                 mirrorV: C.pale, mirrorH: C.soft, mirrorD: C.accentBright,
                 guides: gColor, offsetCenters: ocColor, replace: C.soft, overwrite: owColor,
                 otg: C.danger,
-                eyedropper: "#84cc16", highlight: "#a78bfa", rotate: "#2563eb",
+                eyedropper: "#39ff14", highlight: "#a78bfa", rotate: "#2563eb",
                 convert: C.soft,
               };
               // Only show tool-key starred items (not numeric tile IDs)
