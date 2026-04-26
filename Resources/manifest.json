@@ -56,7 +56,7 @@
       "name": "Airport",
       "creator": "Ophelia",
       "wip": true,
-      "order": ["wall1", "wall2", "crate", "barrel", "cactus", "bush", "breakable", "fence", "rope", "water"],
+      "order": ["wall1", "wall2", "crate", "barrel", "cactus", "bush", "breakable", "fence", "rope", "water", "objectives"],
       "files": {
         "wall1":     "Airport/AIRP-wall.png",
         "wall2":     "Airport/AIRP-wall2.png",
@@ -68,13 +68,15 @@
       },
       "folders": {
         "fence": ["AIRP-fence-H.png", "AIRP-fence-V.png", "AIRP-fence-TURN.png", "AIRP-fence-TURN2.png", "AIRP-fenceBLOCK.png"],
-        "rope":  ["AIRP-post.png", "AIRP-post-H.png", "AIRP-post-H-L.png", "AIRP-post-H-R.png", "AIRP-post-V.png", "AIRP-post-V-H.png", "AIRP-post-V-L.png", "AIRP-post-V-R.png"],
-        "water": ["AIRP-waterBEND.png", "AIRP-waterCORNER.png", "AIRP-waterLINE.png", "AIRP-water.png", "AIRP-waterDOUBLEBEND.png", "AIRP-waterDOUBLELINE.png", "AIRP-waterFULL.png"]
+        "rope":  ["AIRP-post.png", "AIRP-post-H.png", "AIRP-post-H-R.png", "AIRP-post-V.png", "AIRP-post-V-H.png", "AIRP-post-V-R.png"],
+        "water":      ["AIRP-waterBEND.png", "AIRP-waterCORNER.png", "AIRP-waterLINE.png", "AIRP-water.png", "AIRP-waterDOUBLEBEND.png", "AIRP-waterDOUBLELINE.png", "AIRP-waterFULL.png"],
+        "objectives": ["AIRP-safe_1.png"]
       },
       "folderPaths": {
-        "fence": "Airport/Fence/",
-        "rope":  "Airport/Rope/",
-        "water": "Airport/Water/"
+        "fence":      "Airport/Fence/",
+        "rope":       "Airport/Rope/",
+        "water":      "Airport/Water/",
+        "objectives": "Airport/Objectives/"
       }
     },
     {
