@@ -1344,6 +1344,11 @@ function App() {
       setHighlightedCells(s);
       highlightedCellsRef.current = s;
     }
+    // Always clear any in-progress highlight drag when restoring a snapshot
+    setHighlightDragOffset(null);
+    highlightDragOffsetRef.current = null;
+    highlightDragAnchorCell.current = null;
+    isHighlightDraggingRef.current = false;
     if (snap.shownTilesets !== undefined) {
       setShownTilesets(snap.shownTilesets);
       shownTilsetsRef.current = snap.shownTilesets;
@@ -1918,12 +1923,15 @@ function App() {
         setHighlightedCells(finalHighlight);
         highlightedCellsRef.current = finalHighlight;
         // Push AFTER state so undo restores the pre-selection state (tile stays, highlight clears)
+        // Update histIdxRef synchronously so rapid subsequent events see the correct index
+        const selNextIdx = Math.min(histIdxRef.current + 1, MAX_HISTORY - 1);
+        histIdxRef.current = selNextIdx;
         setHistory(h => {
-          const trimmed = h.slice(0, histIdxRef.current + 1);
+          const trimmed = h.slice(0, selNextIdx);
           const capped = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
           return [...capped, { grid: gridRef.current, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...finalHighlight], rots: gridRotationsRef.current, flips: gridFlipsRef.current }];
         });
-        setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
+        setHistIdx(selNextIdx);
       }
       setRectPreview(null);
       setPreviewCells(null);
@@ -2408,14 +2416,15 @@ function App() {
           const newHighlight = new Set(newCells.map(({ newR, newC }) => `${newR},${newC}`));
           setHighlightedCells(newHighlight);
           highlightedCellsRef.current = newHighlight;
-          // Push post-drag snapshot so a single undo restores the pre-drag state (grid + highlight)
-          // The pre-drag snapshot was already pushed at drag mousedown via pushHistRef.current()
+          // Push post-drag snapshot; synchronous histIdxRef update prevents stale-ref trimming
+          const dragNextIdx = Math.min(histIdxRef.current + 1, MAX_HISTORY - 1);
+          histIdxRef.current = dragNextIdx;
           setHistory(h => {
-            const trimmed = h.slice(0, histIdxRef.current + 1);
+            const trimmed = h.slice(0, dragNextIdx);
             const capped = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
             return [...capped, { grid: newG, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...newHighlight], rots: postDragRots, flips: postDragFlips }];
           });
-          setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
+          setHistIdx(dragNextIdx);
         }
         isHighlightDraggingRef.current = false;
         highlightDragAnchorCell.current = null;
@@ -2801,13 +2810,15 @@ function App() {
             const newHighlight = new Set(newCells.map(({ newR, newC }) => `${newR},${newC}`));
             setHighlightedCells(newHighlight);
             highlightedCellsRef.current = newHighlight;
-            // Push post-drag snapshot so a single undo restores the pre-drag state (tiles + highlight)
+            // Push post-drag snapshot; synchronous histIdxRef update prevents stale-ref trimming
+            const tDragNextIdx = Math.min(histIdxRef.current + 1, MAX_HISTORY - 1);
+            histIdxRef.current = tDragNextIdx;
             setHistory(h => {
-              const trimmed = h.slice(0, histIdxRef.current + 1);
+              const trimmed = h.slice(0, tDragNextIdx);
               const capped = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
               return [...capped, { grid: tNewG, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...newHighlight], rots: tPostRots, flips: tPostFlips }];
             });
-            setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
+            setHistIdx(tDragNextIdx);
           }
           isHighlightDraggingRef.current = false;
           highlightDragAnchorCell.current = null;
@@ -4971,14 +4982,14 @@ function App() {
                   {(() => {
                     const exploreHint = !exploreMode && highlightMode && highlightedCells.size > 0;
                     const exploreColor = "#9ADF1C"; // blend of Hand yellow and Pick lime
-                    const exploreBorderColor = exploreMode ? exploreColor : exploreHint ? "#8acc00" : C.border;
-                    const exploreBgColor = exploreMode ? "rgba(154,223,28,0.15)" : exploreHint ? "rgba(154,223,28,0.1)" : "rgba(255,255,255,0.03)";
+                    const exploreBorderColor = exploreMode ? exploreColor : exploreHint ? "rgba(154,223,28,0.28)" : C.border;
+                    const exploreBgColor = exploreMode ? "rgba(154,223,28,0.15)" : exploreHint ? "rgba(154,223,28,0.04)" : "rgba(255,255,255,0.03)";
                     return (
                       <div onClick={() => { const turningOn = !exploreMode; setExploreMode(v => !v); setEraser(false); setHandMode(false); setEyedropperMode(false); setRotateMode(false); if (turningOn) { setSel(null); setExplorePicker(null); } }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${exploreBorderColor}`, background: exploreBgColor, transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
                         <div style={{ borderRadius: 6, overflow: "hidden" }}>
-                          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: exploreMode ? `rgba(154,223,28,0.28)` : `rgba(154,223,28,0.08)`, padding: "2px 4px" }}>
-                            <span style={{ fontSize: 9, fontWeight: 700, color: exploreMode ? exploreColor : C.muted }}>Explore</span>
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: exploreMode ? `rgba(154,223,28,0.28)` : exploreHint ? `rgba(154,223,28,0.06)` : `rgba(154,223,28,0.08)`, padding: "2px 4px" }}>
+                            <span style={{ fontSize: 9, fontWeight: 700, color: exploreMode ? exploreColor : exploreHint ? "rgba(154,223,28,0.4)" : C.muted }}>Explore</span>
                           </div>
                           <div style={{ height: cardSz - 18, background: C.panelDeep, display: "flex", alignItems: "center", justifyContent: "center" }}>
                             <span style={{ fontSize: 20, lineHeight: 1, opacity: (exploreMode || exploreHint) ? 1 : 0.55 }}>🌻</span>
@@ -5036,10 +5047,10 @@ function App() {
                   {(() => {
                     const isStarredRotate = starredTiles.includes("rotate");
                     const rotateHint = !rotateMode && highlightMode && highlightedCells.size > 0;
-                    const rotateBorderColor = rotateMode ? "#2563eb" : rotateHint ? "#7c3aed" : C.border;
-                    const rotateBgColor = rotateMode ? "rgba(37,99,235,0.15)" : rotateHint ? "rgba(124,58,237,0.1)" : "rgba(255,255,255,0.03)";
-                    const rotateHeaderBg = rotateMode ? "rgba(37,99,235,0.28)" : rotateHint ? "rgba(124,58,237,0.18)" : "rgba(37,99,235,0.08)";
-                    const rotateLabelColor = rotateMode ? "#2563eb" : rotateHint ? "#a78bfa" : C.muted;
+                    const rotateBorderColor = rotateMode ? "#2563eb" : rotateHint ? "rgba(124,58,237,0.28)" : C.border;
+                    const rotateBgColor = rotateMode ? "rgba(37,99,235,0.15)" : rotateHint ? "rgba(124,58,237,0.04)" : "rgba(255,255,255,0.03)";
+                    const rotateHeaderBg = rotateMode ? "rgba(37,99,235,0.28)" : rotateHint ? "rgba(124,58,237,0.07)" : "rgba(37,99,235,0.08)";
+                    const rotateLabelColor = rotateMode ? "#2563eb" : rotateHint ? "rgba(167,139,250,0.45)" : C.muted;
                     return (
                       <div onClick={() => { const turningOn = !rotateMode; setRotateMode(r => !r); setEraser(false); setHandMode(false); setEyedropperMode(false); setExploreMode(false); if (turningOn) setSel(null); }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer",
@@ -5735,13 +5746,13 @@ function App() {
                 {/* Ghost tile warning overlay — ⚠️ on cells with deleted tile IDs */}
                 {(() => {
                   const cellPx = CELL * zoom;
-                  const fontSize = Math.max(10, Math.min(18, cellPx * 0.45));
+                  const fontSize = Math.max(10, Math.min(12, cellPx * 0.32));
                   const warnings = [];
                   grid.forEach((row, r) => row.forEach((id, c) => {
                     if (id == null || id === SPACE_TILE_ID) return;
                     if (getTile(id)) return;
                     warnings.push(
-                      <div key={`ghost${r}-${c}`} style={{ position: "absolute", left: c * cellPx, top: (r + 1) * cellPx, width: cellPx, height: cellPx, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none", zIndex: 10003, background: "rgba(249,115,22,0.18)", borderRadius: 2 }}>
+                      <div key={`ghost${r}-${c}`} style={{ position: "absolute", left: c * cellPx, top: (r + 1) * cellPx, width: cellPx, height: cellPx, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none", zIndex: 10003 }}>
                         <span style={{ fontSize, lineHeight: 1 }}>⚠️</span>
                       </div>
                     );
@@ -5808,7 +5819,7 @@ function App() {
                       <div style={{ position: "fixed", left: vx, top: vy, background: "rgba(22,22,30,0.97)", border: `1px solid #9ADF1C`, borderRadius: 10, padding: 8, maxWidth: MAX_W, boxShadow: "0 4px 24px rgba(0,0,0,0.7)", zIndex: 20001, pointerEvents: "auto" }}
                         onClick={e => e.stopPropagation()}>
                         <div style={{ fontSize: 9, fontWeight: 700, color: "#9ADF1C", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>
-                          {forHighlight ? "Apply to highlighted" : "Pick variant"} {siblings[0]?.folderLabel ? `— ${siblings[0].folderLabel}` : ""}
+                          {siblings[0]?.folderLabel || fKey || (forHighlight ? "Apply to highlighted" : "Pick variant")}
                         </div>
                         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(40px, 1fr))", gap: 4 }}>
                           {siblings.map(t => (
