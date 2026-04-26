@@ -757,6 +757,8 @@ function App() {
     const s = t.src;
     // Jumppads, Teleporters, HealPad: +50% H and +50% V so 2× tile sits centred on a 2×2 area
     if (s.includes("Jumppads/") || s.includes("Teleporters/") || s.includes("HealPad")) return { ox: 50, oy: 50 };
+    // Global unbreakable
+    if (s.includes("Unbreakable")) return { ox: 0, oy: -12 };
     // Goal posts
     if (s.includes("goalRed") || s.includes("goalBlue")) return { ox: 0, oy: -50 };
     // Halloween Heist safe (checked before generic Heist)
