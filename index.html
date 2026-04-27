@@ -157,8 +157,8 @@ const WIP_TILESETS = new Set(["Airport"]);
 // Default per-tile settings: src pattern → property value.
 // Functions like isDefaultRotatable/isDefaultOTGWall read from here.
 const TILE_SETTINGS = {
-  rotatable:    ["/Water/", "Jumppads/"],  // src substrings → tile is rotatable (spin) by default
-  flippable:    ["/Fence/", "/Rope/"],     // src substrings → tile is flippable by default
+  rotatable:    ["/Water/"],               // src substrings → tile is rotatable (spin) by default
+  flippable:    ["/Fence/", "/Rope/", "Jumppads/"],  // src substrings → tile is flippable by default
   otgPassable:  ["bush", "Bush", "SpeedTile", "SlowTile", "Objective", "Rope/", "Jumppads/", "Teleporters/", "HealPad", "Spawn", "SpawnPoint", "spawn"],
   mirrorOffset: ["Jumppads/", "Teleporters/", "HealPad"],
   bottomRender: ["/Water/", "Jumppads/", "Teleporters/", "HealPad"],
@@ -190,7 +190,8 @@ const deriveCodename = src => {
     "Unbreakable": "Unbreakable", "HealPad": "HealPad", "SlowTile": "SlowTile",
     "Smoke": "Smoke", "SpeedTile": "SpeedTile", "Spikes": "Spike",
     // Spawns
-    "1": "SpawnRed", "2": "SpawnBlue", "5": "RespawnRed", "6": "RespawnBlue",
+    "1": "SpawnBlue", "2": "SpawnRed", "5": "RespawnBlue", "6": "RespawnRed",
+    "3": "SpawnSolo", "4": "SpawnDuo", "7": "SpawnTrio",
     // Objectives
     "Bounty": "BountyGObjective", "Gem_Grab": "GGObjective", "Heist": "HeistObjective", "Hot_Zone": "HZObjective",
     // Teleporters
@@ -564,6 +565,7 @@ function App() {
   const selectionStartRef = useRef(null);     // [r, c] of mousedown cell
   const selectionEndRef   = useRef(null);     // [r, c] of latest mousemove cell
   const hoveredTilesRef   = useRef(new Set()); // accumulated "r,c" strings for line mode
+  const lastLineCellRef   = useRef(null);      // previous cell for Bresenham interpolation in line mode
   const commitOnUpRef     = useRef(null);     // commitSelectionOnMouseUp
   const pushHistRef       = useRef(null);     // pushHistorySnapshot
   const histLabelRef      = useRef("Draw");   // label for next history snapshot
@@ -767,8 +769,12 @@ function App() {
   const getDefaultOffset = t => {
     if (!t?.src) return { ox: 0, oy: 0 };
     const s = t.src;
-    // Jumppads, Teleporters, HealPad: +50% H and +50% V so 2× tile sits centred on a 2×2 area
-    if (s.includes("Jumppads/") || s.includes("Teleporters/") || s.includes("HealPad")) return { ox: 50, oy: 50 };
+    // Jumppads: +50% H, +66% V (sprite anchor is above center)
+    if (s.includes("Jumppads/")) return { ox: 50, oy: 66 };
+    // Teleporters: +50% H, +60% V
+    if (s.includes("Teleporters/")) return { ox: 50, oy: 60 };
+    // HealPad: centred on 2×2 area
+    if (s.includes("HealPad")) return { ox: 50, oy: 50 };
     // Global unbreakable
     if (s.includes("Unbreakable")) return { ox: 0, oy: -12 };
     // Goal posts
@@ -1109,12 +1115,15 @@ function App() {
         if (!files || files.length === 0) continue;
         const folderPath = gDef.folderPaths?.[key] ?? `Global/${key}/`;
         const label = displayLabel(key, folderPath);
-        const folderTiles = files.map(fn => {
-          const t = makeTile(`${folderPath}${fn}`);
-          t.folderKey = `global_${key}`; t.folderLabel = label;
-          t.codename = `Global_${fn.replace(/\.[^.]+$/, '')}`;
-          return t;
-        });
+        const EXCLUDED_GLOBAL_FILES = { jumppads: ["TL.png", "L.png", "BL.png"] };
+        const folderTiles = files
+          .filter(fn => !(EXCLUDED_GLOBAL_FILES[key] ?? []).includes(fn))
+          .map(fn => {
+            const t = makeTile(`${folderPath}${fn}`);
+            t.folderKey = `global_${key}`; t.folderLabel = label;
+            t.codename = `Global_${fn.replace(/\.[^.]+$/, '')}`;
+            return t;
+          });
         flatTiles.push(...folderTiles);
         glbEntries.push({ type: 'folder', key: `global_${key}`, label, tiles: folderTiles });
       }
@@ -1808,6 +1817,22 @@ function App() {
     return r;
   };
 
+  // Returns all grid cells on a straight line between two points (inclusive), using Bresenham's algorithm.
+  const bresenhamLine = (r0, c0, r1, c1) => {
+    const cells = [];
+    let dr = Math.abs(r1 - r0), dc = Math.abs(c1 - c0);
+    const sr = r0 < r1 ? 1 : -1, sc = c0 < c1 ? 1 : -1;
+    let err = dr - dc, r = r0, c = c0;
+    while (true) {
+      cells.push([r, c]);
+      if (r === r1 && c === c1) break;
+      const e2 = 2 * err;
+      if (e2 > -dc) { err -= dc; r += sr; }
+      if (e2 < dr)  { err += dr; c += sc; }
+    }
+    return cells;
+  };
+
   const paintCells = useCallback((r, c) => {
     const meta   = (getMirrorMetaRef.current ?? getMirrorMeta)(r, c);
     const tileId = eraser ? null : (sel ?? null);
@@ -1826,10 +1851,12 @@ function App() {
     if (!eraser && tileId) {
       const tile = getTile(tileId);
       const isTileRot = tile ? isTileRotatable(tile) : false;
+      const effectiveRot = isTileRot ? rot : 0;
       setGridRotations(prev => {
         const n = { ...prev };
         meta.forEach(({ pos: [pr, pc], fV, fH, fD }) => {
-          n[`${pr},${pc}`] = (ms.mirrorRotation && isTileRot) ? applyRotMirror(rot, fV, fH, fD) : rot;
+          const r = (ms.mirrorRotation && isTileRot) ? applyRotMirror(effectiveRot, fV, fH, fD) : effectiveRot;
+          if (r !== 0) n[`${pr},${pc}`] = r; else delete n[`${pr},${pc}`];
         });
         return n;
       });
@@ -1924,10 +1951,12 @@ function App() {
     if (!isEraser && tileId) {
       const tile = getTile(tileId);
       const isTileRot = tile ? isTileRotatable(tile) : false;
+      const effectiveRot = isTileRot ? rot : 0;
       setGridRotations(prev => {
         const n = { ...prev };
         placedMeta.forEach(({ pos: [pr, pc], fV, fH, fD }) => {
-          n[`${pr},${pc}`] = (ms.mirrorRotation && isTileRot) ? applyRotMirror(rot, fV, fH, fD) : rot;
+          const r = (ms.mirrorRotation && isTileRot) ? applyRotMirror(effectiveRot, fV, fH, fD) : effectiveRot;
+          if (r !== 0) n[`${pr},${pc}`] = r; else delete n[`${pr},${pc}`];
         });
         return n;
       });
@@ -2065,6 +2094,7 @@ function App() {
     selectionStartRef.current = null;
     selectionEndRef.current   = null;
     hoveredTilesRef.current   = new Set();
+    lastLineCellRef.current   = null;
   }, [commitMultipleCells]);
 
   useEffect(() => { commitOnUpRef.current = commitSelectionOnMouseUp; }, [commitSelectionOnMouseUp]);
@@ -2189,6 +2219,7 @@ function App() {
           selectionStartRef.current = [r, c];
           selectionEndRef.current   = [r, c];
           hoveredTilesRef.current   = new Set([key]);
+          lastLineCellRef.current   = [r, c];
           const mode = selectionModeRef.current;
           if (mode === 'single') setPreviewCells([[r, c]]);
           else if (mode === 'line') setPreviewCells([[r, c]]);
@@ -2270,6 +2301,7 @@ function App() {
       selectionStartRef.current = [r, c];
       selectionEndRef.current   = [r, c];
       hoveredTilesRef.current   = new Set([`${r},${c}`]);
+      lastLineCellRef.current   = [r, c];
       const mode = selectionModeRef.current;
       if (mode === 'single') setPreviewCells([[r, c]]);
       else if (mode === 'line') setPreviewCells([[r, c]]);
@@ -2303,7 +2335,9 @@ function App() {
           hoveredTilesRef.current.add(`${r},${c}`);
           setPreviewCells([...hoveredTilesRef.current].map(k => k.split(',').map(Number)));
         } else if (mode === 'line') {
-          hoveredTilesRef.current.add(`${r},${c}`);
+          const [pr, pc] = lastLineCellRef.current ?? [r, c];
+          bresenhamLine(pr, pc, r, c).forEach(([br, bc]) => hoveredTilesRef.current.add(`${br},${bc}`));
+          lastLineCellRef.current = [r, c];
           setPreviewCells([...hoveredTilesRef.current].map(k => k.split(',').map(Number)));
         } else if (mode === 'rect') {
           const [r1, c1] = selectionStartRef.current;
@@ -2326,7 +2360,9 @@ function App() {
       if (mode === 'single') {
         setPreviewCells([[r, c]]);
       } else if (mode === 'line') {
-        hoveredTilesRef.current.add(`${r},${c}`);
+        const [pr, pc] = lastLineCellRef.current ?? [r, c];
+        bresenhamLine(pr, pc, r, c).forEach(([br, bc]) => hoveredTilesRef.current.add(`${br},${bc}`));
+        lastLineCellRef.current = [r, c];
         setPreviewCells([...hoveredTilesRef.current].map(k => k.split(',').map(Number)));
       } else if (mode === 'rect') {
         const [r1, c1] = selectionStartRef.current;
@@ -2541,6 +2577,10 @@ function App() {
           const rot_data = {};
           oldCells.forEach(key => { rot_data[key] = postDragRots[key]; delete postDragRots[key]; });
           newCells.forEach(({ oldKey, newR, newC, fV, fH, fD }) => {
+            const [or, oc] = oldKey.split(',').map(Number);
+            const tileId_d = tileData.find(d => d.r === or && d.c === oc)?.id ?? null;
+            const tileObj_d = tileId_d ? allTilesByIdRef.current[tileId_d] : null;
+            if (tileObj_d && !isTileRotatable(tileObj_d)) { delete postDragRots[`${newR},${newC}`]; return; }
             const rawRot = rot_data[oldKey];
             const needsMirror = ms.mirrorRotation && (fV || fH || fD);
             if (rawRot === undefined && !needsMirror) return;
@@ -2770,6 +2810,7 @@ function App() {
           selectionStartRef.current = [r, c];
           selectionEndRef.current   = [r, c];
           hoveredTilesRef.current   = new Set([key]);
+          lastLineCellRef.current   = [r, c];
           const mode = selectionModeRef.current;
           if (mode === 'single') setPreviewCells([[r, c]]);
           else if (mode === 'line') setPreviewCells([[r, c]]);
@@ -2831,6 +2872,7 @@ function App() {
       selectionStartRef.current = [r, c];
       selectionEndRef.current   = [r, c];
       hoveredTilesRef.current   = new Set([`${r},${c}`]);
+      lastLineCellRef.current   = [r, c];
       const mode = selectionModeRef.current;
       if (mode === 'single')      setPreviewCells([[r, c]]);
       else if (mode === 'line')   setPreviewCells([[r, c]]);
@@ -2895,7 +2937,9 @@ function App() {
           hoveredTilesRef.current.add(`${r},${c}`);
           setPreviewCells([...hoveredTilesRef.current].map(k => k.split(',').map(Number)));
         } else if (mode === 'line') {
-          hoveredTilesRef.current.add(`${r},${c}`);
+          const [pr, pc] = lastLineCellRef.current ?? [r, c];
+          bresenhamLine(pr, pc, r, c).forEach(([br, bc]) => hoveredTilesRef.current.add(`${br},${bc}`));
+          lastLineCellRef.current = [r, c];
           setPreviewCells([...hoveredTilesRef.current].map(k => k.split(',').map(Number)));
         } else if (mode === 'rect') {
           const [r1, c1] = selectionStartRef.current;
@@ -2905,7 +2949,9 @@ function App() {
         if (mode === 'single') {
           setPreviewCells([[r, c]]);
         } else if (mode === 'line') {
-          hoveredTilesRef.current.add(`${r},${c}`);
+          const [pr2, pc2] = lastLineCellRef.current ?? [r, c];
+          bresenhamLine(pr2, pc2, r, c).forEach(([br, bc]) => hoveredTilesRef.current.add(`${br},${bc}`));
+          lastLineCellRef.current = [r, c];
           setPreviewCells([...hoveredTilesRef.current].map(k => k.split(',').map(Number)));
         } else if (mode === 'rect') {
           const [r1, c1] = selectionStartRef.current;
@@ -3119,11 +3165,12 @@ function App() {
           const id = selRef.current;
           if (id != null) {
             const tile = allTilesByIdRef.current[id];
-            const defaultRot = tile ? !!(tile.src && TILE_SETTINGS.rotatable.some(p => tile.src.includes(p))) : true;
+            const defaultRot  = tile ? !!(tile.src && TILE_SETTINGS.rotatable.some(p => tile.src.includes(p))) : true;
+            const defaultFlip = tile ? !!(tile.src && TILE_SETTINGS.flippable.some(p => tile.src.includes(p))) : false;
             const rMap = rotatableMapRef.current;
             const fMap = allowFlipMapRef.current;
             const canSpin = tile ? (rMap[id] !== undefined ? rMap[id] : defaultRot) : true;
-            const canFlip = tile ? (fMap[id] !== undefined ? fMap[id] : defaultRot) : true;
+            const canFlip = tile ? (fMap[id] !== undefined ? fMap[id] : defaultFlip) : false;
             const rawMode = cardFlipModesRef.current[id] ?? 'spin';
             const mode = !canFlip ? 'spin' : (!canSpin ? 'flip' : rawMode);
             if (mode === 'flip' && canFlip) {
