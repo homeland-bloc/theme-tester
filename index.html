@@ -1687,7 +1687,7 @@ function App() {
   const ATLAS_SUBFOLDERS = ["Fence", "Rope", "Water", "Gamemode_Specifics"];
   const ATLAS_TILES_FOLDER = "Tiles";
   const ATLAS_WATER_FILES    = ["00001011.png", "01111111.png", "01101011.png", "11111111.png"];
-  const ATLAS_TILES_FILES    = ["Barrel.png", "Bush.png", "Bush2.png", "Cactus.png", "Crate.png", "Skull.png", "Wall.png", "Wall2.png"];
+  const ATLAS_TILES_FILES    = ["Barrel.png", "Bush.png", "Cactus.png", "Crate.png", "Skull.png", "Wall.png", "Wall2.png"];
   const ATLAS_ROPE_FILES     = ["Post.png", "Post_R.png", "Post_T.png", "Post_TR.png"];
   const ATLAS_FENCE_SIMPLE_FILES  = ["Fence.png", "Horizontal.png", "Vertical.png"];
   const ATLAS_FENCE_COMPLEX_FILES = ["0001.png", "0010.png", "0011.png", "0100.png", "0101.png", "1000.png", "1001.png", "1010.png", "1100.png", "Fence.png"];
@@ -1906,7 +1906,7 @@ function App() {
           ?? deriveCodename(paintTile.src)
           ?? (paintTile.codename ?? '').split('_').slice(1).join('-')
           ?? paintTile.src?.split('/').pop().replace(/\.[^.]+$/, '');
-        const ts = paintTile.tilesetName ?? (paintTile.isAtlas ? 'Atlas' : null);
+        const ts = paintTile.tilesetName ?? paintTile.atlasTilesetName ?? null;
         histLabelRef.current = ts ? `Draw ${name} (${ts})` : (name ? `Draw ${name}` : "Draw");
       }
     }
@@ -4740,13 +4740,19 @@ function App() {
                                       let newGrid = gridRef.current;
                                       if (manifest) {
                                         const tilesets = manifest.tilesets ?? [];
+                                        const WATER_CNS_D = ["waterbend","watercorner","waterline","waterfill","waterdoublebend","waterdoubleline","waterfull"];
                                         let cid = TILESET_ID_START;
                                         const maps = {};
                                         for (const tsDef of tilesets) {
                                           const m = {};
                                           for (const key of (tsDef.order ?? [])) {
-                                            if (tsDef.folders?.[key]) m[key] = tsDef.folders[key].map(() => cid++);
-                                            else if (tsDef.files?.[key]) m[key] = [cid++];
+                                            if (tsDef.folders?.[key]) {
+                                              if (key === "water") {
+                                                tsDef.folders[key].forEach((_, i) => { m[WATER_CNS_D[i] ?? `water${i}`] = [cid++]; });
+                                              } else {
+                                                m[key] = tsDef.folders[key].map(() => cid++);
+                                              }
+                                            } else if (tsDef.files?.[key]) m[key] = [cid++];
                                           }
                                           maps[tsDef.name] = m;
                                         }
@@ -4783,10 +4789,15 @@ function App() {
                                             if (folderMatch) {
                                               const folderName = folderMatch[1];
                                               const folderTiles = atlasByFolder[folderName] ?? [];
-                                              const idx = folderIdx[folderName] ?? 0;
-                                              if (idx < folderTiles.length) {
-                                                opheliaIds.forEach(oid => { idRemap[folderTiles[idx].id] = oid; });
-                                                folderIdx[folderName] = idx + 1;
+                                              const nameMatch = folderTiles.find(t => normC(t.baseCodename) === n);
+                                              if (nameMatch) {
+                                                opheliaIds.forEach(oid => { idRemap[nameMatch.id] = oid; });
+                                              } else {
+                                                const idx = folderIdx[folderName] ?? 0;
+                                                if (idx < folderTiles.length) {
+                                                  opheliaIds.forEach(oid => { idRemap[folderTiles[idx].id] = oid; });
+                                                  folderIdx[folderName] = idx + 1;
+                                                }
                                               }
                                             }
                                           }
@@ -4811,7 +4822,7 @@ function App() {
                                       const tsBg = getTilesetBgColors(ts.name);
                                       const newBg1 = tsBg ? tsBg.bg1 : bg1Ref.current;
                                       const newBg2 = tsBg ? tsBg.bg2 : bg2Ref.current;
-                                      const snap = { grid: newGrid, w: gridWRef.current, h: gridHRef.current, tileset: ts.name, shownTilesets: [ts.name], shownAtlasTilesets: [], bg1: newBg1, bg2: newBg2, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current };
+                                      const snap = { grid: newGrid, w: gridWRef.current, h: gridHRef.current, tileset: ts.name, shownTilesets: [ts.name], shownAtlasTilesets: [], bg1: newBg1, bg2: newBg2, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current, label: `Switch to ${ts.name}` };
                                       setHistory(h => {
                                         const trimmed = h.slice(0, histIdxRef.current + 1);
                                         const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
@@ -4883,15 +4894,21 @@ function App() {
                                         ["mine","Gamemode_Specifics"],["gem","Gamemode_Specifics"],
                                         ["obj","Gamemode_Specifics"],["skull","Gamemode_Specifics"],
                                       ];
-                                      // Build Ophelia ID maps
+                                      // Build Ophelia ID maps (with per-variant water keys)
                                       const opheliaTsDefs = manifest?.tilesets ?? [];
+                                      const WATER_CNS_D = ["waterbend","watercorner","waterline","waterfill","waterdoublebend","waterdoubleline","waterfull"];
                                       let cid = TILESET_ID_START;
                                       const opheliaIdMaps = {};
                                       for (const tsDef of opheliaTsDefs) {
                                         const m = {};
                                         for (const key of (tsDef.order ?? [])) {
-                                          if (tsDef.folders?.[key]) m[key] = tsDef.folders[key].map(() => cid++);
-                                          else if (tsDef.files?.[key]) m[key] = [cid++];
+                                          if (tsDef.folders?.[key]) {
+                                            if (key === "water") {
+                                              tsDef.folders[key].forEach((_, i) => { m[WATER_CNS_D[i] ?? `water${i}`] = [cid++]; });
+                                            } else {
+                                              m[key] = tsDef.folders[key].map(() => cid++);
+                                            }
+                                          } else if (tsDef.files?.[key]) m[key] = [cid++];
                                         }
                                         opheliaIdMaps[tsDef.name] = m;
                                       }
@@ -4925,8 +4942,13 @@ function App() {
                                           const fm = FOLDER_PFXS.find(([p]) => n.startsWith(p));
                                           if (fm) {
                                             const ftiles = atlasByFolder[fm[1]] ?? [];
-                                            const idx = folderIdx[fm[1]] ?? 0;
-                                            if (idx < ftiles.length) { opheliaIds.forEach(oid => { idRemap[oid] = ftiles[idx].id; }); folderIdx[fm[1]] = idx + 1; }
+                                            const nameMatch = ftiles.find(t => normC(t.baseCodename) === n);
+                                            if (nameMatch) {
+                                              opheliaIds.forEach(oid => { idRemap[oid] = nameMatch.id; });
+                                            } else {
+                                              const idx = folderIdx[fm[1]] ?? 0;
+                                              if (idx < ftiles.length) { opheliaIds.forEach(oid => { idRemap[oid] = ftiles[idx].id; }); folderIdx[fm[1]] = idx + 1; }
+                                            }
                                           }
                                         }
                                         newGrid = gridRef.current.map(row => row.map(id => (id != null && fromAll.has(id) && idRemap[id] !== undefined) ? idRemap[id] : id));
@@ -4945,7 +4967,7 @@ function App() {
                                       const cachedBg = getTilesetBgColors(atsDef.name);
                                       const newBg1 = cachedBg ? cachedBg.bg1 : bg1Ref.current;
                                       const newBg2 = cachedBg ? cachedBg.bg2 : bg2Ref.current;
-                                      const snap = { grid: newGrid, w: gridWRef.current, h: gridHRef.current, tileset: atsDef.name, shownTilesets: [], shownAtlasTilesets: [atsDef.name], bg1: newBg1, bg2: newBg2, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current };
+                                      const snap = { grid: newGrid, w: gridWRef.current, h: gridHRef.current, tileset: atsDef.name, shownTilesets: [], shownAtlasTilesets: [atsDef.name], bg1: newBg1, bg2: newBg2, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current, label: `Switch to ${atsDef.name}` };
                                       setHistory(h => { const trimmed = h.slice(0, histIdxRef.current + 1); const capped = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed; return [...capped, snap]; });
                                       setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
                                       setGridRaw(newGrid);
