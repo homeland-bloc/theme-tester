@@ -4090,6 +4090,7 @@ function App() {
       Object.values(atlasByFolder).forEach(arr => arr.sort((a, b) => a.id - b.id));
       // Index trackers for folder-based matching
       const folderIdx = {};
+      const usedAtlasIds = new Set();
 
       for (const [key, opheliaIds] of Object.entries(opheliaKeyMap)) {
         opheliaIds.forEach(oid => fromIds.add(oid));
@@ -4098,6 +4099,7 @@ function App() {
         const flatMatch = atlasByNorm[norm] ?? atlasByNorm[norm === 'breakable' ? 'skull' : norm === 'skull' ? 'breakable' : ''];
         if (flatMatch) {
           opheliaIds.forEach(oid => { remap[oid] = flatMatch.id; });
+          usedAtlasIds.add(flatMatch.id);
           continue;
         }
         // Identify folder type from key prefix (Fence/Rope/Water/objectives)
@@ -4114,10 +4116,13 @@ function App() {
           const nameMatch = folderTiles.find(t => normCode(t.baseCodename) === norm);
           if (nameMatch) {
             opheliaIds.forEach(oid => { remap[oid] = nameMatch.id; });
+            usedAtlasIds.add(nameMatch.id);
           } else {
+            const availTiles = folderTiles.filter(t => !usedAtlasIds.has(t.id));
             const idx = folderIdx[folderName] ?? 0;
-            if (idx < folderTiles.length) {
-              opheliaIds.forEach(oid => { remap[oid] = folderTiles[idx].id; });
+            if (idx < availTiles.length) {
+              opheliaIds.forEach(oid => { remap[oid] = availTiles[idx].id; });
+              usedAtlasIds.add(availTiles[idx].id);
               folderIdx[folderName] = idx + 1;
             }
           }
@@ -4196,9 +4201,10 @@ function App() {
           if (nameMatch) {
             opheliaIds.forEach(oid => { idRemap[nameMatch.id] = oid; });
           } else {
+            const availTiles = folderTiles.filter(t => idRemap[t.id] === undefined);
             const idx = folderIdx[folderName] ?? 0;
-            if (idx < folderTiles.length) {
-              opheliaIds.forEach(oid => { idRemap[folderTiles[idx].id] = oid; });
+            if (idx < availTiles.length) {
+              opheliaIds.forEach(oid => { idRemap[availTiles[idx].id] = oid; });
               folderIdx[folderName] = idx + 1;
             }
           }
@@ -4793,9 +4799,10 @@ function App() {
                                               if (nameMatch) {
                                                 opheliaIds.forEach(oid => { idRemap[nameMatch.id] = oid; });
                                               } else {
+                                                const availTiles = folderTiles.filter(t => idRemap[t.id] === undefined);
                                                 const idx = folderIdx[folderName] ?? 0;
-                                                if (idx < folderTiles.length) {
-                                                  opheliaIds.forEach(oid => { idRemap[folderTiles[idx].id] = oid; });
+                                                if (idx < availTiles.length) {
+                                                  opheliaIds.forEach(oid => { idRemap[availTiles[idx].id] = oid; });
                                                   folderIdx[folderName] = idx + 1;
                                                 }
                                               }
@@ -4931,6 +4938,7 @@ function App() {
                                         });
                                         Object.values(atlasByFolder).forEach(arr => arr.sort((a, b) => a.id - b.id));
                                         const folderIdx = {};
+                                        const usedAtlasIds = new Set();
                                         const idRemap = {};
                                         const fromAll = new Set();
                                         for (const [key, opheliaIds] of Object.entries(fromMap)) {
@@ -4938,16 +4946,18 @@ function App() {
                                           const n = normC(key);
                                           const aliasN = n === 'breakable' ? 'skull' : n === 'skull' ? 'breakable' : null;
                                           const flatM = atlasByNorm[n] ?? (aliasN ? atlasByNorm[aliasN] : undefined);
-                                          if (flatM) { opheliaIds.forEach(oid => { idRemap[oid] = flatM.id; }); continue; }
+                                          if (flatM) { opheliaIds.forEach(oid => { idRemap[oid] = flatM.id; }); usedAtlasIds.add(flatM.id); continue; }
                                           const fm = FOLDER_PFXS.find(([p]) => n.startsWith(p));
                                           if (fm) {
                                             const ftiles = atlasByFolder[fm[1]] ?? [];
                                             const nameMatch = ftiles.find(t => normC(t.baseCodename) === n);
                                             if (nameMatch) {
                                               opheliaIds.forEach(oid => { idRemap[oid] = nameMatch.id; });
+                                              usedAtlasIds.add(nameMatch.id);
                                             } else {
+                                              const availTiles = ftiles.filter(t => !usedAtlasIds.has(t.id));
                                               const idx = folderIdx[fm[1]] ?? 0;
-                                              if (idx < ftiles.length) { opheliaIds.forEach(oid => { idRemap[oid] = ftiles[idx].id; }); folderIdx[fm[1]] = idx + 1; }
+                                              if (idx < availTiles.length) { opheliaIds.forEach(oid => { idRemap[oid] = availTiles[idx].id; }); usedAtlasIds.add(availTiles[idx].id); folderIdx[fm[1]] = idx + 1; }
                                             }
                                           }
                                         }
