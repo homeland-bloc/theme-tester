@@ -606,6 +606,14 @@ function App() {
   useEffect(() => { highlightedCellsRef.current = highlightedCells; }, [highlightedCells]);
   useEffect(() => { highlightDragOffsetRef.current = highlightDragOffset; }, [highlightDragOffset]);
   useEffect(() => { duplicateModeRef.current = duplicateMode; }, [duplicateMode]);
+  useEffect(() => {
+    if (highlightedCells.size === 0 && duplicateMode) {
+      setDuplicateMode(false);
+      setHighlightDragOffset(null);
+      highlightDragOffsetRef.current = null;
+      highlightDragAnchorCell.current = null;
+    }
+  }, [highlightedCells.size, duplicateMode]);
   useEffect(() => { zoomRef.current         = zoom;          }, [zoom]);
   useEffect(() => { selectionModeRef.current = selectionMode; }, [selectionMode]);
   useEffect(() => { gridRef.current = grid; }, [grid]);
@@ -714,13 +722,11 @@ function App() {
     const s = t.src;
     // Spawns
     if (s.includes("Spawns/")) return 1.65;
-    // Airport crate → 1.05×
-    if (s.includes("AIRP-crate")) return 1.05;
     // Barrel: Sewer 1.05×, Mausoleum/default 1.1×
     if (s.includes("SWR-barrel")) return 1.05;
     if (s.includes("barrel") || s.includes("MSLM-barrel")) return 1.1;
-    // Breakable (MSLM-break only, NOT Unbreakable)
-    if (s.includes("MSLM-break") || (s.includes("break") && !s.includes("Unbreakable"))) return 1.1;
+    // Breakable (MSLM-break only, NOT Unbreakable, NOT AIRP)
+    if (s.includes("MSLM-break") || s.includes("SWR-breakable") || (s.includes("break") && !s.includes("Unbreakable") && !s.includes("AIRP"))) return 1.1;
     // Jumppads & Teleporters & HealPad → 2x
     if (s.includes("Jumppads/") || s.includes("Teleporters/") || s.includes("HealPad")) return 2.0;
     // Hot Zone
@@ -777,7 +783,7 @@ function App() {
     // Airport (wall2 must be checked before wall since "AIRP-wall" matches both)
     if (s.includes("AIRP-wall2"))  return { ox: 0, oy: -20 };
     if (s.includes("AIRP-wall"))   return { ox: 0, oy: -4 };
-    if (s.includes("AIRP-crate"))  return { ox: 0, oy: -4 };
+    if (s.includes("AIRP-crate"))  return { ox: 0, oy: -10 };
     if (s.includes("AIRP-cactus")) return { ox: 0, oy: -10 };
     if (s.includes("AIRP-bush"))   return { ox: 0, oy: -10 };
     // Airport fence (AIRP-fence-V checked before generic fence path)
@@ -1316,13 +1322,15 @@ function App() {
 
   // Grid with history
   const setGrid = useCallback((updater, skipHistory = false) => {
+    const snapLabel = histLabelRef.current || "Draw";
+    if (!skipHistory) histLabelRef.current = "Draw";
     setGridRaw(prev => {
       const next = typeof updater === "function" ? updater(prev) : updater;
       if (!skipHistory) {
         setHistory(h => {
           const trimmed = h.slice(0, histIdx + 1);
           const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-          return [...capped, { grid: next, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current }];
+          return [...capped, { grid: next, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current, label: snapLabel }];
         });
         setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
       }
@@ -1884,6 +1892,24 @@ function App() {
     if (!cells.length) return;
     const tileId   = selRef.current;
     const isEraser = eraserRef.current;
+    // Set descriptive history label
+    if (isEraser) {
+      histLabelRef.current = "Erase";
+    } else if (tileId === SPACE_TILE_ID) {
+      histLabelRef.current = "Draw Space";
+    } else if (tileId === WARN_TILE_ID) {
+      histLabelRef.current = "Draw Warn";
+    } else if (tileId !== null) {
+      const paintTile = tiles.find(t => t.id === tileId);
+      if (paintTile) {
+        const name = paintTile.folderLabel
+          ?? deriveCodename(paintTile.src)
+          ?? (paintTile.codename ?? '').split('_').slice(1).join('-')
+          ?? paintTile.src?.split('/').pop().replace(/\.[^.]+$/, '');
+        const ts = paintTile.tilesetName ?? (paintTile.isAtlas ? 'Atlas' : null);
+        histLabelRef.current = ts ? `Draw ${name} (${ts})` : (name ? `Draw ${name}` : "Draw");
+      }
+    }
     const rot      = tileId ? ((cardRotationsRef.current[tileId] ?? 0) / 90 % 4) : 0;
     const ms       = mirrorSettingsRef.current;
     const placedMeta = [];
@@ -2060,9 +2086,13 @@ function App() {
   // BFS flood fill — returns Set of "r,c" strings
   // matchById=false: match all connected filled/empty cells (default behaviour)
   // matchById=true:  match only cells with the same tile ID as the origin (for highlight+fill and block-overwrite+fill)
-  const bfsFill = useCallback((startR, startC, currentGrid, gW, gH, matchById = false) => {
+  const bfsFill = useCallback((startR, startC, currentGrid, gW, gH, matchById = false, matchByFolder = false) => {
     const originId = currentGrid[startR]?.[startC] ?? null;
     const originFilled = originId !== null;
+    const originTile = (matchByFolder && originId !== null) ? tiles.find(t => t.id === originId) : null;
+    const originFolderKey = originTile
+      ? (originTile.folderKey ?? (originTile.atlasTilesetGroup ? `atlas_${originTile.atlasTilesetGroup}` : null))
+      : null;
     const visited = new Set();
     const queue = [[startR, startC]];
     visited.add(`${startR},${startC}`);
@@ -2074,7 +2104,21 @@ function App() {
         const key = `${nr},${nc}`;
         if (visited.has(key)) continue;
         const cellId = currentGrid[nr]?.[nc] ?? null;
-        const matches = matchById ? (cellId === originId) : ((cellId !== null) === originFilled);
+        let matches;
+        if (matchByFolder && originFolderKey !== null) {
+          if (cellId === null) { matches = false; }
+          else {
+            const cellTile = tiles.find(t => t.id === cellId);
+            const cellFolderKey = cellTile
+              ? (cellTile.folderKey ?? (cellTile.atlasTilesetGroup ? `atlas_${cellTile.atlasTilesetGroup}` : null))
+              : null;
+            matches = cellFolderKey !== null && cellFolderKey === originFolderKey;
+          }
+        } else if (matchById) {
+          matches = cellId === originId;
+        } else {
+          matches = (cellId !== null) === originFilled;
+        }
         if (matches) {
           visited.add(key);
           queue.push([nr, nc]);
@@ -2082,7 +2126,7 @@ function App() {
       }
     }
     return visited;
-  }, []);
+  }, [tiles]);
 
   useEffect(() => { bfsFillRef.current = bfsFill; }, [bfsFill]);
 
@@ -2132,7 +2176,7 @@ function App() {
           else if (mode === 'rect') setRectPreview({ r1: r, c1: c, r2: r, c2: c });
           else if (mode === 'fill') {
             const originId = gridRef.current?.[r]?.[c] ?? null;
-            const fillSet = bfsFill(r, c, gridRef.current, gridWRef.current, gridHRef.current, originId !== null);
+            const fillSet = bfsFill(r, c, gridRef.current, gridWRef.current, gridHRef.current, originId !== null, true);
             hoveredTilesRef.current = fillSet;
             setPreviewCells([...fillSet].map(k => k.split(',').map(Number)));
           }
@@ -2706,7 +2750,7 @@ function App() {
             const bfs = bfsFillRef.current;
             if (bfs) {
               const originId = gridRef.current?.[r]?.[c] ?? null;
-              const fillSet = bfs(r, c, gridRef.current, gridWRef.current, gridHRef.current, originId !== null);
+              const fillSet = bfs(r, c, gridRef.current, gridWRef.current, gridHRef.current, originId !== null, true);
               hoveredTilesRef.current = fillSet;
               setPreviewCells([...fillSet].map(k => k.split(',').map(Number)));
             }
@@ -3286,7 +3330,7 @@ function App() {
     const [multInput,      setMultInput]      = React.useState(String(currentMult));
     const [oxInput,        setOxInput]        = React.useState(String(currentOff.ox));
     const [oyInput,        setOyInput]        = React.useState(String(currentOff.oy));
-    const [codenameInput,  setCodenameInput]  = React.useState(tileNames[t.id] !== undefined ? tileNames[t.id] : defaultCodename_);
+    const [codenameInput,  setCodenameInput]  = React.useState(tileNames[t.id] || defaultCodename_);
     const isPriority = !!priorityTiles[t.id];
 
     const commitMult = val => {
@@ -3356,7 +3400,13 @@ function App() {
             <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Codename</span>
             <input value={codenameInput}
               onChange={e => setCodenameInput(e.target.value)}
-              onBlur={() => setTileNames(prev => ({ ...prev, [t.id]: codenameInput }))}
+              onBlur={() => {
+                if (codenameInput === '') {
+                  setTileNames(prev => { const n = { ...prev }; delete n[t.id]; return n; });
+                } else {
+                  setTileNames(prev => ({ ...prev, [t.id]: codenameInput }));
+                }
+              }}
               onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
               placeholder={defaultCodename_ || "Enter codename…"}
               style={{ flex: 1, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none" }} />
@@ -5224,7 +5274,7 @@ function App() {
                           </div>
                         </div>
                         {highlightMode && highlightedCells.size > 0 && (
-                          <button onClick={e => { e.stopPropagation(); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
+                          <button onClick={e => { e.stopPropagation(); setDuplicateMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
                             style={{ position: "absolute", bottom: -10, left: "50%", transform: "translateX(-50%)", fontSize: 8, fontWeight: 700, color: "#a78bfa", background: "rgba(0,0,0,0.75)", border: "1px solid #a78bfa", borderRadius: 4, padding: "1px 5px", cursor: "pointer", whiteSpace: "nowrap", zIndex: 8, lineHeight: 1.4 }}>
                             ✕ Clear
                           </button>
@@ -5241,6 +5291,7 @@ function App() {
                   {(() => {
                     const dupColor = "#e879a0";
                     const dupEnabled = highlightedCells.size > 0;
+                    const dupHint = !duplicateMode && highlightedCells.size > 0;
                     const hasPending = duplicateMode && highlightDragOffset && (highlightDragOffset.dr !== 0 || highlightDragOffset.dc !== 0);
                     const isStarredDuplicate = starredTiles.includes("duplicate");
                     return (
@@ -5256,14 +5307,14 @@ function App() {
                         }
                       }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: (dupEnabled || duplicateMode) ? "pointer" : "not-allowed",
-                          border: `2px solid ${duplicateMode ? dupColor : C.border}`,
-                          background: duplicateMode ? "rgba(232,121,160,0.15)" : "rgba(255,255,255,0.03)",
+                          border: `2px solid ${duplicateMode ? dupColor : dupHint ? "rgba(232,121,160,0.32)" : C.border}`,
+                          background: `${duplicateMode ? "rgba(232,121,160,0.15)" : dupHint ? "rgba(232,121,160,0.05)" : "rgba(255,255,255,0.03)"}`,
                           opacity: (dupEnabled || duplicateMode) ? 1 : 0.32,
                           transition: "border 0.12s, background 0.12s, opacity 0.12s", position: "relative", overflow: "visible" }}>
                         <div style={{ borderRadius: 6, overflow: "hidden" }}>
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "center",
                             background: duplicateMode ? "rgba(232,121,160,0.22)" : "rgba(232,121,160,0.08)", padding: "2px 4px" }}>
-                            <span style={{ fontSize: 9, fontWeight: 700, color: duplicateMode ? dupColor : C.muted }}>Duplicate</span>
+                            <span style={{ fontSize: 9, fontWeight: 700, color: duplicateMode ? dupColor : dupHint ? "rgba(232,121,160,0.45)" : C.muted }}>Duplicate</span>
                           </div>
                           <div style={{ height: cardSz - 18, background: C.panelDeep, display: "flex", alignItems: "center", justifyContent: "center" }}>
                             <span style={{ fontSize: 20, lineHeight: 1, opacity: duplicateMode ? 1 : (dupEnabled ? 0.55 : 0.2) }}>💞</span>
@@ -6425,11 +6476,20 @@ function App() {
                 })()}
                 <div style={{ height: 1, background: C.border }} />
                 <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1, display: "flex", alignItems: "center", gap: 4 }}>Mirroring <span onClick={() => setInfoTool("mirroring")} style={{ fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.65)", lineHeight: 1 }}>ⓘ</span></span>
-                <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}>
-                  <button style={btn(mirrorV, C.pale, C.paleDim)} onClick={() => setMirrorV(v => !v)} title="Horizontal mirror (left ↔ right)">Horizontal</button>
-                  <button style={btn(mirrorH, C.soft, C.softDim)} onClick={() => setMirrorH(v => !v)} title="Vertical mirror (top ↔ bottom)">Vertical</button>
-                  <button style={btn(mirrorD, C.accentBright, C.accentDim)} onClick={() => setMirrorD(v => !v)} title="Diagonal mirror (180° rotation)">Diagonal</button>
+                {(() => { const mirrorLocked = highlightedCells.size > 0; return (
+                <div style={{ position: "relative" }}>
+                  <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center", opacity: mirrorLocked ? 0.55 : 1, pointerEvents: mirrorLocked ? "none" : "auto", transition: "opacity 0.15s" }}>
+                    <button style={btn(mirrorV, C.pale, C.paleDim)} onClick={() => setMirrorV(v => !v)} title="Horizontal mirror (left ↔ right)">Horizontal</button>
+                    <button style={btn(mirrorH, C.soft, C.softDim)} onClick={() => setMirrorH(v => !v)} title="Vertical mirror (top ↔ bottom)">Vertical</button>
+                    <button style={btn(mirrorD, C.accentBright, C.accentDim)} onClick={() => setMirrorD(v => !v)} title="Diagonal mirror (180° rotation)">Diagonal</button>
+                  </div>
+                  {mirrorLocked && (
+                    <div style={{ fontSize: 9, color: C.muted, marginTop: 3, lineHeight: 1.4 }}>
+                      Locked while cells are highlighted — prevents inconsistencies with Highlight/Duplicate tools.
+                    </div>
+                  )}
                 </div>
+                ); })()}
                 <div style={{ height: 1, background: C.border }} />
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                   <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
