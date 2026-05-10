@@ -1,0 +1,36 @@
+name = "oph"
+main = "worker.js"
+compatibility_date = "2024-01-01"
+
+[vars]
+SUPABASE_URL = "https://eizcooctnlugsxcyrplh.supabase.co"
+SUPABASE_ANON_KEY = "sb_publishable_K0J0EGtj3m9DyDxZoRpy3w_bDwgMxg_"
+DISCORD_CLIENT_ID = "1503113409678410019"
+FIREBASE_PROJECT_ID = "opheliapp-wow"
+
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+persist = true
+invocation_logs = true
+
+[observability.traces]
+enabled = true
+persist = true
+head_sampling_rate = 1
+
+[[unsafe.bindings]]
+type = "ratelimit"
+name = "RATE_LIMITER"
+namespace_id = "1001"
+simple = { limit = 300, period = 60 }
+
+[[unsafe.bindings]]
+type = "ratelimit"
+name = "AUTH_LIMITER"
+namespace_id = "1002"
+simple = { limit = 5, period = 60 }
