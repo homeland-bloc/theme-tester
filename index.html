@@ -4192,6 +4192,152 @@ function App() {
     );
   };
 
+  // ── Create Tileset modal (Task 6d) ───────────────────────────────
+  const CreateTilesetModal = () => {
+    if (!createTsOpen) return null;
+    return (
+      <div className="modal-backdrop" onClick={() => { if (!createTsLoading) setCreateTsOpen(false); }}>
+        <div className="modal-box" style={{ maxWidth: 320 }} onClick={e => e.stopPropagation()}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Create Tileset</span>
+            <button onClick={() => { if (!createTsLoading) setCreateTsOpen(false); }} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <label style={{ fontSize: 11, color: C.muted }}>Tileset name</label>
+            <input value={createTsName} onChange={e => setCreateTsName(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter" && createTsName.trim()) doCreateTs(); }}
+              placeholder="My Tileset"
+              style={{ background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "'Inter', monospace", fontSize: 12, padding: "6px 8px", outline: "none", width: "100%" }} />
+          </div>
+          <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+            <button style={{ ...btn(false), flex: 1, justifyContent: "center" }} disabled={createTsLoading} onClick={() => setCreateTsOpen(false)}>Cancel</button>
+            <button style={{ ...btn(true, C.accent, C.accentDim), flex: 1, justifyContent: "center" }} disabled={createTsLoading || !createTsName.trim()} onClick={doCreateTs}>
+              {createTsLoading ? 'Creating…' : 'Create'}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+  const doCreateTs = async () => {
+    if (!createTsName.trim() || !currentUser) return;
+    setCreateTsLoading(true);
+    try {
+      const resp = await fetch(`${WORKER_URL}/rest/v1/tilesets`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${currentUser.firebaseToken}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+        body: JSON.stringify({ name: createTsName.trim(), type: 'base', owner_id: currentUser.id, is_published: false }),
+      });
+      if (resp.ok) {
+        setTsFetchTrigger(n => n + 1);
+        setCreateTsOpen(false);
+        setCreateTsName('');
+      } else {
+        alert('Failed to create tileset.');
+      }
+    } catch (err) {
+      alert('Error: ' + err.message);
+    }
+    setCreateTsLoading(false);
+  };
+
+  // ── Add Tile modal (Task 6e) ──────────────────────────────────────
+  const AddTileModal = () => {
+    if (!addTileOpen) return null;
+    const tsName = dbTilesets.find(ts => ts.id === addTileTsId)?.name ?? addTileTsId;
+    const previewUrl = addTileFile ? URL.createObjectURL(addTileFile) : null;
+    return (
+      <div className="modal-backdrop" onClick={() => { if (!addTileLoading) { setAddTileOpen(false); setAddTileFile(null); } }}>
+        <div className="modal-box" style={{ maxWidth: 340 }} onClick={e => e.stopPropagation()}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Add Tile — {tsName}</span>
+            <button onClick={() => { if (!addTileLoading) { setAddTileOpen(false); setAddTileFile(null); } }} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {/* Image preview */}
+            {previewUrl && (
+              <div style={{ background: C.panelDeep, borderRadius: 6, padding: 8, display: "flex", justifyContent: "center" }}>
+                <img src={previewUrl} alt="" style={{ maxWidth: 120, maxHeight: 120, imageRendering: "pixelated" }} />
+              </div>
+            )}
+            {/* File picker */}
+            <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <span style={{ fontSize: 11, color: C.muted }}>Image file *</span>
+              <input type="file" accept="image/*"
+                onChange={e => setAddTileFile(e.target.files?.[0] ?? null)}
+                style={{ fontSize: 11, color: C.text }} />
+            </label>
+            {/* Codename */}
+            <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <span style={{ fontSize: 11, color: C.muted }}>Codename *</span>
+              <input value={addTileCodename} onChange={e => setAddTileCodename(e.target.value)}
+                placeholder="e.g. MyTileset_Wall1"
+                style={{ background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "5px 8px", outline: "none", width: "100%" }} />
+            </label>
+            {/* Folder key */}
+            <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <span style={{ fontSize: 11, color: C.muted }}>Folder key (optional)</span>
+              <input value={addTileFolderKey} onChange={e => setAddTileFolderKey(e.target.value)}
+                placeholder="e.g. Walls"
+                style={{ background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "5px 8px", outline: "none", width: "100%" }} />
+            </label>
+            {/* Sort index */}
+            <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <span style={{ fontSize: 11, color: C.muted }}>Sort index (optional)</span>
+              <input type="number" value={addTileSortIdx} onChange={e => setAddTileSortIdx(e.target.value)}
+                placeholder="0"
+                style={{ background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "5px 8px", outline: "none", width: "100%" }} />
+            </label>
+            {addTileError && <span style={{ fontSize: 11, color: C.danger }}>{addTileError}</span>}
+          </div>
+          <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+            <button style={{ ...btn(false), flex: 1, justifyContent: "center" }} disabled={addTileLoading} onClick={() => { setAddTileOpen(false); setAddTileFile(null); }}>Cancel</button>
+            <button style={{ ...btn(true, C.accent, C.accentDim), flex: 1, justifyContent: "center" }} disabled={addTileLoading || !addTileFile || !addTileCodename.trim()} onClick={doAddTile}>
+              {addTileLoading ? 'Uploading…' : 'Add Tile'}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+  const doAddTile = async () => {
+    if (!addTileFile || !addTileCodename.trim() || !currentUser || !addTileTsId) return;
+    setAddTileLoading(true);
+    setAddTileError('');
+    try {
+      const storageName = `${Date.now()}_${addTileFile.name}`;
+      const storagePath = `${currentUser.id}/${addTileTsId}/${storageName}`;
+      const upResp = await fetch(`${WORKER_URL}/storage/v1/object/tiles/${storagePath}`, {
+        method: 'PUT',
+        headers: { 'Authorization': `Bearer ${currentUser.firebaseToken}`, 'Content-Type': addTileFile.type, 'x-upsert': 'true' },
+        body: addTileFile,
+      });
+      if (!upResp.ok) throw new Error('Storage upload failed');
+      const publicUrl = `${SUPABASE_URL}/storage/v1/object/public/tiles/${storagePath}`;
+      const insResp = await fetch(`${WORKER_URL}/rest/v1/tiles`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${currentUser.firebaseToken}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+        body: JSON.stringify({
+          tileset_id: addTileTsId,
+          codename: addTileCodename.trim(),
+          image_url: publicUrl,
+          folder_key: addTileFolderKey.trim() || null,
+          sort_index: addTileSortIdx !== '' ? Number(addTileSortIdx) : null,
+        }),
+      });
+      if (!insResp.ok) throw new Error('DB insert failed');
+      setTsFetchTrigger(n => n + 1);
+      setAddTileOpen(false);
+      setAddTileFile(null);
+      setAddTileCodename('');
+      setAddTileFolderKey('');
+      setAddTileSortIdx('');
+    } catch (err) {
+      setAddTileError(err.message);
+    }
+    setAddTileLoading(false);
+  };
+
   // ─────────────────────────────────────────────────────────────────
   // Grid size in pixels (at current zoom)
   const gW = gridW * CELL * zoom;
@@ -4215,6 +4361,8 @@ function App() {
       <MemoryModal />
       <ConvertModal />
       <HotkeysModal />
+      <CreateTilesetModal />
+      <AddTileModal />
 
       {/* Grid load warning banner */}
       {gridLoadWarning && (
@@ -4565,7 +4713,12 @@ function App() {
                     </button>
                     {tilesetDropOpen && (
                       <div onMouseDown={e => e.stopPropagation()} style={{ position: "absolute", top: "100%", left: 8, right: 8, background: C.panelDeep, border: `1px solid ${C.border}`, borderRadius: 6, zIndex: 200, padding: "4px 0", maxHeight: 320, overflowY: "auto", boxShadow: "0 4px 16px rgba(0,0,0,0.45)" }}>
-                        {dbTilesets.map(ts => {
+                        {[...dbTilesets].sort((a, b) => {
+                          const order = { atlas: 0, base: 1 };
+                          const oa = order[a.type] ?? 2, ob = order[b.type] ?? 2;
+                          if (oa !== ob) return oa - ob;
+                          return a.name.localeCompare(b.name);
+                        }).map(ts => {
                           const checked = ts.name === activeTileset;
                           return (
                             <label key={ts.name} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", cursor: "pointer", userSelect: "none" }}
@@ -4974,18 +5127,70 @@ function App() {
                       );
                       return (<>
                         {/* ── Per-tileset sections (one per shown Ophelia tileset) ── */}
-                        {tilesetEntriesPerTs.map(({ name, entries, count }) => {
+                        {tilesetEntriesPerTs.map(({ name, entries, count, tilesetId, tilesetOwnerId }) => {
+                          if (entries.length === 0) return null;
                           const sectionId = `tileset_${name}`;
-                          return entries.length > 0 ? (
+                          const isOwned = currentUser && tilesetOwnerId === currentUser.id;
+                          const tsData = dbTilesets.find(ts => ts.id === tilesetId);
+                          const isPub = tsData?.is_published ?? true;
+                          return (
                             <React.Fragment key={name}>
-                              <SectionHeader id={sectionId} label={WIP_TILESETS.has(name) ? name + " (WIP)" : name} count={count} />
+                              <div onClick={() => setPanelCollapsed(p => ({ ...p, [sectionId]: !p[sectionId] }))}
+                                style={{ width: "100%", flexBasis: "100%", flexShrink: 0, display: "flex", alignItems: "center", gap: 4, padding: "3px 2px", cursor: "pointer", userSelect: "none", marginTop: 4 }}>
+                                <span style={{ fontSize: 9, color: C.muted, lineHeight: 1 }}>{panelCollapsed[sectionId] ? "▶" : "▼"}</span>
+                                <span style={{ fontSize: 9, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: 0.8 }}>
+                                  {WIP_TILESETS.has(name) ? name + " (WIP)" : name} ({count})
+                                  {isOwned && !isPub && <span style={{ marginLeft: 4, fontSize: 8, color: "#f97316", background: "rgba(249,115,22,0.12)", border: "1px solid rgba(249,115,22,0.3)", borderRadius: 3, padding: "0 3px" }}>unpublished</span>}
+                                </span>
+                                <div style={{ flex: 1, height: 1, background: C.border, marginLeft: 4 }} />
+                                {isOwned && (
+                                  <button
+                                    onClick={e => {
+                                      e.stopPropagation();
+                                      const newPub = !isPub;
+                                      fetch(`${WORKER_URL}/rest/v1/tilesets?id=eq.${tilesetId}`, {
+                                        method: 'PATCH',
+                                        headers: { 'Authorization': `Bearer ${currentUser.firebaseToken}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+                                        body: JSON.stringify({ is_published: newPub }),
+                                      }).then(r => {
+                                        if (r.ok) setDbTilesets(prev => prev.map(ts => ts.id === tilesetId ? { ...ts, is_published: newPub } : ts));
+                                      });
+                                    }}
+                                    style={{ background: "none", border: `1px solid ${isPub ? '#4ade80' : C.border}`, borderRadius: 4, padding: "1px 5px", fontSize: 8, color: isPub ? '#4ade80' : C.muted, cursor: "pointer", flexShrink: 0, marginRight: 2 }}
+                                    title={isPub ? "Published — click to unpublish" : "Unpublished — click to publish"}>
+                                    {isPub ? "pub" : "draft"}
+                                  </button>
+                                )}
+                                {isOwned && (
+                                  <button
+                                    onClick={e => { e.stopPropagation(); setAddTileTsId(tilesetId); setAddTileOpen(true); setAddTileFile(null); setAddTileCodename(''); setAddTileFolderKey(''); setAddTileSortIdx(''); setAddTileError(''); }}
+                                    style={{ background: "none", border: `1px solid ${C.accent}`, borderRadius: 4, padding: "1px 5px", fontSize: 8, color: C.accent, cursor: "pointer", flexShrink: 0 }}
+                                    title="Add tile">
+                                    + tile
+                                  </button>
+                                )}
+                              </div>
                               {!panelCollapsed[sectionId] && entries.map(renderEntry)}
                             </React.Fragment>
-                          ) : null;
+                          );
                         })}
-                        {/* ── User Uploaded ── */}
+                        {/* ── Create Tileset button (logged in users) ── */}
+                        {currentUser && (
+                          <div style={{ width: "100%", flexBasis: "100%", flexShrink: 0, paddingTop: 4 }}>
+                            <button onClick={() => { setCreateTsName(''); setCreateTsOpen(true); }}
+                              style={{ ...btn(false, C.accent, C.accentDim), fontSize: 9, padding: "3px 8px", width: "100%", justifyContent: "center" }}>
+                              + Create Tileset
+                            </button>
+                          </div>
+                        )}
+                        {/* ── Global ── */}
+                        {globalEntries.length > 0 && (<>
+                          <SectionHeader id="global" label="Global" count={globalEntries.reduce((n, e) => n + (e.tiles?.length ?? 1), 0)} />
+                          {!panelCollapsed.global && globalEntries.map(renderEntry)}
+                        </>)}
+                        {/* ── Local Uploads ── */}
                         {(userTiles.length > 0 || true) && (<>
-                          <SectionHeader id="user" label="User Uploaded" count={userTiles.length} />
+                          <SectionHeader id="user" label="Local Uploads" count={userTiles.length} />
                           {!panelCollapsed.user && (<>
                             {userTiles.map(t => renderFlatCard(t))}
                             <div onClick={() => fileRef.current.click()}
@@ -4995,11 +5200,6 @@ function App() {
                               <span style={{ fontSize: 9, color: C.muted, textTransform: "uppercase", letterSpacing: 0.8, lineHeight: 1 }}>Upload</span>
                             </div>
                           </>)}
-                        </>)}
-                        {/* ── Global ── */}
-                        {globalEntries.length > 0 && (<>
-                          <SectionHeader id="global" label="Global" count={globalEntries.reduce((n, e) => n + (e.tiles?.length ?? 1), 0)} />
-                          {!panelCollapsed.global && globalEntries.map(renderEntry)}
                         </>)}
                       </>);
                     })()}
