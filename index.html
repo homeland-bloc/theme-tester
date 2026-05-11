@@ -338,6 +338,14 @@ function App() {
   const [dbTilesets, setDbTilesets] = useState([]);
   const [dbTilesData, setDbTilesData] = useState([]); // raw tile rows from DB
 
+  // Auth: Discord login via OAuth + Firebase custom tokens
+  const [currentUser, setCurrentUser] = useState(() => { try { return JSON.parse(localStorage.getItem('oph_user')); } catch { return null; } });
+  const [userProfile, setUserProfile] = useState(null); // { role, ... } fetched from Supabase
+  const [userDropOpen, setUserDropOpen] = useState(false);
+  const [adminOpen, setAdminOpen] = useState(false);
+  const [adminProfiles, setAdminProfiles] = useState([]);
+  const [adminLoading, setAdminLoading] = useState(false);
+
   const tiles = useMemo(() => [...defaultTiles, ...userTiles], [defaultTiles, userTiles]);
 
   const [gridW, setGridW] = useState(() => load(SK.gridW, GRID_W));
@@ -1238,6 +1246,56 @@ function App() {
       })
       .catch(() => setTilesLoading(false));
   }, []);
+
+  // Fetch user profile (role) from Supabase when logged in
+  useEffect(() => {
+    if (!currentUser?.firebaseToken || !currentUser?.id) { setUserProfile(null); return; }
+    fetch(`${WORKER_URL}/rest/v1/profiles?id=eq.${currentUser.id}&select=id,username,avatar_hash,role`, {
+      headers: { 'Authorization': `Bearer ${currentUser.firebaseToken}`, 'Content-Type': 'application/json' }
+    }).then(r => r.ok ? r.json() : []).then(rows => setUserProfile(rows[0] ?? null)).catch(() => setUserProfile(null));
+  }, [currentUser]);
+
+  // Fetch all profiles when admin modal opens
+  useEffect(() => {
+    if (!adminOpen || !currentUser?.firebaseToken) return;
+    setAdminLoading(true);
+    fetch(`${WORKER_URL}/rest/v1/profiles?select=id,discord_id,username,avatar_hash,role&order=username`, {
+      headers: { 'Authorization': `Bearer ${currentUser.firebaseToken}`, 'Content-Type': 'application/json' }
+    }).then(r => r.ok ? r.json() : []).then(rows => { setAdminProfiles(rows); setAdminLoading(false); }).catch(() => setAdminLoading(false));
+  }, [adminOpen, currentUser]);
+
+  // Close user dropdown on outside click
+  useEffect(() => {
+    if (!userDropOpen) return;
+    const handler = () => setUserDropOpen(false);
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [userDropOpen]);
+
+  const loginWithDiscord = async () => {
+    const verifier = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32)))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+    sessionStorage.setItem('pkce_verifier', verifier);
+    const encoder = new TextEncoder();
+    const digest = await crypto.subtle.digest('SHA-256', encoder.encode(verifier));
+    const challenge = btoa(String.fromCharCode(...new Uint8Array(digest))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+    const params = new URLSearchParams({
+      client_id: DISCORD_CLIENT_ID,
+      response_type: 'code',
+      redirect_uri: 'https://bicipikay.github.io/ophelia/auth/callback.html',
+      scope: 'identify',
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
+    });
+    window.location.href = `https://discord.com/oauth2/authorize?${params}`;
+  };
+
+  const logout = () => {
+    localStorage.removeItem('oph_user');
+    setCurrentUser(null);
+    setUserProfile(null);
+    setUserDropOpen(false);
+  };
+
   // Resolve a v2 palette-format grid once all tiles (including default tiles from the manifest) are loaded.
   // Guard on flatDefaultTiles.length rather than tiles.length: if the user has atlas tiles persisted in
   // localStorage, tiles is non-empty from the very first render (before the setDefaultTiles useEffect
@@ -3854,11 +3912,6 @@ function App() {
       return maps;
     };
 
-    // Normalize a codename for cross-system matching:
-    // "Wall1"→"wall", "Wall2"→"wall2", "Crate"→"crate", "FenceH"→"fenceh"
-    // Strips trailing "1" so "Wall1" and "Wall" both map to "wall"
-    const normCode = s => s.toLowerCase().replace(/1$/, '') || s.toLowerCase();
-
     // Compute remap
     const opheliaIdMaps = buildOpheliaIdMaps();
     const idRemap = {};
@@ -4265,6 +4318,62 @@ function App() {
         <span className="oph-title-text" style={{ fontFamily: "'Lilita One', cursive", fontWeight: 400, fontSize: isMobile ? 15 : 18, letterSpacing: 0.4, whiteSpace: "nowrap", flexShrink: 0, display: "inline-block" }}>
           Opheliapp — Custom Theme Tester
         </span>
+        <div style={{ flex: 1 }} />
+        {/* Auth panel */}
+        {currentUser ? (
+          <div style={{ position: "relative" }} onMouseDown={e => e.stopPropagation()}>
+            <button onClick={() => setUserDropOpen(o => !o)}
+              style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: `1px solid ${C.border}`, borderRadius: 20, padding: "4px 10px 4px 4px", cursor: "pointer", color: C.text, fontFamily: "'Inter', sans-serif" }}>
+              {currentUser.avatar
+                ? <img src={currentUser.avatar} alt="" style={{ width: 26, height: 26, borderRadius: "50%", flexShrink: 0 }} />
+                : <div style={{ width: 26, height: 26, borderRadius: "50%", background: C.accent, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, color: "#fff", fontWeight: 700 }}>{currentUser.username?.[0]?.toUpperCase()}</div>
+              }
+              <span style={{ fontSize: 12, fontWeight: 600, maxWidth: 100, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: C.text }}>{currentUser.username}</span>
+              <span style={{ fontSize: 9, color: C.muted }}>▾</span>
+            </button>
+            {userDropOpen && (
+              <div style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, background: C.panelDeep, border: `1px solid ${C.border}`, borderRadius: 8, zIndex: 2000, minWidth: 210, boxShadow: "0 4px 20px rgba(0,0,0,0.5)", padding: "6px 0" }}>
+                {/* Theme selector */}
+                <div style={{ padding: "6px 12px 8px", borderBottom: `1px solid ${C.border}` }}>
+                  <div style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 0.8, marginBottom: 6 }}>Theme</div>
+                  <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                    <button onClick={() => setAutoTheme(v => !v)} style={{ ...btn(autoTheme, C.accent, C.accentDim), fontSize: 10, padding: "2px 8px" }} title="Auto-switch based on background">Auto 🌦️</button>
+                    {["warm", "cold"].map(th => (
+                      <button key={th} onClick={() => { setAutoTheme(false); setUiTheme(th); }}
+                        style={{ ...btn(!autoTheme && uiTheme === th, !autoTheme && uiTheme === th ? C.accent : undefined, !autoTheme && uiTheme === th ? C.accentDim : undefined), fontSize: 10, padding: "2px 8px", opacity: autoTheme ? 0.45 : 1 }}>
+                        {th === "warm" ? "🔥 Warm" : "❄️ Cold"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {/* Admin Dashboard — only visible to admins */}
+                {userProfile?.role === 'admin' && (
+                  <button
+                    onClick={() => { setAdminOpen(true); setUserDropOpen(false); }}
+                    style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 12px", background: "none", border: "none", cursor: "pointer", color: "#fbbf24", fontSize: 12, fontFamily: "'Inter', sans-serif" }}
+                    onMouseEnter={e => { e.currentTarget.style.background = "rgba(251,191,36,0.08)"; }}
+                    onMouseLeave={e => { e.currentTarget.style.background = "none"; }}>
+                    🛡 Admin Dashboard
+                  </button>
+                )}
+                {/* Logout */}
+                <button
+                  onClick={logout}
+                  style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 12px", background: "none", border: "none", cursor: "pointer", color: "#f87171", fontSize: 12, fontFamily: "'Inter', sans-serif" }}
+                  onMouseEnter={e => { e.currentTarget.style.background = "rgba(248,113,113,0.08)"; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = "none"; }}>
+                  → Logout
+                </button>
+              </div>
+            )}
+          </div>
+        ) : (
+          <button onClick={loginWithDiscord}
+            style={{ ...btn(false, "#5865F2", "rgba(88,101,242,0.18)"), display: "flex", alignItems: "center", gap: 6, fontSize: 12, padding: "5px 12px" }}>
+            <svg width="16" height="12" viewBox="0 0 71 55" fill="currentColor" style={{ flexShrink: 0 }}><path d="M60.1 4.9A58.55 58.55 0 0 0 45.6.4a.22.22 0 0 0-.23.11 40.84 40.84 0 0 0-1.8 3.7 54.07 54.07 0 0 0-16.24 0 37.35 37.35 0 0 0-1.83-3.7.23.23 0 0 0-.23-.11A58.38 58.38 0 0 0 10.93 4.9a.21.21 0 0 0-.1.08C1.58 18.8-1.03 32.5.34 46 .35 46 .36 46.07.38 46.09a58.9 58.9 0 0 0 17.7 8.95.23.23 0 0 0 .25-.08 42.08 42.08 0 0 0 3.63-5.9.22.22 0 0 0-.12-.31 38.78 38.78 0 0 1-5.54-2.64.23.23 0 0 1-.02-.38c.37-.28.74-.57 1.1-.86a.22.22 0 0 1 .23-.03c11.62 5.3 24.2 5.3 35.7 0a.22.22 0 0 1 .23.03c.36.29.73.58 1.1.86a.23.23 0 0 1-.02.38 36.41 36.41 0 0 1-5.54 2.63.23.23 0 0 0-.12.32 47.25 47.25 0 0 0 3.62 5.9.22.22 0 0 0 .25.08 58.7 58.7 0 0 0 17.72-8.95.22.22 0 0 0 .1-.1c1.66-17.2-2.8-32.2-11.84-45.54a.18.18 0 0 0-.1-.08zM23.73 37.57c-3.5 0-6.38-3.21-6.38-7.16s2.83-7.16 6.38-7.16c3.58 0 6.42 3.23 6.38 7.16 0 3.95-2.84 7.16-6.38 7.16zm23.61 0c-3.5 0-6.38-3.21-6.38-7.16s2.83-7.16 6.38-7.16c3.58 0 6.42 3.23 6.38 7.16 0 3.95-2.83 7.16-6.38 7.16z"/></svg>
+            Login with Discord
+          </button>
+        )}
       </div>
 
       {/* ══ MIDDLE ROW: canvas with sidebars ════════════════════════ */}
@@ -6015,19 +6124,6 @@ function App() {
             })()}
           </div>
 
-          {/* Row 5: Theme switcher */}
-          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 14px 6px" }}>
-            <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1, userSelect: "none" }}>Theme</span>
-            <button onClick={() => setAutoTheme(v => !v)}
-              style={{ ...btn(autoTheme, C.accent, C.accentDim), fontSize: 11, padding: "3px 12px" }}
-              title="Automatically switch between Warm and Cold theme based on background colour temperature">Auto 🌦️</button>
-            {["warm", "cold"].map(th => (
-              <button key={th} onClick={() => { setAutoTheme(false); setUiTheme(th); }}
-                style={{ ...btn(!autoTheme && uiTheme === th, !autoTheme && uiTheme === th ? C.accent : undefined, !autoTheme && uiTheme === th ? C.accentDim : undefined), fontSize: 11, padding: "3px 12px", opacity: autoTheme ? 0.45 : 1 }}>
-                {th === "warm" ? "🔥 Warm" : "❄️ Cold"}
-              </button>
-            ))}
-          </div>
         </>)}
 
       </div>
