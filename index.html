@@ -346,6 +346,20 @@ function App() {
   const [adminProfiles, setAdminProfiles] = useState([]);
   const [adminLoading, setAdminLoading] = useState(false);
 
+  // Tileset/tile management (Tasks 6d, 6e, 6f)
+  const [createTsOpen, setCreateTsOpen] = useState(false);
+  const [createTsName, setCreateTsName] = useState('');
+  const [createTsLoading, setCreateTsLoading] = useState(false);
+  const [addTileOpen, setAddTileOpen] = useState(false);
+  const [addTileTsId, setAddTileTsId] = useState(null);
+  const [addTileFile, setAddTileFile] = useState(null);
+  const [addTileCodename, setAddTileCodename] = useState('');
+  const [addTileFolderKey, setAddTileFolderKey] = useState('');
+  const [addTileSortIdx, setAddTileSortIdx] = useState('');
+  const [addTileLoading, setAddTileLoading] = useState(false);
+  const [addTileError, setAddTileError] = useState('');
+  const [tsFetchTrigger, setTsFetchTrigger] = useState(0);
+
   const tiles = useMemo(() => [...defaultTiles, ...userTiles], [defaultTiles, userTiles]);
 
   const [gridW, setGridW] = useState(() => load(SK.gridW, GRID_W));
@@ -1216,13 +1230,21 @@ function App() {
       .then(data => setManifest({ global: data.global }))
       .catch(() => setManifest({ global: null }));
 
-    // Fetch published tilesets from Supabase (exclude global type — handled by manifest)
-    const headers = {
+    // Fetch tilesets from Supabase (exclude global type — handled by manifest)
+    // When logged in: fetch published + own tilesets via worker with auth
+    // When not logged in: fetch only published tilesets via public API
+    const publicHeaders = {
       apikey: SUPABASE_ANON_KEY,
       Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
       'Content-Type': 'application/json',
     };
-    fetch(`${SUPABASE_URL}/rest/v1/tilesets?is_published=eq.true&type=neq.global&order=sort_index`, { headers })
+    const tsUrl = currentUser?.id
+      ? `${SUPABASE_URL}/rest/v1/tilesets?or=(is_published.eq.true,owner_id.eq.${currentUser.id})&type=neq.global&order=name`
+      : `${SUPABASE_URL}/rest/v1/tilesets?is_published=eq.true&type=neq.global&order=name`;
+    const tsHeaders = currentUser?.firebaseToken
+      ? { ...publicHeaders, Authorization: `Bearer ${currentUser.firebaseToken}` }
+      : publicHeaders;
+    fetch(tsUrl, { headers: tsHeaders })
       .then(r => r.ok ? r.json() : [])
       .then(tilesets => {
         if (!Array.isArray(tilesets) || tilesets.length === 0) {
@@ -1232,7 +1254,7 @@ function App() {
           return;
         }
         const tsIds = tilesets.map(ts => ts.id).join(',');
-        return fetch(`${SUPABASE_URL}/rest/v1/tiles?tileset_id=in.(${tsIds})&order=sort_index`, { headers })
+        return fetch(`${SUPABASE_URL}/rest/v1/tiles?tileset_id=in.(${tsIds})&order=sort_index`, { headers: publicHeaders })
           .then(r => r.ok ? r.json() : [])
           .then(tilesRows => {
             setDbTilesets(tilesets);
@@ -1245,7 +1267,7 @@ function App() {
           });
       })
       .catch(() => setTilesLoading(false));
-  }, []);
+  }, [currentUser?.id, tsFetchTrigger]);
 
   // Fetch user profile (role) from Supabase when logged in
   useEffect(() => {
@@ -3240,6 +3262,15 @@ function App() {
       </div>
     );
 
+    // Task 7: Navigation arrows
+    const [saveStatus, setSaveStatus] = React.useState(null); // null | 'saving' | 'ok' | 'err'
+    const navTiles = t.tilesetName
+      ? tiles.filter(tile => tile.tilesetName === t.tilesetName).sort((a, b) => (a.sortIndex ?? 0) - (b.sortIndex ?? 0))
+      : [];
+    const navIdx = navTiles.findIndex(tile => tile.id === t.id);
+    const hasPrev = navIdx > 0;
+    const hasNext = navIdx < navTiles.length - 1;
+
     return (
       <div className="modal-backdrop" onClick={() => { setInfoTile(null); setDeleteConfirmId(null); }}>
         <div className="modal-box" onClick={e => e.stopPropagation()}>
@@ -3247,11 +3278,23 @@ function App() {
             <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Tile info</span>
             <button onClick={() => { setInfoTile(null); setDeleteConfirmId(null); }} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
           </div>
-          <div style={{ background: C.panelDeep, borderRadius: 8, padding: 12, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 120 }}>
-            <div className="tile-img-checker" style={{ borderRadius: 4, overflow: "hidden" }}>
-              <img src={t.blobSrc ?? t.src} alt="" style={{ maxWidth: "260px", maxHeight: 180, imageRendering: "pixelated" }} />
+          {navTiles.length > 1 ? (
+            <div style={{ background: C.panelDeep, borderRadius: 8, padding: "12px 8px", display: "flex", alignItems: "center", justifyContent: "center", minHeight: 120, gap: 8 }}>
+              <button disabled={!hasPrev} onClick={() => hasPrev && setInfoTile(navTiles[navIdx - 1].id)}
+                style={{ background: "none", border: `1px solid ${hasPrev ? C.border : "transparent"}`, borderRadius: 4, color: hasPrev ? C.text : C.muted, fontSize: 18, cursor: hasPrev ? "pointer" : "default", padding: "4px 8px", opacity: hasPrev ? 1 : 0.25, flexShrink: 0, lineHeight: 1 }}>‹</button>
+              <div className="tile-img-checker" style={{ borderRadius: 4, overflow: "hidden" }}>
+                <img src={t.blobSrc ?? t.src} alt="" style={{ maxWidth: "220px", maxHeight: 180, imageRendering: "pixelated" }} />
+              </div>
+              <button disabled={!hasNext} onClick={() => hasNext && setInfoTile(navTiles[navIdx + 1].id)}
+                style={{ background: "none", border: `1px solid ${hasNext ? C.border : "transparent"}`, borderRadius: 4, color: hasNext ? C.text : C.muted, fontSize: 18, cursor: hasNext ? "pointer" : "default", padding: "4px 8px", opacity: hasNext ? 1 : 0.25, flexShrink: 0, lineHeight: 1 }}>›</button>
             </div>
-          </div>
+          ) : (
+            <div style={{ background: C.panelDeep, borderRadius: 8, padding: 12, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 120 }}>
+              <div className="tile-img-checker" style={{ borderRadius: 4, overflow: "hidden" }}>
+                <img src={t.blobSrc ?? t.src} alt="" style={{ maxWidth: "260px", maxHeight: 180, imageRendering: "pixelated" }} />
+              </div>
+            </div>
+          )}
 
           {/* Tile ID */}
           {t.codename && (
@@ -3451,7 +3494,115 @@ function App() {
             <span style={{ fontSize: 11, color: C.text }}>Starred shortcut ⭐</span>
           </label>
 
-          {!t.isDefault && (
+          {/* Task 5: Save to Database */}
+          {currentUser && t.isDb && t.dbId && (
+            <button
+              disabled={saveStatus === 'saving'}
+              onClick={async () => {
+                setSaveStatus('saving');
+                try {
+                  const body = {
+                    size_multiplier: getTileMultiplier(t),
+                    offset_x: getTileOffset(t).ox,
+                    offset_y: getTileOffset(t).oy,
+                    rotatable: isTileRotatable(t),
+                    flippable: isFlipAllowed(t),
+                    mirror_offset: isMirrorOffset(t),
+                    bottom_render: !!bottomTiles[t.id],
+                    priority: !!priorityTiles[t.id],
+                    auto_shadow: !!autoShadowTiles[t.id],
+                  };
+                  const resp = await fetch(`${WORKER_URL}/rest/v1/tiles?id=eq.${t.dbId}`, {
+                    method: 'PATCH',
+                    headers: {
+                      'Authorization': `Bearer ${currentUser.firebaseToken}`,
+                      'Content-Type': 'application/json',
+                      'Prefer': 'return=minimal',
+                    },
+                    body: JSON.stringify(body),
+                  });
+                  setSaveStatus(resp.ok ? 'ok' : 'err');
+                } catch {
+                  setSaveStatus('err');
+                }
+                setTimeout(() => setSaveStatus(null), 3000);
+              }}
+              style={{ ...btn(false, saveStatus === 'ok' ? '#4ade80' : saveStatus === 'err' ? C.danger : C.accent, saveStatus === 'ok' ? 'rgba(74,222,128,0.15)' : saveStatus === 'err' ? 'rgba(248,113,113,0.15)' : C.accentDim), width: '100%', justifyContent: 'center', fontSize: 11 }}>
+              {saveStatus === 'saving' ? 'Saving…' : saveStatus === 'ok' ? '✓ Saved to Database' : saveStatus === 'err' ? '✗ Save failed' : '💾 Save to Database'}
+            </button>
+          )}
+
+          {/* Task 6f: Replace image (owned DB tiles) */}
+          {t.isDb && currentUser && t.tilesetOwnerId === currentUser.id && (
+            <>
+              <input type="file" accept="image/*" id="replace-img-input" style={{ display: "none" }}
+                onChange={async e => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+                  const newPath = `${currentUser.id}/${t.tilesetId}/${Date.now()}_${file.name}`;
+                  try {
+                    const upResp = await fetch(`${WORKER_URL}/storage/v1/object/tiles/${newPath}`, {
+                      method: 'PUT',
+                      headers: { 'Authorization': `Bearer ${currentUser.firebaseToken}`, 'Content-Type': file.type, 'x-upsert': 'true' },
+                      body: file,
+                    });
+                    if (!upResp.ok) throw new Error('Upload failed');
+                    const newUrl = `${SUPABASE_URL}/storage/v1/object/public/tiles/${newPath}`;
+                    const patchResp = await fetch(`${WORKER_URL}/rest/v1/tiles?id=eq.${t.dbId}`, {
+                      method: 'PATCH',
+                      headers: { 'Authorization': `Bearer ${currentUser.firebaseToken}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+                      body: JSON.stringify({ image_url: newUrl }),
+                    });
+                    if (patchResp.ok) setTsFetchTrigger(n => n + 1);
+                  } catch (err) {
+                    alert('Failed to replace image: ' + err.message);
+                  }
+                  e.target.value = '';
+                }} />
+              <button onClick={() => document.getElementById('replace-img-input').click()}
+                style={{ ...btn(false, C.accent, C.accentDim), width: '100%', justifyContent: 'center', fontSize: 11 }}>
+                🖼 Replace Image
+              </button>
+            </>
+          )}
+
+          {/* Task 6f: Delete — DB-owned tiles, local user tiles, default tiles */}
+          {t.isDb && currentUser && t.tilesetOwnerId === currentUser.id ? (
+            deleteConfirmId === t.id ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 5, padding: "6px 0" }}>
+                <span style={{ fontSize: 11, color: C.danger, textAlign: "center" }}>Delete this tile from the database?</span>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button style={{ ...btn(false), flex: 1, fontSize: 11 }} onClick={() => setDeleteConfirmId(null)}>Cancel</button>
+                  <button style={{ ...btn(true, C.danger, "rgba(248,113,113,0.18)"), flex: 1, fontSize: 11 }}
+                    onClick={async () => {
+                      setDeleteConfirmId(null);
+                      try {
+                        await fetch(`${WORKER_URL}/rest/v1/tiles?id=eq.${t.dbId}`, {
+                          method: 'DELETE',
+                          headers: { 'Authorization': `Bearer ${currentUser.firebaseToken}`, 'Content-Type': 'application/json' },
+                        });
+                        const prefix = `${SUPABASE_URL}/storage/v1/object/public/tiles/`;
+                        if (t.src?.startsWith(prefix)) {
+                          const storagePath = t.src.slice(prefix.length);
+                          await fetch(`${WORKER_URL}/storage/v1/object/tiles`, {
+                            method: 'DELETE',
+                            headers: { 'Authorization': `Bearer ${currentUser.firebaseToken}`, 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ prefixes: [storagePath] }),
+                          });
+                        }
+                        setTsFetchTrigger(n => n + 1);
+                        setInfoTile(null);
+                      } catch (err) {
+                        alert('Failed to delete tile: ' + err.message);
+                      }
+                    }}>Delete from DB</button>
+                </div>
+              </div>
+            ) : (
+              <button style={{ ...btn(false, C.danger, "rgba(248,113,113,0.14)"), width: "100%", justifyContent: "center", fontSize: 11 }}
+                onClick={() => setDeleteConfirmId(t.id)}>🗑 Delete from Database</button>
+            )
+          ) : !t.isDefault && !t.isDb ? (
             deleteConfirmId === t.id ? (
               <div style={{ display: "flex", flexDirection: "column", gap: 5, padding: "6px 0" }}>
                 <span style={{ fontSize: 11, color: C.danger, textAlign: "center" }}>Delete this tile from the panel?</span>
@@ -3465,10 +3616,9 @@ function App() {
               <button style={{ ...btn(false, C.danger, "rgba(248,113,113,0.14)"), width: "100%", justifyContent: "center" }}
                 onClick={() => setDeleteConfirmId(t.id)}>Delete tile</button>
             )
-          )}
-          {t.isDefault && (
+          ) : t.isDefault ? (
             <p style={{ fontSize: 11, color: C.muted, textAlign: "center" }}>Default tile — cannot be deleted.</p>
-          )}
+          ) : null}
         </div>
       </div>
     );

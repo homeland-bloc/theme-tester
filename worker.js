@@ -22,7 +22,7 @@ const WRITE_METHODS = new Set(['POST', 'PATCH', 'PUT', 'DELETE']);
 const BLOCKED_IPS = new Set([]);
 
 const ADMIN_SENSITIVE_TABLES = new Set([
-  'tilesets', 'tiles', 'profiles'
+  'profiles'
 ]);
 
 export default {
