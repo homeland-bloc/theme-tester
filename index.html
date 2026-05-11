@@ -105,7 +105,7 @@ const MIN_ZOOM = 0.25, MAX_ZOOM = 4;
 // Zoom buttons snap to nearest 5%
 const ZOOM_STEP = 0.05;
 const snapTo10 = z => Math.round(z * 20) / 20;
-const SK = { tiles: "oph_tiles", grid: "oph_grid", colors: "oph_colors", userTiles: "oph_user_tiles", multipliers: "oph_multipliers", priority: "oph_priority", offsets: "oph_offsets", rotatable: "oph_rotatable", tileRots: "oph_tile_rots", gridW: "oph_gridW", gridH: "oph_gridH", tileNames: "oph_tile_names", bottom: "oph_bottom", mirrorOffset: "oph_mirror_offset", gridOff: "oph_grid_off", activeTileset: "oph_active_ts", atlasTiles: "oph_atlas_tiles" };
+const SK = { tiles: "oph_tiles", grid: "oph_grid", colors: "oph_colors", userTiles: "oph_user_tiles", multipliers: "oph_multipliers", priority: "oph_priority", offsets: "oph_offsets", rotatable: "oph_rotatable", tileRots: "oph_tile_rots", gridW: "oph_gridW", gridH: "oph_gridH", tileNames: "oph_tile_names", bottom: "oph_bottom", mirrorOffset: "oph_mirror_offset", gridOff: "oph_grid_off", activeTileset: "oph_active_ts" };
 const ACCEPTED = "image/png,image/jpeg,image/gif,image/webp,image/svg+xml,image/bmp";
 const MAX_HISTORY = 60;
 // Non-overlapping tile ID ranges — prevents collisions between sections regardless of reordering
@@ -119,28 +119,11 @@ const SPACE_TILE_ID    = 998; // special: makes a cell fully transparent
 const WARN_TILE_ID     = 997; // special: places a warning-marker ghost tile
 const REPLACE_ERASE_ID = -1;  // sentinel: replace-with-empty in the Replace modal
 
-// Module-level cache for GitHub API responses (survives re-renders, not page reload)
-const atlasApiCache = new Map(); // url → resolved data
-// Session-cached Atlas tileset list (fetched once per page load)
-const atlasTilesetsListCache = { pending: null, data: null, error: null };
-
-// Pre-bundled Atlas tileset folder names — replaces the GitHub API list call entirely.
-// Excludes "Additional" and "Global" (special/shared resource folders, not tilesets).
-const ATLAS_TILESET_NAMES = [
-  "Aquarium","Arcade","Bandstand","Bazaar","Beach","Biodome","Brawlywood",
-  "Candyland","Castle_Courtyard","Circus","City","Coin_Factory","Deep_Sea",
-  "Desert","Enchanted_Woods","Escape_Room","Fighting_Game","Ghost_Station",
-  "Gift_Shop","Grassy_Field","Hockey","Holiday","Ice_Island","Katana_Kingdom",
-  "Medieval_Manor","Mine","Mortuary","Oasis","Oddities_Shop","Pirate_Ship",
-  "Ranger_Ranch","Retropolis","Robot_Factory","Rooftop","Rumble_Jungle",
-  "Scrapyard","Skating_Bowl","Snowtel","Spongebob","Stadium","Starr_Force",
-  "Starr_Toon","Stranger_Things","Stranger_Things_Forest","Stranger_Things_Lab",
-  "Stranger_Things_Lair","Stunt_Show","Subway_Surfers","Super_City","Super_City_2",
-  "Swamp_of_Love","The_Hub","Tropical_Island","Wasteland","Water_Park","Wild_West",
-  "Z_BrawlClub","Z_CasinoTheme","Z_JurassicTheme","Z_SkyTheme","Z_UnderwaterTheme",
-];
-// In-flight deduplication for loadAtlasTileset — prevents concurrent duplicate loads
-const atlasTilesetLoadInFlight = new Map(); // tilesetName → Promise
+// Supabase connection — anon key is safe to expose client-side (RLS enforced server-side)
+const SUPABASE_URL = "https://eizcooctnlugsxcyrplh.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_K0J0EGtj3m9DyDxZoRpy3w_bDwgMxg_";
+const WORKER_URL = "https://oph.opheliapp.workers.dev";
+const DISCORD_CLIENT_ID = "1503113409678410019";
 // Hardcoded BG colours for Ophelia tilesets (single source of truth)
 const OPHELIA_BG = {
   Airport:   { bg1: "#9cacbc", bg2: "#94a2b2" },
@@ -235,6 +218,7 @@ const GRID_FORMAT_VERSION = 2;
 const getTileCodename = tile => {
   if (!tile) return null;
   if (tile.id === SPACE_TILE_ID) return "space";
+  if (tile.dbId) return "d:" + tile.dbId;
   if (tile.isAtlas) return "a:" + tile.codename;
   if (!tile.isDefault) return "u:" + tile.id;
   return tile.src;
@@ -243,6 +227,7 @@ const resolveCodename = (codename, tiles) => {
   if (!codename) return null;
   if (codename === "space") return { id: SPACE_TILE_ID };
   if (codename.startsWith("u:")) { const uid = parseInt(codename.slice(2), 10); return tiles.find(t => t.id === uid) ?? null; }
+  if (codename.startsWith("d:")) { const uuid = codename.slice(2); return tiles.find(t => t.dbId === uuid) ?? null; }
   if (codename.startsWith("a:")) { const cn = codename.slice(2); return tiles.find(t => t.isAtlas && t.codename === cn) ?? null; }
   return tiles.find(t => t.src === codename) ?? null;
 };
@@ -349,18 +334,11 @@ function App() {
     const saved = load(SK.userTiles, []);
     return saved.map(t => ({ ...t, blobSrc: t.src ? dataURLtoBlobURL(t.src) : undefined }));
   });
-  // Atlas tiles: stored in localStorage, IDs 300–499
-  const [atlasTiles, setAtlasTiles] = useState(() => load(SK.atlasTiles, []));
-  // Atlas icon size for the browser panel
-  const [atlasIconSize, setAtlasIconSize] = useState(() => load("oph_atlas_icon_size", 20));
-  // Atlas panel UI state
-  const [atlasOpen,    setAtlasOpen]    = useState(false);
-  const [atlasPath,    setAtlasPath]    = useState(""); // current browse path within Resources/
-  const [atlasItems,   setAtlasItems]   = useState(null); // null=not yet loaded, array=loaded
-  const [atlasError,   setAtlasError]   = useState("");
-  const [atlasLoading, setAtlasLoading] = useState(false);
+  // DB tilesets and tiles (fetched from Supabase on mount)
+  const [dbTilesets, setDbTilesets] = useState([]);
+  const [dbTilesData, setDbTilesData] = useState([]); // raw tile rows from DB
 
-  const tiles = useMemo(() => [...defaultTiles, ...userTiles, ...atlasTiles], [defaultTiles, userTiles, atlasTiles]);
+  const tiles = useMemo(() => [...defaultTiles, ...userTiles], [defaultTiles, userTiles]);
 
   const [gridW, setGridW] = useState(() => load(SK.gridW, GRID_W));
   const [gridH, setGridH] = useState(() => load(SK.gridH, GRID_H));
@@ -589,21 +567,17 @@ function App() {
   const bg1Ref   = useRef(bg1);
   const bg2Ref   = useRef(bg2);
   const histIdxRef = useRef(0);
-  const shownTilsetsRef = useRef(null);
   const bgHistTimerRef = useRef(null);
   const mirrorVRef = useRef(false);
   const mirrorHRef = useRef(false);
   const mirrorDRef = useRef(false);
-  const atlasTilesRef = useRef([]);
-  const lastOpheliaTilesetRef = useRef(null);
-  const shownAtlasTilesetsRef = useRef([]);
   useEffect(() => { gridWRef.current = gridW; }, [gridW]);
   useEffect(() => { gridHRef.current = gridH; }, [gridH]);
   useEffect(() => { bg1Ref.current   = bg1;   }, [bg1]);
   useEffect(() => { bg2Ref.current   = bg2;   }, [bg2]);
   useEffect(() => { histIdxRef.current = histIdx; }, [histIdx]);
   useEffect(() => { activeTilesetRef.current = activeTileset ?? null; }, [activeTileset]);
-  useEffect(() => { selRef.current          = sel;           }, [sel]);
+  useEffect(() => { selRef.current = sel; }, [sel]);
   useEffect(() => { eraserRef.current       = eraser;        }, [eraser]);
   useEffect(() => { handModeRef.current     = handMode;      }, [handMode]);
   useEffect(() => { eyedropperModeRef.current = eyedropperMode; }, [eyedropperMode]);
@@ -635,25 +609,16 @@ function App() {
   useEffect(() => { cardFlipStepsRef.current     = cardFlipSteps;     }, [cardFlipSteps]);
   useEffect(() => { rotatableMapRef.current      = rotatableMap;      }, [rotatableMap]);
   useEffect(() => { allowFlipMapRef.current      = allowFlipMap;      }, [allowFlipMap]);
-  useEffect(() => { atlasTilesRef.current        = atlasTiles;        }, [atlasTiles]);
-  useEffect(() => { shownAtlasTilesetsRef.current = shownAtlasTilesets; }, [shownAtlasTilesets]);
-  useEffect(() => {
-    if (activeTileset && manifest?.tilesets?.some(t => t.name === activeTileset)) {
-      lastOpheliaTilesetRef.current = activeTileset;
-    }
-  }, [activeTileset, manifest]);
+
   useEffect(() => {
     const map = {};
     flatDefaultTiles.forEach(t => { map[t.id] = t; });
     userTiles.forEach(t => { map[t.id] = t; });
-    atlasTiles.forEach(t => { map[t.id] = t; });
     allTilesByIdRef.current = map;
-  }, [flatDefaultTiles, userTiles, atlasTiles]);
+  }, [flatDefaultTiles, userTiles]);
 
   // Persist
-  useEffect(() => { save(SK.userTiles,   userTiles.map(({ blobSrc: _b, ...t }) => t)); }, [userTiles]);
-  useEffect(() => { save(SK.atlasTiles,  atlasTiles); }, [atlasTiles]);
-  useEffect(() => { save("oph_atlas_icon_size", atlasIconSize); }, [atlasIconSize]);
+  useEffect(() => { save(SK.userTiles, userTiles.map(({ blobSrc: _b, ...t }) => t)); }, [userTiles]);
   useEffect(() => { save("oph_panel_collapsed", panelCollapsed); }, [panelCollapsed]);
   useEffect(() => {
     if (pendingGridLoadRef.current) return; // v2 load in progress — don't overwrite palette data
@@ -728,6 +693,7 @@ function App() {
   useEffect(() => { save(SK.gridH, gridH); setSizeHInput(String(gridH)); }, [gridH]);
 
   const getDefaultMultiplier = t => {
+    if (t?.dbSizeMultiplier != null) return Number(t.dbSizeMultiplier);
     if (!t?.src) return 1.0;
     const s = t.src;
     // Spawns
@@ -772,6 +738,7 @@ function App() {
 
   // Returns { ox, oy } in % (100 = one full cell width/height). Positive ox=right, positive oy=down.
   const getDefaultOffset = t => {
+    if (t?.dbOffsetX != null && t?.dbOffsetY != null) return { ox: Number(t.dbOffsetX), oy: Number(t.dbOffsetY) };
     if (!t?.src) return { ox: 0, oy: 0 };
     const s = t.src;
     // Jumppads: +50% H, +66% V (sprite anchor is above center)
@@ -872,20 +839,29 @@ function App() {
   };
 
   // Water tiles have rotation on by default
-  const isDefaultRotatable = t => !!(t?.src && TILE_SETTINGS.rotatable.some(p => t.src.includes(p)));
+  const isDefaultRotatable = t => {
+    if (t?.dbRotatable != null) return !!t.dbRotatable;
+    return !!(t?.src && TILE_SETTINGS.rotatable.some(p => t.src.includes(p)));
+  };
 
   const isTileRotatable = t => {
     if (rotatableMap[t.id] !== undefined) return rotatableMap[t.id];
     return isDefaultRotatable(t);
   };
 
-  const isDefaultFlippable = t => !!(t?.src && TILE_SETTINGS.flippable.some(p => t.src.includes(p)));
+  const isDefaultFlippable = t => {
+    if (t?.dbFlippable != null) return !!t.dbFlippable;
+    return !!(t?.src && TILE_SETTINGS.flippable.some(p => t.src.includes(p)));
+  };
   const isFlipAllowed = t => {
     if (allowFlipMap[t.id] !== undefined) return allowFlipMap[t.id];
     return isDefaultFlippable(t); // fence/rope flippable by default; water is spin-only
   };
 
-  const isDefaultMirrorOffset = t => !!(t?.src && TILE_SETTINGS.mirrorOffset.some(p => t.src.includes(p)));
+  const isDefaultMirrorOffset = t => {
+    if (t?.dbMirrorOffset != null) return !!t.dbMirrorOffset;
+    return !!(t?.src && TILE_SETTINGS.mirrorOffset.some(p => t.src.includes(p)));
+  };
   const isMirrorOffset = t => {
     if (mirrorOffsetTiles[t.id] !== undefined) return mirrorOffsetTiles[t.id];
     return isDefaultMirrorOffset(t);
@@ -893,6 +869,7 @@ function App() {
 
   // OTG: which tiles count as walls by default (all except passable game-layer tiles)
   const isDefaultOTGWall = t => {
+    if (t?.dbOtgPassable != null) return !t.dbOtgPassable;
     if (!t?.src) return false;
     return !TILE_SETTINGS.otgPassable.some(p => t.src.includes(p));
   };
@@ -991,7 +968,7 @@ function App() {
     return counts;
   })() : {};
 
-  // Count badge shown at top-left of tile cards when "Show tile count" is enabled.
+  // Count badge shown at bottom-right of tile cards when "Show tile count" is enabled.
   // Ignores "Hide default tile settings labels" — always shown when the feature is on.
   const CountBadge = ({ t }) => {
     if (!showTileCount) return null;
@@ -1001,7 +978,7 @@ function App() {
     const count = tileCounts[t.id] ?? 0;
     if (count === 0) return null;
     return (
-      <span style={{ position: "absolute", top: -7, left: -7, fontSize: 8, fontWeight: 700, color: "#34d399", background: "rgba(0,0,0,0.75)", borderRadius: 3, padding: "1px 3px", lineHeight: 1.3, pointerEvents: "none", zIndex: 7 }}>
+      <span style={{ position: "absolute", bottom: -7, right: -7, fontSize: 10, fontWeight: 800, color: "#ffffff", background: "#059669", borderRadius: 4, padding: "1px 4px", lineHeight: 1.4, pointerEvents: "none", zIndex: 8, boxShadow: "0 1px 4px rgba(0,0,0,0.7)" }}>
         ×{count}
       </span>
     );
@@ -1038,29 +1015,17 @@ function App() {
     );
   };
 
-  // Active tileset name (primary — drives BG colour on switch, history tileset field)
+  // Active tileset name (drives BG colour on switch, history tileset field)
   const [activeTileset, setActiveTileset] = useState(null);
-  // Set of tileset names whose tiles are shown in the panel (multi-select)
-  const [shownTilesets, setShownTilesets] = useState(() => load("oph_shown_tilesets", null));
-  const [allowTsMixing, setAllowTsMixing] = useState(() => load("oph_allow_mixing", true));
-  const [hiddenAtlasGroups, setHiddenAtlasGroups] = useState(() => load("oph_hidden_atlas_groups", []));
   // Tileset dropdown open state
   const [tilesetDropOpen, setTilesetDropOpen] = useState(false);
-  // Atlas tileset list fetched from GitHub API (null = not yet loaded)
-  const [atlasTilesetList, setAtlasTilesetList] = useState(null);
-  const [atlasTilesetError, setAtlasTilesetError] = useState("");
-  const [atlasRateLimitHit, setAtlasRateLimitHit] = useState(false);
   const [gridLoadWarning, setGridLoadWarning] = useState(null); // null or count of unresolved tiles
-  const [clearAtlasOpen, setClearAtlasOpen] = useState(false);
   const [customBgModalOpen, setCustomBgModalOpen] = useState(false);
-  // Which Atlas tilesets are shown in the panel (persisted)
-  const [shownAtlasTilesets, setShownAtlasTilesets] = useState(() => load("oph_shown_atlas_tilesets", []));
-  // Cached BG colours extracted from each Atlas tileset's BGLight/BGDark images
-  const [atlasTilesetBgColors, setAtlasTilesetBgColors] = useState(() => load("oph_atlas_ts_bg", {}));
-  // Parsed manifest data
+  // Cached BG colours per tileset name (loaded from DB or sampled)
+  const [tilesetBgColors, setTilesetBgColors] = useState(() => load("oph_ts_bg", {}));
+  // Parsed manifest data (globals only)
   const [manifest, setManifest] = useState(null);
   useEffect(() => { openFolderKeyRef.current = openFolderKey; }, [openFolderKey]);
-  useEffect(() => { shownTilsetsRef.current = shownTilesets; }, [shownTilesets]);
   // toggleFolder uses ref to read current value — avoids stale-closure reopening after
   // the outside-click mousedown handler closes the panel in the same event cycle.
   const toggleFolder = (key, e) => {
@@ -1090,58 +1055,85 @@ function App() {
     };
   }, [openFolderKey]);
 
-  // Build the flat defaultTiles list and the ordered panel entries from manifest + activeTileset.
+  // Build the flat defaultTiles list and the ordered panel entries from DB tilesets + global manifest.
   // ALL tilesets are loaded with sequential non-overlapping IDs so that switching themes never
-  // causes ID collisions (e.g. Mausoleum breakable ID 7 stays valid even when Sewer is active).
-  // shownTilesets controls which tilesets appear in the panel (multi-select).
+  // causes ID collisions. Only the active tileset's entries are shown in the panel.
   // Returns: tilesetEntriesPerTs, tilesetEntries, globalEntries, flatDefaultTiles, tilesetTileCount
   const { tilesetEntriesPerTs, tilesetEntries, globalEntries, flatDefaultTiles, tilesetTileCount } = useMemo(() => {
-    if (!manifest) return { tilesetEntriesPerTs: [], tilesetEntries: [], globalEntries: [], flatDefaultTiles: [], tilesetTileCount: 0 };
     const flatTiles = [];
     let idCounter = TILESET_ID_START;
+
+    // ── DB tilesets — IDs assigned sequentially ──
+    const entriesPerTs = [];
+    let tsCount = 0;
+    const tilesByTsId = {};
+    dbTilesData.forEach(tile => {
+      if (!tilesByTsId[tile.tileset_id]) tilesByTsId[tile.tileset_id] = [];
+      tilesByTsId[tile.tileset_id].push(tile);
+    });
+
+    for (const tsDef of dbTilesets) {
+      const isActive = tsDef.name === activeTileset;
+      const tilesForTs = (tilesByTsId[tsDef.id] ?? []).slice().sort((a, b) => a.sort_index - b.sort_index);
+      const entries = [];
+      const folderGroups = {};
+      const flatItems = [];
+
+      for (const row of tilesForTs) {
+        const tileObj = {
+          id: idCounter++,
+          dbId: row.id,
+          dbTilesetId: row.tileset_id,
+          src: row.image_url,
+          isDefault: true,
+          isDb: true,
+          codename: row.codename,
+          tilesetName: tsDef.name,
+          tilesetId: tsDef.id,
+          tilesetType: tsDef.type,
+          tilesetOwnerId: tsDef.owner_id,
+          sortIndex: row.sort_index,
+          dbSizeMultiplier: row.size_multiplier,
+          dbOffsetX: row.offset_x,
+          dbOffsetY: row.offset_y,
+          dbRotatable: row.rotatable,
+          dbFlippable: row.flippable,
+          dbOtgPassable: row.otg_passable,
+          dbMirrorOffset: row.mirror_offset,
+          dbBottomRender: row.bottom_render,
+          dbPriority: row.priority,
+          dbAutoShadow: row.auto_shadow,
+        };
+        if (row.folder_key) {
+          tileObj.folderKey = `${tsDef.name}/${row.folder_key}`;
+          tileObj.folderLabel = row.folder_key;
+          if (!folderGroups[row.folder_key]) folderGroups[row.folder_key] = [];
+          folderGroups[row.folder_key].push(tileObj);
+        } else {
+          flatItems.push(tileObj);
+        }
+        flatTiles.push(tileObj);
+      }
+
+      if (isActive) {
+        flatItems.forEach(t => entries.push({ type: 'flat', tile: t }));
+        Object.entries(folderGroups).forEach(([key, tiles]) => {
+          entries.push({ type: 'folder', key: `${tsDef.name}/${key}`, label: key, tiles });
+        });
+        const cnt = entries.reduce((n, e) => n + (e.tiles?.length ?? 1), 0);
+        entriesPerTs.push({ name: tsDef.name, entries, count: cnt, tilesetId: tsDef.id, tilesetType: tsDef.type, tilesetOwnerId: tsDef.owner_id });
+        tsCount += cnt;
+      }
+    }
+
+    // ── Global tiles from manifest — IDs start at GLOBAL_ID_START (200) ──
+    idCounter = GLOBAL_ID_START;
     const makeTile = src => ({ id: idCounter++, src: `Resources/${src}`, isDefault: true });
     const displayLabel = (key, folderPath) => {
       if (folderPath) { const s = folderPath.replace(/\/$/, '').split('/').pop(); if (s) return s; }
       return key;
     };
-
-    // Determine which tilesets are shown — fall back to just the active one
-    const defaultShown = [activeTileset ?? manifest.tilesets?.[0]?.name];
-    const shownNames = new Set(shownTilesets ?? defaultShown);
-
-    // ── ALL tilesets — IDs assigned sequentially so no tileset reuses another's IDs ──
-    const entriesPerTs = []; // [{ name, entries, count }]
-    let tsCount = 0;
-    for (const tsDef of (manifest.tilesets ?? [])) {
-      const isShown = shownNames.has(tsDef.name);
-      const entries = [];
-      for (const key of (tsDef.order ?? [])) {
-        if (tsDef.folders?.[key]) {
-          const folderPath = tsDef.folderPaths?.[key] ?? `${tsDef.name}/${key}/`;
-          const label = displayLabel(key, folderPath);
-          const scopedKey = `${tsDef.name}/${key}`;
-          const folderTiles = tsDef.folders[key].map(fn => {
-            const t = makeTile(`${folderPath}${fn}`);
-            t.folderKey = scopedKey; t.folderLabel = label; t.tilesetName = tsDef.name;
-            t.codename = `${tsDef.name}_${fn.replace(/\.[^.]+$/, '')}`;
-            return t;
-          });
-          flatTiles.push(...folderTiles);
-          if (isShown) { entries.push({ type: 'folder', key: scopedKey, label, tiles: folderTiles }); tsCount += folderTiles.length; }
-        } else if (tsDef.files?.[key]) {
-          const t = makeTile(tsDef.files[key]);
-          t.tilesetName = tsDef.name;
-          t.codename = `${tsDef.name}_${tsDef.files[key].split('/').pop().replace(/\.[^.]+$/, '')}`;
-          flatTiles.push(t);
-          if (isShown) { entries.push({ type: 'flat', tile: t }); tsCount++; }
-        }
-      }
-      if (isShown) entriesPerTs.push({ name: tsDef.name, entries, count: entries.reduce((n, e) => n + (e.tiles?.length ?? 1), 0) });
-    }
-
-    // ── Global tiles (including objectives) — IDs start at GLOBAL_ID_START (200) ──
-    idCounter = GLOBAL_ID_START; // jump to 200 regardless of how many tileset tiles there were
-    const gDef = manifest.global;
+    const gDef = manifest?.global;
     const glbEntries = [];
     if (gDef) {
       for (const key of (gDef.order ?? [])) {
@@ -1165,89 +1157,86 @@ function App() {
 
     const tsEntries = entriesPerTs.flatMap(ts => ts.entries);
     return { tilesetEntriesPerTs: entriesPerTs, tilesetEntries: tsEntries, globalEntries: glbEntries, flatDefaultTiles: flatTiles, tilesetTileCount: tsCount };
-  }, [manifest, activeTileset, shownTilesets]);
+  }, [manifest, activeTileset, dbTilesets, dbTilesData]);
 
-  // Switch tileset — only updates the tile panel and BG colours; board tiles are never remapped.
-  // To convert tiles on the board use the Convert tool.
+  // Switch tileset — updates the tile panel and BG colours; board tiles are never remapped.
+  // To remap tiles on the board use the Convert tool.
   const switchTileset = (newTilesetName) => {
-    if (!manifest || newTilesetName === activeTileset) return;
-    setActiveTileset(newTilesetName);
-    const tsBg = getTilesetBgColors(newTilesetName);
-    if (tsBg) applyBgPreset(newTilesetName, tsBg.bg1, tsBg.bg2);
-  };
-
-  // Toggle a tileset in the shown set; always keep at least one shown (across Ophelia + Atlas).
-  const toggleTilesetShown = (name) => {
-    const cur = shownTilsetsRef.current ?? [activeTilesetRef.current ?? name];
-    const inSet = cur.includes(name);
-    const atlasCount = shownAtlasTilesetsRef.current?.length ?? 0;
-    if (inSet && cur.length <= 1 && atlasCount === 0) return;
-    const nextShown = inSet ? cur.filter(n => n !== name) : [...cur, name];
-    const tsBg = !inSet ? getTilesetBgColors(name) : null;
-    const newBg1 = tsBg ? tsBg.bg1 : bg1Ref.current;
-    const newBg2 = tsBg ? tsBg.bg2 : bg2Ref.current;
-    const nextActive = !inSet ? name :
-      (nextShown.length > 0 ? activeTilesetRef.current :
-        (shownAtlasTilesetsRef.current?.[0] ?? activeTilesetRef.current));
-    const snap = { grid: gridRef.current, w: gridWRef.current, h: gridHRef.current, tileset: nextActive, shownTilesets: nextShown, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1: newBg1, bg2: newBg2, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current };
+    if (newTilesetName === activeTileset) return;
+    const tsBg = tilesetBgColors[newTilesetName] ?? null;
+    const snap = { grid: gridRef.current, w: gridWRef.current, h: gridHRef.current, tileset: newTilesetName, bg1: tsBg?.bg1 ?? bg1Ref.current, bg2: tsBg?.bg2 ?? bg2Ref.current, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current, label: `Switch to ${newTilesetName}` };
     setHistory(h => {
       const trimmed = h.slice(0, histIdxRef.current + 1);
       const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
       return [...capped, snap];
     });
     setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
-    setShownTilesets(nextShown);
-    if (!inSet) {
-      setActiveTileset(name);
-      if (tsBg) applyBgPreset(name, tsBg.bg1, tsBg.bg2);
-    } else if (nextShown.length === 0 && atlasCount > 0) {
-      setActiveTileset(shownAtlasTilesetsRef.current[0]);
-    }
+    setActiveTileset(newTilesetName);
+    if (tsBg?.bg1) applyBgPreset(newTilesetName, tsBg.bg1, tsBg.bg2);
   };
 
   // Sync defaultTiles and nextId whenever flatDefaultTiles changes.
-  // Auto-flag any tile whose src path contains "/objectives/" as priority (case-insensitive).
+  // Rebuild priority/bottomRender/autoShadow from DB flags + src-pattern fallbacks.
   useEffect(() => {
     setDefaultTiles(flatDefaultTiles);
     if (flatDefaultTiles.length > 0) {
       setSel(prev => prev ?? flatDefaultTiles[0].id);
-      // Rebuild priority/bottomRender/autoShadow for default tiles from scratch each time the manifest
-      // changes. This prevents stale IDs (from a previous manifest order) lingering in persisted state
-      // and wrongly applying settings to unrelated tiles. Non-default tile entries (atlas IDs ≥ 300,
-      // user IDs 500-699) are preserved as-is since their IDs don't shift with manifest changes.
       const rebuildDefaultFlags = (prev, matchFn) => {
         const next = {};
+        // Keep user tile overrides (IDs >= USER_ID_START)
         Object.entries(prev).forEach(([id, val]) => {
           const n = Number(id);
-          if (n >= ATLAS_ID_START) next[n] = val; // keep atlas + user tile overrides
+          if (n >= USER_ID_START) next[n] = val;
         });
-        flatDefaultTiles.forEach(t => { if (t.src && matchFn(t.src)) next[t.id] = true; });
+        flatDefaultTiles.forEach(t => { if (matchFn(t)) next[t.id] = true; });
         return next;
       };
-      setPriorityTiles(prev => rebuildDefaultFlags(prev, s => TILE_SETTINGS.priority.some(p => s.includes(p))));
-      setBottomTiles(prev => rebuildDefaultFlags(prev, s => TILE_SETTINGS.bottomRender.some(p => s.includes(p))));
-      setAutoShadowTiles(prev => rebuildDefaultFlags(prev, s =>
-        s.includes("Halloween/Jumppads/") || s.includes("Halloween/Teleporters/")));
+      setPriorityTiles(prev => rebuildDefaultFlags(prev, t =>
+        t.dbPriority ?? !!(t.src && TILE_SETTINGS.priority.some(p => t.src.includes(p)))));
+      setBottomTiles(prev => rebuildDefaultFlags(prev, t =>
+        t.dbBottomRender ?? !!(t.src && TILE_SETTINGS.bottomRender.some(p => t.src.includes(p)))));
+      setAutoShadowTiles(prev => rebuildDefaultFlags(prev, t =>
+        t.dbAutoShadow ?? !!(t.src && (t.src.includes("Halloween/Jumppads/") || t.src.includes("Halloween/Teleporters/")))));
     }
   }, [flatDefaultTiles]);
 
-  // Load manifest from Resources/manifest.json
+  // Load global tiles from manifest and all published tilesets+tiles from Supabase
   useEffect(() => {
+    // Load global tiles from local manifest (Global tileset stays hardcoded)
     fetch("Resources/manifest.json")
       .then(r => r.ok ? r.json() : {})
-      .then(data => {
-        setManifest(data);
-        const firstName = data.tilesets?.[0]?.name ?? null;
-        const saved = load(SK.activeTileset, null);
-        const name = (saved && data.tilesets?.some(ts => ts.name === saved)) ? saved : firstName;
-        setActiveTileset(name);
-        // Init shownTilesets: use saved value if it exists, otherwise default to all tilesets
-        const allNames = data.tilesets?.map(ts => ts.name) ?? [name];
-        const savedShown = load("oph_shown_tilesets", null);
-        setShownTilesets(savedShown ?? allNames);
+      .then(data => setManifest({ global: data.global }))
+      .catch(() => setManifest({ global: null }));
+
+    // Fetch published tilesets from Supabase (exclude global type — handled by manifest)
+    const headers = {
+      apikey: SUPABASE_ANON_KEY,
+      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      'Content-Type': 'application/json',
+    };
+    fetch(`${SUPABASE_URL}/rest/v1/tilesets?is_published=eq.true&type=neq.global&order=sort_index`, { headers })
+      .then(r => r.ok ? r.json() : [])
+      .then(tilesets => {
+        if (!Array.isArray(tilesets) || tilesets.length === 0) {
+          setDbTilesets([]);
+          setDbTilesData([]);
+          setTilesLoading(false);
+          return;
+        }
+        const tsIds = tilesets.map(ts => ts.id).join(',');
+        return fetch(`${SUPABASE_URL}/rest/v1/tiles?tileset_id=in.(${tsIds})&order=sort_index`, { headers })
+          .then(r => r.ok ? r.json() : [])
+          .then(tilesRows => {
+            setDbTilesets(tilesets);
+            setDbTilesData(Array.isArray(tilesRows) ? tilesRows : []);
+            const saved = load(SK.activeTileset, null);
+            const firstName = tilesets[0]?.name ?? null;
+            const name = (saved && tilesets.some(ts => ts.name === saved)) ? saved : firstName;
+            setActiveTileset(name);
+            setTilesLoading(false);
+          });
       })
-      .catch(() => {})
-      .finally(() => setTilesLoading(false));
+      .catch(() => setTilesLoading(false));
   }, []);
   // Resolve a v2 palette-format grid once all tiles (including default tiles from the manifest) are loaded.
   // Guard on flatDefaultTiles.length rather than tiles.length: if the user has atlas tiles persisted in
@@ -1261,7 +1250,7 @@ function App() {
     const { palette, grid: indexGrid } = pending;
     const unresolved = [];
     // Resolve against flatDefaultTiles directly (always current) plus persisted user/atlas tiles.
-    const allTiles = [...flatDefaultTiles, ...userTiles, ...atlasTiles];
+    const allTiles = [...flatDefaultTiles, ...userTiles];
     const idFromPaletteIdx = [null, ...palette.map(cn => {
       const tile = resolveCodename(cn, allTiles);
       if (!tile) unresolved.push(cn);
@@ -1277,42 +1266,7 @@ function App() {
     }
   }, [tiles, tilesLoading, flatDefaultTiles]); // eslint-disable-line
   useEffect(() => { if (activeTileset) save(SK.activeTileset, activeTileset); }, [activeTileset]);
-  useEffect(() => { if (shownTilesets) save("oph_shown_tilesets", shownTilesets); }, [shownTilesets]);
-  useEffect(() => { save("oph_allow_mixing", allowTsMixing); }, [allowTsMixing]);
-  useEffect(() => { save("oph_hidden_atlas_groups", hiddenAtlasGroups); }, [hiddenAtlasGroups]);
-  useEffect(() => { try { localStorage.setItem("oph_shown_atlas_tilesets", JSON.stringify(shownAtlasTilesets)); } catch {} }, [shownAtlasTilesets]);
 
-  // Load Atlas tileset list on mount (now synchronous — reads from bundled constant, no API call)
-  useEffect(() => {
-    setAtlasTilesetList(fetchAtlasTilesetList());
-  }, []); // eslint-disable-line
-  // Dynamic starred tiles: keep wall1+bush for shown tilesets, remove them for hidden tilesets.
-  // Non-wall1/bush stars (user-added tiles and tool shortcuts) are always preserved.
-  useEffect(() => {
-    if (!manifest) return;
-    let id = TILESET_ID_START;
-    const allWall1BushIds = new Set();
-    const shownWall1BushIds = [];
-    const shownSet = new Set(shownTilesets ?? []);
-    for (const tsDef of (manifest.tilesets ?? [])) {
-      for (const key of (tsDef.order ?? [])) {
-        if (tsDef.folders?.[key]) tsDef.folders[key].forEach(() => id++);
-        else if (tsDef.files?.[key]) {
-          const tid = id++;
-          if (key === 'wall1' || key === 'bush') {
-            allWall1BushIds.add(tid);
-            if (shownSet.has(tsDef.name)) shownWall1BushIds.push(tid);
-          }
-        }
-      }
-    }
-    setStarredTiles(prev => {
-      const toolStars = prev.filter(s => typeof s === 'string');
-      const otherTileStars = prev.filter(s => typeof s !== 'string' && !allWall1BushIds.has(s));
-      const newStarred = [...shownWall1BushIds, ...otherTileStars, ...toolStars];
-      return JSON.stringify(newStarred) === JSON.stringify(prev) ? prev : newStarred;
-    });
-  }, [manifest, shownTilesets]);
   // Close tileset dropdown on outside click (bubble phase so stopPropagation inside the dropdown works)
   useEffect(() => {
     if (!tilesetDropOpen) return;
@@ -1335,7 +1289,7 @@ function App() {
   const pushBgHistory = useCallback(() => {
     if (bgHistTimerRef.current) clearTimeout(bgHistTimerRef.current);
     bgHistTimerRef.current = setTimeout(() => {
-      const snap = { grid: gridRef.current, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current };
+      const snap = { grid: gridRef.current, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current };
       setHistory(h => {
         const trimmed = h.slice(0, histIdxRef.current + 1);
         const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
@@ -1376,7 +1330,7 @@ function App() {
         setHistory(h => {
           const trimmed = h.slice(0, histIdx + 1);
           const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-          return [...capped, { grid: next, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current, label: snapLabel }];
+          return [...capped, { grid: next, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current, label: snapLabel }];
         });
         setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
       }
@@ -1411,14 +1365,6 @@ function App() {
     highlightDragOffsetRef.current = null;
     highlightDragAnchorCell.current = null;
     isHighlightDraggingRef.current = false;
-    if (snap.shownTilesets !== undefined) {
-      setShownTilesets(snap.shownTilesets);
-      shownTilsetsRef.current = snap.shownTilesets;
-    }
-    if (snap.shownAtlasTilesets !== undefined) {
-      setShownAtlasTilesets(snap.shownAtlasTilesets);
-      shownAtlasTilesetsRef.current = snap.shownAtlasTilesets;
-    }
     if (snap.rots !== undefined) {
       setGridRotations(snap.rots);
       gridRotationsRef.current = snap.rots;
@@ -1504,7 +1450,7 @@ function App() {
   const pushHistorySnapshot = useCallback(() => {
     const label = histLabelRef.current || "Draw";
     histLabelRef.current = "Draw";
-    const snap = { grid, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1, bg2, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current, label };
+    const snap = { grid, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1, bg2, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current, label };
     setHistory(h => {
       const trimmed = h.slice(0, histIdx + 1);
       const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
@@ -1551,268 +1497,10 @@ function App() {
 
   const deleteTile = id => {
     setUserTiles(p => p.filter(t => t.id !== id));
-    setAtlasTiles(p => p.filter(t => t.id !== id));
     if (sel === id) setSel(null);
     setInfoTile(null);
   };
 
-  // ── Atlas helpers ─────────────────────────────────────────────────
-  const nextAtlasId = () => {
-    const used = new Set(atlasTiles.map(t => t.id));
-    for (let id = ATLAS_ID_START; id <= ATLAS_ID_MAX; id++) {
-      if (id >= USER_ID_START && id <= USER_ID_MAX) continue; // skip user tile range
-      if (!used.has(id)) return id;
-    }
-    return null; // full
-  };
-
-  const fetchAtlasDir = async (path) => {
-    const url = `https://api.github.com/repos/She-Fairy/atlas-horizon/contents/Resources${path ? '/' + path : ''}`;
-    if (atlasApiCache.has(url)) return atlasApiCache.get(url);
-    const p = fetch(url).then(async r => {
-      if (r.status === 403 || r.status === 429) throw new Error("rate_limit");
-      if (!r.ok) throw new Error("fetch_error");
-      return r.json();
-    });
-    atlasApiCache.set(url, p);
-    const resolved = await p;
-    atlasApiCache.set(url, resolved); // replace Promise with resolved data
-    return resolved;
-  };
-
-  const sampleImageCenter = async (url) => {
-    try {
-      const blob = await fetch(url).then(r => r.blob());
-      const blobUrl = URL.createObjectURL(blob);
-      return await new Promise(resolve => {
-        const img = new Image();
-        img.onload = () => {
-          const canvas = document.createElement('canvas');
-          canvas.width = img.width; canvas.height = img.height;
-          const ctx = canvas.getContext('2d');
-          ctx.drawImage(img, 0, 0);
-          const [r, g, b] = ctx.getImageData(Math.floor(img.width/2), Math.floor(img.height/2), 1, 1).data;
-          URL.revokeObjectURL(blobUrl);
-          resolve(`#${r.toString(16).padStart(2,'0')}${g.toString(16).padStart(2,'0')}${b.toString(16).padStart(2,'0')}`);
-        };
-        img.onerror = () => { URL.revokeObjectURL(blobUrl); resolve(null); };
-        img.src = blobUrl;
-      });
-    } catch { return null; }
-  };
-
-  const addAtlasTile = (filePath) => {
-    const id = nextAtlasId();
-    if (id === null) { alert("Atlas tile limit reached (IDs 300–499). Remove some atlas tiles first."); return; }
-    const src = `https://raw.githubusercontent.com/She-Fairy/atlas-horizon/main/Resources/${filePath}`;
-    const baseName = filePath.split('/').pop().replace(/\.[^.]+$/, '');
-    const folderPath = filePath.split('/').slice(0, -1).join('/');
-    const codename = folderPath ? `${folderPath}_${baseName}` : baseName;
-    const tile = { id, src, isDefault: false, isAtlas: true, codename, baseCodename: baseName };
-    if (folderPath) tile.atlasTilesetGroup = folderPath;
-    // Settings inheritance
-    if (filePath.includes('/Water/')) {
-      setRotatableMap(prev => ({ ...prev, [id]: true }));
-    }
-    if (filePath.includes('/Objectives/')) {
-      setPriorityTiles(prev => ({ ...prev, [id]: true }));
-    }
-    setAtlasTiles(prev => [...prev, tile]);
-  };
-
-  const addAtlasTilesetFolder = async (folderName, files) => {
-    const imageFiles = files.filter(f => f.type === 'file' && /\.(png|jpg|jpeg|gif|webp|svg|bmp)$/i.test(f.name));
-    for (const file of imageFiles) {
-      // path relative to Resources/ (file.path is like "Resources/Water/foo.png", strip "Resources/")
-      const relPath = file.path.replace(/^Resources\//, '');
-      // Check if already added
-      const src = `https://raw.githubusercontent.com/She-Fairy/atlas-horizon/main/Resources/${relPath}`;
-      setAtlasTiles(prev => {
-        if (prev.some(t => t.src === src)) return prev;
-        const id = (() => {
-          const used = new Set(prev.map(t => t.id));
-          for (let i = ATLAS_ID_START; i < 500; i++) { if (!used.has(i)) return i; }
-          return null;
-        })();
-        if (id === null) return prev;
-        const fileBaseName = relPath.split('/').pop().replace(/\.[^.]+$/, '');
-        const fileFolderPath = relPath.split('/').slice(0, -1).join('/');
-        const codename = fileFolderPath ? `${fileFolderPath}_${fileBaseName}` : fileBaseName;
-        const tile = { id, src, isDefault: false, isAtlas: true, atlasTilesetGroup: fileFolderPath || folderName, codename, baseCodename: fileBaseName };
-        return [...prev, tile];
-      });
-      // Settings inheritance
-      if (relPath.includes('/Water/')) setRotatableMap(prev => ({ ...prev })); // handled per-tile below
-    }
-    // After batch-add, apply settings inheritance using the folder path
-    imageFiles.forEach(file => {
-      const relPath = file.path.replace(/^Resources\//, '');
-      const src = `https://raw.githubusercontent.com/She-Fairy/atlas-horizon/main/Resources/${relPath}`;
-      setAtlasTiles(prev => {
-        const tile = prev.find(t => t.src === src);
-        if (!tile) return prev;
-        if (relPath.includes('/Water/')) setRotatableMap(rm => ({ ...rm, [tile.id]: true }));
-        if (relPath.includes('/Objectives/')) setPriorityTiles(pt => ({ ...pt, [tile.id]: true }));
-        return prev;
-      });
-    });
-  };
-
-  const navigateAtlas = async (path) => {
-    setAtlasPath(path);
-    setAtlasItems(null);
-    setAtlasError("");
-    setAtlasLoading(true);
-    try {
-      const data = await fetchAtlasDir(path);
-      setAtlasItems(Array.isArray(data) ? data : []);
-    } catch (err) {
-      if (err.message === "rate_limit") setAtlasError("GitHub rate limit reached. Try again later.");
-      else setAtlasError("Failed to load folder contents.");
-      setAtlasItems([]);
-    } finally {
-      setAtlasLoading(false);
-    }
-  };
-
-  // ── Atlas Tileset system ──────────────────────────────────────────
-  // Derive display name and codename prefix from a raw folder name
-  // e.g. "Z_Escape_Room" → displayName "Escape Room", codename "Escape_Room"
-  //      "Escape_Room"   → displayName "Escape Room", codename "Escape_Room"
-  const atlasTilesetMeta = (rawName) => {
-    const isCommunity = rawName.startsWith("Z_");
-    const stripped = rawName.replace(/^Z_/, "");
-    // Split camelCase: "BrawlClub" → "Brawl Club", "UnderwaterTheme" → "Underwater Theme"
-    const camelSplit = stripped.replace(/([a-z0-9])([A-Z])/g, "$1 $2");
-    // Replace underscores with spaces, then remove "Theme" suffix
-    const displayName = camelSplit.replace(/_/g, " ").replace(/ Theme$/, "").trim();
-    return { name: rawName, displayName, codename: stripped, isCommunity };
-  };
-
-  // Build Atlas tileset list from bundled constant — no API call needed.
-  const fetchAtlasTilesetList = () => {
-    if (atlasTilesetsListCache.data) return atlasTilesetsListCache.data;
-    const list = ATLAS_TILESET_NAMES.map(atlasTilesetMeta);
-    atlasTilesetsListCache.data = list;
-    return list;
-  };
-
-  // Get BG colours for any tileset (Ophelia or Atlas) — single source of truth
-  const getTilesetBgColors = (name) => {
-    if (OPHELIA_BG[name]) return OPHELIA_BG[name];
-    return atlasTilesetBgColors[name] ?? null;
-  };
-
-  // Load and cache BG colours for an Atlas tileset by sampling BGLight/BGDark images
-  const loadAtlasTilesetBgColors = async (tilesetName) => {
-    if (atlasTilesetBgColors[tilesetName]) return atlasTilesetBgColors[tilesetName];
-    const base = `https://raw.githubusercontent.com/She-Fairy/atlas-horizon/main/Resources/${tilesetName}`;
-    const [bg1Val, bg2Val] = await Promise.all([
-      sampleImageCenter(`${base}/BGLight.png`),
-      sampleImageCenter(`${base}/BGDark.png`),
-    ]);
-    const colors = { bg1: bg1Val ?? null, bg2: bg2Val ?? null };
-    setAtlasTilesetBgColors(prev => {
-      const next = { ...prev, [tilesetName]: colors };
-      try { localStorage.setItem("oph_atlas_ts_bg", JSON.stringify(next)); } catch {}
-      return next;
-    });
-    return colors;
-  };
-
-  // Load all tiles for an Atlas tileset into atlasTiles state
-  const ATLAS_SUBFOLDERS = ["Fence", "Rope", "Water", "Gamemode_Specifics"];
-  const ATLAS_TILES_FOLDER = "Tiles";
-  const ATLAS_WATER_FILES    = ["00001011.png", "01111111.png", "01101011.png", "11111111.png"];
-  const ATLAS_TILES_FILES    = ["Barrel.png", "Bush.png", "Cactus.png", "Crate.png", "Skull.png", "Wall.png", "Wall2.png"];
-  const ATLAS_ROPE_FILES     = ["Post.png", "Post_R.png", "Post_T.png", "Post_TR.png"];
-  const ATLAS_FENCE_SIMPLE_FILES  = ["Fence.png", "Horizontal.png", "Vertical.png"];
-  const ATLAS_FENCE_COMPLEX_FILES = ["0001.png", "0010.png", "0011.png", "0100.png", "0101.png", "1000.png", "1001.png", "1010.png", "1100.png", "Fence.png"];
-  const ATLAS_GAMEMODE_FILES = ["Brawl_Ball.png", "Gem_Grab.png", "Heist.png"];
-  // Canonical order for flat tiles in Tiles/ folder (case-insensitive base name match)
-  const ATLAS_FLAT_ORDER = ["wall1", "wall", "wall2", "crate", "barrel", "bush1", "bush", "bush2", "skull", "breakable", "cactus"];
-  const getAtlasFlatOrder = base => { const i = ATLAS_FLAT_ORDER.indexOf(base.toLowerCase()); return i >= 0 ? i : ATLAS_FLAT_ORDER.length; };
-  const loadAtlasTileset = async (tilesetName) => {
-    // Deduplicate concurrent loads of the same tileset
-    if (atlasTilesetLoadInFlight.has(tilesetName)) return atlasTilesetLoadInFlight.get(tilesetName);
-    const promise = (async () => {
-    const meta = atlasTilesetMeta(tilesetName);
-    const imageRe = /\.(png|jpg|jpeg|gif|webp|svg|bmp)$/i;
-    const tilesToAdd = []; // { relPath, atlasFolderName, folderLabel, codename }
-
-    try {
-      // Probe for fence variant: simple (Fence/Horizontal/Vertical) vs complex (binary-named files).
-      // A single HEAD request to Horizontal.png is enough — no GitHub API needed.
-      const rawBase = "https://raw.githubusercontent.com/She-Fairy/atlas-horizon/main/Resources";
-      const fenceProbe = await fetch(`${rawBase}/${tilesetName}/Fence/Horizontal.png`, { method: "HEAD" });
-      const fenceFilenames = fenceProbe.ok ? ATLAS_FENCE_SIMPLE_FILES : ATLAS_FENCE_COMPLEX_FILES;
-
-      // Flat tiles from Tiles/ — hardcoded list, sorted by canonical order
-      [...ATLAS_TILES_FILES].sort((a, b) => getAtlasFlatOrder(a.replace(/\.[^.]+$/, "")) - getAtlasFlatOrder(b.replace(/\.[^.]+$/, ""))).forEach(filename => {
-        const base = filename.replace(/\.[^.]+$/, "");
-        tilesToAdd.push({ relPath: `${tilesetName}/${ATLAS_TILES_FOLDER}/${filename}`, atlasFolderName: null, folderLabel: null, codename: `${meta.codename}_${base}` });
-      });
-
-      // Folder-based tiles — all hardcoded (Fence variant detected via probe, Rope always 4 posts)
-      const ATLAS_WATER_CNS = ["WaterBend", "WaterCorner", "WaterLine", "WaterFill"];
-      [["Fence", fenceFilenames], ["Rope", ATLAS_ROPE_FILES], ["Water", ATLAS_WATER_FILES], ["Gamemode_Specifics", ATLAS_GAMEMODE_FILES]].forEach(([sub, filenames]) => {
-        const folderLabel = sub === "Gamemode_Specifics" ? "Objective" : sub;
-        filenames.forEach((filename, i) => {
-          const base = filename.replace(/\.[^.]+$/, "");
-          const baseCodenameOverride = sub === "Water" ? (ATLAS_WATER_CNS[i] ?? null) : null;
-          tilesToAdd.push({ relPath: `${tilesetName}/${sub}/${filename}`, atlasFolderName: sub, folderLabel, codename: `${meta.codename}_${base}`, baseCodenameOverride });
-        });
-      });
-
-      // Read current state synchronously via ref (avoids calling state setters inside updaters)
-      const currentTiles = atlasTilesRef.current;
-
-      if (tilesToAdd.length === 0) return currentTiles.filter(t => t.atlasTilesetName === tilesetName);
-      const existingForTs = currentTiles.filter(t => t.atlasTilesetName === tilesetName);
-      const srcSet = new Set(currentTiles.map(t => t.src));
-      const usedIds = new Set(currentTiles.map(t => t.id));
-      const newTiles = [];
-      let nextId = ATLAS_ID_START;
-      for (const { relPath, atlasFolderName, folderLabel, codename, baseCodenameOverride } of tilesToAdd) {
-        const src = `https://raw.githubusercontent.com/She-Fairy/atlas-horizon/main/Resources/${relPath}`;
-        if (srcSet.has(src)) continue;
-        // Skip user tile ID range (500-699) and find next free atlas ID
-        while ((usedIds.has(nextId) || (nextId >= USER_ID_START && nextId <= USER_ID_MAX)) && nextId <= ATLAS_ID_MAX) nextId++;
-        if (nextId > ATLAS_ID_MAX) break;
-        usedIds.add(nextId);
-        const scopedKey = atlasFolderName ? `${tilesetName}/${atlasFolderName}` : null;
-        const tile = {
-          id: nextId++, src,
-          isDefault: false, isAtlas: true,
-          atlasTilesetName: tilesetName,
-          atlasFolderName,
-          folderKey: scopedKey,
-          folderLabel,
-          codename,
-          baseCodename: baseCodenameOverride ?? relPath.split("/").pop().replace(/\.[^.]+$/, ""),
-        };
-        newTiles.push(tile);
-        srcSet.add(src);
-      }
-      if (newTiles.length === 0) return existingForTs;
-      // Batch-add tiles (separate from settings inheritance calls — never call setters inside updaters)
-      setAtlasTiles(prev => [...prev, ...newTiles]);
-      // Apply settings inheritance as independent state updates
-      const waterIds   = newTiles.filter(t => t.atlasFolderName === "Water").map(t => t.id);
-      const objIds     = newTiles.filter(t => t.atlasFolderName === "Gamemode_Specifics").map(t => t.id);
-      if (waterIds.length > 0)  setRotatableMap(rm => { const n = { ...rm }; waterIds.forEach(id => { n[id] = true; }); return n; });
-      if (objIds.length > 0)    setPriorityTiles(pt => { const n = { ...pt }; objIds.forEach(id => { n[id] = true; }); return n; });
-      return [...existingForTs, ...newTiles];
-    } catch (err) {
-      if (err.message === "rate_limit") setAtlasRateLimitHit(true);
-      console.warn("Failed to load Atlas tileset:", tilesetName, err);
-      return atlasTilesRef.current.filter(t => t.atlasTilesetName === tilesetName);
-    }
-    })();
-    atlasTilesetLoadInFlight.set(tilesetName, promise);
-    promise.finally(() => atlasTilesetLoadInFlight.delete(tilesetName));
-    return promise;
-  };
 
   // Returns [pos] — just positions (used by existing drag/drop code)
   const getMirrorPositions = useCallback((r, c) => {
@@ -1961,7 +1649,7 @@ function App() {
           ?? deriveCodename(paintTile.src)
           ?? (paintTile.codename ?? '').split('_').slice(1).join('-')
           ?? paintTile.src?.split('/').pop().replace(/\.[^.]+$/, '');
-        const ts = paintTile.tilesetName ?? paintTile.atlasTilesetName ?? null;
+        const ts = paintTile.tilesetName ?? null;
         histLabelRef.current = ts ? `Draw ${name} (${ts})` : (name ? `Draw ${name}` : "Draw");
       }
     }
@@ -2090,7 +1778,7 @@ function App() {
         setHistory(h => {
           const trimmed = h.slice(0, selNextIdx);
           const capped = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-          return [...capped, { grid: gridRef.current, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...finalHighlight], primaryHighlight: [...primaryFinal], rots: gridRotationsRef.current, flips: gridFlipsRef.current, label: "Highlight" }];
+          return [...capped, { grid: gridRef.current, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...finalHighlight], primaryHighlight: [...primaryFinal], rots: gridRotationsRef.current, flips: gridFlipsRef.current, label: "Highlight" }];
         });
         setHistIdx(selNextIdx);
       }
@@ -2154,7 +1842,7 @@ function App() {
     const originFilled = originId !== null;
     const originTile = (matchByFolder && originId !== null) ? tiles.find(t => t.id === originId) : null;
     const originFolderKey = originTile
-      ? (originTile.folderKey ?? (originTile.atlasTilesetGroup ? `atlas_${originTile.atlasTilesetGroup}` : null))
+      ? (originTile.folderKey ?? null)
       : null;
     const visited = new Set();
     const queue = [[startR, startC]];
@@ -2173,7 +1861,7 @@ function App() {
           else {
             const cellTile = tiles.find(t => t.id === cellId);
             const cellFolderKey = cellTile
-              ? (cellTile.folderKey ?? (cellTile.atlasTilesetGroup ? `atlas_${cellTile.atlasTilesetGroup}` : null))
+              ? (cellTile.folderKey ?? null)
               : null;
             matches = cellFolderKey !== null && cellFolderKey === originFolderKey;
           }
@@ -2425,7 +2113,6 @@ function App() {
   const getTileFolderKey = t => {
     if (!t || t.isSpace) return null;
     if (t.folderKey) return t.folderKey;                    // tileset + global folder tiles
-    if (t.atlasTilesetGroup) return `atlas_${t.atlasTilesetGroup}`; // atlas folder tiles
     return null;
   };
 
@@ -2674,7 +2361,7 @@ function App() {
           setHistory(h => {
             const trimmed = h.slice(0, dragNextIdx);
             const capped = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-            return [...capped, { grid: newG, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...newHighlight], primaryHighlight: [...newPrimaryHighlight], rots: postDragRots, flips: postDragFlips, label: "Move" }];
+            return [...capped, { grid: newG, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...newHighlight], primaryHighlight: [...newPrimaryHighlight], rots: postDragRots, flips: postDragFlips, label: "Move" }];
           });
           setHistIdx(dragNextIdx);
         }
@@ -3098,7 +2785,7 @@ function App() {
             setHistory(h => {
               const trimmed = h.slice(0, tDragNextIdx);
               const capped = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-              return [...capped, { grid: tNewG, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...newHighlight], rots: tPostRots, flips: tPostFlips }];
+              return [...capped, { grid: tNewG, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...newHighlight], rots: tPostRots, flips: tPostFlips }];
             });
             setHistIdx(tDragNextIdx);
           }
@@ -3366,9 +3053,11 @@ function App() {
     draws.sort((a, b) => zOrder(a.id) - zOrder(b.id));
     // Load all images then draw in sorted order (guarantees z-order)
     Promise.all(draws.map(d => new Promise(resolve => {
-      const img = new Image(); img.src = d.src;
+      const img = new Image();
+      img.crossOrigin = "anonymous";
       img.onload = () => resolve({ ...d, img });
       img.onerror = () => resolve(null);
+      img.src = d.src;
     }))).then(loaded => {
       loaded.forEach(item => {
         if (!item) return;
@@ -3811,13 +3500,11 @@ function App() {
     }
 
     // Step 2: full tile list — tileset tiles grouped with collapsible sections
-    const shownNames     = new Set(shownTilesets ?? [activeTileset ?? manifest?.tilesets?.[0]?.name]);
-    const shownAtlasSet  = new Set(shownAtlasTilesets ?? []);
     const tilesetTiles_  = tiles.filter(t => t.id >= TILESET_ID_START && t.id < GLOBAL_ID_START);
     const userTiles_     = tiles.filter(t => t.id >= USER_ID_START && t.id <= USER_ID_MAX);
     const globalTiles_   = tiles.filter(t => t.id >= GLOBAL_ID_START && t.id < ATLAS_ID_START);
 
-    // Group Ophelia tileset tiles by tileset name
+    // Group tileset tiles by tileset name
     const tsByName = {};
     tilesetTiles_.forEach(t => {
       const name = t.tilesetName ?? "Tileset";
@@ -3825,13 +3512,9 @@ function App() {
       tsByName[name].push(t);
     });
 
-    // Collect all Atlas tileset names that have loaded tiles (for display)
-    const allAtlasTsNames = [...new Set(atlasTiles.map(t => t.atlasTilesetName).filter(Boolean))];
-
-    // Collapsible state: shown tilesets open, hidden collapsed by default
+    // Collapsible state: active tileset open, others collapsed by default
     const initCollapsed = {};
-    Object.keys(tsByName).forEach(name => { initCollapsed[name] = !shownNames.has(name); });
-    allAtlasTsNames.forEach(name => { initCollapsed[`atlas_${name}`] = !shownAtlasSet.has(name); });
+    Object.keys(tsByName).forEach(name => { initCollapsed[name] = name !== activeTileset; });
     const [tsCollapsed, setTsCollapsed] = React.useState(() => initCollapsed);
 
     const onSelect = id => {
@@ -3882,20 +3565,6 @@ function App() {
                     <CollapsibleSepLine label={name} isCollapsed={isCollapsed}
                       onToggle={() => setTsCollapsed(p => ({ ...p, [name]: !p[name] }))} />
                     {!isCollapsed && tsTs.map(t => <RCard key={t.id} t={t} selected={replaceB} onSelect={onSelect} />)}
-                  </React.Fragment>
-                );
-              })}
-              {/* Per-Atlas-tileset collapsible sections (only shown tilesets) */}
-              {allAtlasTsNames.filter(atsTsName => shownAtlasSet.has(atsTsName)).map(atsTsName => {
-                const collKey = `atlas_${atsTsName}`;
-                const isCollapsed = !!tsCollapsed[collKey];
-                const meta = atlasTilesetMeta(atsTsName);
-                const tsTiles = atlasTiles.filter(t => t.atlasTilesetName === atsTsName);
-                return (
-                  <React.Fragment key={atsTsName}>
-                    <CollapsibleSepLine label={meta.displayName} isCollapsed={isCollapsed}
-                      onToggle={() => setTsCollapsed(p => ({ ...p, [collKey]: !p[collKey] }))} />
-                    {!isCollapsed && tsTiles.map(t => <RCard key={t.id} t={t} selected={replaceB} onSelect={onSelect} />)}
                   </React.Fragment>
                 );
               })}
@@ -4157,11 +3826,7 @@ function App() {
     const opheliaTilesets = manifest?.tilesets ?? [];
     // Show ALL Ophelia tilesets from manifest, and all Atlas tilesets that have tiles loaded
     const allOpheliaList = opheliaTilesets;
-    const allAtlasList   = atlasTilesetList ?? [];
-    const allAvailableNames = [
-      ...allOpheliaList.map(ts => ts.name),
-      ...allAtlasList.map(a => a.name),
-    ];
+    const allAvailableNames = allOpheliaList.map(ts => ts.name);
 
     const defaultFrom = activeTileset ?? allAvailableNames[0] ?? "";
     const defaultTo   = allAvailableNames.find(n => n !== defaultFrom) ?? "";
@@ -4194,74 +3859,6 @@ function App() {
     // Strips trailing "1" so "Wall1" and "Wall" both map to "wall"
     const normCode = s => s.toLowerCase().replace(/1$/, '') || s.toLowerCase();
 
-    // Build Atlas ID maps (normCode-keyed, from loaded atlasTiles)
-    const buildAtlasCodenameMap = (tsName) => {
-      const m = {};
-      atlasTiles.filter(t => t.atlasTilesetName === tsName).forEach(t => { m[normCode(t.baseCodename)] = t.id; });
-      return m;
-    };
-
-    // Cross-system remap builder: Ophelia key-map ↔ Atlas tile list
-    const buildCrossSystemRemap = (opheliaKeyMap, atlasTilesList) => {
-      const remap = {};
-      const fromIds = new Set();
-      // Build lookup: normalizedName → Atlas tile (flat tiles)
-      const atlasFlat = atlasTilesList.filter(t => !t.atlasFolderName);
-      const atlasByNorm = {};
-      atlasFlat.forEach(t => {
-        const norm = normCode(t.baseCodename);
-        if (!atlasByNorm[norm]) atlasByNorm[norm] = t;
-      });
-      // Build folder lookup: folderName → sorted tiles by id
-      const atlasByFolder = {};
-      atlasTilesList.filter(t => t.atlasFolderName).forEach(t => {
-        if (!atlasByFolder[t.atlasFolderName]) atlasByFolder[t.atlasFolderName] = [];
-        atlasByFolder[t.atlasFolderName].push(t);
-      });
-      Object.values(atlasByFolder).forEach(arr => arr.sort((a, b) => a.id - b.id));
-      // Index trackers for folder-based matching
-      const folderIdx = {};
-      const usedAtlasIds = new Set();
-
-      for (const [key, opheliaIds] of Object.entries(opheliaKeyMap)) {
-        opheliaIds.forEach(oid => fromIds.add(oid));
-        const norm = normCode(key);
-        // Try flat tile match first (with skull/breakable alias)
-        const flatMatch = atlasByNorm[norm] ?? atlasByNorm[norm === 'breakable' ? 'skull' : norm === 'skull' ? 'breakable' : ''];
-        if (flatMatch) {
-          opheliaIds.forEach(oid => { remap[oid] = flatMatch.id; });
-          usedAtlasIds.add(flatMatch.id);
-          continue;
-        }
-        // Identify folder type from key prefix (Fence/Rope/Water/objectives)
-        const FOLDER_PREFIXES = [
-          ["fence", "Fence"], ["rope", "Rope"], ["water", "Water"],
-          ["ball", "Gamemode_Specifics"], ["safe", "Gamemode_Specifics"],
-          ["mine", "Gamemode_Specifics"], ["gem", "Gamemode_Specifics"],
-          ["obj", "Gamemode_Specifics"], ["skull", "Gamemode_Specifics"],
-        ];
-        const folderMatch = FOLDER_PREFIXES.find(([prefix]) => norm.startsWith(prefix));
-        if (folderMatch) {
-          const folderName = folderMatch[1];
-          const folderTiles = atlasByFolder[folderName] ?? [];
-          const nameMatch = folderTiles.find(t => normCode(t.baseCodename) === norm);
-          if (nameMatch) {
-            opheliaIds.forEach(oid => { remap[oid] = nameMatch.id; });
-            usedAtlasIds.add(nameMatch.id);
-          } else {
-            const availTiles = folderTiles.filter(t => !usedAtlasIds.has(t.id));
-            const idx = folderIdx[folderName] ?? 0;
-            if (idx < availTiles.length) {
-              opheliaIds.forEach(oid => { remap[oid] = availTiles[idx].id; });
-              usedAtlasIds.add(availTiles[idx].id);
-              folderIdx[folderName] = idx + 1;
-            }
-          }
-        }
-      }
-      return { remap, fromIds };
-    };
-
     // Compute remap
     const opheliaIdMaps = buildOpheliaIdMaps();
     const idRemap = {};
@@ -4279,68 +3876,6 @@ function App() {
         const oIds = fromMap[key], nIds = toMap[key];
         if (nIds) oIds.forEach((oid, i) => { if (i < nIds.length) idRemap[oid] = nIds[i]; });
       }
-    } else if (!fromIsOphelia && !toIsOphelia && fromTs && toTs) {
-      // Atlas→Atlas: normCode-based remap (robust across tilesets with slightly different naming)
-      const fromCodeMap = buildAtlasCodenameMap(fromTs);
-      const toCodeMap   = buildAtlasCodenameMap(toTs);
-      Object.entries(fromCodeMap).forEach(([code, fromId]) => {
-        fromAll.add(fromId);
-        if (toCodeMap[code] !== undefined) idRemap[fromId] = toCodeMap[code];
-      });
-    } else if (fromIsOphelia && !toIsOphelia) {
-      // Ophelia→Atlas: cross-system match via normalized codenames
-      const fromMap = opheliaIdMaps[fromTs] ?? {};
-      const atlasTs = atlasTiles.filter(t => t.atlasTilesetName === toTs);
-      const { remap, fromIds } = buildCrossSystemRemap(fromMap, atlasTs);
-      fromIds.forEach(id => fromAll.add(id));
-      Object.assign(idRemap, remap);
-    } else if (!fromIsOphelia && toIsOphelia) {
-      // Atlas→Ophelia: reverse cross-system match
-      const toMap = opheliaIdMaps[toTs] ?? {};
-      const atlasTs = atlasTiles.filter(t => t.atlasTilesetName === fromTs);
-      atlasTs.forEach(t => fromAll.add(t.id));
-      // Build reverse: Atlas baseCodename → Ophelia key IDs
-      const atlasFlat = atlasTs.filter(t => !t.atlasFolderName);
-      const atlasByNorm = {};
-      atlasFlat.forEach(t => { const n = normCode(t.baseCodename); if (!atlasByNorm[n]) atlasByNorm[n] = t.id; });
-      const atlasByFolder = {};
-      atlasTs.filter(t => t.atlasFolderName).forEach(t => {
-        if (!atlasByFolder[t.atlasFolderName]) atlasByFolder[t.atlasFolderName] = [];
-        atlasByFolder[t.atlasFolderName].push(t);
-      });
-      Object.values(atlasByFolder).forEach(arr => arr.sort((a, b) => a.id - b.id));
-      const FOLDER_PREFIXES = [
-        ["fence", "Fence"], ["rope", "Rope"], ["water", "Water"],
-        ["ball", "Gamemode_Specifics"], ["safe", "Gamemode_Specifics"],
-        ["mine", "Gamemode_Specifics"], ["gem", "Gamemode_Specifics"],
-        ["obj", "Gamemode_Specifics"], ["skull", "Gamemode_Specifics"],
-      ];
-      const folderIdx = {};
-      for (const [key, opheliaIds] of Object.entries(toMap)) {
-        const norm = normCode(key);
-        const aliasNorm = norm === 'breakable' ? 'skull' : norm === 'skull' ? 'breakable' : null;
-        const atlasId = atlasByNorm[norm] ?? (aliasNorm != null ? atlasByNorm[aliasNorm] : undefined);
-        if (atlasId !== undefined) {
-          opheliaIds.forEach(oid => { idRemap[atlasId] = oid; });
-          continue;
-        }
-        const folderMatch = FOLDER_PREFIXES.find(([prefix]) => norm.startsWith(prefix));
-        if (folderMatch) {
-          const folderName = folderMatch[1];
-          const folderTiles = atlasByFolder[folderName] ?? [];
-          const nameMatch = folderTiles.find(t => normCode(t.baseCodename) === norm);
-          if (nameMatch) {
-            opheliaIds.forEach(oid => { idRemap[nameMatch.id] = oid; });
-          } else {
-            const availTiles = folderTiles.filter(t => idRemap[t.id] === undefined);
-            const idx = folderIdx[folderName] ?? 0;
-            if (idx < availTiles.length) {
-              opheliaIds.forEach(oid => { idRemap[availTiles[idx].id] = oid; });
-              folderIdx[folderName] = idx + 1;
-            }
-          }
-        }
-      }
     }
 
     const boardFromIds = new Set();
@@ -4356,10 +3891,7 @@ function App() {
       setConvertOpen(false);
     };
 
-    const getDisplayName = (name) => {
-      const atlasDef = atlasTilesetList?.find(a => a.name === name);
-      return atlasDef ? atlasDef.displayName : name;
-    };
+    const getDisplayName = (name) => name;
 
     const TsSelect = ({ value, onChange }) => (
       <select value={value} onChange={e => onChange(e.target.value)}
@@ -4367,11 +3899,6 @@ function App() {
         {allOpheliaList.length > 0 && (
           <optgroup label="Ophelia">
             {allOpheliaList.map(ts => <option key={ts.name} value={ts.name}>{ts.name}</option>)}
-          </optgroup>
-        )}
-        {allAtlasList.length > 0 && (
-          <optgroup label="Atlas">
-            {allAtlasList.map(a => <option key={a.name} value={a.name}>{a.displayName}</option>)}
           </optgroup>
         )}
       </select>
@@ -4497,67 +4024,6 @@ function App() {
         </div>
       )}
 
-      {/* Clear Atlas Cache modal */}
-      {clearAtlasOpen && (() => {
-        const shownAtlasSet = new Set(shownAtlasTilesets ?? []);
-        const onAtlasTileset = shownAtlasSet.size > 0;
-        const clearAtlasTiles = (keepShown) => {
-          const keepSet = keepShown ? shownAtlasSet : new Set();
-          const toRemove = atlasTiles.filter(t => !keepSet.has(t.atlasTilesetName));
-          if (toRemove.length === 0) { setClearAtlasOpen(false); return; }
-          if (!confirm(`Clear ${toRemove.length} tile(s) from ${[...new Set(toRemove.map(t => t.atlasTilesetName))].length} tileset(s)? Atlas tiles on the map will be erased. This cannot be undone.`)) return;
-          const removeIds = new Set(toRemove.map(t => t.id));
-          setAtlasTiles(prev => prev.filter(t => !removeIds.has(t.id)));
-          if (!keepShown) setShownAtlasTilesets([]);
-          else setShownAtlasTilesets(prev => prev.filter(n => keepSet.has(n)));
-          setGrid(prev => prev.map(row => row.map(cell => removeIds.has(cell) ? null : cell)));
-          const cleanObj = obj => { const n = { ...obj }; toRemove.forEach(t => delete n[t.id]); return n; };
-          setTileMultipliers(cleanObj); setTileOffsets(cleanObj);
-          setRotatableMap(cleanObj); setAllowFlipMap(cleanObj);
-          setPriorityTiles(cleanObj); setBottomTiles(cleanObj);
-          setTileNames(cleanObj); setMirrorOffsetTiles(cleanObj);
-          setStarredTiles(prev => prev.filter(id => !removeIds.has(id)));
-          if (removeIds.has(sel)) setSel(null);
-          setClearAtlasOpen(false);
-        };
-        return (
-          <div className="modal-backdrop" onClick={() => setClearAtlasOpen(false)}>
-            <div className="modal-box" style={{ maxWidth: 360 }} onClick={e => e.stopPropagation()}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Clear Atlas Tileset Memory</span>
-                <button onClick={() => setClearAtlasOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18 }}>×</button>
-              </div>
-              <p style={{ fontSize: 11, color: C.muted, lineHeight: 1.5 }}>
-                Removes Atlas tileset tile data cached in this browser. Cleared atlas tiles on the map will be erased.
-              </p>
-              <p style={{ fontSize: 11, color: "#fbbf24", lineHeight: 1.5 }}>
-                Currently cached: <strong style={{ color: C.text }}>{[...new Set(atlasTiles.map(t => t.atlasTilesetName))].length} tileset(s), {atlasTiles.length} tile(s)</strong>
-              </p>
-              {onAtlasTileset && (
-                <p style={{ fontSize: 11, color: "#f87171", lineHeight: 1.5, padding: "4px 8px", background: "rgba(248,113,113,0.08)", borderRadius: 5, border: "1px solid rgba(248,113,113,0.2)" }}>
-                  ⚠️ You currently have an Atlas tileset active. Clearing it will remove those tiles from the map.
-                </p>
-              )}
-              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                {onAtlasTileset && (
-                  <button
-                    disabled={atlasTiles.length === 0}
-                    style={{ ...btn(false, "#60a5fa", "rgba(96,165,250,0.14)"), fontSize: 11, opacity: atlasTiles.length === 0 ? 0.45 : 1 }}
-                    onClick={() => clearAtlasTiles(true)}>
-                    🗑 Clear Other Tilesets (keep active)
-                  </button>
-                )}
-                <button
-                  disabled={atlasTiles.length === 0}
-                  style={{ ...btn(false, C.danger, "rgba(248,113,113,0.14)"), fontSize: 11, opacity: atlasTiles.length === 0 ? 0.45 : 1 }}
-                  onClick={() => clearAtlasTiles(false)}>
-                  🗑 Clear All Atlas Memory
-                </button>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
 
       {/* Delete Custom Tiles modal */}
       {deleteCustomOpen && (() => {
@@ -4696,16 +4162,8 @@ function App() {
 
       {/* ── Folder panel — floating modal anchored near card (Task 4) ── */}
       {openFolderKey && (() => {
-        // Search tileset + global + Atlas entry lists for the open folder key
-        const atlasEntries = shownAtlasTilesets.flatMap(tsName => {
-          const tsTiles = atlasTiles.filter(t => t.atlasTilesetName === tsName);
-          const folderNames = [...new Set(tsTiles.filter(t => t.atlasFolderName).map(t => t.atlasFolderName))];
-          return folderNames.map(folderName => {
-            const fTiles = tsTiles.filter(t => t.atlasFolderName === folderName);
-            return { type: 'folder', key: `${tsName}/${folderName}`, label: fTiles[0]?.folderLabel ?? folderName, tiles: fTiles };
-          });
-        });
-        const allEntries = [...tilesetEntries, ...globalEntries, ...atlasEntries];
+        // Search tileset + global entry lists for the open folder key
+        const allEntries = [...tilesetEntries, ...globalEntries];
         const entry = allEntries.find(e => e.type === 'folder' && e.key === openFolderKey);
         if (!entry) return null;
         const cardSz = isMobile ? 56 : 72;
@@ -4763,13 +4221,6 @@ function App() {
                           <span style={{ fontSize: 20, lineHeight: 1, display: "inline-block", transform: (fMode === 'flip') ? `scale(${eFx}, ${eFy})` : `rotate(${rotDeg}deg)`, transition: "transform 0.15s", filter: "drop-shadow(0 1px 3px rgba(0,0,0,0.9))" }}>{(fMode === 'flip') ? "🦭" : "🐬"}</span>
                         </div>
                       )}
-                      {canSpinF && canFlipF && (
-                        <button onClick={ev => { ev.stopPropagation(); setCardFlipModes(prev => ({ ...prev, [t.id]: (prev[t.id] ?? 'spin') === 'spin' ? 'flip' : 'spin' })); setCardRotations(prev => { const n = {...prev}; delete n[t.id]; return n; }); setCardFlipSteps(prev => { const n = {...prev}; delete n[t.id]; return n; }); }}
-                          style={{ position: "absolute", bottom: -6, right: -6, fontSize: 8, padding: "1px 4px", cursor: "pointer", lineHeight: 1.3, fontWeight: 700, fontFamily: "'Inter', sans-serif", zIndex: 7, borderRadius: 4, border: `1px solid ${fMode === 'flip' ? "#9ca3af" : "#7dd3fc"}`, color: fMode === 'flip' ? "#9ca3af" : "#7dd3fc", background: "rgba(0,0,0,0.82)" }}
-                          title={fMode === 'flip' ? "Flip mode — click to switch to Spin" : "Spin mode — click to switch to Flip"}>
-                          {fMode === 'flip' ? "Flip" : "Spin"}
-                        </button>
-                      )}
                       <span onClick={ev => { ev.stopPropagation(); setInfoTile(t.id); }}
                         style={{ position: "absolute", top: -7, right: -7, width: 18, height: 18, fontSize: 15, cursor: "pointer", color: isStarredF ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "18px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
                         title={isStarredF ? "Starred tile — click for info" : "Tile info"}>ⓘ</span>
@@ -4824,7 +4275,7 @@ function App() {
           {tilesOpen && (
             <div style={{ width: isMobile ? 160 : 240, background: C.panelDeep, borderRight: `1px solid ${C.border}`, borderRadius: "8px 0 0 8px", display: "flex", flexDirection: "column", overflow: "hidden", maxHeight: "min(88vh, 700px)" }}>
               <SectionHeader
-                label={`Tiles (${tilesetTileCount + userTiles.length + shownAtlasTilesets.reduce((sum, tsName) => sum + atlasTiles.filter(t => t.atlasTilesetName === tsName).length, 0)})`}
+                label={`Tiles (${tilesetTileCount + userTiles.length})`}
                 open={tilesOpen}
                 onToggle={() => setTilesOpen(o => !o)}
                 right={
@@ -4840,40 +4291,11 @@ function App() {
                   </div>
                 }
               />
-              {/* Tileset selector — dropdown with multi-select checkboxes */}
-              {manifest?.tilesets?.length > 0 && (() => {
-                // Fallback for shownTilesets must only use Ophelia names, never an Atlas name
-                const opheliaNames = manifest.tilesets.map(ts => ts.name);
-                const shownFallback = (activeTileset && opheliaNames.includes(activeTileset))
-                  ? [activeTileset]
-                  : (opheliaNames.length > 0 ? [opheliaNames[0]] : []);
-                const shown = new Set(shownTilesets ?? shownFallback);
-                const shownAtlas = new Set(shownAtlasTilesets ?? []);
-                const totalShown = shown.size + shownAtlas.size;
-                const labelParts = [
-                  ...[...shown],
-                  ...[...shownAtlas].map(n => atlasTilesetList?.find(a => a.name === n)?.displayName ?? n),
-                ];
-                const label = (labelParts.join(", ") || "None") + (allowTsMixing ? "…" : "");
+              {/* Tileset selector */}
+              {dbTilesets.length > 0 && (() => {
+                const label = activeTileset ?? "None";
                 return (
                   <div style={{ borderBottom: `1px solid ${C.border}`, flexShrink: 0, position: "relative" }}>
-                    {/* Allow tileset mixing toggle — always visible above dropdown */}
-                    <label style={{ display: "flex", alignItems: "center", gap: 5, padding: "3px 8px 2px", cursor: "pointer", userSelect: "none" }}
-                      onClick={e => {
-                        e.preventDefault();
-                        const next = !allowTsMixing;
-                        if (!next) {
-                          const firstShown = activeTilesetRef.current ?? shownTilsetsRef.current?.[0] ?? shownAtlasTilesetsRef.current?.[0];
-                          const isAtlas = firstShown && !manifest?.tilesets?.some(ts => ts.name === firstShown);
-                          if (isAtlas) { setShownTilesets([]); setShownAtlasTilesets(firstShown ? [firstShown] : []); }
-                          else { setShownTilesets(firstShown ? [firstShown] : []); setShownAtlasTilesets([]); }
-                        }
-                        setAllowTsMixing(next);
-                      }}>
-                      <input type="checkbox" readOnly checked={allowTsMixing}
-                        style={{ width: 12, height: 12, accentColor: C.accent, cursor: "pointer", pointerEvents: "none", flexShrink: 0 }} />
-                      <span style={{ fontSize: 10, color: C.muted }}>Allow tileset mixing</span>
-                    </label>
                     <div style={{ padding: "0 8px 4px" }}>
                     <button
                       onMouseDown={e => e.stopPropagation()}
@@ -4882,279 +4304,28 @@ function App() {
                       <span style={{ color: C.accentBright, fontWeight: 600 }}>{label}</span>
                       <span style={{ color: C.muted, fontSize: 9 }}>{tilesetDropOpen ? "▲" : "▼"}</span>
                     </button>
-                    {tilesetDropOpen && (() => {
-                      return (
-                        <div onMouseDown={e => e.stopPropagation()} style={{ position: "absolute", top: "100%", left: 8, right: 8, background: C.panelDeep, border: `1px solid ${C.border}`, borderRadius: 6, zIndex: 200, padding: "4px 0", maxHeight: 320, overflowY: "auto", boxShadow: "0 4px 16px rgba(0,0,0,0.45)" }}>
-                          {/* ── Ophelia tilesets ── */}
-                          {manifest.tilesets.map(ts => {
-                            const checked = shown.has(ts.name);
-                            return (
-                              <label key={ts.name} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", cursor: "pointer", userSelect: "none" }}
-                                onClick={e => {
-                                  e.preventDefault();
-                                  if (allowTsMixing) {
-                                    toggleTilesetShown(ts.name);
-                                  } else {
-                                    if (ts.name !== activeTileset) {
-                                      // Compute remapped grid (Ophelia→Ophelia or Atlas→Ophelia cross-system)
-                                      let newGrid = gridRef.current;
-                                      if (manifest) {
-                                        const tilesets = manifest.tilesets ?? [];
-                                        const WATER_CNS_D = ["waterbend","watercorner","waterline","waterfill","waterdoublebend","waterdoubleline","waterfull"];
-                                        let cid = TILESET_ID_START;
-                                        const maps = {};
-                                        for (const tsDef of tilesets) {
-                                          const m = {};
-                                          for (const key of (tsDef.order ?? [])) {
-                                            if (tsDef.folders?.[key]) {
-                                              if (key === "water") {
-                                                tsDef.folders[key].forEach((_, i) => { m[WATER_CNS_D[i] ?? `water${i}`] = [cid++]; });
-                                              } else {
-                                                m[key] = tsDef.folders[key].map(() => cid++);
-                                              }
-                                            } else if (tsDef.files?.[key]) m[key] = [cid++];
-                                          }
-                                          maps[tsDef.name] = m;
-                                        }
-                                        const isAtlasActive = activeTileset && !maps[activeTileset];
-                                        if (isAtlasActive) {
-                                          // Atlas → Ophelia cross-system remap
-                                          const normC = s => s.toLowerCase().replace(/1$/, '') || s.toLowerCase();
-                                          const FOLDER_PFXS = [
-                                            ["fence","Fence"],["rope","Rope"],["water","Water"],
-                                            ["ball","Gamemode_Specifics"],["safe","Gamemode_Specifics"],
-                                            ["mine","Gamemode_Specifics"],["gem","Gamemode_Specifics"],
-                                            ["obj","Gamemode_Specifics"],["skull","Gamemode_Specifics"],
-                                          ];
-                                          const atlasTs = atlasTilesRef.current.filter(t => t.atlasTilesetName === activeTileset);
-                                          const toMap = maps[ts.name] ?? {};
-                                          const atlasFlat = atlasTs.filter(t => !t.atlasFolderName);
-                                          const atlasByNorm = {};
-                                          atlasFlat.forEach(t => { const n = normC(t.baseCodename); if (!atlasByNorm[n]) atlasByNorm[n] = t.id; });
-                                          const atlasByFolder = {};
-                                          atlasTs.filter(t => t.atlasFolderName).forEach(t => {
-                                            if (!atlasByFolder[t.atlasFolderName]) atlasByFolder[t.atlasFolderName] = [];
-                                            atlasByFolder[t.atlasFolderName].push(t);
-                                          });
-                                          Object.values(atlasByFolder).forEach(arr => arr.sort((a, b) => a.id - b.id));
-                                          const fromAll = new Set(atlasTs.map(t => t.id));
-                                          const idRemap = {};
-                                          const folderIdx = {};
-                                          for (const [key, opheliaIds] of Object.entries(toMap)) {
-                                            const n = normC(key);
-                                            const aliasN2 = n === 'breakable' ? 'skull' : n === 'skull' ? 'breakable' : null;
-                                            const atlasId = atlasByNorm[n] ?? (aliasN2 != null ? atlasByNorm[aliasN2] : undefined);
-                                            if (atlasId !== undefined) { opheliaIds.forEach(oid => { idRemap[atlasId] = oid; }); continue; }
-                                            const folderMatch = FOLDER_PFXS.find(([prefix]) => n.startsWith(prefix));
-                                            if (folderMatch) {
-                                              const folderName = folderMatch[1];
-                                              const folderTiles = atlasByFolder[folderName] ?? [];
-                                              const nameMatch = folderTiles.find(t => normC(t.baseCodename) === n);
-                                              if (nameMatch) {
-                                                opheliaIds.forEach(oid => { idRemap[nameMatch.id] = oid; });
-                                              } else {
-                                                const availTiles = folderTiles.filter(t => idRemap[t.id] === undefined);
-                                                const idx = folderIdx[folderName] ?? 0;
-                                                if (idx < availTiles.length) {
-                                                  opheliaIds.forEach(oid => { idRemap[availTiles[idx].id] = oid; });
-                                                  folderIdx[folderName] = idx + 1;
-                                                }
-                                              }
-                                            }
-                                          }
-                                          newGrid = gridRef.current.map(row => row.map(id =>
-                                            (id != null && fromAll.has(id) && idRemap[id] !== undefined) ? idRemap[id] : id
-                                          ));
-                                        } else {
-                                          // Ophelia → Ophelia key-based remap
-                                          const fromMap = (activeTileset ? maps[activeTileset] : null) ?? {};
-                                          const toMap   = maps[ts.name] ?? {};
-                                          const idRemap = {};
-                                          for (const key of Object.keys(fromMap)) {
-                                            const oIds = fromMap[key], nIds = toMap[key];
-                                            if (nIds) oIds.forEach((oid, i) => { if (i < nIds.length) idRemap[oid] = nIds[i]; });
-                                          }
-                                          const fromAll = new Set(Object.values(fromMap).flat());
-                                          newGrid = gridRef.current.map(row => row.map(id =>
-                                            (id != null && fromAll.has(id) && idRemap[id] !== undefined) ? idRemap[id] : id
-                                          ));
-                                        }
-                                      }
-                                      const tsBg = getTilesetBgColors(ts.name);
-                                      const newBg1 = tsBg ? tsBg.bg1 : bg1Ref.current;
-                                      const newBg2 = tsBg ? tsBg.bg2 : bg2Ref.current;
-                                      const snap = { grid: newGrid, w: gridWRef.current, h: gridHRef.current, tileset: ts.name, shownTilesets: [ts.name], shownAtlasTilesets: [], bg1: newBg1, bg2: newBg2, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current, label: `Switch to ${ts.name}` };
-                                      setHistory(h => {
-                                        const trimmed = h.slice(0, histIdxRef.current + 1);
-                                        const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-                                        return [...capped, snap];
-                                      });
-                                      setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
-                                      setGridRaw(newGrid);
-                                      setActiveTileset(ts.name);
-                                      if (tsBg) applyBgPreset(ts.name, tsBg.bg1, tsBg.bg2);
-                                    }
-                                    setShownTilesets([ts.name]);
-                                    setShownAtlasTilesets([]);
-                                    setTilesetDropOpen(false);
-                                  }
-                                }}>
-                                <input type="checkbox" readOnly checked={checked}
-                                  style={{ accentColor: C.accent, cursor: "pointer", width: 13, height: 13, pointerEvents: "none" }} />
-                                <span style={{ display: "flex", flexDirection: "column" }}>
-                                  <span style={{ fontSize: 11, color: checked ? C.accentBright : C.text, fontWeight: checked ? 600 : 400 }}>
-                                    {ts.name}
-                                    {WIP_TILESETS.has(ts.name) && <span style={{ marginLeft: 4, fontSize: 8, fontWeight: 700, color: "#fbbf24", background: "rgba(251,191,36,0.15)", border: "1px solid rgba(251,191,36,0.4)", borderRadius: 3, padding: "0 3px", verticalAlign: "middle" }}>WIP</span>}
-                                  </span>
-                                  {ts.creator && <span style={{ fontSize: 9, color: C.muted, fontWeight: 400 }}>by {ts.creator}</span>}
-                                </span>
-                              </label>
-                            );
-                          })}
-                          {/* ── Atlas tilesets ── */}
-                          <div style={{ margin: "3px 8px", height: 1, background: C.border }} />
-                          <div style={{ padding: "2px 10px 3px", fontSize: 9, color: C.muted, textTransform: "uppercase", letterSpacing: 0.6 }}>Atlas</div>
-                          {atlasTilesetList === null && (
-                            <div style={{ padding: "4px 10px", fontSize: 10, color: C.muted }}>Loading…</div>
-                          )}
-                          {atlasTilesetError && (
-                            <div style={{ padding: "4px 10px", fontSize: 10, color: "#f87171" }}>{atlasTilesetError}</div>
-                          )}
-                          {(atlasTilesetList ?? []).map(atsDef => {
-                            const checked = shownAtlas.has(atsDef.name);
-                            return (
-                              <label key={atsDef.name} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", cursor: "pointer", userSelect: "none" }}
-                                onClick={async e => {
-                                  e.preventDefault();
-                                  if (allowTsMixing) {
-                                    // Mixing mode: toggle Atlas tileset (no auto-convert)
-                                    const adding = !checked;
-                                    if (adding) {
-                                      loadAtlasTileset(atsDef.name);
-                                      const cachedBg = getTilesetBgColors(atsDef.name);
-                                      if (cachedBg) { applyBgPreset(atsDef.name, cachedBg.bg1, cachedBg.bg2); }
-                                      else { setSelectedBgPreset(atsDef.name); save("oph_bg_preset_key", atsDef.name); loadAtlasTilesetBgColors(atsDef.name).then(colors => { if (colors?.bg1) { setBg1(colors.bg1); setHex1(colors.bg1); setBg2(colors.bg2); setHex2(colors.bg2); save(SK.colors, colors); } }); }
-                                      setActiveTileset(atsDef.name);
-                                      setShownAtlasTilesets(prev => [...prev, atsDef.name]);
-                                    } else {
-                                      const newAtlas = shownAtlasTilesets.filter(n => n !== atsDef.name);
-                                      // Ensure at least one tileset total remains shown
-                                      if (newAtlas.length === 0 && (shownTilesets ?? []).length === 0) return;
-                                      setShownAtlasTilesets(newAtlas);
-                                    }
-                                  } else {
-                                    // Non-mixing mode: select only this Atlas tileset, auto-convert board
-                                    if (!checked) {
-                                      // Load Atlas tiles first (await so we have IDs for remap)
-                                      const newAtlasTiles = await loadAtlasTileset(atsDef.name);
-                                      // Build cross-system remap helpers (mirrors ConvertModal logic)
-                                      const normC = s => s.toLowerCase().replace(/1$/, '') || s.toLowerCase();
-                                      const FOLDER_PFXS = [
-                                        ["fence","Fence"],["rope","Rope"],["water","Water"],
-                                        ["ball","Gamemode_Specifics"],["safe","Gamemode_Specifics"],
-                                        ["mine","Gamemode_Specifics"],["gem","Gamemode_Specifics"],
-                                        ["obj","Gamemode_Specifics"],["skull","Gamemode_Specifics"],
-                                      ];
-                                      // Build Ophelia ID maps (with per-variant water keys)
-                                      const opheliaTsDefs = manifest?.tilesets ?? [];
-                                      const WATER_CNS_D = ["waterbend","watercorner","waterline","waterfill","waterdoublebend","waterdoubleline","waterfull"];
-                                      let cid = TILESET_ID_START;
-                                      const opheliaIdMaps = {};
-                                      for (const tsDef of opheliaTsDefs) {
-                                        const m = {};
-                                        for (const key of (tsDef.order ?? [])) {
-                                          if (tsDef.folders?.[key]) {
-                                            if (key === "water") {
-                                              tsDef.folders[key].forEach((_, i) => { m[WATER_CNS_D[i] ?? `water${i}`] = [cid++]; });
-                                            } else {
-                                              m[key] = tsDef.folders[key].map(() => cid++);
-                                            }
-                                          } else if (tsDef.files?.[key]) m[key] = [cid++];
-                                        }
-                                        opheliaIdMaps[tsDef.name] = m;
-                                      }
-                                      // Determine "from" tileset
-                                      // If currently on Ophelia → Ophelia→Atlas; if on Atlas → Atlas→Atlas
-                                      const fromIsOphelia = activeTileset && !!opheliaIdMaps[activeTileset];
-                                      const fromTs = fromIsOphelia ? activeTileset : (activeTileset ?? lastOpheliaTilesetRef.current ?? opheliaTsDefs[0]?.name);
-                                      const fromOphelia = !!opheliaIdMaps[fromTs];
-                                      let newGrid = gridRef.current;
-                                      if (fromOphelia) {
-                                        // Ophelia → Atlas cross-system remap
-                                        const fromMap = opheliaIdMaps[fromTs] ?? {};
-                                        const atlasFlat = newAtlasTiles.filter(t => !t.atlasFolderName);
-                                        const atlasByNorm = {};
-                                        atlasFlat.forEach(t => { const n = normC(t.baseCodename); if (!atlasByNorm[n]) atlasByNorm[n] = t; });
-                                        const atlasByFolder = {};
-                                        newAtlasTiles.filter(t => t.atlasFolderName).forEach(t => {
-                                          if (!atlasByFolder[t.atlasFolderName]) atlasByFolder[t.atlasFolderName] = [];
-                                          atlasByFolder[t.atlasFolderName].push(t);
-                                        });
-                                        Object.values(atlasByFolder).forEach(arr => arr.sort((a, b) => a.id - b.id));
-                                        const folderIdx = {};
-                                        const usedAtlasIds = new Set();
-                                        const idRemap = {};
-                                        const fromAll = new Set();
-                                        for (const [key, opheliaIds] of Object.entries(fromMap)) {
-                                          opheliaIds.forEach(oid => fromAll.add(oid));
-                                          const n = normC(key);
-                                          const aliasN = n === 'breakable' ? 'skull' : n === 'skull' ? 'breakable' : null;
-                                          const flatM = atlasByNorm[n] ?? (aliasN ? atlasByNorm[aliasN] : undefined);
-                                          if (flatM) { opheliaIds.forEach(oid => { idRemap[oid] = flatM.id; }); usedAtlasIds.add(flatM.id); continue; }
-                                          const fm = FOLDER_PFXS.find(([p]) => n.startsWith(p));
-                                          if (fm) {
-                                            const ftiles = atlasByFolder[fm[1]] ?? [];
-                                            const nameMatch = ftiles.find(t => normC(t.baseCodename) === n);
-                                            if (nameMatch) {
-                                              opheliaIds.forEach(oid => { idRemap[oid] = nameMatch.id; });
-                                              usedAtlasIds.add(nameMatch.id);
-                                            } else {
-                                              const availTiles = ftiles.filter(t => !usedAtlasIds.has(t.id));
-                                              const idx = folderIdx[fm[1]] ?? 0;
-                                              if (idx < availTiles.length) { opheliaIds.forEach(oid => { idRemap[oid] = availTiles[idx].id; }); usedAtlasIds.add(availTiles[idx].id); folderIdx[fm[1]] = idx + 1; }
-                                            }
-                                          }
-                                        }
-                                        newGrid = gridRef.current.map(row => row.map(id => (id != null && fromAll.has(id) && idRemap[id] !== undefined) ? idRemap[id] : id));
-                                      } else if (!fromOphelia && fromTs) {
-                                        // Atlas → Atlas normCode remap
-                                        const curAtlasTiles = atlasTilesRef.current.filter(t => t.atlasTilesetName === fromTs);
-                                        const fromByNorm = {};
-                                        curAtlasTiles.forEach(t => { fromByNorm[normC(t.baseCodename)] = t.id; });
-                                        const toByNorm = {};
-                                        newAtlasTiles.forEach(t => { toByNorm[normC(t.baseCodename)] = t.id; });
-                                        const fromAll = new Set(curAtlasTiles.map(t => t.id));
-                                        const idRemap = {};
-                                        Object.entries(fromByNorm).forEach(([n, fromId]) => { if (toByNorm[n] !== undefined) idRemap[fromId] = toByNorm[n]; });
-                                        newGrid = gridRef.current.map(row => row.map(id => (id != null && fromAll.has(id) && idRemap[id] !== undefined) ? idRemap[id] : id));
-                                      }
-                                      const cachedBg = getTilesetBgColors(atsDef.name);
-                                      const newBg1 = cachedBg ? cachedBg.bg1 : bg1Ref.current;
-                                      const newBg2 = cachedBg ? cachedBg.bg2 : bg2Ref.current;
-                                      const snap = { grid: newGrid, w: gridWRef.current, h: gridHRef.current, tileset: atsDef.name, shownTilesets: [], shownAtlasTilesets: [atsDef.name], bg1: newBg1, bg2: newBg2, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current, label: `Switch to ${atsDef.name}` };
-                                      setHistory(h => { const trimmed = h.slice(0, histIdxRef.current + 1); const capped = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed; return [...capped, snap]; });
-                                      setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
-                                      setGridRaw(newGrid);
-                                      setActiveTileset(atsDef.name);
-                                      if (cachedBg) { applyBgPreset(atsDef.name, cachedBg.bg1, cachedBg.bg2); }
-                                      else { setSelectedBgPreset(atsDef.name); save("oph_bg_preset_key", atsDef.name); loadAtlasTilesetBgColors(atsDef.name).then(colors => { if (colors?.bg1) { setBg1(colors.bg1); setHex1(colors.bg1); setBg2(colors.bg2); setHex2(colors.bg2); save(SK.colors, colors); } }); }
-                                      setShownTilesets([]);
-                                      setShownAtlasTilesets([atsDef.name]);
-                                    }
-                                    setTilesetDropOpen(false);
-                                  }
-                                }}>
-                                <input type="checkbox" readOnly checked={checked}
-                                  style={{ accentColor: atsDef.isCommunity ? "#f472b6" : "#a78bfa", cursor: "pointer", width: 13, height: 13, pointerEvents: "none" }} />
-                                <span style={{ fontSize: 11, color: checked ? (atsDef.isCommunity ? "#f472b6" : "#a78bfa") : C.text, fontWeight: checked ? 600 : 400 }}>
-                                  {atsDef.displayName}
-                                </span>
-                              </label>
-                            );
-                          })}
-                        </div>
-                      );
-                    })()}
+                    {tilesetDropOpen && (
+                      <div onMouseDown={e => e.stopPropagation()} style={{ position: "absolute", top: "100%", left: 8, right: 8, background: C.panelDeep, border: `1px solid ${C.border}`, borderRadius: 6, zIndex: 200, padding: "4px 0", maxHeight: 320, overflowY: "auto", boxShadow: "0 4px 16px rgba(0,0,0,0.45)" }}>
+                        {dbTilesets.map(ts => {
+                          const checked = ts.name === activeTileset;
+                          return (
+                            <label key={ts.name} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", cursor: "pointer", userSelect: "none" }}
+                              onClick={e => {
+                                e.preventDefault();
+                                switchTileset(ts.name);
+                                setTilesetDropOpen(false);
+                              }}>
+                              <input type="checkbox" readOnly checked={checked}
+                                style={{ accentColor: C.accent, cursor: "pointer", width: 13, height: 13, pointerEvents: "none" }} />
+                              <span style={{ fontSize: 11, color: checked ? C.accentBright : C.text, fontWeight: checked ? 600 : 400 }}>
+                                {ts.name}
+                                {WIP_TILESETS.has(ts.name) && <span style={{ marginLeft: 4, fontSize: 8, fontWeight: 700, color: "#fbbf24", background: "rgba(251,191,36,0.15)", border: "1px solid rgba(251,191,36,0.4)", borderRadius: 3, padding: "0 3px", verticalAlign: "middle" }}>WIP</span>}
+                              </span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    )}
                     </div>
                   </div>
                 );
@@ -5214,20 +4385,13 @@ function App() {
                             : <img src={t.blobSrc ?? t.src} alt="" onError={() => markFailed(t.id)} className={tileCardLightBg ? "tile-img-checker" : undefined} style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", transform: imgTransform, transition: "transform 0.15s" }} />}
                         </div>
                         {rotatable && <RotChevron rotDeg={rotDeg} flipStep={flipStep} mode={flipMode} />}
-                        {/* Spin/Flip toggle button — only when both spin and flip are enabled */}
-                        {canSpin && canFlip && (
-                          <button onClick={e => { e.stopPropagation(); setCardFlipModes(prev => ({ ...prev, [t.id]: (prev[t.id] ?? 'spin') === 'spin' ? 'flip' : 'spin' })); setCardRotations(prev => { const n = {...prev}; delete n[t.id]; return n; }); setCardFlipSteps(prev => { const n = {...prev}; delete n[t.id]; return n; }); }}
-                            style={{ position: "absolute", bottom: -6, right: -6, fontSize: 8, padding: "1px 4px", cursor: "pointer", lineHeight: 1.3, fontWeight: 700, fontFamily: "'Inter', sans-serif", zIndex: 7, borderRadius: 4, border: `1px solid ${flipMode === 'flip' ? "#9ca3af" : "#7dd3fc"}`, color: flipMode === 'flip' ? "#9ca3af" : "#7dd3fc", background: "rgba(0,0,0,0.82)" }}
-                            title={flipMode === 'flip' ? "Flip mode — click to switch to Spin" : "Spin mode — click to switch to Flip"}>
-                            {flipMode === 'flip' ? "Flip" : "Spin"}
-                          </button>
-                        )}
                         {/* Info button: yellow if starred, white otherwise — top-right corner */}
                         <span onClick={e => { e.stopPropagation(); setInfoTile(t.id); }}
                           style={{ position: "absolute", top: -7, right: -7, width: 18, height: 18, fontSize: 15, cursor: "pointer", color: "rgba(255,255,255,0.85)", lineHeight: "18px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
                           title={t.codename ?? (isStarred ? "Starred tile — click for info" : "Tile info")}>{isStarred ? "★" : "ⓘ"}</span>
                         <MultLabel t={t} />
                         <TileBadge t={t} />
+                        <CountBadge t={t} />
                       </div>
                     );
                   };
@@ -5560,35 +4724,6 @@ function App() {
                             </React.Fragment>
                           ) : null;
                         })}
-                        {/* ── Per-Atlas-tileset sections (one per shown Atlas tileset, above User Uploaded) ── */}
-                        {atlasRateLimitHit && shownAtlasTilesets.length > 0 && (
-                          <div style={{ width: "100%", flexBasis: "100%", padding: "4px 6px", fontSize: 10, color: "#fbbf24", background: "rgba(251,191,36,0.1)", border: "1px solid rgba(251,191,36,0.3)", borderRadius: 5, lineHeight: 1.4 }}>
-                            GitHub API rate limit reached. Atlas tiles may be incomplete — try reloading the page.
-                          </div>
-                        )}
-                        {shownAtlasTilesets.map(atsTsName => {
-                          const meta = atlasTilesetMeta(atsTsName);
-                          const tsTiles = atlasTiles.filter(t => t.atlasTilesetName === atsTsName);
-                          const sectionId = `atlas_${atsTsName}`;
-                          const isLoaded = tsTiles.length > 0;
-                          const flatTiles = tsTiles.filter(t => !t.atlasFolderName);
-                          const folderNames = [...new Set(tsTiles.filter(t => t.atlasFolderName).map(t => t.atlasFolderName))];
-                          return (
-                            <React.Fragment key={atsTsName}>
-                              <SectionHeader id={sectionId} label={meta.displayName} count={tsTiles.length} />
-                              {!panelCollapsed[sectionId] && (
-                                isLoaded ? <>
-                                  {flatTiles.map(t => renderFlatCard(t))}
-                                  {folderNames.map(folderName => {
-                                    const fTiles = tsTiles.filter(t => t.atlasFolderName === folderName);
-                                    const fLabel = fTiles[0]?.folderLabel ?? folderName;
-                                    return renderEntry({ type: 'folder', key: `${atsTsName}/${folderName}`, label: fLabel, tiles: fTiles });
-                                  })}
-                                </> : <div style={{ width: "100%", flexBasis: "100%", fontSize: 10, color: C.muted, padding: "4px 2px" }}>Loading tiles…</div>
-                              )}
-                            </React.Fragment>
-                          );
-                        })}
                         {/* ── User Uploaded ── */}
                         {(userTiles.length > 0 || true) && (<>
                           <SectionHeader id="user" label="User Uploaded" count={userTiles.length} />
@@ -5642,14 +4777,6 @@ function App() {
                       <button style={{ ...btn(false, C.danger, "rgba(248,113,113,0.14)"), fontSize: 9, padding: "3px 8px", width: "100%" }}
                         onClick={() => { setDeleteCustomSel(new Set()); setDeleteCustomOpen(true); }}>
                         🗑 Delete Uploaded Tiles
-                      </button>
-                    </div>
-                    )}
-                    {atlasTiles.length > 0 && (
-                    <div style={{ width: "100%", flexBasis: "100%", flexShrink: 0 }}>
-                      <button style={{ ...btn(false, C.danger, "rgba(248,113,113,0.14)"), fontSize: 9, padding: "3px 8px", width: "100%" }}
-                        onClick={() => setClearAtlasOpen(true)}>
-                        🗑 Clear Atlas Cache
                       </button>
                     </div>
                     )}
@@ -6593,29 +5720,6 @@ function App() {
                 </label>
                 <p style={{ fontSize: 11, color: C.muted, lineHeight: 1.5, margin: 0 }}>Shows a light checkerboard behind tile images, making dark details easier to see.</p>
                 <div style={{ height: 1, background: C.border, margin: "4px 0" }} />
-                <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}
-                  onClick={e => {
-                    e.preventDefault();
-                    const next = !allowTsMixing;
-                    if (!next) {
-                      const firstShown = activeTilesetRef.current ?? shownTilsetsRef.current?.[0] ?? shownAtlasTilesetsRef.current?.[0];
-                      const isAtlas = firstShown && !manifest?.tilesets?.some(ts => ts.name === firstShown);
-                      if (isAtlas) {
-                        setShownTilesets([]);
-                        setShownAtlasTilesets(firstShown ? [firstShown] : []);
-                      } else {
-                        setShownTilesets(firstShown ? [firstShown] : []);
-                        setShownAtlasTilesets([]);
-                      }
-                    }
-                    setAllowTsMixing(next);
-                  }}>
-                  <input type="checkbox" readOnly checked={allowTsMixing}
-                    style={{ width: 14, height: 14, accentColor: C.accent, cursor: "pointer", flexShrink: 0, pointerEvents: "none" }} />
-                  <span style={{ fontSize: 12, color: C.text }}>Allow Tileset Mixing</span>
-                </label>
-                <p style={{ fontSize: 11, color: C.muted, lineHeight: 1.5, margin: 0 }}>Show tiles from multiple tilesets at once in the tile panel.</p>
-                <div style={{ height: 1, background: C.border, margin: "4px 0" }} />
                 <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
                   <input type="checkbox" checked={hideDefaultLabels} onChange={e => setHideDefaultLabels(e.target.checked)}
                     style={{ width: 14, height: 14, accentColor: C.accent, cursor: "pointer", flexShrink: 0 }} />
@@ -6786,15 +5890,12 @@ function App() {
 
           {/* Row 3: Background colour selector */}
           {(() => {
-            const allBgPresets = { ...OPHELIA_BG, ...atlasTilesetBgColors };
-            const allAtlasBgList = atlasTilesetList ?? [];
-            const defaultBg = activeTileset ? getTilesetBgColors(activeTileset) : null;
-            const bgMismatch = !allowTsMixing && defaultBg?.bg1 && activeTileset && (
+            const allBgPresets = { ...OPHELIA_BG };
+            const defaultBg = activeTileset ? (OPHELIA_BG[activeTileset] ?? null) : null;
+            const bgMismatch = defaultBg?.bg1 && activeTileset && (
               bg1.toLowerCase() !== defaultBg.bg1.toLowerCase() || bg2.toLowerCase() !== defaultBg.bg2.toLowerCase()
             );
-            const resetDisplayName = activeTileset
-              ? (allAtlasBgList.find(a => a.name === activeTileset)?.displayName ?? activeTileset)
-              : null;
+            const resetDisplayName = activeTileset ?? null;
             return (
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8, padding: "3px 14px 5px", alignItems: "center" }}>
                 <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1, userSelect: "none" }}>Background</span>
@@ -6818,10 +5919,6 @@ function App() {
                         histLabelRef.current = "Background";
                         pushHistorySnapshot();
                         applyBgPreset(key, p.bg1, p.bg2);
-                      } else if (key && !OPHELIA_BG[key]) {
-                        loadAtlasTilesetBgColors(key).then(colors => {
-                          if (colors?.bg1) { histLabelRef.current = "Background"; pushHistorySnapshot(); applyBgPreset(key, colors.bg1, colors.bg2); }
-                        });
                       }
                     }
                   }}
@@ -6830,13 +5927,6 @@ function App() {
                   <optgroup label="Ophelia">
                     {Object.keys(OPHELIA_BG).map(k => <option key={k} value={k} style={{ color: C.text, fontStyle: "normal" }}>{k}</option>)}
                   </optgroup>
-                  {allAtlasBgList.length > 0 && (
-                    <optgroup label="Atlas">
-                      {allAtlasBgList.map(a => (
-                        <option key={a.name} value={a.name} style={{ color: C.text, fontStyle: "normal" }}>{a.displayName}</option>
-                      ))}
-                    </optgroup>
-                  )}
                 </select>
                 {selectedBgPreset === "custom" && (
                   <button style={{ ...btn(false), fontSize: 10, padding: "2px 7px" }}
