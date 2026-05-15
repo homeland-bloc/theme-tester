@@ -4765,8 +4765,8 @@ function App() {
                     🛡 Admin Dashboard
                   </button>
                 )}
-                {/* Extract Atlas BG Colours — admin-only temporary tool */}
-                {userProfile?.role === 'admin' && (
+                {/* Extract Atlas BG Colours — temporary tool, visible to all logged-in users */}
+                {currentUser && (
                   <button
                     onClick={() => {
                       setAtlasBgResults('');
