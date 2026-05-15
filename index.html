@@ -133,6 +133,18 @@ const OPHELIA_BG = {
   Cafe:      { bg1: "#AD6B45", bg2: "#B5714A" },
   Pharmacy:  { bg1: "#95a4ae", bg2: "#a2b0b8" },
 };
+// Fix 3A — surface Ophelia BG colours on app load (copy from console)
+console.log("[Ophelia BG Colors]\n" + Object.entries(OPHELIA_BG).map(([name, { bg1, bg2 }]) =>
+  `  ${name}: { light: '${bg1}', dark: '${bg2}' }`).join(",\n"));
+
+// Atlas tileset folder-name overrides (tileset name → GitHub Resources subfolder)
+const ATLAS_FOLDER_MAP = {
+  BrawlClub:  'Z_BrawlClub',
+  Casino:     'Z_CasinoTheme',
+  Jurassic:   'Z_JurassicTheme',
+  Sky:        'Z_SkyTheme',
+  Underwater: 'Z_UnderwaterTheme',
+};
 
 // Tilesets that are still work-in-progress — shown with a WIP badge in the UI.
 const WIP_TILESETS = new Set(["Airport"]);
@@ -345,6 +357,9 @@ function App() {
   const [adminOpen, setAdminOpen] = useState(false);
   const [adminProfiles, setAdminProfiles] = useState([]);
   const [adminLoading, setAdminLoading] = useState(false);
+  const [atlasBgOpen, setAtlasBgOpen] = useState(false);
+  const [atlasBgResults, setAtlasBgResults] = useState('');
+  const [atlasBgLoading, setAtlasBgLoading] = useState(false);
 
   // Tileset/tile management (Tasks 6d, 6e, 6f)
   const [createTsOpen, setCreateTsOpen] = useState(false);
@@ -539,6 +554,8 @@ function App() {
   const scrollRef = useRef();
   // nextId is for user-uploaded tiles only (range 100–199)
   const nextId    = useRef(userTiles.length ? Math.max(USER_ID_START, Math.min(USER_ID_MAX, Math.max(...userTiles.map(t => t.id)) + 1)) : USER_ID_START);
+  // Pre-decoded ImageBitmap cache for user-uploaded tiles (keyed by tile id)
+  const userBitmapCacheRef = useRef(new Map());
 
   const dragRotationRef    = useRef(0); // rotation of tile currently being dragged
   const dragFlipRef        = useRef(0); // flip step of tile currently being dragged
@@ -641,6 +658,15 @@ function App() {
 
   // Persist
   useEffect(() => { save(SK.userTiles, userTiles.map(({ blobSrc: _b, ...t }) => t)); }, [userTiles]);
+  // Pre-decode user tiles into ImageBitmap on mount so canvas drawImage doesn't re-decode each frame
+  useEffect(() => {
+    userTiles.forEach(t => {
+      if (userBitmapCacheRef.current.has(t.id) || !t.blobSrc) return;
+      fetch(t.blobSrc).then(r => r.blob()).then(blob => createImageBitmap(blob)).then(bm => {
+        userBitmapCacheRef.current.set(t.id, bm);
+      }).catch(() => {});
+    });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { save("oph_panel_collapsed", panelCollapsed); }, [panelCollapsed]);
   useEffect(() => {
     if (pendingGridLoadRef.current) return; // v2 load in progress — don't overwrite palette data
@@ -1239,8 +1265,8 @@ function App() {
       'Content-Type': 'application/json',
     };
     const tsUrl = currentUser?.id
-      ? `${SUPABASE_URL}/rest/v1/tilesets?or=(is_published.eq.true,owner_id.eq.${currentUser.id})&type=neq.global&order=name`
-      : `${SUPABASE_URL}/rest/v1/tilesets?is_published=eq.true&type=neq.global&order=name`;
+      ? `${SUPABASE_URL}/rest/v1/tilesets?or=(is_published.eq.true,owner_id.eq.${currentUser.id})&type=in.(atlas,base)&order=name`
+      : `${SUPABASE_URL}/rest/v1/tilesets?is_published=eq.true&type=in.(atlas,base)&order=name`;
     const tsHeaders = currentUser?.firebaseToken
       ? { ...publicHeaders, Authorization: `Bearer ${currentUser.firebaseToken}` }
       : publicHeaders;
@@ -1560,6 +1586,7 @@ function App() {
           const scaledDataUrl = canvas.toDataURL('image/png');
           canvas.toBlob(blob => {
             const blobSrc = URL.createObjectURL(blob);
+            createImageBitmap(blob).then(bm => { userBitmapCacheRef.current.set(id, bm); }).catch(() => {});
             setUserTiles(prev => [...prev, { id, src: scaledDataUrl, blobSrc }]);
             loaded++;
             if (loaded === imageFiles.length) {
@@ -3132,7 +3159,10 @@ function App() {
     const zOrder = id => priorityTiles[id] ? 2 : (bottomTiles[id] && !priorityTiles[id]) ? 0 : 1;
     draws.sort((a, b) => zOrder(a.id) - zOrder(b.id));
     // Load all images then draw in sorted order (guarantees z-order)
+    // Use cached ImageBitmap for user-uploaded tiles to avoid re-decoding
     Promise.all(draws.map(d => new Promise(resolve => {
+      const bm = userBitmapCacheRef.current.get(d.id);
+      if (bm) { resolve({ ...d, img: bm }); return; }
       const img = new Image();
       img.crossOrigin = "anonymous";
       img.onload = () => resolve({ ...d, img });
@@ -3143,7 +3173,9 @@ function App() {
         if (!item) return;
         const { img, r, c, mult, off, rotDeg, flipStep } = item;
         const drawW = CELL * mult;
-        const drawH = drawW * (img.naturalHeight / img.naturalWidth);
+        const imgW = img.naturalWidth  ?? img.width;
+        const imgH = img.naturalHeight ?? img.height;
+        const drawH = drawW * (imgH / imgW);
         const cx = c * CELL + CELL / 2 + (off.ox / 100) * CELL;
         const cy = r * CELL + padding + CELL / 2 + (off.oy / 100) * CELL;
         ctx.save();
@@ -3159,6 +3191,37 @@ function App() {
       });
       finish();
     });
+  };
+
+  // ── Extract Atlas BG Colours (admin tool) ─────────────────────────
+  const extractAtlasBgColors = async () => {
+    setAtlasBgLoading(true);
+    setAtlasBgResults('');
+    const atlasTilesets = dbTilesets.filter(ts => ts.type === 'atlas');
+    const sampleCenter = async (imageUrl) => {
+      try {
+        const resp = await fetch(imageUrl);
+        if (!resp.ok) return null;
+        const blob = await resp.blob();
+        const bm = await createImageBitmap(blob);
+        const cv = document.createElement('canvas');
+        cv.width = 1; cv.height = 1;
+        const ctx = cv.getContext('2d');
+        ctx.drawImage(bm, Math.floor(bm.width / 2), Math.floor(bm.height / 2), 1, 1, 0, 0, 1, 1);
+        const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data;
+        return '#' + [r, g, b].map(x => x.toString(16).padStart(2, '0')).join('');
+      } catch { return null; }
+    };
+    const lines = [];
+    for (const ts of atlasTilesets) {
+      const folder = ATLAS_FOLDER_MAP[ts.name] ?? ts.name;
+      const base = `https://raw.githubusercontent.com/She-Fairy/atlas-horizon/main/Resources/${folder}`;
+      const light = await sampleCenter(`${base}/BGLight.png`);
+      const dark  = await sampleCenter(`${base}/BGDark.png`);
+      lines.push(`${ts.name} | light: ${light ?? 'N/A'} | dark: ${dark ?? 'N/A'}`);
+    }
+    setAtlasBgResults(lines.length ? lines.join('\n') : '(no atlas tilesets found)');
+    setAtlasBgLoading(false);
   };
 
   const commitZoom = () => {
@@ -4192,6 +4255,53 @@ function App() {
     );
   };
 
+  // ── Atlas BG Colour Extractor modal (admin-only, temporary tool) ──
+  const AtlasBgModal = () => {
+    if (!atlasBgOpen) return null;
+    return (
+      <div className="modal-backdrop" onClick={() => { if (!atlasBgLoading) setAtlasBgOpen(false); }}>
+        <div className="modal-box" style={{ maxWidth: 480 }} onClick={e => e.stopPropagation()}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: "#a3e635" }}>Extract Atlas BG Colours</span>
+            <button onClick={() => { if (!atlasBgLoading) setAtlasBgOpen(false); }} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
+          </div>
+          <p style={{ fontSize: 11, color: C.muted, lineHeight: 1.5 }}>
+            Fetches BGLight.png and BGDark.png for each atlas tileset from GitHub and samples the centre pixel.
+          </p>
+          {!atlasBgResults && !atlasBgLoading && (
+            <button
+              style={{ ...btn(true, "#a3e635", "rgba(163,230,53,0.18)"), color: "#14532d", justifyContent: "center", width: "100%" }}
+              onClick={extractAtlasBgColors}>
+              Run Extraction
+            </button>
+          )}
+          {atlasBgLoading && (
+            <div style={{ textAlign: "center", color: C.muted, fontSize: 12, padding: "8px 0" }}>Sampling colours…</div>
+          )}
+          {atlasBgResults && !atlasBgLoading && (
+            <>
+              <textarea
+                readOnly
+                value={atlasBgResults}
+                style={{ width: "100%", height: 200, background: C.panel, color: C.text, border: `1px solid ${C.border}`, borderRadius: 6, fontFamily: "monospace", fontSize: 11, padding: "8px", resize: "vertical", outline: "none" }}
+              />
+              <div style={{ display: "flex", gap: 6 }}>
+                <button style={{ ...btn(true, C.accent, C.accentDim), flex: 1, justifyContent: "center" }}
+                  onClick={() => navigator.clipboard?.writeText(atlasBgResults).catch(() => {})}>
+                  Copy to clipboard
+                </button>
+                <button style={{ ...btn(false), flex: 1, justifyContent: "center" }}
+                  onClick={extractAtlasBgColors}>
+                  Re-run
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  };
+
   // ── Create Tileset modal (Task 6d) ───────────────────────────────
   const CreateTilesetModal = () => {
     if (!createTsOpen) return null;
@@ -4361,6 +4471,7 @@ function App() {
       <MemoryModal />
       <ConvertModal />
       <HotkeysModal />
+      <AtlasBgModal />
       <CreateTilesetModal />
       <AddTileModal />
 
@@ -4652,6 +4763,20 @@ function App() {
                     onMouseEnter={e => { e.currentTarget.style.background = "rgba(251,191,36,0.08)"; }}
                     onMouseLeave={e => { e.currentTarget.style.background = "none"; }}>
                     🛡 Admin Dashboard
+                  </button>
+                )}
+                {/* Extract Atlas BG Colours — admin-only temporary tool */}
+                {userProfile?.role === 'admin' && (
+                  <button
+                    onClick={() => {
+                      setAtlasBgResults('');
+                      setAtlasBgOpen(true);
+                      setUserDropOpen(false);
+                    }}
+                    style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 12px", background: "none", border: "none", cursor: "pointer", color: "#a3e635", fontSize: 12, fontFamily: "'Inter', sans-serif" }}
+                    onMouseEnter={e => { e.currentTarget.style.background = "rgba(163,230,53,0.08)"; }}
+                    onMouseLeave={e => { e.currentTarget.style.background = "none"; }}>
+                    🎨 Extract Atlas BG Colours
                   </button>
                 )}
                 {/* Logout */}
@@ -5671,7 +5796,7 @@ function App() {
             }}
           >
             <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minWidth: "100%", minHeight: "100%", padding: 60, boxSizing: "border-box" }}>
-              <div ref={canvasContainerRef} style={{ position: "relative", width: gW, height: (gridH + 2) * CELL * zoom, flexShrink: 0, isolation: "isolate" }}>
+              <div ref={canvasContainerRef} style={{ position: "relative", width: gW, height: (gridH + 2) * CELL * zoom, flexShrink: 0, isolation: "isolate", contain: "layout style paint" }}>
 
                 {/* Checkerboard — single CSS-gradient element, no inter-cell boundaries at fractional zoom */}
                 <div style={{ position: "absolute", left: 0, top: CELL * zoom, width: gridW * CELL * zoom, height: gridH * CELL * zoom, backgroundColor: bg1, backgroundImage: `linear-gradient(45deg,${bg2} 25%,transparent 25%),linear-gradient(-45deg,${bg2} 25%,transparent 25%),linear-gradient(45deg,transparent 75%,${bg2} 75%),linear-gradient(-45deg,transparent 75%,${bg2} 75%)`, backgroundSize: `${2*CELL*zoom}px ${2*CELL*zoom}px`, backgroundPosition: `0 0,0 ${CELL*zoom}px,${CELL*zoom}px ${-CELL*zoom}px,${-CELL*zoom}px 0`, pointerEvents: "none" }} />
