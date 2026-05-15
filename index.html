@@ -145,6 +145,19 @@ const ATLAS_FOLDER_MAP = {
   Sky:        'Z_SkyTheme',
   Underwater: 'Z_UnderwaterTheme',
 };
+// Hardcoded atlas tileset list for the BG colour extractor (independent of DB)
+const ATLAS_TILESET_NAMES = [
+  'Aquarium','Arcade','Bandstand','Bazaar','Beach','Biodome','BrawlClub','Brawlywood',
+  'Candyland','Casino','Castle_Courtyard','Circus','City','Coin_Factory','Deep_Sea',
+  'Desert','Enchanted_Woods','Escape_Room','Fighting_Game','Ghost_Station','Gift_Shop',
+  'Grassy_Field','Hockey','Holiday','Ice_Island','Jurassic','Katana_Kingdom',
+  'Medieval_Manor','Mine','Mortuary','Oasis','Oddities_Shop','Pirate_Ship','Ranger_Ranch',
+  'Retropolis','Robot_Factory','Rooftop','Rumble_Jungle','Scrapyard','Skating_Bowl','Sky',
+  'Snowtel','Spongebob','Stadium','Starr_Force','Starr_Toon','Stranger_Things',
+  'Stranger_Things_Forest','Stranger_Things_Lab','Stranger_Things_Lair','Stunt_Show',
+  'Subway_Surfers','Super_City','Super_City_2','Swamp_of_Love','The_Hub','Tropical_Island',
+  'Underwater','Wasteland','Water_Park','Wild_West',
+];
 
 // Tilesets that are still work-in-progress — shown with a WIP badge in the UI.
 const WIP_TILESETS = new Set(["Airport"]);
@@ -3197,17 +3210,11 @@ function App() {
   const extractAtlasBgColors = async () => {
     setAtlasBgLoading(true);
     setAtlasBgResults('');
-    const atlasTilesets = dbTilesets.filter(ts => ts.type === 'atlas');
-    if (!atlasTilesets.length) {
-      setAtlasBgResults('ERROR: no atlas tilesets found in loaded data — make sure tilesets have loaded before running.');
-      setAtlasBgLoading(false);
-      return;
-    }
     // Fetch via CORS, decode via createImageBitmap (avoids canvas taint), sample centre pixel
     // using OffscreenCanvas so getImageData is never blocked by origin restrictions.
     const sampleCenter = async (imageUrl) => {
       const resp = await fetch(imageUrl, { mode: 'cors' });
-      if (!resp.ok) throw new Error(`HTTP ${resp.status} for ${imageUrl}`);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const blob = await resp.blob();
       const bm = await createImageBitmap(blob);
       const cv = new OffscreenCanvas(1, 1);
@@ -3217,15 +3224,15 @@ function App() {
       return '#' + [r, g, b].map(x => x.toString(16).padStart(2, '0')).join('');
     };
     const lines = [];
-    for (const ts of atlasTilesets) {
-      const folder = ATLAS_FOLDER_MAP[ts.name] ?? ts.name;
+    for (const name of ATLAS_TILESET_NAMES) {
+      const folder = ATLAS_FOLDER_MAP[name] ?? name;
       const base = `https://raw.githubusercontent.com/She-Fairy/atlas-horizon/main/Resources/${folder}`;
       let light, dark;
       try { light = await sampleCenter(`${base}/BGLight.png`); }
       catch (e) { light = `ERR: ${e.message}`; }
       try { dark = await sampleCenter(`${base}/BGDark.png`); }
       catch (e) { dark = `ERR: ${e.message}`; }
-      lines.push(`${ts.name} | light: ${light} | dark: ${dark}`);
+      lines.push(`${name} | light: ${light} | dark: ${dark}`);
       setAtlasBgResults(lines.join('\n')); // update incrementally so progress is visible
     }
     setAtlasBgLoading(false);
@@ -4265,7 +4272,7 @@ function App() {
   // ── Atlas BG Colour Extractor modal (temporary public tool) ────────
   const AtlasBgModal = () => {
     if (!atlasBgOpen) return null;
-    const atlasTilesetCount = dbTilesets.filter(ts => ts.type === 'atlas').length;
+    const atlasTilesetCount = ATLAS_TILESET_NAMES.length;
     const doneCount = atlasBgResults ? atlasBgResults.split('\n').filter(Boolean).length : 0;
     return (
       <div className="modal-backdrop" onClick={() => { if (!atlasBgLoading) setAtlasBgOpen(false); }}>
@@ -4276,7 +4283,7 @@ function App() {
           </div>
           <p style={{ fontSize: 11, color: C.muted, lineHeight: 1.5 }}>
             Fetches BGLight.png / BGDark.png from GitHub for each atlas tileset and samples the centre pixel.
-            {' '}<strong style={{ color: C.text }}>{atlasTilesetCount} atlas tileset{atlasTilesetCount !== 1 ? 's' : ''} loaded.</strong>
+            {' '}<strong style={{ color: C.text }}>{atlasTilesetCount} tilesets hardcoded.</strong>
           </p>
 
           {/* Status bar */}
