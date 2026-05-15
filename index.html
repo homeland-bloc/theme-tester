@@ -3193,34 +3193,41 @@ function App() {
     });
   };
 
-  // ── Extract Atlas BG Colours (admin tool) ─────────────────────────
+  // ── Extract Atlas BG Colours (temporary public tool) ─────────────
   const extractAtlasBgColors = async () => {
     setAtlasBgLoading(true);
     setAtlasBgResults('');
     const atlasTilesets = dbTilesets.filter(ts => ts.type === 'atlas');
+    if (!atlasTilesets.length) {
+      setAtlasBgResults('ERROR: no atlas tilesets found in loaded data — make sure tilesets have loaded before running.');
+      setAtlasBgLoading(false);
+      return;
+    }
+    // Fetch via CORS, decode via createImageBitmap (avoids canvas taint), sample centre pixel
+    // using OffscreenCanvas so getImageData is never blocked by origin restrictions.
     const sampleCenter = async (imageUrl) => {
-      try {
-        const resp = await fetch(imageUrl);
-        if (!resp.ok) return null;
-        const blob = await resp.blob();
-        const bm = await createImageBitmap(blob);
-        const cv = document.createElement('canvas');
-        cv.width = 1; cv.height = 1;
-        const ctx = cv.getContext('2d');
-        ctx.drawImage(bm, Math.floor(bm.width / 2), Math.floor(bm.height / 2), 1, 1, 0, 0, 1, 1);
-        const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data;
-        return '#' + [r, g, b].map(x => x.toString(16).padStart(2, '0')).join('');
-      } catch { return null; }
+      const resp = await fetch(imageUrl, { mode: 'cors' });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status} for ${imageUrl}`);
+      const blob = await resp.blob();
+      const bm = await createImageBitmap(blob);
+      const cv = new OffscreenCanvas(1, 1);
+      const ctx = cv.getContext('2d');
+      ctx.drawImage(bm, Math.floor(bm.width / 2), Math.floor(bm.height / 2), 1, 1, 0, 0, 1, 1);
+      const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data;
+      return '#' + [r, g, b].map(x => x.toString(16).padStart(2, '0')).join('');
     };
     const lines = [];
     for (const ts of atlasTilesets) {
       const folder = ATLAS_FOLDER_MAP[ts.name] ?? ts.name;
       const base = `https://raw.githubusercontent.com/She-Fairy/atlas-horizon/main/Resources/${folder}`;
-      const light = await sampleCenter(`${base}/BGLight.png`);
-      const dark  = await sampleCenter(`${base}/BGDark.png`);
-      lines.push(`${ts.name} | light: ${light ?? 'N/A'} | dark: ${dark ?? 'N/A'}`);
+      let light, dark;
+      try { light = await sampleCenter(`${base}/BGLight.png`); }
+      catch (e) { light = `ERR: ${e.message}`; }
+      try { dark = await sampleCenter(`${base}/BGDark.png`); }
+      catch (e) { dark = `ERR: ${e.message}`; }
+      lines.push(`${ts.name} | light: ${light} | dark: ${dark}`);
+      setAtlasBgResults(lines.join('\n')); // update incrementally so progress is visible
     }
-    setAtlasBgResults(lines.length ? lines.join('\n') : '(no atlas tilesets found)');
     setAtlasBgLoading(false);
   };
 
@@ -4255,48 +4262,63 @@ function App() {
     );
   };
 
-  // ── Atlas BG Colour Extractor modal (admin-only, temporary tool) ──
+  // ── Atlas BG Colour Extractor modal (temporary public tool) ────────
   const AtlasBgModal = () => {
     if (!atlasBgOpen) return null;
+    const atlasTilesetCount = dbTilesets.filter(ts => ts.type === 'atlas').length;
+    const doneCount = atlasBgResults ? atlasBgResults.split('\n').filter(Boolean).length : 0;
     return (
       <div className="modal-backdrop" onClick={() => { if (!atlasBgLoading) setAtlasBgOpen(false); }}>
-        <div className="modal-box" style={{ maxWidth: 480 }} onClick={e => e.stopPropagation()}>
+        <div className="modal-box" style={{ maxWidth: 520 }} onClick={e => e.stopPropagation()}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <span style={{ fontSize: 13, fontWeight: 700, color: "#a3e635" }}>Extract Atlas BG Colours</span>
             <button onClick={() => { if (!atlasBgLoading) setAtlasBgOpen(false); }} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
           </div>
           <p style={{ fontSize: 11, color: C.muted, lineHeight: 1.5 }}>
-            Fetches BGLight.png and BGDark.png for each atlas tileset from GitHub and samples the centre pixel.
+            Fetches BGLight.png / BGDark.png from GitHub for each atlas tileset and samples the centre pixel.
+            {' '}<strong style={{ color: C.text }}>{atlasTilesetCount} atlas tileset{atlasTilesetCount !== 1 ? 's' : ''} loaded.</strong>
           </p>
-          {!atlasBgResults && !atlasBgLoading && (
-            <button
-              style={{ ...btn(true, "#a3e635", "rgba(163,230,53,0.18)"), color: "#14532d", justifyContent: "center", width: "100%" }}
-              onClick={extractAtlasBgColors}>
-              Run Extraction
-            </button>
-          )}
+
+          {/* Status bar */}
           {atlasBgLoading && (
-            <div style={{ textAlign: "center", color: C.muted, fontSize: 12, padding: "8px 0" }}>Sampling colours…</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", background: "rgba(163,230,53,0.08)", border: "1px solid rgba(163,230,53,0.25)", borderRadius: 6 }}>
+              <span style={{ fontSize: 14, lineHeight: 1 }}>⏳</span>
+              <span style={{ fontSize: 11, color: "#a3e635" }}>
+                Sampling… {doneCount} / {atlasTilesetCount} done
+              </span>
+            </div>
           )}
-          {atlasBgResults && !atlasBgLoading && (
-            <>
-              <textarea
-                readOnly
-                value={atlasBgResults}
-                style={{ width: "100%", height: 200, background: C.panel, color: C.text, border: `1px solid ${C.border}`, borderRadius: 6, fontFamily: "monospace", fontSize: 11, padding: "8px", resize: "vertical", outline: "none" }}
-              />
-              <div style={{ display: "flex", gap: 6 }}>
-                <button style={{ ...btn(true, C.accent, C.accentDim), flex: 1, justifyContent: "center" }}
-                  onClick={() => navigator.clipboard?.writeText(atlasBgResults).catch(() => {})}>
-                  Copy to clipboard
-                </button>
-                <button style={{ ...btn(false), flex: 1, justifyContent: "center" }}
-                  onClick={extractAtlasBgColors}>
-                  Re-run
-                </button>
-              </div>
-            </>
-          )}
+
+          {/* Results textarea — shown during loading too for live feedback */}
+          {atlasBgResults ? (
+            <textarea
+              readOnly
+              value={atlasBgResults}
+              style={{ width: "100%", height: 200, background: C.panel, color: C.text, border: `1px solid ${C.border}`, borderRadius: 6, fontFamily: "monospace", fontSize: 11, padding: "8px", resize: "vertical", outline: "none" }}
+            />
+          ) : !atlasBgLoading ? (
+            <div style={{ textAlign: "center", color: C.muted, fontSize: 11, padding: "12px 0" }}>
+              Press Run to start.
+            </div>
+          ) : null}
+
+          {/* Action buttons */}
+          <div style={{ display: "flex", gap: 6 }}>
+            {!atlasBgLoading && (
+              <button
+                style={{ ...btn(true, "#a3e635", "rgba(163,230,53,0.18)"), color: "#14532d", flex: 1, justifyContent: "center" }}
+                onClick={extractAtlasBgColors}>
+                {atlasBgResults ? 'Re-run' : 'Run Extraction'}
+              </button>
+            )}
+            {atlasBgResults && !atlasBgLoading && (
+              <button
+                style={{ ...btn(true, C.accent, C.accentDim), flex: 1, justifyContent: "center" }}
+                onClick={() => navigator.clipboard?.writeText(atlasBgResults).catch(() => {})}>
+                Copy to clipboard
+              </button>
+            )}
+          </div>
         </div>
       </div>
     );
