@@ -4728,6 +4728,12 @@ function App() {
           Opheliapp — Custom Theme Tester
         </span>
         <div style={{ flex: 1 }} />
+        {/* Extract Atlas BG Colours — temporary public tool, remove after backfill */}
+        <button
+          onClick={() => { setAtlasBgResults(''); setAtlasBgOpen(true); }}
+          style={{ ...btn(false, "#a3e635", "rgba(163,230,53,0.12)"), fontSize: 11, padding: "4px 10px", color: "#a3e635" }}>
+          🎨 BG Colours
+        </button>
         {/* Auth panel */}
         {currentUser ? (
           <div style={{ position: "relative" }} onMouseDown={e => e.stopPropagation()}>
@@ -4763,20 +4769,6 @@ function App() {
                     onMouseEnter={e => { e.currentTarget.style.background = "rgba(251,191,36,0.08)"; }}
                     onMouseLeave={e => { e.currentTarget.style.background = "none"; }}>
                     🛡 Admin Dashboard
-                  </button>
-                )}
-                {/* Extract Atlas BG Colours — temporary tool, visible to all logged-in users */}
-                {currentUser && (
-                  <button
-                    onClick={() => {
-                      setAtlasBgResults('');
-                      setAtlasBgOpen(true);
-                      setUserDropOpen(false);
-                    }}
-                    style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 12px", background: "none", border: "none", cursor: "pointer", color: "#a3e635", fontSize: 12, fontFamily: "'Inter', sans-serif" }}
-                    onMouseEnter={e => { e.currentTarget.style.background = "rgba(163,230,53,0.08)"; }}
-                    onMouseLeave={e => { e.currentTarget.style.background = "none"; }}>
-                    🎨 Extract Atlas BG Colours
                   </button>
                 )}
                 {/* Logout */}
