@@ -21,10 +21,6 @@ const WRITE_METHODS = new Set(['POST', 'PATCH', 'PUT', 'DELETE']);
 
 const BLOCKED_IPS = new Set([]);
 
-const ADMIN_SENSITIVE_TABLES = new Set([
-  'profiles'
-]);
-
 export default {
   async fetch(request, env) {
     try {
@@ -189,14 +185,6 @@ async function handleSupabaseProxy(request, url, normalizedPath, env) {
     firebaseUid = payload.sub;
     console.error(`[auth] uid=${firebaseUid} method=${method} table=${table}`);
 
-    if (method === 'DELETE' && ADMIN_SENSITIVE_TABLES.has(table)) {
-      const isAdmin = await verifyAdmin(request, env);
-      if (!isAdmin) {
-        console.warn(`Unauthorized DELETE on ${table} by uid=${firebaseUid}`);
-        return corsResponse({ error: 'Forbidden' }, 403);
-      }
-    }
-
     if (method === 'POST' || method === 'PATCH' || method === 'PUT') {
       const cloned = request.clone();
       try {
@@ -239,25 +227,6 @@ async function handleSupabaseProxy(request, url, normalizedPath, env) {
     supabaseResp.headers.get('Content-Type') || 'application/json',
     extraHeaders
   );
-}
-
-async function verifyAdmin(request, env) {
-  const discordToken = request.headers.get('X-Discord-Token');
-  if (!discordToken) return false;
-  const discordUser = await fetchDiscordUser(discordToken);
-  if (!discordUser) return false;
-
-  const res = await fetch(
-    `${env.SUPABASE_URL}/rest/v1/profiles?id=eq.${discordUser.id}&select=role`,
-    {
-      headers: {
-        'apikey': env.SUPABASE_ANON_KEY,
-        'Authorization': `Bearer ${env.SUPABASE_ANON_KEY}`
-      }
-    }
-  );
-  const rows = await res.json();
-  return Array.isArray(rows) && rows.length > 0 && rows[0].role === 'admin';
 }
 
 async function fetchDiscordUser(token) {
@@ -365,7 +334,7 @@ function corsResponse(body, status, contentType = 'application/json', extraHeade
   const headers = {
     'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
     'Access-Control-Allow-Methods': 'GET, POST, PATCH, PUT, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization, apikey, X-Discord-Token, Prefer, X-Upsert, Cache-Control, Pragma, Expires, Range, Content-Range',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, apikey, Prefer, X-Upsert, Cache-Control, Pragma, Expires, Range, Content-Range',
     'Access-Control-Expose-Headers': 'Content-Range',
     'Access-Control-Max-Age': '86400',
     'Content-Type': contentType,
