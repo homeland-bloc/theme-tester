@@ -997,20 +997,21 @@ function App() {
     );
   };
 
-  // Pre-computed tile → count in grid (for CountBadge). Only computed when showTileCount is on.
-  const tileCounts = showTileCount ? (() => {
+  // Pre-computed tile → count in grid (for CountBadge).
+  // Computed whenever the global toggle is on OR any tile has a per-tile setting.
+  const tileCounts = (showTileCount || Object.keys(tileCountMap).length > 0) ? (() => {
     const counts = {};
     grid.forEach(row => row.forEach(id => { if (id != null) counts[id] = (counts[id] ?? 0) + 1; }));
     return counts;
   })() : {};
 
-  // Count badge shown at bottom-right of tile cards when "Show tile count" is enabled.
-  // Ignores "Hide default tile settings labels" — always shown when the feature is on.
+  // Count badge shown at bottom-right of tile cards.
+  // Global toggle (showTileCount ON) → show for ALL tiles regardless of per-tile flag.
+  // Global toggle OFF → fall back to each tile's individual opt-in flag.
   const CountBadge = ({ t }) => {
-    if (!showTileCount) return null;
     const isGlobal = t.codename?.startsWith("Global_");
-    const enabled = tileCountMap[t.id] !== undefined ? tileCountMap[t.id] : isGlobal;
-    if (!enabled) return null;
+    const perTile = tileCountMap[t.id] !== undefined ? tileCountMap[t.id] : isGlobal;
+    if (!showTileCount && !perTile) return null;
     const count = tileCounts[t.id] ?? 0;
     if (count === 0) return null;
     return (
@@ -3236,7 +3237,10 @@ function App() {
     const [oxInput,        setOxInput]        = React.useState(String(currentOff.ox));
     const [oyInput,        setOyInput]        = React.useState(String(currentOff.oy));
     const [codenameInput,  setCodenameInput]  = React.useState(tileNames[t.id] || defaultCodename_);
+    const [folderKeyInput, setFolderKeyInput] = React.useState(t.folderLabel ?? '');
+    const [saveStatus,     setSaveStatus]     = React.useState(null);
     const isPriority = !!priorityTiles[t.id];
+    const canEditFolderKey = !!(currentUser && t.isDb && t.tilesetOwnerId === currentUser.id);
 
     const commitMult = val => {
       const v = parseFloat(val ?? multInput);
@@ -3269,19 +3273,20 @@ function App() {
       setOyInput(String(next));
       commitOffset(parseFloat(oxInput) || 0, next);
     };
+    const saveFolderKey = async () => {
+      if (!canEditFolderKey) return;
+      const newKey = folderKeyInput.trim() || null;
+      if (newKey === (t.folderLabel ?? null)) return;
+      try {
+        await fetch(`${WORKER_URL}/rest/v1/tiles?id=eq.${t.dbId}`, {
+          method: 'PATCH',
+          headers: { 'Authorization': `Bearer ${currentUser.firebaseToken}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+          body: JSON.stringify({ folder_key: newKey }),
+        });
+        setTsFetchTrigger(n => n + 1);
+      } catch {}
+    };
 
-    const fieldRow = (label, input, setInput, onBlur, extra) => (
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>{label}</span>
-        <input type="number" value={input} onChange={e => setInput(e.target.value)}
-          onBlur={onBlur} onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
-          style={{ width: 72, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none" }} />
-        {extra}
-      </div>
-    );
-
-    // Task 7: Navigation arrows
-    const [saveStatus, setSaveStatus] = React.useState(null); // null | 'saving' | 'ok' | 'err'
     const navTiles = t.tilesetName
       ? tiles.filter(tile => tile.tilesetName === t.tilesetName).sort((a, b) => (a.sortIndex ?? 0) - (b.sortIndex ?? 0))
       : [];
@@ -3289,9 +3294,12 @@ function App() {
     const hasPrev = navIdx > 0;
     const hasNext = navIdx < navTiles.length - 1;
 
+    const iStyle = { background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none", width: "100%" };
+    const smallBtn = { ...btn(false), padding: "3px 7px", fontSize: 13, lineHeight: 1 };
+
     return (
       <div className="modal-backdrop" onClick={() => { setInfoTile(null); setDeleteConfirmId(null); }}>
-        <div className="modal-box" onClick={e => e.stopPropagation()}>
+        <div className="modal-box" style={{ maxWidth: 480 }} onClick={e => e.stopPropagation()}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Tile info</span>
             <button onClick={() => { setInfoTile(null); setDeleteConfirmId(null); }} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
@@ -3314,33 +3322,38 @@ function App() {
             </div>
           )}
 
-          {/* Tile ID */}
-          {t.codename && (
-            <div style={{ fontSize: 10, color: C.muted, fontFamily: "monospace", wordBreak: "break-all" }}>
-              <span style={{ color: C.text }}>ID: </span>{t.codename}
+          {/* Codename + Folder key — same row */}
+          <div style={{ display: "flex", gap: 8 }}>
+            <div style={{ flex: 2, display: "flex", flexDirection: "column", gap: 4 }}>
+              <span style={{ fontSize: 10, color: C.muted }}>Codename</span>
+              <input value={codenameInput}
+                onChange={e => setCodenameInput(e.target.value)}
+                onBlur={() => {
+                  if (codenameInput === '') {
+                    setTileNames(prev => { const n = { ...prev }; delete n[t.id]; return n; });
+                  } else {
+                    setTileNames(prev => ({ ...prev, [t.id]: codenameInput }));
+                  }
+                }}
+                onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
+                placeholder={defaultCodename_ || "Enter codename…"}
+                style={{ ...iStyle }} />
             </div>
-          )}
-
-          {/* Codename — editable for all tile types; uses local state to avoid losing focus on every keystroke */}
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Codename</span>
-            <input value={codenameInput}
-              onChange={e => setCodenameInput(e.target.value)}
-              onBlur={() => {
-                if (codenameInput === '') {
-                  setTileNames(prev => { const n = { ...prev }; delete n[t.id]; return n; });
-                } else {
-                  setTileNames(prev => ({ ...prev, [t.id]: codenameInput }));
-                }
-              }}
-              onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
-              placeholder={defaultCodename_ || "Enter codename…"}
-              style={{ flex: 1, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none" }} />
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 4 }}>
+              <span style={{ fontSize: 10, color: C.muted }}>Folder key</span>
+              <input value={folderKeyInput}
+                onChange={e => setFolderKeyInput(e.target.value)}
+                onBlur={saveFolderKey}
+                onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
+                disabled={!canEditFolderKey}
+                placeholder={canEditFolderKey ? "e.g. Walls" : "—"}
+                style={{ ...iStyle, opacity: canEditFolderKey ? 1 : 0.5 }} />
+            </div>
           </div>
 
           {/* Size multiplier */}
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Size multiplier (%)</span>
+            <span style={{ fontSize: 11, color: C.muted, flexShrink: 0 }}>Size mult (%)</span>
             <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepMult(-0.05)}>−</button>
             <input type="number" value={multInput} step="0.05"
               onChange={e => setMultInput(e.target.value)}
@@ -3355,164 +3368,169 @@ function App() {
             ); })()}
           </div>
 
-          {/* Offsets */}
-          <span style={{ fontSize: 11, color: C.muted, fontWeight: 600 }}>Offsets (%) 📐</span>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Horizontal</span>
-            <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepOx(-1)}>−</button>
-            <input type="number" value={oxInput} onChange={e => setOxInput(e.target.value)}
-              onBlur={() => commitOffset()} onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
-              style={{ width: 62, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none", textAlign: "center" }} />
-            <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepOx(+1)}>+</button>
-            {(() => { const isDefault = currentOff.ox === defaultOff.ox; const stl = isDefault ? { color: "#4ade80", borderColor: "#4ade80", background: "rgba(74,222,128,0.12)" } : { color: "#f97316", borderColor: "#f97316", background: "rgba(249,115,22,0.12)" }; return (
-              <button style={{ ...btn(false), fontSize: 10, padding: "3px 7px", marginLeft: "auto", ...stl }}
-                disabled={isDefault} title={isDefault ? "Already at default" : "Reset to default"}
-                onClick={() => { setOxInput(String(defaultOff.ox)); setTileOffsets(prev => { const n = {...prev}; const o = {...(prev[t.id] ?? {}), ox: defaultOff.ox}; n[t.id] = o; return n; }); }}>Reset</button>
-            ); })()}
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Vertical</span>
-            <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepOy(-1)}>−</button>
-            <input type="number" value={oyInput} onChange={e => setOyInput(e.target.value)}
-              onBlur={() => commitOffset()} onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
-              style={{ width: 62, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none", textAlign: "center" }} />
-            <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepOy(+1)}>+</button>
-            {(() => { const isDefault = currentOff.oy === defaultOff.oy; const stl = isDefault ? { color: "#4ade80", borderColor: "#4ade80", background: "rgba(74,222,128,0.12)" } : { color: "#f97316", borderColor: "#f97316", background: "rgba(249,115,22,0.12)" }; return (
-              <button style={{ ...btn(false), fontSize: 10, padding: "3px 7px", marginLeft: "auto", ...stl }}
-                disabled={isDefault} title={isDefault ? "Already at default" : "Reset to default"}
-                onClick={() => { setOyInput(String(defaultOff.oy)); setTileOffsets(prev => { const n = {...prev}; const o = {...(prev[t.id] ?? {}), oy: defaultOff.oy}; n[t.id] = o; return n; }); }}>Reset</button>
-            ); })()}
+          {/* Offsets — H and V in the same row */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <span style={{ fontSize: 11, color: C.muted, fontWeight: 600 }}>Offsets (%) 📐</span>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                <span style={{ fontSize: 10, color: C.muted, width: 14, flexShrink: 0 }}>H</span>
+                <button style={smallBtn} onClick={() => stepOx(-1)}>−</button>
+                <input type="number" value={oxInput} onChange={e => setOxInput(e.target.value)}
+                  onBlur={() => commitOffset()} onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
+                  style={{ width: 52, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none", textAlign: "center" }} />
+                <button style={smallBtn} onClick={() => stepOx(+1)}>+</button>
+                {(() => { const isDefault = currentOff.ox === defaultOff.ox; const stl = isDefault ? { color: "#4ade80", borderColor: "#4ade80", background: "rgba(74,222,128,0.12)" } : { color: "#f97316", borderColor: "#f97316", background: "rgba(249,115,22,0.12)" }; return (
+                  <button style={{ ...btn(false), fontSize: 9, padding: "2px 5px", ...stl }}
+                    disabled={isDefault} title={isDefault ? "Already at default" : "Reset to default"}
+                    onClick={() => { setOxInput(String(defaultOff.ox)); setTileOffsets(prev => { const n = {...prev}; const o = {...(prev[t.id] ?? {}), ox: defaultOff.ox}; n[t.id] = o; return n; }); }}>↺</button>
+                ); })()}
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                <span style={{ fontSize: 10, color: C.muted, width: 14, flexShrink: 0 }}>V</span>
+                <button style={smallBtn} onClick={() => stepOy(-1)}>−</button>
+                <input type="number" value={oyInput} onChange={e => setOyInput(e.target.value)}
+                  onBlur={() => commitOffset()} onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
+                  style={{ width: 52, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none", textAlign: "center" }} />
+                <button style={smallBtn} onClick={() => stepOy(+1)}>+</button>
+                {(() => { const isDefault = currentOff.oy === defaultOff.oy; const stl = isDefault ? { color: "#4ade80", borderColor: "#4ade80", background: "rgba(74,222,128,0.12)" } : { color: "#f97316", borderColor: "#f97316", background: "rgba(249,115,22,0.12)" }; return (
+                  <button style={{ ...btn(false), fontSize: 9, padding: "2px 5px", ...stl }}
+                    disabled={isDefault} title={isDefault ? "Already at default" : "Reset to default"}
+                    onClick={() => { setOyInput(String(defaultOff.oy)); setTileOffsets(prev => { const n = {...prev}; const o = {...(prev[t.id] ?? {}), oy: defaultOff.oy}; n[t.id] = o; return n; }); }}>↺</button>
+                ); })()}
+              </div>
+            </div>
           </div>
 
-          {/* Allow spinning */}
-          {(() => {
-            const curSpin = isTileRotatable(t);
-            const isSpinDefault = curSpin === isDefaultRotatable(t);
-            const spinColor = isSpinDefault ? "#4ade80" : "#f97316";
-            return (
-              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
-                <input type="checkbox" checked={curSpin}
-                  onChange={ev => {
-                    setRotatableMap(prev => ({ ...prev, [t.id]: ev.target.checked }));
-                    if (!ev.target.checked) {
-                      setCardRotations(prev => { const n = {...prev}; delete n[t.id]; return n; });
-                      // If flip is also off, clear flip state
-                      if (!isFlipAllowed(t)) {
+          {/* Boolean flags — 2-column grid */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "4px 8px" }}>
+            {/* Allow spinning */}
+            {(() => {
+              const curSpin = isTileRotatable(t);
+              const isSpinDefault = curSpin === isDefaultRotatable(t);
+              const spinColor = isSpinDefault ? "#4ade80" : "#f97316";
+              return (
+                <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", userSelect: "none" }}>
+                  <input type="checkbox" checked={curSpin}
+                    onChange={ev => {
+                      setRotatableMap(prev => ({ ...prev, [t.id]: ev.target.checked }));
+                      if (!ev.target.checked) {
+                        setCardRotations(prev => { const n = {...prev}; delete n[t.id]; return n; });
+                        if (!isFlipAllowed(t)) {
+                          setCardFlipSteps(prev => { const n = {...prev}; delete n[t.id]; return n; });
+                          setCardFlipModes(prev => { const n = {...prev}; delete n[t.id]; return n; });
+                        }
+                      }
+                    }}
+                    style={{ width: 13, height: 13, accentColor: isSpinDefault ? "#4ade80" : "#f97316", cursor: "pointer", flexShrink: 0 }} />
+                  <span style={{ fontSize: 11, color: spinColor }}>Allow spinning 🐬</span>
+                </label>
+              );
+            })()}
+            {/* Allow flipping */}
+            {(() => {
+              const curFlip = isFlipAllowed(t);
+              const isFlipDefault = curFlip === isDefaultFlippable(t);
+              const flipColor = isFlipDefault ? "#4ade80" : "#f97316";
+              return (
+                <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", userSelect: "none" }}>
+                  <input type="checkbox" checked={curFlip}
+                    onChange={ev => {
+                      setAllowFlipMap(prev => ({ ...prev, [t.id]: ev.target.checked }));
+                      if (!ev.target.checked) {
                         setCardFlipSteps(prev => { const n = {...prev}; delete n[t.id]; return n; });
-                        setCardFlipModes(prev => { const n = {...prev}; delete n[t.id]; return n; });
+                        if ((cardFlipModes[t.id] ?? 'flip') === 'flip') {
+                          setCardFlipModes(prev => { const n = {...prev}; delete n[t.id]; return n; });
+                        }
                       }
-                    }
-                  }}
-                  style={{ width: 14, height: 14, accentColor: isSpinDefault ? "#4ade80" : "#f97316", cursor: "pointer" }} />
-                <span style={{ fontSize: 11, color: spinColor }}>Allow spinning 🐬</span>
-              </label>
-            );
-          })()}
-          {/* Allow flipping */}
-          {(() => {
-            const curFlip = isFlipAllowed(t);
-            const isFlipDefault = curFlip === isDefaultFlippable(t);
-            const flipColor = isFlipDefault ? "#4ade80" : "#f97316";
-            return (
-              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
-                <input type="checkbox" checked={curFlip}
-                  onChange={ev => {
-                    setAllowFlipMap(prev => ({ ...prev, [t.id]: ev.target.checked }));
-                    if (!ev.target.checked) {
-                      setCardFlipSteps(prev => { const n = {...prev}; delete n[t.id]; return n; });
-                      // If flip mode was active but flip is now off, reset to spin
-                      if ((cardFlipModes[t.id] ?? 'flip') === 'flip') {
-                        setCardFlipModes(prev => { const n = {...prev}; delete n[t.id]; return n; });
-                      }
-                    }
-                  }}
-                  style={{ width: 14, height: 14, accentColor: isFlipDefault ? "#4ade80" : "#f97316", cursor: "pointer" }} />
-                <span style={{ fontSize: 11, color: flipColor }}>Allow flipping 🦭</span>
-              </label>
-            );
-          })()}
-          {/* Allow mirror offset */}
-          {(() => {
-            const isMirrorOffDefault = isMirrorOffset(t) === isDefaultMirrorOffset(t);
-            const moColor = isMirrorOffDefault ? "#4ade80" : "#f97316";
-            return (
-              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
-                <input type="checkbox" checked={isMirrorOffset(t)}
-                  onChange={ev => setMirrorOffsetTiles(prev => ({ ...prev, [t.id]: ev.target.checked }))}
-                  style={{ width: 14, height: 14, accentColor: isMirrorOffDefault ? "#4ade80" : "#f97316", cursor: "pointer" }} />
-                <span style={{ fontSize: 11, color: moColor }}>Allow mirror offset 🌪️</span>
-              </label>
-            );
-          })()}
-          {/* Always render on top */}
-          {(() => {
-            const topDefault = !!(t.src && TILE_SETTINGS.priority.some(p => t.src.includes(p)));
-            const isTopDefault = isPriority === topDefault;
-            const topColor = isTopDefault ? "#4ade80" : "#f97316";
-            return (
-              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
-                <input type="checkbox" checked={isPriority}
-                  onChange={ev => {
-                    setPriorityTiles(prev => { const n = { ...prev }; if (ev.target.checked) n[t.id] = true; else delete n[t.id]; return n; });
-                    if (ev.target.checked) setBottomTiles(prev => { const n = { ...prev }; delete n[t.id]; return n; });
-                  }}
-                  style={{ width: 14, height: 14, accentColor: isTopDefault ? "#4ade80" : "#f97316", cursor: "pointer" }} />
-                <span style={{ fontSize: 11, color: topColor }}>Always render on top 🚨</span>
-              </label>
-            );
-          })()}
-          {/* Always render on bottom */}
-          {(() => {
-            const bottomDefault = !!(t.src && TILE_SETTINGS.bottomRender.some(p => t.src.includes(p)));
-            const isBottomDefault = !!bottomTiles[t.id] === bottomDefault;
-            const botColor = isBottomDefault ? "#4ade80" : "#f97316";
-            return (
-              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
-                <input type="checkbox" checked={!!bottomTiles[t.id]}
-                  onChange={ev => {
-                    setBottomTiles(prev => { const n = { ...prev }; if (ev.target.checked) n[t.id] = true; else delete n[t.id]; return n; });
-                    if (ev.target.checked) setPriorityTiles(prev => { const n = { ...prev }; delete n[t.id]; return n; });
-                  }}
-                  style={{ width: 14, height: 14, accentColor: isBottomDefault ? "#4ade80" : "#f97316", cursor: "pointer" }} />
-                <span style={{ fontSize: 11, color: botColor }}>Always render on bottom ⚓</span>
-              </label>
-            );
-          })()}
-          {/* Auto shadow */}
-          {(() => {
-            const shadowOn = !!autoShadowTiles[t.id];
-            const shadowColor = !shadowOn ? "#4ade80" : "#f97316";
-            return (
-              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
-                <input type="checkbox" checked={shadowOn}
-                  onChange={ev => setAutoShadowTiles(prev => { const n = { ...prev }; if (ev.target.checked) n[t.id] = true; else delete n[t.id]; return n; })}
-                  style={{ width: 14, height: 14, accentColor: !shadowOn ? "#4ade80" : "#f97316", cursor: "pointer" }} />
-                <span style={{ fontSize: 11, color: shadowColor }}>Auto shadow 👻</span>
-              </label>
-            );
-          })()}
-          {/* Show map count */}
-          {(() => {
-            const isGlobal = t.codename?.startsWith("Global_");
-            const countEnabled = tileCountMap[t.id] !== undefined ? tileCountMap[t.id] : isGlobal;
-            return (
-              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
-                <input type="checkbox" checked={!!countEnabled}
-                  onChange={ev => setTileCountMap(prev => ({ ...prev, [t.id]: ev.target.checked }))}
-                  style={{ width: 14, height: 14, accentColor: "#34d399", cursor: "pointer" }} />
-                <span style={{ fontSize: 11, color: "#34d399" }}>Show map count 🧮</span>
-              </label>
-            );
-          })()}
-          {/* Starred shortcut */}
-          <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
-            <input type="checkbox" checked={starredTiles.includes(t.id)}
-              onChange={() => toggleStar(t.id)}
-              style={{ width: 14, height: 14, accentColor: C.accent, cursor: "pointer" }} />
-            <span style={{ fontSize: 11, color: C.text }}>Starred shortcut ⭐</span>
-          </label>
+                    }}
+                    style={{ width: 13, height: 13, accentColor: isFlipDefault ? "#4ade80" : "#f97316", cursor: "pointer", flexShrink: 0 }} />
+                  <span style={{ fontSize: 11, color: flipColor }}>Allow flipping 🦭</span>
+                </label>
+              );
+            })()}
+            {/* Allow mirror offset */}
+            {(() => {
+              const isMirrorOffDefault = isMirrorOffset(t) === isDefaultMirrorOffset(t);
+              const moColor = isMirrorOffDefault ? "#4ade80" : "#f97316";
+              return (
+                <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", userSelect: "none" }}>
+                  <input type="checkbox" checked={isMirrorOffset(t)}
+                    onChange={ev => setMirrorOffsetTiles(prev => ({ ...prev, [t.id]: ev.target.checked }))}
+                    style={{ width: 13, height: 13, accentColor: isMirrorOffDefault ? "#4ade80" : "#f97316", cursor: "pointer", flexShrink: 0 }} />
+                  <span style={{ fontSize: 11, color: moColor }}>Allow mirror offset 🌪️</span>
+                </label>
+              );
+            })()}
+            {/* Always render on top */}
+            {(() => {
+              const topDefault = !!(t.src && TILE_SETTINGS.priority.some(p => t.src.includes(p)));
+              const isTopDefault = isPriority === topDefault;
+              const topColor = isTopDefault ? "#4ade80" : "#f97316";
+              return (
+                <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", userSelect: "none" }}>
+                  <input type="checkbox" checked={isPriority}
+                    onChange={ev => {
+                      setPriorityTiles(prev => { const n = { ...prev }; if (ev.target.checked) n[t.id] = true; else delete n[t.id]; return n; });
+                      if (ev.target.checked) setBottomTiles(prev => { const n = { ...prev }; delete n[t.id]; return n; });
+                    }}
+                    style={{ width: 13, height: 13, accentColor: isTopDefault ? "#4ade80" : "#f97316", cursor: "pointer", flexShrink: 0 }} />
+                  <span style={{ fontSize: 11, color: topColor }}>Always render on top 🚨</span>
+                </label>
+              );
+            })()}
+            {/* Always render on bottom */}
+            {(() => {
+              const bottomDefault = !!(t.src && TILE_SETTINGS.bottomRender.some(p => t.src.includes(p)));
+              const isBottomDefault = !!bottomTiles[t.id] === bottomDefault;
+              const botColor = isBottomDefault ? "#4ade80" : "#f97316";
+              return (
+                <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", userSelect: "none" }}>
+                  <input type="checkbox" checked={!!bottomTiles[t.id]}
+                    onChange={ev => {
+                      setBottomTiles(prev => { const n = { ...prev }; if (ev.target.checked) n[t.id] = true; else delete n[t.id]; return n; });
+                      if (ev.target.checked) setPriorityTiles(prev => { const n = { ...prev }; delete n[t.id]; return n; });
+                    }}
+                    style={{ width: 13, height: 13, accentColor: isBottomDefault ? "#4ade80" : "#f97316", cursor: "pointer", flexShrink: 0 }} />
+                  <span style={{ fontSize: 11, color: botColor }}>Always render on bottom ⚓</span>
+                </label>
+              );
+            })()}
+            {/* Auto shadow */}
+            {(() => {
+              const shadowOn = !!autoShadowTiles[t.id];
+              const shadowColor = !shadowOn ? "#4ade80" : "#f97316";
+              return (
+                <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", userSelect: "none" }}>
+                  <input type="checkbox" checked={shadowOn}
+                    onChange={ev => setAutoShadowTiles(prev => { const n = { ...prev }; if (ev.target.checked) n[t.id] = true; else delete n[t.id]; return n; })}
+                    style={{ width: 13, height: 13, accentColor: !shadowOn ? "#4ade80" : "#f97316", cursor: "pointer", flexShrink: 0 }} />
+                  <span style={{ fontSize: 11, color: shadowColor }}>Auto shadow 👻</span>
+                </label>
+              );
+            })()}
+            {/* Show map count */}
+            {(() => {
+              const isGlobal = t.codename?.startsWith("Global_");
+              const countEnabled = tileCountMap[t.id] !== undefined ? tileCountMap[t.id] : isGlobal;
+              return (
+                <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", userSelect: "none" }}>
+                  <input type="checkbox" checked={!!countEnabled}
+                    onChange={ev => setTileCountMap(prev => ({ ...prev, [t.id]: ev.target.checked }))}
+                    style={{ width: 13, height: 13, accentColor: "#34d399", cursor: "pointer", flexShrink: 0 }} />
+                  <span style={{ fontSize: 11, color: "#34d399" }}>Show map count 🧮</span>
+                </label>
+              );
+            })()}
+            {/* Starred shortcut */}
+            <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", userSelect: "none" }}>
+              <input type="checkbox" checked={starredTiles.includes(t.id)}
+                onChange={() => toggleStar(t.id)}
+                style={{ width: 13, height: 13, accentColor: C.accent, cursor: "pointer", flexShrink: 0 }} />
+              <span style={{ fontSize: 11, color: C.text }}>Starred shortcut ⭐</span>
+            </label>
+          </div>
 
-          {/* Task 5: Save to Database */}
+          {/* Save to Database */}
           {currentUser && t.isDb && t.dbId && (
             <button
               disabled={saveStatus === 'saving'}
@@ -3529,6 +3547,7 @@ function App() {
                     bottom_render: !!bottomTiles[t.id],
                     priority: !!priorityTiles[t.id],
                     auto_shadow: !!autoShadowTiles[t.id],
+                    ...(canEditFolderKey && { folder_key: folderKeyInput.trim() || null }),
                   };
                   const resp = await fetch(`${WORKER_URL}/rest/v1/tiles?id=eq.${t.dbId}`, {
                     method: 'PATCH',
