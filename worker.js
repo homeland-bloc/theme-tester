@@ -5,11 +5,11 @@
  *
  * Environment variables (wrangler.toml):
  *   SUPABASE_URL          = https://eizcooctnlugsxcyrplh.supabase.co
- *   SUPABASE_ANON_KEY     = sb_publishable_K0J0EGtj3m9DyDxZoRpy3w_bDwgMxg_
  *   DISCORD_CLIENT_ID     = 1503113409678410019
  *   FIREBASE_PROJECT_ID   = opheliapp-wow
  *
  * Secrets (wrangler secret put):
+ *   SUPABASE_ANON_KEY
  *   DISCORD_CLIENT_SECRET
  *   FIREBASE_SERVICE_ACCOUNT
  */
@@ -248,7 +248,7 @@ async function verifyAdmin(request, env) {
   if (!discordUser) return false;
 
   const res = await fetch(
-    `${env.SUPABASE_URL}/rest/v1/profiles?discord_id=eq.${discordUser.id}&select=role`,
+    `${env.SUPABASE_URL}/rest/v1/profiles?id=eq.${discordUser.id}&select=role`,
     {
       headers: {
         'apikey': env.SUPABASE_ANON_KEY,

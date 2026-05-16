@@ -119,9 +119,7 @@ const SPACE_TILE_ID    = 998; // special: makes a cell fully transparent
 const WARN_TILE_ID     = 997; // special: places a warning-marker ghost tile
 const REPLACE_ERASE_ID = -1;  // sentinel: replace-with-empty in the Replace modal
 
-// Supabase connection — anon key is safe to expose client-side (RLS enforced server-side)
 const SUPABASE_URL = "https://eizcooctnlugsxcyrplh.supabase.co";
-const SUPABASE_ANON_KEY = "sb_publishable_K0J0EGtj3m9DyDxZoRpy3w_bDwgMxg_";
 const WORKER_URL = "https://oph.opheliapp.workers.dev";
 const DISCORD_CLIENT_ID = "1503113409678410019";
 // Hardcoded BG colours for Ophelia tilesets (single source of truth)
@@ -133,31 +131,6 @@ const OPHELIA_BG = {
   Cafe:      { bg1: "#AD6B45", bg2: "#B5714A" },
   Pharmacy:  { bg1: "#95a4ae", bg2: "#a2b0b8" },
 };
-// Fix 3A — surface Ophelia BG colours on app load (copy from console)
-console.log("[Ophelia BG Colors]\n" + Object.entries(OPHELIA_BG).map(([name, { bg1, bg2 }]) =>
-  `  ${name}: { light: '${bg1}', dark: '${bg2}' }`).join(",\n"));
-
-// Atlas tileset folder-name overrides (tileset name → GitHub Resources subfolder)
-const ATLAS_FOLDER_MAP = {
-  BrawlClub:  'Z_BrawlClub',
-  Casino:     'Z_CasinoTheme',
-  Jurassic:   'Z_JurassicTheme',
-  Sky:        'Z_SkyTheme',
-  Underwater: 'Z_UnderwaterTheme',
-};
-// Hardcoded atlas tileset list for the BG colour extractor (independent of DB)
-const ATLAS_TILESET_NAMES = [
-  'Aquarium','Arcade','Bandstand','Bazaar','Beach','Biodome','BrawlClub','Brawlywood',
-  'Candyland','Casino','Castle_Courtyard','Circus','City','Coin_Factory','Deep_Sea',
-  'Desert','Enchanted_Woods','Escape_Room','Fighting_Game','Ghost_Station','Gift_Shop',
-  'Grassy_Field','Hockey','Holiday','Ice_Island','Jurassic','Katana_Kingdom',
-  'Medieval_Manor','Mine','Mortuary','Oasis','Oddities_Shop','Pirate_Ship','Ranger_Ranch',
-  'Retropolis','Robot_Factory','Rooftop','Rumble_Jungle','Scrapyard','Skating_Bowl','Sky',
-  'Snowtel','Spongebob','Stadium','Starr_Force','Starr_Toon','Stranger_Things',
-  'Stranger_Things_Forest','Stranger_Things_Lab','Stranger_Things_Lair','Stunt_Show',
-  'Subway_Surfers','Super_City','Super_City_2','Swamp_of_Love','The_Hub','Tropical_Island',
-  'Underwater','Wasteland','Water_Park','Wild_West',
-];
 
 // Tilesets that are still work-in-progress — shown with a WIP badge in the UI.
 const WIP_TILESETS = new Set(["Airport"]);
@@ -370,9 +343,11 @@ function App() {
   const [adminOpen, setAdminOpen] = useState(false);
   const [adminProfiles, setAdminProfiles] = useState([]);
   const [adminLoading, setAdminLoading] = useState(false);
-  const [atlasBgOpen, setAtlasBgOpen] = useState(false);
-  const [atlasBgResults, setAtlasBgResults] = useState('');
-  const [atlasBgLoading, setAtlasBgLoading] = useState(false);
+  const [bgEditOpen, setBgEditOpen] = useState(false);
+  const [bgEditTsId, setBgEditTsId] = useState(null);
+  const [bgEditLight, setBgEditLight] = useState('#000000');
+  const [bgEditDark, setBgEditDark] = useState('#000000');
+  const [bgEditSaving, setBgEditSaving] = useState(false);
 
   // Tileset/tile management (Tasks 6d, 6e, 6f)
   const [createTsOpen, setCreateTsOpen] = useState(false);
@@ -1261,29 +1236,25 @@ function App() {
     }
   }, [flatDefaultTiles]);
 
-  // Load global tiles from manifest and all published tilesets+tiles from Supabase
+  // Load global tiles from manifest; fetch tilesets+tiles via worker once authenticated
   useEffect(() => {
-    // Load global tiles from local manifest (Global tileset stays hardcoded)
+    // Global tiles always come from the local manifest
     fetch("Resources/manifest.json")
       .then(r => r.ok ? r.json() : {})
       .then(data => setManifest({ global: data.global }))
       .catch(() => setManifest({ global: null }));
 
-    // Fetch tilesets from Supabase (exclude global type — handled by manifest)
-    // When logged in: fetch published + own tilesets via worker with auth
-    // When not logged in: fetch only published tilesets via public API
-    const publicHeaders = {
-      apikey: SUPABASE_ANON_KEY,
-      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+    if (!currentUser?.id || !currentUser?.firebaseToken) {
+      setTilesLoading(false);
+      return;
+    }
+
+    const authHeaders = {
+      'Authorization': `Bearer ${currentUser.firebaseToken}`,
       'Content-Type': 'application/json',
     };
-    const tsUrl = currentUser?.id
-      ? `${SUPABASE_URL}/rest/v1/tilesets?or=(is_published.eq.true,owner_id.eq.${currentUser.id})&type=in.(atlas,base)&order=name`
-      : `${SUPABASE_URL}/rest/v1/tilesets?is_published=eq.true&type=in.(atlas,base)&order=name`;
-    const tsHeaders = currentUser?.firebaseToken
-      ? { ...publicHeaders, Authorization: `Bearer ${currentUser.firebaseToken}` }
-      : publicHeaders;
-    fetch(tsUrl, { headers: tsHeaders })
+    const tsUrl = `${WORKER_URL}/rest/v1/tilesets?or=(is_published.eq.true,owner_id.eq.${currentUser.id})&type=in.(atlas,base)&order=name`;
+    fetch(tsUrl, { headers: authHeaders })
       .then(r => r.ok ? r.json() : [])
       .then(tilesets => {
         if (!Array.isArray(tilesets) || tilesets.length === 0) {
@@ -1293,14 +1264,15 @@ function App() {
           return;
         }
         const tsIds = tilesets.map(ts => ts.id).join(',');
-        return fetch(`${SUPABASE_URL}/rest/v1/tiles?tileset_id=in.(${tsIds})&order=sort_index`, { headers: publicHeaders })
+        return fetch(`${WORKER_URL}/rest/v1/tiles?tileset_id=in.(${tsIds})&order=sort_index`, { headers: authHeaders })
           .then(r => r.ok ? r.json() : [])
           .then(tilesRows => {
             setDbTilesets(tilesets);
             setDbTilesData(Array.isArray(tilesRows) ? tilesRows : []);
             const saved = load(SK.activeTileset, null);
-            const firstName = tilesets[0]?.name ?? null;
-            const name = (saved && tilesets.some(ts => ts.name === saved)) ? saved : firstName;
+            // Default to the most recently created tileset on first load
+            const mostRecent = [...tilesets].sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0]?.name ?? null;
+            const name = (saved && tilesets.some(ts => ts.name === saved)) ? saved : mostRecent;
             setActiveTileset(name);
             setTilesLoading(false);
           });
@@ -1320,7 +1292,7 @@ function App() {
   useEffect(() => {
     if (!adminOpen || !currentUser?.firebaseToken) return;
     setAdminLoading(true);
-    fetch(`${WORKER_URL}/rest/v1/profiles?select=id,discord_id,username,avatar_hash,role&order=username`, {
+    fetch(`${WORKER_URL}/rest/v1/profiles?select=id,username,avatar_hash,role&order=username`, {
       headers: { 'Authorization': `Bearer ${currentUser.firebaseToken}`, 'Content-Type': 'application/json' }
     }).then(r => r.ok ? r.json() : []).then(rows => { setAdminProfiles(rows); setAdminLoading(false); }).catch(() => setAdminLoading(false));
   }, [adminOpen, currentUser]);
@@ -3206,37 +3178,6 @@ function App() {
     });
   };
 
-  // ── Extract Atlas BG Colours (temporary public tool) ─────────────
-  const extractAtlasBgColors = async () => {
-    setAtlasBgLoading(true);
-    setAtlasBgResults('');
-    // Fetch via CORS, decode via createImageBitmap (avoids canvas taint), sample centre pixel
-    // using OffscreenCanvas so getImageData is never blocked by origin restrictions.
-    const sampleCenter = async (imageUrl) => {
-      const resp = await fetch(imageUrl, { mode: 'cors' });
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const blob = await resp.blob();
-      const bm = await createImageBitmap(blob);
-      const cv = new OffscreenCanvas(1, 1);
-      const ctx = cv.getContext('2d');
-      ctx.drawImage(bm, Math.floor(bm.width / 2), Math.floor(bm.height / 2), 1, 1, 0, 0, 1, 1);
-      const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data;
-      return '#' + [r, g, b].map(x => x.toString(16).padStart(2, '0')).join('');
-    };
-    const lines = [];
-    for (const name of ATLAS_TILESET_NAMES) {
-      const folder = ATLAS_FOLDER_MAP[name] ?? name;
-      const base = `https://raw.githubusercontent.com/She-Fairy/atlas-horizon/main/Resources/${folder}`;
-      let light, dark;
-      try { light = await sampleCenter(`${base}/BGLight.png`); }
-      catch (e) { light = `ERR: ${e.message}`; }
-      try { dark = await sampleCenter(`${base}/BGDark.png`); }
-      catch (e) { dark = `ERR: ${e.message}`; }
-      lines.push(`${name} | light: ${light} | dark: ${dark}`);
-      setAtlasBgResults(lines.join('\n')); // update incrementally so progress is visible
-    }
-    setAtlasBgLoading(false);
-  };
 
   const commitZoom = () => {
     const v = parseInt(zoomInput, 10);
@@ -4269,67 +4210,6 @@ function App() {
     );
   };
 
-  // ── Atlas BG Colour Extractor modal (temporary public tool) ────────
-  const AtlasBgModal = () => {
-    if (!atlasBgOpen) return null;
-    const atlasTilesetCount = ATLAS_TILESET_NAMES.length;
-    const doneCount = atlasBgResults ? atlasBgResults.split('\n').filter(Boolean).length : 0;
-    return (
-      <div className="modal-backdrop" onClick={() => { if (!atlasBgLoading) setAtlasBgOpen(false); }}>
-        <div className="modal-box" style={{ maxWidth: 520 }} onClick={e => e.stopPropagation()}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <span style={{ fontSize: 13, fontWeight: 700, color: "#a3e635" }}>Extract Atlas BG Colours</span>
-            <button onClick={() => { if (!atlasBgLoading) setAtlasBgOpen(false); }} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
-          </div>
-          <p style={{ fontSize: 11, color: C.muted, lineHeight: 1.5 }}>
-            Fetches BGLight.png / BGDark.png from GitHub for each atlas tileset and samples the centre pixel.
-            {' '}<strong style={{ color: C.text }}>{atlasTilesetCount} tilesets hardcoded.</strong>
-          </p>
-
-          {/* Status bar */}
-          {atlasBgLoading && (
-            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", background: "rgba(163,230,53,0.08)", border: "1px solid rgba(163,230,53,0.25)", borderRadius: 6 }}>
-              <span style={{ fontSize: 14, lineHeight: 1 }}>⏳</span>
-              <span style={{ fontSize: 11, color: "#a3e635" }}>
-                Sampling… {doneCount} / {atlasTilesetCount} done
-              </span>
-            </div>
-          )}
-
-          {/* Results textarea — shown during loading too for live feedback */}
-          {atlasBgResults ? (
-            <textarea
-              readOnly
-              value={atlasBgResults}
-              style={{ width: "100%", height: 200, background: C.panel, color: C.text, border: `1px solid ${C.border}`, borderRadius: 6, fontFamily: "monospace", fontSize: 11, padding: "8px", resize: "vertical", outline: "none" }}
-            />
-          ) : !atlasBgLoading ? (
-            <div style={{ textAlign: "center", color: C.muted, fontSize: 11, padding: "12px 0" }}>
-              Press Run to start.
-            </div>
-          ) : null}
-
-          {/* Action buttons */}
-          <div style={{ display: "flex", gap: 6 }}>
-            {!atlasBgLoading && (
-              <button
-                style={{ ...btn(true, "#a3e635", "rgba(163,230,53,0.18)"), color: "#14532d", flex: 1, justifyContent: "center" }}
-                onClick={extractAtlasBgColors}>
-                {atlasBgResults ? 'Re-run' : 'Run Extraction'}
-              </button>
-            )}
-            {atlasBgResults && !atlasBgLoading && (
-              <button
-                style={{ ...btn(true, C.accent, C.accentDim), flex: 1, justifyContent: "center" }}
-                onClick={() => navigator.clipboard?.writeText(atlasBgResults).catch(() => {})}>
-                Copy to clipboard
-              </button>
-            )}
-          </div>
-        </div>
-      </div>
-    );
-  };
 
   // ── Create Tileset modal (Task 6d) ───────────────────────────────
   const CreateTilesetModal = () => {
@@ -4477,6 +4357,100 @@ function App() {
     setAddTileLoading(false);
   };
 
+  // ── BG Colour Edit modal (Task 6e) ──────────────────────────────
+  const BgEditModal = () => {
+    if (!bgEditOpen) return null;
+    const tsName = dbTilesets.find(ts => ts.id === bgEditTsId)?.name ?? bgEditTsId;
+    return (
+      <div className="modal-backdrop" onClick={() => { if (!bgEditSaving) setBgEditOpen(false); }}>
+        <div className="modal-box" style={{ maxWidth: 300 }} onClick={e => e.stopPropagation()}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>BG Colours — {tsName}</span>
+            <button onClick={() => { if (!bgEditSaving) setBgEditOpen(false); }} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{ width: 28, height: 28, borderRadius: 5, background: bgEditLight, border: `1px solid ${C.border}`, flexShrink: 0 }} />
+              <span style={{ fontSize: 11, color: C.muted, minWidth: 60 }}>Light BG</span>
+              <input type="color" value={bgEditLight} onChange={e => setBgEditLight(e.target.value)}
+                style={{ width: 36, height: 28, border: "none", background: "none", cursor: "pointer", padding: 0, borderRadius: 4 }} />
+              <input value={bgEditLight} onChange={e => setBgEditLight(e.target.value)}
+                style={{ flex: 1, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 11, padding: "4px 6px", outline: "none" }} />
+            </label>
+            <label style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{ width: 28, height: 28, borderRadius: 5, background: bgEditDark, border: `1px solid ${C.border}`, flexShrink: 0 }} />
+              <span style={{ fontSize: 11, color: C.muted, minWidth: 60 }}>Dark BG</span>
+              <input type="color" value={bgEditDark} onChange={e => setBgEditDark(e.target.value)}
+                style={{ width: 36, height: 28, border: "none", background: "none", cursor: "pointer", padding: 0, borderRadius: 4 }} />
+              <input value={bgEditDark} onChange={e => setBgEditDark(e.target.value)}
+                style={{ flex: 1, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 11, padding: "4px 6px", outline: "none" }} />
+            </label>
+          </div>
+          <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+            <button style={{ ...btn(false), flex: 1, justifyContent: "center" }} disabled={bgEditSaving} onClick={() => setBgEditOpen(false)}>Cancel</button>
+            <button style={{ ...btn(true, C.accent, C.accentDim), flex: 1, justifyContent: "center" }} disabled={bgEditSaving} onClick={async () => {
+              setBgEditSaving(true);
+              try {
+                const resp = await fetch(`${WORKER_URL}/rest/v1/tilesets?id=eq.${bgEditTsId}`, {
+                  method: 'PATCH',
+                  headers: { 'Authorization': `Bearer ${currentUser.firebaseToken}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+                  body: JSON.stringify({ bg_color_light: bgEditLight, bg_color_dark: bgEditDark }),
+                });
+                if (resp.ok) {
+                  setDbTilesets(prev => prev.map(ts => ts.id === bgEditTsId ? { ...ts, bg_color_light: bgEditLight, bg_color_dark: bgEditDark } : ts));
+                  setBgEditOpen(false);
+                } else {
+                  alert('Failed to save BG colours.');
+                }
+              } catch (err) {
+                alert('Error: ' + err.message);
+              }
+              setBgEditSaving(false);
+            }}>
+              {bgEditSaving ? 'Saving…' : 'Save BG Colours'}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // ─────────────────────────────────────────────────────────────────
+  // Login gate — show login page if not authenticated
+  if (!currentUser) {
+    const bg = C.bg;
+    const panel = C.panel;
+    const border = C.border;
+    const accent = C.accent;
+    const accentDim = C.accentDim;
+    const text = C.text;
+    const muted = C.muted;
+    return (
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100dvh", background: bg, fontFamily: "'Inter', sans-serif" }}>
+        <div style={{ background: panel, border: `1px solid ${border}`, borderRadius: 18, padding: "36px 32px", maxWidth: 360, width: "90%", display: "flex", flexDirection: "column", alignItems: "center", gap: 20, boxShadow: "0 8px 40px rgba(0,0,0,0.55)" }}>
+          <img src="favicon/apple-touch-icon.png" alt="Opheliapp" style={{ width: 72, height: 72, borderRadius: 16, imageRendering: "auto" }} />
+          <div style={{ textAlign: "center" }}>
+            <span className="oph-title-text" style={{ fontFamily: "'Lilita One', cursive", fontWeight: 400, fontSize: 26, letterSpacing: 0.4, display: "block", marginBottom: 4 }}>
+              Opheliapp
+            </span>
+            <span style={{ fontSize: 13, color: muted }}>Custom Theme Tester</span>
+          </div>
+          <button onClick={loginWithDiscord}
+            style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, background: "#5865F2", color: "#fff", border: "none", borderRadius: 10, padding: "12px 28px", fontSize: 14, fontWeight: 700, cursor: "pointer", width: "100%", fontFamily: "'Inter', sans-serif", transition: "opacity 0.15s" }}
+            onMouseEnter={e => e.currentTarget.style.opacity = "0.88"}
+            onMouseLeave={e => e.currentTarget.style.opacity = "1"}>
+            <svg width="20" height="15" viewBox="0 0 71 55" fill="currentColor" style={{ flexShrink: 0 }}><path d="M60.1 4.9A58.55 58.55 0 0 0 45.6.4a.22.22 0 0 0-.23.11 40.84 40.84 0 0 0-1.8 3.7 54.07 54.07 0 0 0-16.24 0 37.35 37.35 0 0 0-1.83-3.7.23.23 0 0 0-.23-.11A58.38 58.38 0 0 0 10.93 4.9a.21.21 0 0 0-.1.08C1.58 18.8-1.03 32.5.34 46 .35 46 .36 46.07.38 46.09a58.9 58.9 0 0 0 17.7 8.95.23.23 0 0 0 .25-.08 42.08 42.08 0 0 0 3.63-5.9.22.22 0 0 0-.12-.31 38.78 38.78 0 0 1-5.54-2.64.23.23 0 0 1-.02-.38c.37-.28.74-.57 1.1-.86a.22.22 0 0 1 .23-.03c11.62 5.3 24.2 5.3 35.7 0a.22.22 0 0 1 .23.03c.36.29.73.58 1.1.86a.23.23 0 0 1-.02.38 36.41 36.41 0 0 1-5.54 2.63.23.23 0 0 0-.12.32 47.25 47.25 0 0 0 3.62 5.9.22.22 0 0 0 .25.08 58.7 58.7 0 0 0 17.72-8.95.22.22 0 0 0 .1-.1c1.66-17.2-2.8-32.2-11.84-45.54a.18.18 0 0 0-.1-.08zM23.73 37.57c-3.5 0-6.38-3.21-6.38-7.16s2.83-7.16 6.38-7.16c3.58 0 6.42 3.23 6.38 7.16 0 3.95-2.84 7.16-6.38 7.16zm23.61 0c-3.5 0-6.38-3.21-6.38-7.16s2.83-7.16 6.38-7.16c3.58 0 6.42 3.23 6.38 7.16 0 3.95-2.83 7.16-6.38 7.16z"/></svg>
+            Login with Discord
+          </button>
+          <p style={{ fontSize: 11, color: muted, textAlign: "center", lineHeight: 1.6, margin: 0 }}>
+            By logging in you agree that your Discord username and avatar may be stored to manage your tilesets.
+            We do not share your data with third parties.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   // ─────────────────────────────────────────────────────────────────
   // Grid size in pixels (at current zoom)
   const gW = gridW * CELL * zoom;
@@ -4500,7 +4474,7 @@ function App() {
       <MemoryModal />
       <ConvertModal />
       <HotkeysModal />
-      <AtlasBgModal />
+      <BgEditModal />
       <CreateTilesetModal />
       <AddTileModal />
 
@@ -4757,12 +4731,6 @@ function App() {
           Opheliapp — Custom Theme Tester
         </span>
         <div style={{ flex: 1 }} />
-        {/* Extract Atlas BG Colours — temporary public tool, remove after backfill */}
-        <button
-          onClick={() => { setAtlasBgResults(''); setAtlasBgOpen(true); }}
-          style={{ ...btn(false, "#a3e635", "rgba(163,230,53,0.12)"), fontSize: 11, padding: "4px 10px", color: "#a3e635" }}>
-          🎨 BG Colours
-        </button>
         {/* Auth panel */}
         {currentUser ? (
           <div style={{ position: "relative" }} onMouseDown={e => e.stopPropagation()}>
@@ -5305,6 +5273,21 @@ function App() {
                                     style={{ background: "none", border: `1px solid ${isPub ? '#4ade80' : C.border}`, borderRadius: 4, padding: "1px 5px", fontSize: 8, color: isPub ? '#4ade80' : C.muted, cursor: "pointer", flexShrink: 0, marginRight: 2 }}
                                     title={isPub ? "Published — click to unpublish" : "Unpublished — click to publish"}>
                                     {isPub ? "pub" : "draft"}
+                                  </button>
+                                )}
+                                {isOwned && (
+                                  <button
+                                    onClick={e => {
+                                      e.stopPropagation();
+                                      const ts = dbTilesets.find(t => t.id === tilesetId);
+                                      setBgEditTsId(tilesetId);
+                                      setBgEditLight(ts?.bg_color_light ?? '#888888');
+                                      setBgEditDark(ts?.bg_color_dark ?? '#666666');
+                                      setBgEditOpen(true);
+                                    }}
+                                    style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 4, padding: "1px 5px", fontSize: 8, color: C.muted, cursor: "pointer", flexShrink: 0 }}
+                                    title="Edit BG colours">
+                                    bg
                                   </button>
                                 )}
                                 {isOwned && (
