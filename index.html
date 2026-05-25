@@ -119,9 +119,8 @@ const SPACE_TILE_ID    = 998; // special: makes a cell fully transparent
 const WARN_TILE_ID     = 997; // special: places a warning-marker ghost tile
 const REPLACE_ERASE_ID = -1;  // sentinel: replace-with-empty in the Replace modal
 
-// Supabase connection — anon key is safe to expose client-side (RLS enforced server-side)
+// All Supabase requests go through the Worker (never directly to SUPABASE_URL with an anon key).
 const SUPABASE_URL = "https://eizcooctnlugsxcyrplh.supabase.co";
-const SUPABASE_ANON_KEY = "sb_publishable_K0J0EGtj3m9DyDxZoRpy3w_bDwgMxg_";
 const WORKER_URL = "https://oph.opheliapp.workers.dev";
 const DISCORD_CLIENT_ID = "1503113409678410019";
 // Hardcoded BG colours for Ophelia tilesets (single source of truth)
@@ -387,6 +386,34 @@ function App() {
   const [addTileLoading, setAddTileLoading] = useState(false);
   const [addTileError, setAddTileError] = useState('');
   const [tsFetchTrigger, setTsFetchTrigger] = useState(0);
+
+  // Returns a valid Firebase token, refreshing Discord tokens first if near expiry.
+  const getValidToken = async () => {
+    if (!currentUser?.firebaseToken) return null;
+    if (Date.now() >= (currentUser.tokenExpiry ?? 0) - 60000) {
+      try {
+        const res = await fetch(`${WORKER_URL}/discord-refresh`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refresh_token: currentUser.refreshToken }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          const updated = {
+            ...currentUser,
+            accessToken: data.access_token,
+            refreshToken: data.refresh_token,
+            tokenExpiry: Date.now() + data.expires_in * 1000,
+          };
+          setCurrentUser(updated);
+          localStorage.setItem('oph_user', JSON.stringify(updated));
+        }
+      } catch {
+        // proceed with existing token on network error
+      }
+    }
+    return currentUser.firebaseToken;
+  };
 
   const tiles = useMemo(() => [...defaultTiles, ...userTiles], [defaultTiles, userTiles]);
 
@@ -1269,23 +1296,20 @@ function App() {
       .then(data => setManifest({ global: data.global }))
       .catch(() => setManifest({ global: null }));
 
-    // Fetch tilesets from Supabase (exclude global type — handled by manifest)
-    // When logged in: fetch published + own tilesets via worker with auth
-    // When not logged in: fetch only published tilesets via public API
-    const publicHeaders = {
-      apikey: SUPABASE_ANON_KEY,
-      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-      'Content-Type': 'application/json',
-    };
-    const tsUrl = currentUser?.id
-      ? `${SUPABASE_URL}/rest/v1/tilesets?or=(is_published.eq.true,owner_id.eq.${currentUser.id})&type=in.(atlas,base)&order=name`
-      : `${SUPABASE_URL}/rest/v1/tilesets?is_published=eq.true&type=in.(atlas,base)&order=name`;
-    const tsHeaders = currentUser?.firebaseToken
-      ? { ...publicHeaders, Authorization: `Bearer ${currentUser.firebaseToken}` }
-      : publicHeaders;
-    fetch(tsUrl, { headers: tsHeaders })
-      .then(r => r.ok ? r.json() : [])
-      .then(tilesets => {
+    // Fetch tilesets from the Worker (never directly to Supabase with an anon key).
+    // Unauthenticated reads use no Authorization header — the Worker forwards the anon key internally.
+    // Authenticated reads include the Firebase token so the Worker can also return private tilesets.
+    (async () => {
+      const tsUrl = currentUser?.id
+        ? `${WORKER_URL}/rest/v1/tilesets?or=(is_published.eq.true,owner_id.eq.${currentUser.id})&type=in.(atlas,base,custom)&order=name`
+        : `${WORKER_URL}/rest/v1/tilesets?is_published=eq.true&type=in.(atlas,base,custom)&order=name`;
+      const token = currentUser?.firebaseToken ? await getValidToken() : null;
+      const tsHeaders = token
+        ? { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
+        : { 'Content-Type': 'application/json' };
+      try {
+        const tsResp = await fetch(tsUrl, { headers: tsHeaders });
+        const tilesets = tsResp.ok ? await tsResp.json() : [];
         if (!Array.isArray(tilesets) || tilesets.length === 0) {
           setDbTilesets([]);
           setDbTilesData([]);
@@ -1293,36 +1317,42 @@ function App() {
           return;
         }
         const tsIds = tilesets.map(ts => ts.id).join(',');
-        return fetch(`${SUPABASE_URL}/rest/v1/tiles?tileset_id=in.(${tsIds})&order=sort_index`, { headers: publicHeaders })
-          .then(r => r.ok ? r.json() : [])
-          .then(tilesRows => {
-            setDbTilesets(tilesets);
-            setDbTilesData(Array.isArray(tilesRows) ? tilesRows : []);
-            const saved = load(SK.activeTileset, null);
-            const firstName = tilesets[0]?.name ?? null;
-            const name = (saved && tilesets.some(ts => ts.name === saved)) ? saved : firstName;
-            setActiveTileset(name);
-            setTilesLoading(false);
-          });
-      })
-      .catch(() => setTilesLoading(false));
+        const tilesResp = await fetch(`${WORKER_URL}/rest/v1/tiles?tileset_id=in.(${tsIds})&order=sort_index`, { headers: { 'Content-Type': 'application/json' } });
+        const tilesRows = tilesResp.ok ? await tilesResp.json() : [];
+        setDbTilesets(tilesets);
+        setDbTilesData(Array.isArray(tilesRows) ? tilesRows : []);
+        const saved = load(SK.activeTileset, null);
+        const firstName = tilesets[0]?.name ?? null;
+        const name = (saved && tilesets.some(ts => ts.name === saved)) ? saved : firstName;
+        setActiveTileset(name);
+        setTilesLoading(false);
+      } catch {
+        setTilesLoading(false);
+      }
+    })();
   }, [currentUser?.id, tsFetchTrigger]);
 
   // Fetch user profile (role) from Supabase when logged in
   useEffect(() => {
     if (!currentUser?.firebaseToken || !currentUser?.id) { setUserProfile(null); return; }
-    fetch(`${WORKER_URL}/rest/v1/profiles?id=eq.${currentUser.id}&select=id,username,avatar_hash,role`, {
-      headers: { 'Authorization': `Bearer ${currentUser.firebaseToken}`, 'Content-Type': 'application/json' }
-    }).then(r => r.ok ? r.json() : []).then(rows => setUserProfile(rows[0] ?? null)).catch(() => setUserProfile(null));
+    (async () => {
+      const token = await getValidToken();
+      fetch(`${WORKER_URL}/rest/v1/profiles?id=eq.${currentUser.id}&select=id,username,avatar_hash,role`, {
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
+      }).then(r => r.ok ? r.json() : []).then(rows => setUserProfile(rows[0] ?? null)).catch(() => setUserProfile(null));
+    })();
   }, [currentUser]);
 
   // Fetch all profiles when admin modal opens
   useEffect(() => {
     if (!adminOpen || !currentUser?.firebaseToken) return;
     setAdminLoading(true);
-    fetch(`${WORKER_URL}/rest/v1/profiles?select=id,discord_id,username,avatar_hash,role&order=username`, {
-      headers: { 'Authorization': `Bearer ${currentUser.firebaseToken}`, 'Content-Type': 'application/json' }
-    }).then(r => r.ok ? r.json() : []).then(rows => { setAdminProfiles(rows); setAdminLoading(false); }).catch(() => setAdminLoading(false));
+    (async () => {
+      const token = await getValidToken();
+      fetch(`${WORKER_URL}/rest/v1/profiles?select=id,discord_id,username,avatar_hash,role&order=username`, {
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
+      }).then(r => r.ok ? r.json() : []).then(rows => { setAdminProfiles(rows); setAdminLoading(false); }).catch(() => setAdminLoading(false));
+    })();
   }, [adminOpen, currentUser]);
 
   // Close user dropdown on outside click
@@ -3571,8 +3601,8 @@ function App() {
             <span style={{ fontSize: 11, color: C.text }}>Starred shortcut ⭐</span>
           </label>
 
-          {/* Task 5: Save to Database */}
-          {currentUser && t.isDb && t.dbId && (
+          {/* Save to Database — visible to admins and the tileset owner */}
+          {currentUser && t.isDb && t.dbId && (userProfile?.role === 'admin' || t.tilesetOwnerId === currentUser.id) && (
             <button
               disabled={saveStatus === 'saving'}
               onClick={async () => {
@@ -3588,11 +3618,13 @@ function App() {
                     bottom_render: !!bottomTiles[t.id],
                     priority: !!priorityTiles[t.id],
                     auto_shadow: !!autoShadowTiles[t.id],
+                    otg_passable: !isOTGWall(t),
                   };
+                  const token = await getValidToken();
                   const resp = await fetch(`${WORKER_URL}/rest/v1/tiles?id=eq.${t.dbId}`, {
                     method: 'PATCH',
                     headers: {
-                      'Authorization': `Bearer ${currentUser.firebaseToken}`,
+                      'Authorization': `Bearer ${token}`,
                       'Content-Type': 'application/json',
                       'Prefer': 'return=minimal',
                     },
@@ -3618,16 +3650,17 @@ function App() {
                   if (!file) return;
                   const newPath = `${currentUser.id}/${t.tilesetId}/${Date.now()}_${file.name}`;
                   try {
+                    const token = await getValidToken();
                     const upResp = await fetch(`${WORKER_URL}/storage/v1/object/tiles/${newPath}`, {
                       method: 'PUT',
-                      headers: { 'Authorization': `Bearer ${currentUser.firebaseToken}`, 'Content-Type': file.type, 'x-upsert': 'true' },
+                      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': file.type, 'x-upsert': 'true' },
                       body: file,
                     });
                     if (!upResp.ok) throw new Error('Upload failed');
                     const newUrl = `${SUPABASE_URL}/storage/v1/object/public/tiles/${newPath}`;
                     const patchResp = await fetch(`${WORKER_URL}/rest/v1/tiles?id=eq.${t.dbId}`, {
                       method: 'PATCH',
-                      headers: { 'Authorization': `Bearer ${currentUser.firebaseToken}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+                      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
                       body: JSON.stringify({ image_url: newUrl }),
                     });
                     if (patchResp.ok) setTsFetchTrigger(n => n + 1);
@@ -3654,16 +3687,17 @@ function App() {
                     onClick={async () => {
                       setDeleteConfirmId(null);
                       try {
+                        const token = await getValidToken();
                         await fetch(`${WORKER_URL}/rest/v1/tiles?id=eq.${t.dbId}`, {
                           method: 'DELETE',
-                          headers: { 'Authorization': `Bearer ${currentUser.firebaseToken}`, 'Content-Type': 'application/json' },
+                          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
                         });
                         const prefix = `${SUPABASE_URL}/storage/v1/object/public/tiles/`;
                         if (t.src?.startsWith(prefix)) {
                           const storagePath = t.src.slice(prefix.length);
                           await fetch(`${WORKER_URL}/storage/v1/object/tiles`, {
                             method: 'DELETE',
-                            headers: { 'Authorization': `Bearer ${currentUser.firebaseToken}`, 'Content-Type': 'application/json' },
+                            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
                             body: JSON.stringify({ prefixes: [storagePath] }),
                           });
                         }
@@ -4362,10 +4396,11 @@ function App() {
     if (!createTsName.trim() || !currentUser) return;
     setCreateTsLoading(true);
     try {
+      const token = await getValidToken();
       const resp = await fetch(`${WORKER_URL}/rest/v1/tilesets`, {
         method: 'POST',
-        headers: { 'Authorization': `Bearer ${currentUser.firebaseToken}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
-        body: JSON.stringify({ name: createTsName.trim(), type: 'base', owner_id: currentUser.id, is_published: false }),
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+        body: JSON.stringify({ name: createTsName.trim(), type: 'custom', owner_id: currentUser.id, is_published: false }),
       });
       if (resp.ok) {
         setTsFetchTrigger(n => n + 1);
@@ -4444,18 +4479,19 @@ function App() {
     setAddTileLoading(true);
     setAddTileError('');
     try {
+      const token = await getValidToken();
       const storageName = `${Date.now()}_${addTileFile.name}`;
       const storagePath = `${currentUser.id}/${addTileTsId}/${storageName}`;
       const upResp = await fetch(`${WORKER_URL}/storage/v1/object/tiles/${storagePath}`, {
         method: 'PUT',
-        headers: { 'Authorization': `Bearer ${currentUser.firebaseToken}`, 'Content-Type': addTileFile.type, 'x-upsert': 'true' },
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': addTileFile.type, 'x-upsert': 'true' },
         body: addTileFile,
       });
       if (!upResp.ok) throw new Error('Storage upload failed');
       const publicUrl = `${SUPABASE_URL}/storage/v1/object/public/tiles/${storagePath}`;
       const insResp = await fetch(`${WORKER_URL}/rest/v1/tiles`, {
         method: 'POST',
-        headers: { 'Authorization': `Bearer ${currentUser.firebaseToken}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
         body: JSON.stringify({
           tileset_id: addTileTsId,
           codename: addTileCodename.trim(),
@@ -5291,12 +5327,13 @@ function App() {
                                 <div style={{ flex: 1, height: 1, background: C.border, marginLeft: 4 }} />
                                 {isOwned && (
                                   <button
-                                    onClick={e => {
+                                    onClick={async e => {
                                       e.stopPropagation();
                                       const newPub = !isPub;
+                                      const token = await getValidToken();
                                       fetch(`${WORKER_URL}/rest/v1/tilesets?id=eq.${tilesetId}`, {
                                         method: 'PATCH',
-                                        headers: { 'Authorization': `Bearer ${currentUser.firebaseToken}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+                                        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
                                         body: JSON.stringify({ is_published: newPub }),
                                       }).then(r => {
                                         if (r.ok) setDbTilesets(prev => prev.map(ts => ts.id === tilesetId ? { ...ts, is_published: newPub } : ts));
