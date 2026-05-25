@@ -426,10 +426,13 @@ function App() {
     return currentUser.firebaseToken;
   };
 
-  // Mirror of the expiry check in getValidToken: treat the user as logged out
-  // when the token is missing, has no expiry, or expires within 60 seconds.
+  // Treat the user as logged out when either the Firebase ID token (1 h) or the
+  // Discord OAuth token (tokenExpiry, ~7 days) is missing or within 60 s of expiry.
+  // firebaseTokenExpiry is written by auth/callback.html; users who authenticated
+  // before this field was added are conservatively treated as expired.
   const isAuthenticated = !!(
     currentUser?.firebaseToken &&
+    (currentUser.firebaseTokenExpiry ?? 0) - 60000 > Date.now() &&
     (currentUser.tokenExpiry ?? 0) - 60000 > Date.now()
   );
 
