@@ -3,13 +3,13 @@
  * Sits between the GitHub Pages app and Supabase.
  * Uses Firebase Auth (Third-Party Auth) for identity — no service role key.
  *
- * Environment variables (wrangler.toml):
+ * Environment variables (wrangler.toml [vars]):
  *   SUPABASE_URL          = https://eizcooctnlugsxcyrplh.supabase.co
- *   SUPABASE_ANON_KEY     = sb_publishable_K0J0EGtj3m9DyDxZoRpy3w_bDwgMxg_
  *   DISCORD_CLIENT_ID     = 1503113409678410019
  *   FIREBASE_PROJECT_ID   = opheliapp-wow
  *
  * Secrets (wrangler secret put):
+ *   SUPABASE_ANON_KEY
  *   DISCORD_CLIENT_SECRET
  *   FIREBASE_SERVICE_ACCOUNT
  */

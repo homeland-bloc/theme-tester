@@ -1599,7 +1599,7 @@ function App() {
     const imageFiles = [...files].filter(f => f.type.startsWith("image/"));
     if (!imageFiles.length) return;
     let loaded = 0;
-    const MAX_TILE_DIM = 256; // scale down large images to cap at this dimension
+    const MAX_TILE_DIM = 128; // scale down to CELL*MAX_ZOOM (32*4) — enough for max display size
     imageFiles.forEach(f => {
       const r = new FileReader();
       r.onload = e => {
@@ -2020,6 +2020,7 @@ function App() {
 
   const onCell = (r, c, e) => {
     if (handModeRef.current) return; // hand mode: let native scroll handle panning
+    if (exploreModeRef.current) return; // explore mode: clicks handled by overlay chevrons only
     if (rotateModeRef.current) {
       // rotate mode: record clicked cell for click-vs-drag detection; panning handled at container level
       if (e.type === "mousedown") { e.preventDefault(); rotatePendingCellRef.current = [r, c]; }
@@ -5726,7 +5727,7 @@ function App() {
               const el = scrollRef.current;
               const startX = e.clientX, startY = e.clientY;
               const startScrollLeft = el.scrollLeft, startScrollTop = el.scrollTop;
-              const pendingCell = wantsRotate ? rotatePendingCellRef.current : null;
+              const pendingCell = wantsRotate ? cellFromEvent(e.clientX, e.clientY) : null;
               let didDrag = false;
               el.style.cursor = "grabbing";
               const onMove = ev => {
@@ -5856,7 +5857,7 @@ function App() {
                     const cellPx = CELL * zoom;
                     const ox = (off.ox / 100) * cellPx;
                     const oy = (off.oy / 100) * cellPx;
-                    const tileImg = <img key={`bot${r}-${c}`} src={t.blobSrc ?? t.src} alt="" draggable={false}
+                    const tileImg = <img key={`bot${r}-${c}`} src={t.blobSrc ?? t.src} alt="" draggable={false} decoding="async"
                       style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%) rotate(${rotDeg}deg) scale(${fxB}, ${fyB})`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 1 }}
                     />;
                     if (!autoShadowTiles[t.id]) return tileImg;
@@ -5883,7 +5884,7 @@ function App() {
                     const cellPx = CELL * zoom;
                     const ox = (off.ox / 100) * cellPx;
                     const oy = (off.oy / 100) * cellPx;
-                    const tileImg = <img key={`t${r}-${c}`} src={t.blobSrc ?? t.src} alt="" draggable={false}
+                    const tileImg = <img key={`t${r}-${c}`} src={t.blobSrc ?? t.src} alt="" draggable={false} decoding="async"
                       style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%) rotate(${rotDeg}deg) scale(${fxN}, ${fyN})`, pointerEvents: "none", imageRendering: "pixelated", zIndex: r + 2 }}
                     />;
                     if (!autoShadowTiles[t.id]) return tileImg;
@@ -5909,7 +5910,7 @@ function App() {
                     const cellPx = CELL * zoom;
                     const ox = (off.ox / 100) * cellPx;
                     const oy = (off.oy / 100) * cellPx;
-                    const tileImg = <img key={`prio${r}-${c}`} src={t.blobSrc ?? t.src} alt="" draggable={false}
+                    const tileImg = <img key={`prio${r}-${c}`} src={t.blobSrc ?? t.src} alt="" draggable={false} decoding="async"
                       style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%) rotate(${rotDeg}deg) scale(${fxP}, ${fyP})`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 9999 }}
                     />;
                     if (!autoShadowTiles[t.id]) return tileImg;
@@ -5990,52 +5991,6 @@ function App() {
                   return elems.length > 0 ? elems : null;
                 })()}
 
-                {/* Explore picker popup */}
-                {explorePicker && (() => {
-                  const { r, c, siblings, x, y, forHighlight, fKey } = explorePicker;
-                  const applyExplore = targetId => {
-                    histLabelRef.current = "Explore";
-                    pushHistRef.current?.();
-                    if (forHighlight) {
-                      setGrid(prev => prev.map((row, ri) => row.map((id, ci) => {
-                        if (!highlightedCellsRef.current.has(`${ri},${ci}`)) return id;
-                        const t2 = getTile(id);
-                        if (!t2 || getTileFolderKey(t2) !== fKey) return id;
-                        return targetId;
-                      })));
-                    } else {
-                      const mirrorPositions = getMirrorRef.current ? getMirrorRef.current(r, c) : [[r, c]];
-                      setGrid(prev => prev.map((row, ri) => row.map((id, ci) =>
-                        mirrorPositions.some(([mr, mc]) => mr === ri && mc === ci) ? targetId : id
-                      )));
-                    }
-                    setExplorePicker(null);
-                  };
-                  const MAX_W = 220;
-                  const vx = Math.min(x + 8, window.innerWidth - MAX_W - 8);
-                  const vy = Math.min(y + 8, window.innerHeight - 200);
-                  return (
-                    <div style={{ position: "fixed", left: 0, top: 0, width: "100vw", height: "100vh", zIndex: 20000, pointerEvents: "auto" }}
-                      onClick={() => setExplorePicker(null)}>
-                      <div style={{ position: "fixed", left: vx, top: vy, background: "rgba(22,22,30,0.97)", border: `1px solid #9ADF1C`, borderRadius: 10, padding: 8, maxWidth: MAX_W, boxShadow: "0 4px 24px rgba(0,0,0,0.7)", zIndex: 20001, pointerEvents: "auto" }}
-                        onClick={e => e.stopPropagation()}>
-                        <div style={{ fontSize: 9, fontWeight: 700, color: "#9ADF1C", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>
-                          {siblings[0]?.folderLabel || fKey || (forHighlight ? "Apply to highlighted" : "Pick variant")}
-                        </div>
-                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(40px, 1fr))", gap: 4 }}>
-                          {siblings.map(t => (
-                            <div key={t.id} onClick={() => applyExplore(t.id)}
-                              style={{ cursor: "pointer", borderRadius: 5, overflow: "hidden", aspectRatio: "1",
-                                border: `2px solid ${t.id === grid[r]?.[c] ? "#9ADF1C" : "rgba(154,223,28,0.3)"}`,
-                                background: t.id === grid[r]?.[c] ? "rgba(154,223,28,0.2)" : "rgba(255,255,255,0.04)" }}>
-                              <img src={t.blobSrc ?? t.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated" }} />
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })()}
 
                 {/* Selection preview overlay + drag target cell highlight */}
                 {(previewCells || rectPreview || dragTargetCell) && (() => {
@@ -6076,7 +6031,8 @@ function App() {
                     const t = id && getTile(id);
                     if (!t || t.isSpace) return;
                     const off = getEffectiveOffset(t, r, c);
-                    if (off.ox === 0 && off.oy === 0) return;
+                    const mult = getTileMultiplier(t);
+                    if (off.ox === 0 && off.oy === 0 && mult === 1) return;
                     markers.push({ r, c, key: `${r}-${c}` });
                   }));
                   if (!markers.length) return null;
@@ -6163,6 +6119,53 @@ function App() {
               </div>
             </div>
           </div>
+
+        {/* Explore picker popup — rendered outside canvasContainerRef so position:fixed is viewport-relative */}
+        {explorePicker && (() => {
+          const { r, c, siblings, x, y, forHighlight, fKey } = explorePicker;
+          const applyExplore = targetId => {
+            histLabelRef.current = "Explore";
+            pushHistRef.current?.();
+            if (forHighlight) {
+              setGrid(prev => prev.map((row, ri) => row.map((id, ci) => {
+                if (!highlightedCellsRef.current.has(`${ri},${ci}`)) return id;
+                const t2 = getTile(id);
+                if (!t2 || getTileFolderKey(t2) !== fKey) return id;
+                return targetId;
+              })));
+            } else {
+              const mirrorPositions = getMirrorRef.current ? getMirrorRef.current(r, c) : [[r, c]];
+              setGrid(prev => prev.map((row, ri) => row.map((id, ci) =>
+                mirrorPositions.some(([mr, mc]) => mr === ri && mc === ci) ? targetId : id
+              )));
+            }
+            setExplorePicker(null);
+          };
+          const MAX_W = 220;
+          const vx = Math.min(x + 8, window.innerWidth - MAX_W - 8);
+          const vy = Math.min(y + 8, window.innerHeight - 200);
+          return (
+            <div style={{ position: "fixed", left: 0, top: 0, width: "100vw", height: "100vh", zIndex: 20000, pointerEvents: "auto" }}
+              onClick={() => setExplorePicker(null)}>
+              <div style={{ position: "fixed", left: vx, top: vy, background: "rgba(22,22,30,0.97)", border: `1px solid #9ADF1C`, borderRadius: 10, padding: 8, maxWidth: MAX_W, boxShadow: "0 4px 24px rgba(0,0,0,0.7)", zIndex: 20001, pointerEvents: "auto" }}
+                onClick={e => e.stopPropagation()}>
+                <div style={{ fontSize: 9, fontWeight: 700, color: "#9ADF1C", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>
+                  {siblings[0]?.folderLabel || fKey || (forHighlight ? "Apply to highlighted" : "Pick variant")}
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(40px, 1fr))", gap: 4 }}>
+                  {siblings.map(t => (
+                    <div key={t.id} onClick={() => applyExplore(t.id)}
+                      style={{ cursor: "pointer", borderRadius: 5, overflow: "hidden", aspectRatio: "1",
+                        border: `2px solid ${t.id === grid[r]?.[c] ? "#9ADF1C" : "rgba(154,223,28,0.3)"}`,
+                        background: t.id === grid[r]?.[c] ? "rgba(154,223,28,0.2)" : "rgba(255,255,255,0.04)" }}>
+                      <img src={t.blobSrc ?? t.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated" }} />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* ── RIGHT SIDEBAR: Tools ─────────────────────────────────── */}
         <div style={{ display: "flex", flexDirection: "row", flexShrink: 0, alignSelf: "stretch" }}>
