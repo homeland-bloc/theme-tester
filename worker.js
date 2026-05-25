@@ -47,12 +47,13 @@ export default {
       const url = new URL(request.url);
       const path = url.pathname.replace(/\/\/+/g, '/').toLowerCase();
 
-      if (path === '/discord-token' || path === '/discord-refresh') {
+      if (path === '/discord-token' || path === '/discord-refresh' || path === '/firebase-refresh') {
         if (env.AUTH_LIMITER) {
           const { success } = await env.AUTH_LIMITER.limit({ key: ip });
           if (!success) return rateLimitResponse();
         }
         if (path === '/discord-token') return handleDiscordToken(request, env);
+        if (path === '/firebase-refresh') return handleFirebaseRefresh(request, env);
         return handleDiscordRefresh(request, env);
       }
 
@@ -166,6 +167,33 @@ async function handleDiscordRefresh(request, env) {
     refresh_token: tokens.refresh_token,
     expires_in: tokens.expires_in
   }, 200);
+}
+
+async function handleFirebaseRefresh(request, env) {
+  if (request.method !== 'POST') return corsResponse({ error: 'Method not allowed' }, 405);
+  if (!env.FIREBASE_SERVICE_ACCOUNT) return corsResponse({ error: 'Worker misconfigured' }, 500);
+
+  let body;
+  try { body = await request.json(); }
+  catch { return corsResponse({ error: 'Invalid JSON body' }, 400); }
+
+  const { access_token } = body;
+  if (!access_token) return corsResponse({ error: 'Missing required field: access_token' }, 400);
+
+  const discordUser = await fetchDiscordUser(access_token);
+  if (!discordUser) {
+    return corsResponse({ error: 'Invalid Discord access token' }, 401);
+  }
+
+  let serviceAccount;
+  try {
+    serviceAccount = JSON.parse(env.FIREBASE_SERVICE_ACCOUNT);
+  } catch {
+    return corsResponse({ error: 'Worker misconfigured' }, 500);
+  }
+
+  const firebaseToken = await mintFirebaseCustomToken(serviceAccount, discordUser.id);
+  return corsResponse({ firebase_token: firebaseToken }, 200);
 }
 
 async function handleSupabaseProxy(request, url, normalizedPath, env) {

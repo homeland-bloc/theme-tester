@@ -27,6 +27,20 @@
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
+  <!-- Firebase SDK (compat) — needed for mid-session Firebase token refresh -->
+  <script src="https://www.gstatic.com/firebasejs/10.0.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.0.0/firebase-auth-compat.js"></script>
+  <script>
+    firebase.initializeApp({
+      apiKey: "AIzaSyC7vTGI_pnSk02Qyd3YFUYe-bDlktDQhVo",
+      authDomain: "opheliapp-wow.firebaseapp.com",
+      projectId: "opheliapp-wow",
+      storageBucket: "opheliapp-wow.firebasestorage.app",
+      messagingSenderId: "749767602175",
+      appId: "1:749767602175:web:170018ad1ac5d227a441ca"
+    });
+  </script>
+
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { height: 100%; height: 100dvh; overflow: hidden; background: #1a0f06; }
@@ -398,9 +412,13 @@ function App() {
   const [addTileError, setAddTileError] = useState('');
   const [tsFetchTrigger, setTsFetchTrigger] = useState(0);
 
-  // Returns a valid Firebase token, refreshing Discord tokens first if near expiry.
+  // Returns a valid Firebase ID token. Refreshes Discord and/or Firebase tokens
+  // when near expiry, accumulating updates into a single state/localStorage write.
   const getValidToken = async () => {
     if (!currentUser?.firebaseToken) return null;
+    const patch = {};
+
+    // 1. Refresh Discord access token when within 60 s of expiry.
     if (Date.now() >= (currentUser.tokenExpiry ?? 0) - 60000) {
       try {
         const res = await fetch(`${WORKER_URL}/discord-refresh`, {
@@ -410,20 +428,44 @@ function App() {
         });
         if (res.ok) {
           const data = await res.json();
-          const updated = {
-            ...currentUser,
-            accessToken: data.access_token,
-            refreshToken: data.refresh_token,
-            tokenExpiry: Date.now() + data.expires_in * 1000,
-          };
-          setCurrentUser(updated);
-          localStorage.setItem('oph_user', JSON.stringify(updated));
+          patch.accessToken = data.access_token;
+          patch.refreshToken = data.refresh_token;
+          patch.tokenExpiry = Date.now() + data.expires_in * 1000;
         }
       } catch {
-        // proceed with existing token on network error
+        // proceed with existing Discord token on network error
       }
     }
-    return currentUser.firebaseToken;
+
+    // 2. Refresh Firebase ID token when within 5 min of expiry.
+    //    Uses the freshly-refreshed Discord access token when available.
+    if (Date.now() >= (currentUser.firebaseTokenExpiry ?? 0) - 300000) {
+      try {
+        const accessToken = patch.accessToken ?? currentUser.accessToken;
+        const fbRes = await fetch(`${WORKER_URL}/firebase-refresh`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ access_token: accessToken }),
+        });
+        if (fbRes.ok) {
+          const { firebase_token: customToken } = await fbRes.json();
+          await firebase.auth().signInWithCustomToken(customToken);
+          patch.firebaseToken = await firebase.auth().currentUser.getIdToken();
+          patch.firebaseTokenExpiry = Date.now() + 3600 * 1000;
+        }
+      } catch {
+        // proceed with existing Firebase token on error
+      }
+    }
+
+    // Persist all updates in one write.
+    if (Object.keys(patch).length > 0) {
+      const updated = { ...currentUser, ...patch };
+      setCurrentUser(updated);
+      localStorage.setItem('oph_user', JSON.stringify(updated));
+    }
+
+    return patch.firebaseToken ?? currentUser.firebaseToken;
   };
 
   // Treat the user as logged out when either the Firebase ID token (1 h) or the
@@ -3662,6 +3704,11 @@ function App() {
                     },
                     body: JSON.stringify(body),
                   });
+                  if (resp.ok) {
+                    setDbTilesData(prev => prev.map(row =>
+                      row.id === t.dbId ? { ...row, ...body } : row
+                    ));
+                  }
                   setSaveStatus(resp.ok ? 'ok' : 'err');
                 } catch {
                   setSaveStatus('err');
@@ -4537,7 +4584,14 @@ function App() {
           sort_index: addTileSortIdx !== '' ? Number(addTileSortIdx) : null,
         }),
       });
-      if (!insResp.ok) throw new Error('DB insert failed');
+      if (!insResp.ok) {
+        let msg = 'DB insert failed';
+        try {
+          const errData = await insResp.json();
+          if (errData.code === '23505') msg = 'A tile with this codename already exists in this tileset.';
+        } catch {}
+        throw new Error(msg);
+      }
       setTsFetchTrigger(n => n + 1);
       setAddTileOpen(false);
       setAddTileFile(null);
@@ -5408,7 +5462,7 @@ function App() {
                                   {isOwned && !isPub && <span style={{ marginLeft: 4, fontSize: 8, color: "#f97316", background: "rgba(249,115,22,0.12)", border: "1px solid rgba(249,115,22,0.3)", borderRadius: 3, padding: "0 3px" }}>unpublished</span>}
                                 </span>
                                 <div style={{ flex: 1, height: 1, background: C.border, marginLeft: 4 }} />
-                                {isOwned && (
+                                {(isOwned || userProfile?.role === 'admin') && (
                                   <button
                                     onClick={async e => {
                                       e.stopPropagation();
