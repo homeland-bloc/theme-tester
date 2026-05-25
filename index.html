@@ -800,7 +800,7 @@ function App() {
 
   const getDefaultMultiplier = t => {
     if (t?.dbSizeMultiplier != null) return Number(t.dbSizeMultiplier);
-    if (!t?.src) return 1.0;
+    if (!t?.src || t.src.startsWith('data:')) return 1.0;
     const s = t.src;
     // Spawns
     if (s.includes("Spawns/")) return 1.65;
@@ -831,7 +831,7 @@ function App() {
   // Returns { ox, oy } in % (100 = one full cell width/height). Positive ox=right, positive oy=down.
   const getDefaultOffset = t => {
     if (t?.dbOffsetX != null && t?.dbOffsetY != null) return { ox: Number(t.dbOffsetX), oy: Number(t.dbOffsetY) };
-    if (!t?.src) return { ox: 0, oy: 0 };
+    if (!t?.src || t.src.startsWith('data:')) return { ox: 0, oy: 0 };
     const s = t.src;
     // Jumppads: +50% H, +66% V (sprite anchor is above center)
     if (s.includes("Jumppads/")) return { ox: 50, oy: 66 };
@@ -886,7 +886,8 @@ function App() {
   // Water tiles have rotation on by default
   const isDefaultRotatable = t => {
     if (t?.dbRotatable != null) return !!t.dbRotatable;
-    return !!(t?.src && TILE_SETTINGS.rotatable.some(p => t.src.includes(p)));
+    if (!t?.src || t.src.startsWith('data:')) return false;
+    return TILE_SETTINGS.rotatable.some(p => t.src.includes(p));
   };
 
   const isTileRotatable = t => {
@@ -896,7 +897,8 @@ function App() {
 
   const isDefaultFlippable = t => {
     if (t?.dbFlippable != null) return !!t.dbFlippable;
-    return !!(t?.src && TILE_SETTINGS.flippable.some(p => t.src.includes(p)));
+    if (!t?.src || t.src.startsWith('data:')) return false;
+    return TILE_SETTINGS.flippable.some(p => t.src.includes(p));
   };
   const isFlipAllowed = t => {
     if (allowFlipMap[t.id] !== undefined) return allowFlipMap[t.id];
@@ -905,7 +907,8 @@ function App() {
 
   const isDefaultMirrorOffset = t => {
     if (t?.dbMirrorOffset != null) return !!t.dbMirrorOffset;
-    return !!(t?.src && TILE_SETTINGS.mirrorOffset.some(p => t.src.includes(p)));
+    if (!t?.src || t.src.startsWith('data:')) return false;
+    return TILE_SETTINGS.mirrorOffset.some(p => t.src.includes(p));
   };
   const isMirrorOffset = t => {
     if (mirrorOffsetTiles[t.id] !== undefined) return mirrorOffsetTiles[t.id];
@@ -2020,6 +2023,7 @@ function App() {
 
   const onCell = (r, c, e) => {
     if (handModeRef.current) return; // hand mode: let native scroll handle panning
+    if (exploreModeRef.current) return; // explore mode: clicks handled by overlay chevrons only
     if (rotateModeRef.current) {
       // rotate mode: record clicked cell for click-vs-drag detection; panning handled at container level
       if (e.type === "mousedown") { e.preventDefault(); rotatePendingCellRef.current = [r, c]; }
@@ -4269,32 +4273,29 @@ function App() {
   };
 
   // ── Create Tileset modal (Task 6d) ───────────────────────────────
-  const CreateTilesetModal = () => {
-    if (!createTsOpen) return null;
-    return (
-      <div className="modal-backdrop" onClick={() => { if (!createTsLoading) setCreateTsOpen(false); }}>
-        <div className="modal-box" style={{ maxWidth: 320 }} onClick={e => e.stopPropagation()}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Create Tileset</span>
-            <button onClick={() => { if (!createTsLoading) setCreateTsOpen(false); }} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            <label style={{ fontSize: 11, color: C.muted }}>Tileset name</label>
-            <input value={createTsName} onChange={e => setCreateTsName(e.target.value)}
-              onKeyDown={e => { if (e.key === "Enter" && createTsName.trim()) doCreateTs(); }}
-              placeholder="My Tileset"
-              style={{ background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "'Inter', monospace", fontSize: 12, padding: "6px 8px", outline: "none", width: "100%" }} />
-          </div>
-          <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
-            <button style={{ ...btn(false), flex: 1, justifyContent: "center" }} disabled={createTsLoading} onClick={() => setCreateTsOpen(false)}>Cancel</button>
-            <button style={{ ...btn(true, C.accent, C.accentDim), flex: 1, justifyContent: "center" }} disabled={createTsLoading || !createTsName.trim()} onClick={doCreateTs}>
-              {createTsLoading ? 'Creating…' : 'Create'}
-            </button>
-          </div>
+  const createTilesetModal = !createTsOpen ? null : (
+    <div className="modal-backdrop" onClick={() => { if (!createTsLoading) setCreateTsOpen(false); }}>
+      <div className="modal-box" style={{ maxWidth: 320 }} onClick={e => e.stopPropagation()}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Create Tileset</span>
+          <button onClick={() => { if (!createTsLoading) setCreateTsOpen(false); }} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <label style={{ fontSize: 11, color: C.muted }}>Tileset name</label>
+          <input value={createTsName} onChange={e => setCreateTsName(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter" && createTsName.trim()) doCreateTs(); }}
+            placeholder="My Tileset"
+            style={{ background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "'Inter', monospace", fontSize: 12, padding: "6px 8px", outline: "none", width: "100%" }} />
+        </div>
+        <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+          <button style={{ ...btn(false), flex: 1, justifyContent: "center" }} disabled={createTsLoading} onClick={() => setCreateTsOpen(false)}>Cancel</button>
+          <button style={{ ...btn(true, C.accent, C.accentDim), flex: 1, justifyContent: "center" }} disabled={createTsLoading || !createTsName.trim()} onClick={doCreateTs}>
+            {createTsLoading ? 'Creating…' : 'Create'}
+          </button>
         </div>
       </div>
-    );
-  };
+    </div>
+  );
   const doCreateTs = async () => {
     if (!createTsName.trim() || !currentUser) return;
     setCreateTsLoading(true);
@@ -4492,7 +4493,7 @@ function App() {
       <MemoryModal />
       <ConvertModal />
       <HotkeysModal />
-      <CreateTilesetModal />
+      {createTilesetModal}
       <AddTileModal />
 
       {/* Grid load warning banner */}
@@ -5182,7 +5183,7 @@ function App() {
                   {(() => {
                     const isStarredHighlight = starredTiles.includes("highlight");
                     return (
-                      <div onClick={() => { const turningOn = !highlightMode; setHighlightMode(h => !h); setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); if (turningOn) { setSel(null); } else { setDuplicateMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); } }}
+                      <div onClick={() => { const turningOn = !highlightMode; setHighlightMode(h => !h); setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); if (turningOn) { setSel(null); } else { setDuplicateMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); setSel(WARN_TILE_ID); } }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer",
                           border: `2px solid ${highlightMode ? "#a78bfa" : C.border}`,
                           background: highlightMode ? "rgba(167,139,250,0.15)" : "rgba(255,255,255,0.03)",
@@ -5549,7 +5550,7 @@ function App() {
                     </div>
                   );
                   if (sid === "highlight") return (
-                    <div key="highlight" onClick={() => { const on = !highlightMode; setHighlightMode(h => !h); setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); if (!on) { setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); } }}
+                    <div key="highlight" onClick={() => { const on = !highlightMode; setHighlightMode(h => !h); setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); if (!on) { setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); setSel(WARN_TILE_ID); } }}
                       style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
                         border: `1px solid ${highlightMode ? "#a78bfa" : C.border}`, background: highlightMode ? "rgba(167,139,250,0.22)" : "rgba(255,255,255,0.04)" }}
                       title="Highlight">
@@ -5729,7 +5730,7 @@ function App() {
               const el = scrollRef.current;
               const startX = e.clientX, startY = e.clientY;
               const startScrollLeft = el.scrollLeft, startScrollTop = el.scrollTop;
-              const pendingCell = wantsRotate ? rotatePendingCellRef.current : null;
+              const pendingCell = wantsRotate ? cellFromEvent(e.clientX, e.clientY) : null;
               let didDrag = false;
               el.style.cursor = "grabbing";
               const onMove = ev => {
@@ -5859,7 +5860,7 @@ function App() {
                     const cellPx = CELL * zoom;
                     const ox = (off.ox / 100) * cellPx;
                     const oy = (off.oy / 100) * cellPx;
-                    const tileImg = <img key={`bot${r}-${c}`} src={t.blobSrc ?? t.src} alt="" draggable={false}
+                    const tileImg = <img key={`bot${r}-${c}`} src={t.blobSrc ?? t.src} alt="" draggable={false} decoding="async"
                       style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%) rotate(${rotDeg}deg) scale(${fxB}, ${fyB})`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 1 }}
                     />;
                     if (!autoShadowTiles[t.id]) return tileImg;
@@ -5886,7 +5887,7 @@ function App() {
                     const cellPx = CELL * zoom;
                     const ox = (off.ox / 100) * cellPx;
                     const oy = (off.oy / 100) * cellPx;
-                    const tileImg = <img key={`t${r}-${c}`} src={t.blobSrc ?? t.src} alt="" draggable={false}
+                    const tileImg = <img key={`t${r}-${c}`} src={t.blobSrc ?? t.src} alt="" draggable={false} decoding="async"
                       style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%) rotate(${rotDeg}deg) scale(${fxN}, ${fyN})`, pointerEvents: "none", imageRendering: "pixelated", zIndex: r + 2 }}
                     />;
                     if (!autoShadowTiles[t.id]) return tileImg;
@@ -5912,7 +5913,7 @@ function App() {
                     const cellPx = CELL * zoom;
                     const ox = (off.ox / 100) * cellPx;
                     const oy = (off.oy / 100) * cellPx;
-                    const tileImg = <img key={`prio${r}-${c}`} src={t.blobSrc ?? t.src} alt="" draggable={false}
+                    const tileImg = <img key={`prio${r}-${c}`} src={t.blobSrc ?? t.src} alt="" draggable={false} decoding="async"
                       style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%) rotate(${rotDeg}deg) scale(${fxP}, ${fyP})`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 9999 }}
                     />;
                     if (!autoShadowTiles[t.id]) return tileImg;
@@ -5993,52 +5994,6 @@ function App() {
                   return elems.length > 0 ? elems : null;
                 })()}
 
-                {/* Explore picker popup */}
-                {explorePicker && (() => {
-                  const { r, c, siblings, x, y, forHighlight, fKey } = explorePicker;
-                  const applyExplore = targetId => {
-                    histLabelRef.current = "Explore";
-                    pushHistRef.current?.();
-                    if (forHighlight) {
-                      setGrid(prev => prev.map((row, ri) => row.map((id, ci) => {
-                        if (!highlightedCellsRef.current.has(`${ri},${ci}`)) return id;
-                        const t2 = getTile(id);
-                        if (!t2 || getTileFolderKey(t2) !== fKey) return id;
-                        return targetId;
-                      })));
-                    } else {
-                      const mirrorPositions = getMirrorRef.current ? getMirrorRef.current(r, c) : [[r, c]];
-                      setGrid(prev => prev.map((row, ri) => row.map((id, ci) =>
-                        mirrorPositions.some(([mr, mc]) => mr === ri && mc === ci) ? targetId : id
-                      )));
-                    }
-                    setExplorePicker(null);
-                  };
-                  const MAX_W = 220;
-                  const vx = Math.min(x + 8, window.innerWidth - MAX_W - 8);
-                  const vy = Math.min(y + 8, window.innerHeight - 200);
-                  return (
-                    <div style={{ position: "fixed", left: 0, top: 0, width: "100vw", height: "100vh", zIndex: 20000, pointerEvents: "auto" }}
-                      onClick={() => setExplorePicker(null)}>
-                      <div style={{ position: "fixed", left: vx, top: vy, background: "rgba(22,22,30,0.97)", border: `1px solid #9ADF1C`, borderRadius: 10, padding: 8, maxWidth: MAX_W, boxShadow: "0 4px 24px rgba(0,0,0,0.7)", zIndex: 20001, pointerEvents: "auto" }}
-                        onClick={e => e.stopPropagation()}>
-                        <div style={{ fontSize: 9, fontWeight: 700, color: "#9ADF1C", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>
-                          {siblings[0]?.folderLabel || fKey || (forHighlight ? "Apply to highlighted" : "Pick variant")}
-                        </div>
-                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(40px, 1fr))", gap: 4 }}>
-                          {siblings.map(t => (
-                            <div key={t.id} onClick={() => applyExplore(t.id)}
-                              style={{ cursor: "pointer", borderRadius: 5, overflow: "hidden", aspectRatio: "1",
-                                border: `2px solid ${t.id === grid[r]?.[c] ? "#9ADF1C" : "rgba(154,223,28,0.3)"}`,
-                                background: t.id === grid[r]?.[c] ? "rgba(154,223,28,0.2)" : "rgba(255,255,255,0.04)" }}>
-                              <img src={t.blobSrc ?? t.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated" }} />
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })()}
 
                 {/* Selection preview overlay + drag target cell highlight */}
                 {(previewCells || rectPreview || dragTargetCell) && (() => {
@@ -6079,7 +6034,8 @@ function App() {
                     const t = id && getTile(id);
                     if (!t || t.isSpace) return;
                     const off = getEffectiveOffset(t, r, c);
-                    if (off.ox === 0 && off.oy === 0) return;
+                    const mult = getTileMultiplier(t);
+                    if (off.ox === 0 && off.oy === 0 && mult === 1) return;
                     markers.push({ r, c, key: `${r}-${c}` });
                   }));
                   if (!markers.length) return null;
@@ -6167,6 +6123,53 @@ function App() {
             </div>
           </div>
 
+        {/* Explore picker popup — rendered outside canvasContainerRef so position:fixed is viewport-relative */}
+        {explorePicker && (() => {
+          const { r, c, siblings, x, y, forHighlight, fKey } = explorePicker;
+          const applyExplore = targetId => {
+            histLabelRef.current = "Explore";
+            pushHistRef.current?.();
+            if (forHighlight) {
+              setGrid(prev => prev.map((row, ri) => row.map((id, ci) => {
+                if (!highlightedCellsRef.current.has(`${ri},${ci}`)) return id;
+                const t2 = getTile(id);
+                if (!t2 || getTileFolderKey(t2) !== fKey) return id;
+                return targetId;
+              })));
+            } else {
+              const mirrorPositions = getMirrorRef.current ? getMirrorRef.current(r, c) : [[r, c]];
+              setGrid(prev => prev.map((row, ri) => row.map((id, ci) =>
+                mirrorPositions.some(([mr, mc]) => mr === ri && mc === ci) ? targetId : id
+              )));
+            }
+            setExplorePicker(null);
+          };
+          const MAX_W = 220;
+          const vx = Math.min(x + 8, window.innerWidth - MAX_W - 8);
+          const vy = Math.min(y + 8, window.innerHeight - 200);
+          return (
+            <div style={{ position: "fixed", left: 0, top: 0, width: "100vw", height: "100vh", zIndex: 20000, pointerEvents: "auto" }}
+              onClick={() => setExplorePicker(null)}>
+              <div style={{ position: "fixed", left: vx, top: vy, background: "rgba(22,22,30,0.97)", border: `1px solid #9ADF1C`, borderRadius: 10, padding: 8, maxWidth: MAX_W, boxShadow: "0 4px 24px rgba(0,0,0,0.7)", zIndex: 20001, pointerEvents: "auto" }}
+                onClick={e => e.stopPropagation()}>
+                <div style={{ fontSize: 9, fontWeight: 700, color: "#9ADF1C", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>
+                  {siblings[0]?.folderLabel || fKey || (forHighlight ? "Apply to highlighted" : "Pick variant")}
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(40px, 1fr))", gap: 4 }}>
+                  {siblings.map(t => (
+                    <div key={t.id} onClick={() => applyExplore(t.id)}
+                      style={{ cursor: "pointer", borderRadius: 5, overflow: "hidden", aspectRatio: "1",
+                        border: `2px solid ${t.id === grid[r]?.[c] ? "#9ADF1C" : "rgba(154,223,28,0.3)"}`,
+                        background: t.id === grid[r]?.[c] ? "rgba(154,223,28,0.2)" : "rgba(255,255,255,0.04)" }}>
+                      <img src={t.blobSrc ?? t.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated" }} />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
         {/* ── RIGHT SIDEBAR: Tools ─────────────────────────────────── */}
         <div style={{ display: "flex", flexDirection: "row", flexShrink: 0, alignSelf: "stretch" }}>
           {/* Right toggle strip — shows starred-tool mini-cards when collapsed */}
@@ -6197,7 +6200,7 @@ function App() {
                 overwrite: () => setMirrorSettings(p => ({ ...p, allowSwap: !p.allowSwap })),
                 otg: () => setShowOTG(v => !v),
                 eyedropper: () => { setEyedropperMode(v => !v); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); },
-                highlight: () => { const on = !highlightMode; setHighlightMode(h => !h); setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); if (!on) { setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); } },
+                highlight: () => { const on = !highlightMode; setHighlightMode(h => !h); setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); if (!on) { setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); setSel(WARN_TILE_ID); } },
                 rotate: () => { setRotateMode(r => !r); setEraser(false); setHandMode(false); setHighlightMode(false); setEyedropperMode(false); },
                 convert: () => setConvertOpen(true),
               };
