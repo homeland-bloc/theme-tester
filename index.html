@@ -122,6 +122,7 @@ const REPLACE_ERASE_ID = -1;  // sentinel: replace-with-empty in the Replace mod
 // All Supabase requests go through the Worker (never directly to SUPABASE_URL with an anon key).
 const SUPABASE_URL = "https://eizcooctnlugsxcyrplh.supabase.co";
 const WORKER_URL = "https://oph.opheliapp.workers.dev";
+const IMAGEKIT_URL = "https://ik.imagekit.io/rhu6mphyg";
 const DISCORD_CLIENT_ID = "1503113409678410019";
 // Hardcoded BG colours for Ophelia tilesets (single source of truth)
 const OPHELIA_BG = {
@@ -308,6 +309,16 @@ const THEMES = {
 };
 // C is mutable so App can update it on theme change; Sep/SectionHeader always read the current value
 let C = (() => { try { const t = JSON.parse(localStorage.getItem("oph_theme")); return { ...(THEMES[t] || THEMES.warm) }; } catch { return { ...THEMES.warm }; } })();
+
+// Rewrites a Supabase storage public tile URL to the ImageKit CDN equivalent.
+// All other URLs (GitHub raw, atlas, etc.) are returned unchanged.
+const SUPABASE_TILES_PREFIX = `${SUPABASE_URL}/storage/v1/object/public/tiles`;
+function toImageKitUrl(url) {
+  if (url && url.startsWith(SUPABASE_TILES_PREFIX)) {
+    return IMAGEKIT_URL + url.slice(SUPABASE_TILES_PREFIX.length);
+  }
+  return url;
+}
 
 // ── Tiny helpers ───────────────────────────────────────────────────────
 const Sep = () => <div style={{ width: 1, height: 22, background: C.border, flexShrink: 0, alignSelf: "center" }} />;
@@ -1172,7 +1183,7 @@ function App() {
           id: idCounter++,
           dbId: row.id,
           dbTilesetId: row.tileset_id,
-          src: row.image_url,
+          src: toImageKitUrl(row.image_url),
           isDefault: true,
           isDb: true,
           codename: row.codename,
@@ -3692,9 +3703,14 @@ function App() {
                           method: 'DELETE',
                           headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
                         });
-                        const prefix = `${SUPABASE_URL}/storage/v1/object/public/tiles/`;
-                        if (t.src?.startsWith(prefix)) {
-                          const storagePath = t.src.slice(prefix.length);
+                        const sbTilesPrefix = `${SUPABASE_TILES_PREFIX}/`;
+                        const ikPrefix = `${IMAGEKIT_URL}/`;
+                        const storagePath = t.src?.startsWith(ikPrefix)
+                          ? t.src.slice(ikPrefix.length)
+                          : t.src?.startsWith(sbTilesPrefix)
+                            ? t.src.slice(sbTilesPrefix.length)
+                            : null;
+                        if (storagePath) {
                           await fetch(`${WORKER_URL}/storage/v1/object/tiles`, {
                             method: 'DELETE',
                             headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
