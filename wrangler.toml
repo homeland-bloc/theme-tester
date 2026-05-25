@@ -4,7 +4,6 @@ compatibility_date = "2024-01-01"
 
 [vars]
 SUPABASE_URL = "https://eizcooctnlugsxcyrplh.supabase.co"
-SUPABASE_ANON_KEY = "sb_publishable_K0J0EGtj3m9DyDxZoRpy3w_bDwgMxg_"
 DISCORD_CLIENT_ID = "1503113409678410019"
 FIREBASE_PROJECT_ID = "opheliapp-wow"
 
