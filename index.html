@@ -147,10 +147,6 @@ const OPHELIA_BG = {
   Cafe:      { bg1: "#AD6B45", bg2: "#B5714A" },
   Pharmacy:  { bg1: "#95a4ae", bg2: "#a2b0b8" },
 };
-// Fix 3A — surface Ophelia BG colours on app load (copy from console)
-console.log("[Ophelia BG Colors]\n" + Object.entries(OPHELIA_BG).map(([name, { bg1, bg2 }]) =>
-  `  ${name}: { light: '${bg1}', dark: '${bg2}' }`).join(",\n"));
-
 // Atlas tileset folder-name overrides (tileset name → GitHub Resources subfolder)
 const ATLAS_FOLDER_MAP = {
   BrawlClub:  'Z_BrawlClub',
@@ -394,10 +390,6 @@ function App() {
   const [adminOpen, setAdminOpen] = useState(false);
   const [adminProfiles, setAdminProfiles] = useState([]);
   const [adminLoading, setAdminLoading] = useState(false);
-  const [atlasBgOpen, setAtlasBgOpen] = useState(false);
-  const [atlasBgResults, setAtlasBgResults] = useState('');
-  const [atlasBgLoading, setAtlasBgLoading] = useState(false);
-
   // Tileset/tile management (Tasks 6d, 6e, 6f)
   const [createTsOpen, setCreateTsOpen] = useState(false);
   const [createTsName, setCreateTsName] = useState('');
@@ -3310,38 +3302,6 @@ function App() {
     });
   };
 
-  // ── Extract Atlas BG Colours (temporary public tool) ─────────────
-  const extractAtlasBgColors = async () => {
-    setAtlasBgLoading(true);
-    setAtlasBgResults('');
-    // Fetch via CORS, decode via createImageBitmap (avoids canvas taint), sample centre pixel
-    // using OffscreenCanvas so getImageData is never blocked by origin restrictions.
-    const sampleCenter = async (imageUrl) => {
-      const resp = await fetch(imageUrl, { mode: 'cors' });
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const blob = await resp.blob();
-      const bm = await createImageBitmap(blob);
-      const cv = new OffscreenCanvas(1, 1);
-      const ctx = cv.getContext('2d');
-      ctx.drawImage(bm, Math.floor(bm.width / 2), Math.floor(bm.height / 2), 1, 1, 0, 0, 1, 1);
-      const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data;
-      return '#' + [r, g, b].map(x => x.toString(16).padStart(2, '0')).join('');
-    };
-    const lines = [];
-    for (const name of ATLAS_TILESET_NAMES) {
-      const folder = ATLAS_FOLDER_MAP[name] ?? name;
-      const base = `https://raw.githubusercontent.com/She-Fairy/atlas-horizon/main/Resources/${folder}`;
-      let light, dark;
-      try { light = await sampleCenter(`${base}/BGLight.png`); }
-      catch (e) { light = `ERR: ${e.message}`; }
-      try { dark = await sampleCenter(`${base}/BGDark.png`); }
-      catch (e) { dark = `ERR: ${e.message}`; }
-      lines.push(`${name} | light: ${light} | dark: ${dark}`);
-      setAtlasBgResults(lines.join('\n')); // update incrementally so progress is visible
-    }
-    setAtlasBgLoading(false);
-  };
-
   const commitZoom = () => {
     const v = parseInt(zoomInput, 10);
     if (!isNaN(v) && v > 0) {
@@ -4387,68 +4347,6 @@ function App() {
     );
   };
 
-  // ── Atlas BG Colour Extractor modal (temporary public tool) ────────
-  const AtlasBgModal = () => {
-    if (!atlasBgOpen) return null;
-    const atlasTilesetCount = ATLAS_TILESET_NAMES.length;
-    const doneCount = atlasBgResults ? atlasBgResults.split('\n').filter(Boolean).length : 0;
-    return (
-      <div className="modal-backdrop" onClick={() => { if (!atlasBgLoading) setAtlasBgOpen(false); }}>
-        <div className="modal-box" style={{ maxWidth: 520 }} onClick={e => e.stopPropagation()}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <span style={{ fontSize: 13, fontWeight: 700, color: "#a3e635" }}>Extract Atlas BG Colours</span>
-            <button onClick={() => { if (!atlasBgLoading) setAtlasBgOpen(false); }} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
-          </div>
-          <p style={{ fontSize: 11, color: C.muted, lineHeight: 1.5 }}>
-            Fetches BGLight.png / BGDark.png from GitHub for each atlas tileset and samples the centre pixel.
-            {' '}<strong style={{ color: C.text }}>{atlasTilesetCount} tilesets hardcoded.</strong>
-          </p>
-
-          {/* Status bar */}
-          {atlasBgLoading && (
-            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", background: "rgba(163,230,53,0.08)", border: "1px solid rgba(163,230,53,0.25)", borderRadius: 6 }}>
-              <span style={{ fontSize: 14, lineHeight: 1 }}>⏳</span>
-              <span style={{ fontSize: 11, color: "#a3e635" }}>
-                Sampling… {doneCount} / {atlasTilesetCount} done
-              </span>
-            </div>
-          )}
-
-          {/* Results textarea — shown during loading too for live feedback */}
-          {atlasBgResults ? (
-            <textarea
-              readOnly
-              value={atlasBgResults}
-              style={{ width: "100%", height: 200, background: C.panel, color: C.text, border: `1px solid ${C.border}`, borderRadius: 6, fontFamily: "monospace", fontSize: 11, padding: "8px", resize: "vertical", outline: "none" }}
-            />
-          ) : !atlasBgLoading ? (
-            <div style={{ textAlign: "center", color: C.muted, fontSize: 11, padding: "12px 0" }}>
-              Press Run to start.
-            </div>
-          ) : null}
-
-          {/* Action buttons */}
-          <div style={{ display: "flex", gap: 6 }}>
-            {!atlasBgLoading && (
-              <button
-                style={{ ...btn(true, "#a3e635", "rgba(163,230,53,0.18)"), color: "#14532d", flex: 1, justifyContent: "center" }}
-                onClick={extractAtlasBgColors}>
-                {atlasBgResults ? 'Re-run' : 'Run Extraction'}
-              </button>
-            )}
-            {atlasBgResults && !atlasBgLoading && (
-              <button
-                style={{ ...btn(true, C.accent, C.accentDim), flex: 1, justifyContent: "center" }}
-                onClick={() => navigator.clipboard?.writeText(atlasBgResults).catch(() => {})}>
-                Copy to clipboard
-              </button>
-            )}
-          </div>
-        </div>
-      </div>
-    );
-  };
-
   // ── Create Tileset modal (Task 6d) ───────────────────────────────
   const CreateTilesetModal = () => {
     if (!createTsOpen) return null;
@@ -4673,7 +4571,6 @@ function App() {
       <MemoryModal />
       <ConvertModal />
       <HotkeysModal />
-      <AtlasBgModal />
       <CreateTilesetModal />
       <AddTileModal />
 
@@ -4930,12 +4827,6 @@ function App() {
           Opheliapp — Custom Theme Tester
         </span>
         <div style={{ flex: 1 }} />
-        {/* Extract Atlas BG Colours — temporary public tool, remove after backfill */}
-        <button
-          onClick={() => { setAtlasBgResults(''); setAtlasBgOpen(true); }}
-          style={{ ...btn(false, "#a3e635", "rgba(163,230,53,0.12)"), fontSize: 11, padding: "4px 10px", color: "#a3e635" }}>
-          🎨 BG Colours
-        </button>
         {/* Auth panel */}
         {currentUser ? (
           <div style={{ position: "relative" }} onMouseDown={e => e.stopPropagation()}>
