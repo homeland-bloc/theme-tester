@@ -131,6 +131,7 @@
                     username: discord_user.username,
                     avatar: avatarUrl,
                     firebaseToken,
+                    firebaseTokenExpiry: Date.now() + 3600 * 1000, // Firebase ID tokens expire in 1 hour
                     accessToken: access_token,
                     refreshToken: refresh_token,
                     tokenExpiry: Date.now() + expires_in * 1000,
