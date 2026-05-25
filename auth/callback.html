@@ -6,6 +6,16 @@
     <title>Logging in... - Opheliapp</title>
     <script src="https://www.gstatic.com/firebasejs/10.0.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.0.0/firebase-auth-compat.js"></script>
+    <script>
+        firebase.initializeApp({
+            apiKey: "AIzaSyC7vTGI_pnSk02Qyd3YFUYe-bDlktDQhVo",
+            authDomain: "opheliapp-wow.firebaseapp.com",
+            projectId: "opheliapp-wow",
+            storageBucket: "opheliapp-wow.firebasestorage.app",
+            messagingSenderId: "749767602175",
+            appId: "1:749767602175:web:170018ad1ac5d227a441ca"
+        });
+    </script>
     <style>
         body {
             margin: 0;
@@ -52,16 +62,6 @@
     </div>
 
     <script>
-        const firebaseConfig = {
-            apiKey: "AIzaSyC7vTGI_pnSk02Qyd3YFUYe-bDlktDQhVo",
-            authDomain: "opheliapp-wow.firebaseapp.com",
-            projectId: "opheliapp-wow",
-            storageBucket: "opheliapp-wow.firebasestorage.app",
-            messagingSenderId: "749767602175",
-            appId: "1:749767602175:web:170018ad1ac5d227a441ca"
-        };
-        firebase.initializeApp(firebaseConfig);
-
         const WORKER_URL = 'https://oph.opheliapp.workers.dev';
         const DISCORD_REDIRECT_URI = 'https://bicipikay.github.io/ophelia/auth/callback.html';
 
