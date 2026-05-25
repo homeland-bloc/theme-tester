@@ -155,19 +155,6 @@ const ATLAS_FOLDER_MAP = {
   Sky:        'Z_SkyTheme',
   Underwater: 'Z_UnderwaterTheme',
 };
-// Hardcoded atlas tileset list for the BG colour extractor (independent of DB)
-const ATLAS_TILESET_NAMES = [
-  'Aquarium','Arcade','Bandstand','Bazaar','Beach','Biodome','BrawlClub','Brawlywood',
-  'Candyland','Casino','Castle_Courtyard','Circus','City','Coin_Factory','Deep_Sea',
-  'Desert','Enchanted_Woods','Escape_Room','Fighting_Game','Ghost_Station','Gift_Shop',
-  'Grassy_Field','Hockey','Holiday','Ice_Island','Jurassic','Katana_Kingdom',
-  'Medieval_Manor','Mine','Mortuary','Oasis','Oddities_Shop','Pirate_Ship','Ranger_Ranch',
-  'Retropolis','Robot_Factory','Rooftop','Rumble_Jungle','Scrapyard','Skating_Bowl','Sky',
-  'Snowtel','Spongebob','Stadium','Starr_Force','Starr_Toon','Stranger_Things',
-  'Stranger_Things_Forest','Stranger_Things_Lab','Stranger_Things_Lair','Stunt_Show',
-  'Subway_Surfers','Super_City','Super_City_2','Swamp_of_Love','The_Hub','Tropical_Island',
-  'Underwater','Wasteland','Water_Park','Wild_West',
-];
 
 // Tilesets that are still work-in-progress — shown with a WIP badge in the UI.
 const WIP_TILESETS = new Set(["Airport"]);
@@ -193,15 +180,6 @@ const deriveCodename = src => {
   if (!src) return null;
   const file = src.split("/").pop().replace(/\.[^.]+$/, "");
   const map = {
-    // Mausoleum
-    "MSLM-wall": "Wall1", "MSLM-wall2": "Wall2", "MSLM-crate": "Crate", "MSLM-barrel": "Barrel",
-    "MSLM-cactus": "Cactus", "MSLM-bush": "Bush", "MSLM-break": "Breakable",
-    "MSLM-fence": "Fence1", "MSLM-fenceHORIZONTAL": "Fence2", "MSLM-fenceVERTICAL": "Fence3",
-    "MSLM-post1": "Rope1", "MSLM-post2": "Rope2", "MSLM-post3": "Rope3", "MSLM-post4": "Rope4",
-    "MSLM-water": "WaterFill", "MSLM-waterBEND": "WaterBend", "MSLM-waterCORNER": "WaterCorner", "MSLM-waterLINE": "WaterLine",
-    "MSLM-waterDOUBLEBEND": "WaterDoubleBend", "MSLM-waterDOUBLELINE": "WaterDoubleLine", "MSLM-waterFULL": "WaterFull",
-    // Mausoleum objectives
-    "MSLM-ball": "Ball", "MSLM-safe": "Safe", "MSLM-mine": "GemMine",
     // Global water
     "00001011": "GWaterBend", "01111111": "GWaterCorner", "01101011": "GWaterLine", "11111111": "GWaterFill",
     // Global special
@@ -214,22 +192,6 @@ const deriveCodename = src => {
     "Bounty": "BountyGObjective", "Gem_Grab": "GGObjective", "Heist": "HeistObjective", "Hot_Zone": "HZObjective",
     // Teleporters
     "Blue": "BlueTeleport", "Green": "GreenTeleport", "Red": "RedTeleport", "Yellow": "YellowTeleport",
-    // Sewer
-    "SWR-wall": "Wall1", "SWR-wall2": "Wall2", "SWR-crate": "Crate", "SWR-barrel": "Barrel",
-    "SWR-cactus": "Cactus", "SWR-bush": "Bush", "SWR-breakable": "Breakable",
-    "SWR-fence": "Fence", "SWR-fence-VALVE": "FenceValve",
-    "SWR-fenceH": "FenceH", "SWR-fenceH-L": "FenceH-L", "SWR-fenceH-R": "FenceH-R", "SWR-fenceH-VALVE": "FenceH-Valve",
-    "SWR-fenceV": "FenceV", "SWR-fenceV-T": "FenceV-T", "SWR-fenceV-B": "FenceV-B", "SWR-fenceV-B-VALVE": "FenceV-B-Valve",
-    "SWR-fenceV-TURN-L": "FenceV-TurnL", "SWR-fenceV-TURN-R": "FenceV-TurnR",
-    "SWR-fenceV-TURN2-L": "FenceV-Turn2L", "SWR-fenceV-TURN2-R": "FenceV-Turn2R",
-    "SWR-post": "Rope", "SWR-post-H": "RopeH", "SWR-post-H-L": "RopeH-L", "SWR-post-H-R": "RopeH-R",
-    "SWR-post-V": "RopeV", "SWR-post-V-H": "RopeV-H", "SWR-post-V-L": "RopeV-L", "SWR-post-V-R": "RopeV-R",
-    "SWR-waterBEND": "WaterBend", "SWR-waterCORNER": "WaterCorner", "SWR-waterLINE": "WaterLine",
-    "SWR-water": "WaterFill", "SWR-waterDOUBLEBEND": "WaterDoubleBend", "SWR-waterDOUBLELINE": "WaterDoubleLine", "SWR-waterFULL": "WaterFull",
-    "SWR-ball": "Ball", "SWR-safe": "Safe", "SWR-mine": "GemMine",
-    // Airport
-    "AIRP-waterBEND": "WaterBend", "AIRP-waterCORNER": "WaterCorner", "AIRP-waterLINE": "WaterLine",
-    "AIRP-water": "WaterFill", "AIRP-waterDOUBLEBEND": "WaterDoubleBend", "AIRP-waterDOUBLELINE": "WaterDoubleLine", "AIRP-waterFULL": "WaterFull",
     // Community tilesets water — named by position for cross-tileset compatibility
     "WaterCurve": "WaterBend", "WaterTwist": "WaterCorner", "WaterLine": "WaterLine", "WaterFill": "WaterFill",
     "WaterBubble1": "WaterDoubleBend", "WaterBubble2": "WaterDoubleLine",
@@ -387,6 +349,7 @@ function App() {
   const [currentUser, setCurrentUser] = useState(() => { try { return JSON.parse(localStorage.getItem('oph_user')); } catch { return null; } });
   const [userProfile, setUserProfile] = useState(null); // { role, ... } fetched from Supabase
   const [userDropOpen, setUserDropOpen] = useState(false);
+  const [logoutConfirming, setLogoutConfirming] = useState(false);
   const [adminOpen, setAdminOpen] = useState(false);
   const [adminProfiles, setAdminProfiles] = useState([]);
   const [adminLoading, setAdminLoading] = useState(false);
@@ -841,32 +804,18 @@ function App() {
     const s = t.src;
     // Spawns
     if (s.includes("Spawns/")) return 1.65;
-    // Barrel: Sewer 1.05×, Mausoleum/default 1.1×
-    if (s.includes("SWR-barrel")) return 1.05;
-    if (s.includes("barrel") || s.includes("MSLM-barrel")) return 1.1;
-    // Breakable (MSLM-break only, NOT Unbreakable, NOT AIRP)
-    if (s.includes("MSLM-break") || s.includes("SWR-breakable") || (s.includes("break") && !s.includes("Unbreakable") && !s.includes("AIRP"))) return 1.1;
     // Jumppads & Teleporters & HealPad → 2x
     if (s.includes("Jumppads/") || s.includes("Teleporters/") || s.includes("HealPad")) return 2.0;
     // Hot Zone
     if (s.includes("Hot_Zone")) return 7.0;
     // Smoke / poison / gas
     if (s.includes("Smoke")) return 1.65;
-    // Gem mine (MSLM-mine) → 2.2x
-    if (s.includes("MSLM-mine")) return 2.2;
-    // Brawl ball (MSLM-ball) → 1.6x
-    if (s.includes("MSLM-ball")) return 1.6;
-    // Sewer objectives
-    if (s.includes("SWR-ball")) return 1.5;
-    if (s.includes("SWR-mine")) return 2.0;
     // Global Brawl Ball → 1.5x
     if (s.includes("Brawl_Ball")) return 1.5;
     // Goal posts → 7x
     if (s.includes("goalRed") || s.includes("goalBlue")) return 7.0;
-    // Airport heist safe → 2.2x
-    if (s.includes("AIRP-safe")) return 2.2;
-    // Gem Grab & Heist objectives + Mausoleum safe + Sewer safe → 2x
-    if (s.includes("Gem_Grab") || s.includes("Heist") || s.includes("MSLM-safe") || s.includes("SWR-safe")) return 2.0;
+    // Gem Grab & Heist objectives → 2x
+    if (s.includes("Gem_Grab") || s.includes("Heist")) return 2.0;
     // Bounty star → 1.2x
     if (s.includes("Bounty")) return 1.2;
     // Atlas Post_R / Post_TR rope tiles → 1.5×
@@ -894,59 +843,12 @@ function App() {
     if (s.includes("Unbreakable")) return { ox: 0, oy: -12 };
     // Goal posts
     if (s.includes("goalRed") || s.includes("goalBlue")) return { ox: 0, oy: -50 };
-    // Airport heist safe
-    if (s.includes("AIRP-safe")) return { ox: 0, oy: -42 };
     // Global objectives
     if (s.includes("Heist")) return { ox: 0, oy: -60 };
     if (s.includes("Brawl_Ball")) return { ox: 0, oy: -14 };
     if (s.includes("Bounty")) return { ox: 0, oy: 4 };
-    // Mausoleum objectives
-    if (s.includes("MSLM-safe")) return { ox: 0, oy: -90 };
-    if (s.includes("MSLM-ball")) return { ox: 0, oy: -20 };
-    if (s.includes("MSLM-mine")) return { ox: 0, oy: -20 };
-    // Airport (wall2 must be checked before wall since "AIRP-wall" matches both)
-    if (s.includes("AIRP-wall2"))  return { ox: 0, oy: -20 };
-    if (s.includes("AIRP-wall"))   return { ox: 0, oy: -4 };
-    if (s.includes("AIRP-crate"))  return { ox: 0, oy: -10 };
-    if (s.includes("AIRP-cactus")) return { ox: 0, oy: -10 };
-    if (s.includes("AIRP-bush"))   return { ox: 0, oy: -10 };
-    // Airport fence (AIRP-fence-V checked before generic fence path)
-    if (s.includes("AIRP-fence-V"))    return { ox: 0, oy: -84 };
-    if (s.includes("Airport/Fence/"))  return { ox: 0, oy: -40 };
-    // Airport rope
-    if (s.includes("Airport/Rope/"))   return { ox: 0, oy: -44 };
     // Atlas Post_R / Post_TR rope tiles
     if (s.includes("/Rope/Post_R") || s.includes("/Rope/Post_TR")) return { ox: 25, oy: 0 };
-    // Mausoleum fence
-    if (s.includes("Mausoleum/Fence/")) return { ox: 0, oy: -15 };
-    // Mausoleum rope (MSLM-post*)
-    if (s.includes("MSLM-post")) return { ox: 0, oy: -30 };
-    // Mausoleum wall2 (checked before wall1 since "MSLM-wall" matches both)
-    if (s.includes("MSLM-wall2")) return { ox: 0, oy: -24 };
-    if (s.includes("MSLM-wall") && !s.includes("MSLM-wall2")) return { ox: 0, oy: -12 };
-    if (s.includes("MSLM-crate")) return { ox: 0, oy: -10 };
-    if (s.includes("MSLM-barrel")) return { ox: 0, oy: -12 };
-    if (s.includes("MSLM-cactus")) return { ox: 0, oy: -10 };
-    if (s.includes("MSLM-bush")) return { ox: 0, oy: -10 };
-    if (s.includes("MSLM-break")) return { ox: 0, oy: -8 };
-    // Sewer objectives
-    if (s.includes("SWR-ball")) return { ox: 0, oy: -34 };
-    if (s.includes("SWR-safe")) return { ox: 0, oy: -56 };
-    if (s.includes("SWR-mine")) return { ox: 0, oy: -10 };
-    if (s.includes("SWR-breakable")) return { ox: 0, oy: -10 };
-    // Sewer fence
-    if (s.includes("Sewer/Fence/")) return { ox: 0, oy: -40 };
-    // Sewer rope
-    if (s.includes("Sewer/Rope/")) return { ox: 0, oy: -60 };
-    // Sewer wall2 (checked before wall1)
-    if (s.includes("SWR-wall2")) return { ox: 0, oy: -12 };
-    if (s.includes("SWR-wall") && !s.includes("SWR-wall2")) return { ox: 0, oy: -12 };
-    if (s.includes("SWR-crate")) return { ox: 0, oy: -10 };
-    if (s.includes("SWR-barrel")) return { ox: 0, oy: -8 };
-    if (s.includes("SWR-cactus")) return { ox: 0, oy: -12 };
-    if (s.includes("SWR-bush")) return { ox: 0, oy: -10 };
-    // Halloween RopeConnects: +50 horizontal offset
-    if (s.includes("Halloween/Rope/RopeConnects")) return { ox: 50, oy: 0 };
     return { ox: 0, oy: 0 };
   };
 
@@ -1339,7 +1241,7 @@ function App() {
       setBottomTiles(prev => rebuildDefaultFlags(prev, t =>
         t.dbBottomRender ?? !!(t.src && TILE_SETTINGS.bottomRender.some(p => t.src.includes(p)))));
       setAutoShadowTiles(prev => rebuildDefaultFlags(prev, t =>
-        t.dbAutoShadow ?? !!(t.src && (t.src.includes("Halloween/Jumppads/") || t.src.includes("Halloween/Teleporters/")))));
+        t.dbAutoShadow ?? false));
     }
   }, [flatDefaultTiles]);
 
@@ -1363,24 +1265,42 @@ function App() {
     // Unauthenticated reads use no Authorization header — the Worker forwards the anon key internally.
     // Authenticated reads include the Firebase token so the Worker can also return private tilesets.
     (async () => {
-      const tsUrl = currentUser?.id
-        ? `${WORKER_URL}/rest/v1/tilesets?or=(is_published.eq.true,owner_id.eq.${currentUser.id})&type=in.(atlas,base,custom)&order=name`
-        : `${WORKER_URL}/rest/v1/tilesets?is_published=eq.true&type=in.(atlas,base,custom)&order=name`;
+      const tsBase = new URL(`${WORKER_URL}/rest/v1/tilesets`);
+      if (currentUser?.id) {
+        tsBase.searchParams.set('or', `(is_published.eq.true,owner_id.eq.${currentUser.id})`);
+      } else {
+        tsBase.searchParams.set('is_published', 'eq.true');
+      }
+      tsBase.searchParams.set('type', 'in.(atlas,base,custom)');
+      tsBase.searchParams.set('order', 'name');
+      const tsUrl = tsBase.toString();
       const token = currentUser?.firebaseToken ? await getValidToken() : null;
       const tsHeaders = token
         ? { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
         : { 'Content-Type': 'application/json' };
       try {
         const tsResp = await fetch(tsUrl, { headers: tsHeaders });
+        if (!tsResp.ok) {
+          const errText = await tsResp.text();
+          console.error('[tilesets] fetch failed:', tsResp.status, tsResp.statusText, errText);
+        }
         const tilesets = tsResp.ok ? await tsResp.json() : [];
         if (!Array.isArray(tilesets) || tilesets.length === 0) {
+          console.error('[tilesets] empty or invalid response — tilesets will not load. URL:', tsUrl, 'parsed:', tilesets);
           setDbTilesets([]);
           setDbTilesData([]);
           setTilesLoading(false);
           return;
         }
         const tsIds = tilesets.map(ts => ts.id).join(',');
-        const tilesResp = await fetch(`${WORKER_URL}/rest/v1/tiles?tileset_id=in.(${tsIds})&order=sort_index`, { headers: { 'Content-Type': 'application/json' } });
+        const tilesUrl = new URL(`${WORKER_URL}/rest/v1/tiles`);
+        tilesUrl.searchParams.set('tileset_id', `in.(${tsIds})`);
+        tilesUrl.searchParams.set('order', 'sort_index');
+        const tilesResp = await fetch(tilesUrl.toString(), { headers: { 'Content-Type': 'application/json' } });
+        if (!tilesResp.ok) {
+          const errText = await tilesResp.text();
+          console.error('[tiles] fetch failed:', tilesResp.status, tilesResp.statusText, errText);
+        }
         const tilesRows = tilesResp.ok ? await tilesResp.json() : [];
         setDbTilesets(tilesets);
         setDbTilesData(Array.isArray(tilesRows) ? tilesRows : []);
@@ -1389,7 +1309,8 @@ function App() {
         const name = (saved && tilesets.some(ts => ts.name === saved)) ? saved : firstName;
         setActiveTileset(name);
         setTilesLoading(false);
-      } catch {
+      } catch (err) {
+        console.error('[tilesets] exception during fetch:', err);
         setTilesLoading(false);
       }
     })();
@@ -1418,9 +1339,9 @@ function App() {
     })();
   }, [adminOpen, currentUser]);
 
-  // Close user dropdown on outside click
+  // Close user dropdown on outside click; reset logout confirmation state when closed
   useEffect(() => {
-    if (!userDropOpen) return;
+    if (!userDropOpen) { setLogoutConfirming(false); return; }
     const handler = () => setUserDropOpen(false);
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
@@ -4844,7 +4765,7 @@ function App() {
                 {/* Theme selector */}
                 <div style={{ padding: "6px 12px 8px", borderBottom: `1px solid ${C.border}` }}>
                   <div style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 0.8, marginBottom: 6 }}>Theme</div>
-                  <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                  <div style={{ display: "flex", gap: 5, flexWrap: "nowrap" }}>
                     <button onClick={() => setAutoTheme(v => !v)} style={{ ...btn(autoTheme, C.accent, C.accentDim), fontSize: 10, padding: "2px 8px" }} title="Auto-switch based on background">Auto 🌦️</button>
                     {["warm", "cold"].map(th => (
                       <button key={th} onClick={() => { setAutoTheme(false); setUiTheme(th); }}
@@ -4865,13 +4786,30 @@ function App() {
                   </button>
                 )}
                 {/* Logout */}
-                <button
-                  onClick={logout}
-                  style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 12px", background: "none", border: "none", cursor: "pointer", color: "#f87171", fontSize: 12, fontFamily: "'Inter', sans-serif" }}
-                  onMouseEnter={e => { e.currentTarget.style.background = "rgba(248,113,113,0.08)"; }}
-                  onMouseLeave={e => { e.currentTarget.style.background = "none"; }}>
-                  → Logout
-                </button>
+                {logoutConfirming ? (
+                  <div style={{ padding: "8px 12px", display: "flex", alignItems: "center", gap: 8 }}
+                    onMouseDown={e => e.stopPropagation()}>
+                    <span style={{ fontSize: 12, color: "#f87171", fontFamily: "'Inter', sans-serif" }}>Are you sure?</span>
+                    <button
+                      onClick={logout}
+                      style={{ padding: "2px 10px", background: "rgba(248,113,113,0.15)", border: "1px solid rgba(248,113,113,0.5)", borderRadius: 5, cursor: "pointer", color: "#f87171", fontSize: 12, fontFamily: "'Inter', sans-serif" }}>
+                      Yes
+                    </button>
+                    <button
+                      onClick={() => setLogoutConfirming(false)}
+                      style={{ padding: "2px 10px", background: "none", border: `1px solid ${C.border}`, borderRadius: 5, cursor: "pointer", color: C.muted, fontSize: 12, fontFamily: "'Inter', sans-serif" }}>
+                      No
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setLogoutConfirming(true)}
+                    style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 12px", background: "none", border: "none", cursor: "pointer", color: "#f87171", fontSize: 12, fontFamily: "'Inter', sans-serif" }}
+                    onMouseEnter={e => { e.currentTarget.style.background = "rgba(248,113,113,0.08)"; }}
+                    onMouseLeave={e => { e.currentTarget.style.background = "none"; }}>
+                    → Logout
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -6560,7 +6498,8 @@ function App() {
 
           {/* Row 3: Background colour selector */}
           {(() => {
-            const allBgPresets = { ...OPHELIA_BG };
+            const allBgPresets = {};
+            dbTilesets.forEach(ts => { if (OPHELIA_BG[ts.name]) allBgPresets[ts.name] = OPHELIA_BG[ts.name]; });
             const defaultBg = activeTileset ? (OPHELIA_BG[activeTileset] ?? null) : null;
             const bgMismatch = defaultBg?.bg1 && activeTileset && (
               bg1.toLowerCase() !== defaultBg.bg1.toLowerCase() || bg2.toLowerCase() !== defaultBg.bg2.toLowerCase()
@@ -6594,9 +6533,11 @@ function App() {
                   }}
                   style={{ background: C.panel, color: selectedBgPreset === "custom" ? C.accent : C.accentBright, border: `1px solid ${C.border}`, borderRadius: 5, fontSize: 10, padding: "2px 4px", cursor: "pointer", outline: "none", fontStyle: selectedBgPreset === "custom" ? "italic" : "normal" }}>
                   <option value="custom" style={{ color: C.accent, fontStyle: "italic" }}>✏ Custom…</option>
-                  <optgroup label="Ophelia">
-                    {Object.keys(OPHELIA_BG).map(k => <option key={k} value={k} style={{ color: C.text, fontStyle: "normal" }}>{k}</option>)}
-                  </optgroup>
+                  {Object.keys(allBgPresets).length > 0 && (
+                    <optgroup label="Tilesets">
+                      {Object.keys(allBgPresets).map(k => <option key={k} value={k} style={{ color: C.text, fontStyle: "normal" }}>{k}</option>)}
+                    </optgroup>
+                  )}
                 </select>
                 {selectedBgPreset === "custom" && (
                   <button style={{ ...btn(false), fontSize: 10, padding: "2px 7px" }}
