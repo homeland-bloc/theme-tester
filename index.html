@@ -1299,7 +1299,10 @@ function App() {
         const tilesUrl = new URL(`${WORKER_URL}/rest/v1/tiles`);
         tilesUrl.searchParams.set('tileset_id', `in.(${tsIds})`);
         tilesUrl.searchParams.set('order', 'sort_index');
-        const tilesResp = await fetch(tilesUrl.toString(), { headers: { 'Content-Type': 'application/json' } });
+        const tilesHeaders = token
+          ? { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
+          : { 'Content-Type': 'application/json' };
+        const tilesResp = await fetch(tilesUrl.toString(), { headers: tilesHeaders });
         if (!tilesResp.ok) {
           const errText = await tilesResp.text();
           console.error('[tiles] fetch failed:', tilesResp.status, tilesResp.statusText, errText);
