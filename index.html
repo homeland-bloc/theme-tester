@@ -1339,9 +1339,9 @@ function App() {
         const mostRecent = published[0]?.name ?? tilesets[0]?.name ?? null;
         const name = (saved && tilesets.some(ts => ts.name === saved)) ? saved : mostRecent;
         setActiveTileset(name);
-        setTilesLoading(false);
 
-        // Pre-fetch tiles for the active tileset immediately
+        // Pre-fetch tiles for the active tileset before unblocking grid resolution,
+        // so d: prefix tiles are in flatDefaultTiles when the resolution effect fires.
         if (name) {
           const tsDef = tilesets.find(ts => ts.name === name);
           if (tsDef) {
@@ -1359,6 +1359,7 @@ function App() {
             }
           }
         }
+        setTilesLoading(false);
       } catch (err) {
         console.error('[tilesets] exception during fetch:', err);
         setTilesLoading(false);
@@ -4046,8 +4047,8 @@ function App() {
                 </div>
               </div>
               <RCard key="space" t={null} selected={replaceB} onSelect={onSelect} isSpace />
-              {/* Per-Ophelia-tileset collapsible sections (only shown tilesets) */}
-              {Object.entries(tsByName).filter(([name]) => shownNames.has(name)).map(([name, tsTs]) => {
+              {/* Per-tileset collapsible sections — only show the active tileset */}
+              {Object.entries(tsByName).filter(([name]) => name === activeTileset).map(([name, tsTs]) => {
                 const isCollapsed = !!tsCollapsed[name];
                 return (
                   <React.Fragment key={name}>
@@ -4312,60 +4313,42 @@ function App() {
   // ── Convert modal — remap tileset tiles on the board ────────────
   const ConvertModal = () => {
     if (!convertOpen) return null;
-    const opheliaTilesets = manifest?.tilesets ?? [];
-    // Show ALL Ophelia tilesets from manifest, and all Atlas tilesets that have tiles loaded
-    const allOpheliaList = opheliaTilesets;
-    const allAvailableNames = allOpheliaList.map(ts => ts.name);
+    const byAlpha = (a, b) => a.name.localeCompare(b.name);
+    const opheliaList = [...dbTilesets].filter(ts => ts.type === 'base' || ts.type === 'custom').sort((a, b) => (a.type === b.type ? byAlpha(a, b) : a.type === 'base' ? -1 : 1));
+    const atlasList   = [...dbTilesets].filter(ts => ts.type === 'atlas' || ts.type === 'atlas2').sort((a, b) => (a.type === b.type ? byAlpha(a, b) : a.type === 'atlas' ? -1 : 1));
+    const allAvailableNames = [...opheliaList, ...atlasList].map(ts => ts.name);
 
     const defaultFrom = activeTileset ?? allAvailableNames[0] ?? "";
     const defaultTo   = allAvailableNames.find(n => n !== defaultFrom) ?? "";
     const [fromTs, setFromTs] = React.useState(defaultFrom);
     const [toTs,   setToTs]   = React.useState(defaultTo);
 
-    // Build Ophelia ID maps (key-based, sequential IDs from manifest)
-    const buildOpheliaIdMaps = () => {
-      let id = TILESET_ID_START;
-      const maps = {};
-      const WATER_CNS = ["waterbend","watercorner","waterline","waterfill","waterdoublebend","waterdoubleline","waterfull"];
-      for (const tsDef of opheliaTilesets) {
-        const m = {};
-        for (const key of (tsDef.order ?? [])) {
-          if (tsDef.folders?.[key]) {
-            if (key === "water") {
-              tsDef.folders[key].forEach((_, i) => { m[WATER_CNS[i] ?? `water${i}`] = [id++]; });
-            } else {
-              m[key] = tsDef.folders[key].map(() => id++);
-            }
-          } else if (tsDef.files?.[key]) m[key] = [id++];
-        }
-        maps[tsDef.name] = m;
-      }
-      return maps;
-    };
+    // Codename-based remap: match tiles across tilesets strictly by codename.
+    const fromTsDef = dbTilesets.find(ts => ts.name === fromTs);
+    const toTsDef   = dbTilesets.find(ts => ts.name === toTs);
+    const toDbTiles = toTsDef ? (dbTilesByTsId[toTsDef.id] ?? null) : null;
 
-    // Compute remap
-    const opheliaIdMaps = buildOpheliaIdMaps();
+    // Build codename→numeric-ID map for the "to" tileset from flatDefaultTiles
+    const toCodenameToId = {};
+    if (toTsDef) {
+      flatDefaultTiles.forEach(t => { if (t.isDb && t.dbTilesetId === toTsDef.id && t.codename) toCodenameToId[t.codename] = t.id; });
+    }
+
     const idRemap = {};
     const fromAll = new Set();
-
-    const fromIsOphelia = !!opheliaIdMaps[fromTs];
-    const toIsOphelia   = !!opheliaIdMaps[toTs];
-
-    if (fromIsOphelia && toIsOphelia) {
-      // Ophelia→Ophelia: key-based remap
-      const fromMap = opheliaIdMaps[fromTs] ?? {};
-      const toMap   = opheliaIdMaps[toTs]   ?? {};
-      Object.values(fromMap).flat().forEach(id => fromAll.add(id));
-      for (const key of Object.keys(fromMap)) {
-        const oIds = fromMap[key], nIds = toMap[key];
-        if (nIds) oIds.forEach((oid, i) => { if (i < nIds.length) idRemap[oid] = nIds[i]; });
-      }
+    if (fromTsDef) {
+      flatDefaultTiles.forEach(t => {
+        if (!t.isDb || t.dbTilesetId !== fromTsDef.id) return;
+        fromAll.add(t.id);
+        if (t.codename && toCodenameToId[t.codename] !== undefined) idRemap[t.id] = toCodenameToId[t.codename];
+      });
     }
 
     const boardFromIds = new Set();
     grid.forEach(row => row.forEach(id => { if (id != null && fromAll.has(id)) boardFromIds.add(id); }));
     const unmapped = [...boardFromIds].filter(id => idRemap[id] === undefined);
     const mappable = [...boardFromIds].filter(id => idRemap[id] !== undefined);
+    const toTilesNotLoaded = toTsDef && toDbTiles === null;
 
     const doConvert = () => {
       const newGrid = grid.map(row => row.map(id =>
@@ -4375,14 +4358,17 @@ function App() {
       setConvertOpen(false);
     };
 
-    const getDisplayName = (name) => name;
-
     const TsSelect = ({ value, onChange }) => (
       <select value={value} onChange={e => onChange(e.target.value)}
         style={{ background: C.panel, color: C.text, border: `1px solid ${C.border}`, borderRadius: 5, fontSize: 11, padding: "3px 6px", cursor: "pointer", outline: "none" }}>
-        {allOpheliaList.length > 0 && (
+        {opheliaList.length > 0 && (
           <optgroup label="Ophelia">
-            {allOpheliaList.map(ts => <option key={ts.name} value={ts.name}>{ts.name}</option>)}
+            {opheliaList.map(ts => <option key={ts.name} value={ts.name}>{ts.name}</option>)}
+          </optgroup>
+        )}
+        {atlasList.length > 0 && (
+          <optgroup label="Atlas">
+            {atlasList.map(ts => <option key={ts.name} value={ts.name}>{ts.name}</option>)}
           </optgroup>
         )}
       </select>
@@ -4421,8 +4407,13 @@ function App() {
           </div>
           {fromTs && toTs && fromTs !== toTs && (
             <div style={{ fontSize: 11, color: C.text, background: C.panelAlt ?? "rgba(0,0,0,0.2)", borderRadius: 6, padding: "6px 10px" }}>
-              <div>{mappable.length} tile type{mappable.length !== 1 ? "s" : ""} will be converted.</div>
-              {unmapped.length > 0 && <div style={{ color: "#fbbf24" }}>{unmapped.length} type{unmapped.length !== 1 ? "s" : ""} have no match in {getDisplayName(toTs)} and will stay as-is.</div>}
+              {toTilesNotLoaded
+                ? <div style={{ color: "#fbbf24" }}>Target tileset tiles not yet loaded — switch to it once to load.</div>
+                : <>
+                    <div>{mappable.length} tile type{mappable.length !== 1 ? "s" : ""} will be converted.</div>
+                    {unmapped.length > 0 && <div style={{ color: "#fbbf24" }}>{unmapped.length} type{unmapped.length !== 1 ? "s" : ""} have no codename match in {toTs} and will stay as-is.</div>}
+                  </>
+              }
             </div>
           )}
           <div style={{ display: "flex", gap: 8 }}>
@@ -5322,6 +5313,14 @@ function App() {
                           );
                           return (
                             <>
+                              {currentUser && (
+                                <div
+                                  onClick={() => { setTilesetDropOpen(false); setCreateTsName(''); setCreateTsOpen(true); }}
+                                  style={{ display: "flex", alignItems: "center", gap: 7, padding: "5px 10px", cursor: "pointer", userSelect: "none", borderBottom: `1px dashed ${C.border}`, marginBottom: 2 }}>
+                                  <span style={{ fontSize: 13, lineHeight: 1, color: C.muted, fontWeight: 300 }}>+</span>
+                                  <span style={{ fontSize: 11, color: C.muted, fontStyle: "italic" }}>Create Tileset</span>
+                                </div>
+                              )}
                               {opheliaTilesets.length > 0 && sectionLabel("Opheliapp")}
                               {opheliaTilesets.map(renderItem)}
                               {atlasTilesets.length > 0 && sectionLabel("Atlas")}
@@ -5750,15 +5749,6 @@ function App() {
                             </React.Fragment>
                           );
                         })}
-                        {/* ── Create Tileset button (logged in users) ── */}
-                        {currentUser && (
-                          <div style={{ width: "100%", flexBasis: "100%", flexShrink: 0, paddingTop: 4 }}>
-                            <button onClick={() => { setCreateTsName(''); setCreateTsOpen(true); }}
-                              style={{ ...btn(false, C.accent, C.accentDim), fontSize: 9, padding: "3px 8px", width: "100%", justifyContent: "center" }}>
-                              + Create Tileset
-                            </button>
-                          </div>
-                        )}
                         {/* ── Global ── */}
                         {globalEntries.length > 0 && (<>
                           <SectionHeader id="global" label="Global" count={globalEntries.reduce((n, e) => n + (e.tiles?.length ?? 1), 0)} />
