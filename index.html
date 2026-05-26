@@ -372,6 +372,16 @@ function App() {
   const [tsGearName, setTsGearName] = useState('');
   const [tsGearSaving, setTsGearSaving] = useState(false);
   const [tsGearDeleteConfirm, setTsGearDeleteConfirm] = useState(false);
+  // Create tileset inline error
+  const [createTsError, setCreateTsError] = useState('');
+  // Custom bg modal draft (null = not open; { bg1, bg2 } = current draft while open)
+  const [customBgDraft, setCustomBgDraft] = useState(null);
+  // Delete-from-db confirmation input (codename the user must type)
+  const [deleteConfirmInput, setDeleteConfirmInput] = useState('');
+  // Inline flag tooltip state inside InfoModal
+  const [flagTooltip, setFlagTooltip] = useState(null); // key string or null
+  // Theme DB persistence debounce timer
+  const themeDbTimerRef = useRef(null);
 
   // Returns a valid Firebase ID token. Refreshes Discord and/or Firebase tokens
   // when near expiry, accumulating updates into a single state/localStorage write.
@@ -773,7 +783,22 @@ function App() {
       .modal-box { background: ${modalBg} !important; border-color: ${modalBorder} !important; }
       .oph-title-text { background: ${titleGrad} !important; -webkit-background-clip: text !important; background-clip: text !important; -webkit-text-fill-color: transparent !important; color: transparent !important; }
     `;
-  }, [uiTheme]);
+    // Persist theme to DB with 2-second debounce (issue 14)
+    if (currentUser?.firebaseToken && currentUser?.id) {
+      if (themeDbTimerRef.current) clearTimeout(themeDbTimerRef.current);
+      const themeValue = autoTheme ? 'auto' : uiTheme;
+      themeDbTimerRef.current = setTimeout(async () => {
+        try {
+          const token = await getValidToken();
+          await fetch(`${WORKER_URL}/rest/v1/profiles?id=eq.${currentUser.id}`, {
+            method: 'PATCH',
+            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+            body: JSON.stringify({ theme: themeValue }),
+          });
+        } catch {}
+      }, 2000);
+    }
+  }, [uiTheme, autoTheme]);
   useEffect(() => { save("oph_auto_theme", autoTheme); }, [autoTheme]);
   // Auto-adapt theme: when on, derive warm/cold from the BG colour temperature.
   // Uses B>G>R check: blue-dominant palettes map to warm (cool blues → warm UI contrast),
@@ -1075,6 +1100,7 @@ function App() {
   const [tilesetDropOpen, setTilesetDropOpen] = useState(false);
   const [gridLoadWarning, setGridLoadWarning] = useState(null); // null or count of unresolved tiles
   const [customBgModalOpen, setCustomBgModalOpen] = useState(false);
+  const [bgDropOpen, setBgDropOpen] = useState(false);
   // Cached BG colours per tileset name (loaded from DB or sampled)
   const [tilesetBgColors, setTilesetBgColors] = useState(() => load("oph_ts_bg", {}));
   // Parsed manifest data (globals only)
@@ -1212,7 +1238,13 @@ function App() {
   // To remap tiles on the board use the Convert tool.
   const switchTileset = (newTilesetName) => {
     if (newTilesetName === activeTileset) return;
-    const tsBg = tilesetBgColors[newTilesetName] ?? null;
+    // Look up BG colours: DB record first, then OPHELIA_BG fallback, then current
+    const tsDef = dbTilesets.find(ts => ts.name === newTilesetName);
+    const dbBg = (tsDef?.bg_color_1 && tsDef?.bg_color_2)
+      ? { bg1: tsDef.bg_color_1, bg2: tsDef.bg_color_2 }
+      : null;
+    const opheliaBg = OPHELIA_BG[newTilesetName] ?? null;
+    const tsBg = dbBg ?? opheliaBg ?? tilesetBgColors[newTilesetName] ?? null;
     const snap = { grid: gridRef.current, w: gridWRef.current, h: gridHRef.current, tileset: newTilesetName, bg1: tsBg?.bg1 ?? bg1Ref.current, bg2: tsBg?.bg2 ?? bg2Ref.current, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current, label: `Switch to ${newTilesetName}` };
     setHistory(h => {
       const trimmed = h.slice(0, histIdxRef.current + 1);
@@ -1365,9 +1397,19 @@ function App() {
     if (!currentUser?.firebaseToken || !currentUser?.id) { setUserProfile(null); return; }
     (async () => {
       const token = await getValidToken();
-      fetch(`${WORKER_URL}/rest/v1/profiles?id=eq.${currentUser.id}&select=id,username,avatar_hash,role`, {
+      fetch(`${WORKER_URL}/rest/v1/profiles?id=eq.${currentUser.id}&select=id,username,avatar_hash,role,theme`, {
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
-      }).then(r => r.ok ? r.json() : []).then(rows => setUserProfile(rows[0] ?? null)).catch(() => setUserProfile(null));
+      }).then(r => r.ok ? r.json() : []).then(rows => {
+        const profile = rows[0] ?? null;
+        setUserProfile(profile);
+        // Apply stored theme from DB (issue 14)
+        if (profile?.theme && profile.theme !== 'auto') {
+          setAutoTheme(false);
+          setUiTheme(profile.theme === 'cold' ? 'cold' : 'warm');
+        } else if (profile?.theme === 'auto') {
+          setAutoTheme(true);
+        }
+      }).catch(() => setUserProfile(null));
     })();
   }, [currentUser]);
 
@@ -1455,6 +1497,13 @@ function App() {
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, [tilesetDropOpen]);
+
+  useEffect(() => {
+    if (!bgDropOpen) return;
+    const handler = () => setBgDropOpen(false);
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [bgDropOpen]);
 
   // Responsive resize listener
   useEffect(() => {
@@ -3328,6 +3377,7 @@ function App() {
     const [oyInput,        setOyInput]        = React.useState(String(currentOff.oy));
     const [codenameInput,  setCodenameInput]  = React.useState(t.isDb ? (t.codename ?? '') : (tileNames[t.id] || defaultCodename_));
     const [folderKeyInput, setFolderKeyInput] = React.useState(t.folderLabel ?? '');
+    const [sortIndexInput, setSortIndexInput] = React.useState(t.sortIndex != null ? String(t.sortIndex) : '');
     const isPriority = !!priorityTiles[t.id];
 
     const commitMult = val => {
@@ -3372,11 +3422,47 @@ function App() {
       </div>
     );
 
-    // Task 7: Navigation arrows
     const [saveStatus, setSaveStatus] = React.useState(null); // null | 'saving' | 'ok' | 'err'
-    const navTiles = t.tilesetName
-      ? tiles.filter(tile => tile.tilesetName === t.tilesetName).sort((a, b) => (a.sortIndex ?? 0) - (b.sortIndex ?? 0))
-      : [];
+
+    const FLAG_TIPS = {
+      rotatable: "Tile can be rotated in 90° steps on the map.",
+      flippable: "Tile can be flipped horizontally on the map.",
+      otg_passable: "Tile is passable for Over-the-Ground (OTG) movement — characters can walk on top of it.",
+      mirror_offset: "When the tile is flipped, its render offset is mirrored along the horizontal axis.",
+      bottom_render: "Tile renders below the player/unit layer (e.g. floor details, shadows).",
+      priority: "Tile renders above the player/unit layer (e.g. tall objects that overlap characters).",
+      auto_shadow: "Tile automatically casts a drop-shadow onto the layer below.",
+      size_multiplier: "Scales the tile's display size. 1.0 = normal, 1.5 = 50% larger, etc.",
+      offset_h: "Shifts the tile horizontally (% of tile width). Positive = right.",
+      offset_v: "Shifts the tile vertically (% of tile height). Positive = down.",
+      show_count: "Display a counter badge showing how many times this tile has been placed on the map.",
+      starred: "Pin this tile to the starred shortcuts bar for instant access.",
+    };
+    const FlagTip = ({ id }) => (
+      <span style={{ position: "relative", display: "inline-flex", alignItems: "center" }}>
+        <button
+          onClick={e => { e.stopPropagation(); setFlagTooltip(prev => prev === id ? null : id); }}
+          style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 10, padding: "0 2px", lineHeight: 1, opacity: 0.7 }}
+          title="Info">ⓘ</button>
+        {flagTooltip === id && (
+          <span style={{ position: "absolute", left: "100%", top: "50%", transform: "translateY(-50%)", marginLeft: 4, zIndex: 200, background: C.panel, border: `1px solid ${C.border}`, borderRadius: 6, padding: "5px 8px", fontSize: 10, color: C.text, whiteSpace: "nowrap", maxWidth: 220, boxShadow: "0 4px 16px rgba(0,0,0,0.4)", pointerEvents: "none" }}>
+            {FLAG_TIPS[id]}
+          </span>
+        )}
+      </span>
+    );
+    // Issue 13: navigation follows panel order — flat tiles sorted by sortIndex, folder tiles within same folder only
+    const navTiles = (() => {
+      if (!t.tilesetName) return [];
+      const tsFlatTiles = tiles.filter(tile => tile.tilesetName === t.tilesetName && !tile.folderKey);
+      const tsFolderTiles = tiles.filter(tile => tile.tilesetName === t.tilesetName && tile.folderKey);
+      const sortBySortIndex = arr => arr.slice().sort((a, b) => (a.sortIndex ?? 0) - (b.sortIndex ?? 0));
+      if (t.folderKey) {
+        return sortBySortIndex(tsFolderTiles.filter(tile => tile.folderKey === t.folderKey));
+      } else {
+        return sortBySortIndex(tsFlatTiles);
+      }
+    })();
     const navIdx = navTiles.findIndex(tile => tile.id === t.id);
     const hasPrev = navIdx > 0;
     const hasNext = navIdx < navTiles.length - 1;
@@ -3389,19 +3475,19 @@ function App() {
             <button onClick={() => { setInfoTile(null); setDeleteConfirmId(null); }} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
           </div>
           {navTiles.length > 1 ? (
-            <div style={{ background: C.panelDeep, borderRadius: 8, padding: "12px 8px", display: "flex", alignItems: "center", justifyContent: "center", minHeight: 120, gap: 8 }}>
+            <div style={{ background: C.panelDeep, borderRadius: 8, padding: "12px 8px", display: "flex", alignItems: "center", justifyContent: "center", height: 160, gap: 8, flexShrink: 0 }}>
               <button disabled={!hasPrev} onClick={() => hasPrev && setInfoTile(navTiles[navIdx - 1].id)}
                 style={{ background: "none", border: `1px solid ${hasPrev ? C.border : "transparent"}`, borderRadius: 4, color: hasPrev ? C.text : C.muted, fontSize: 18, cursor: hasPrev ? "pointer" : "default", padding: "4px 8px", opacity: hasPrev ? 1 : 0.25, flexShrink: 0, lineHeight: 1 }}>‹</button>
-              <div className="tile-img-checker" style={{ borderRadius: 4, overflow: "hidden" }}>
-                <img src={t.blobSrc ?? t.src} alt="" style={{ maxWidth: "220px", maxHeight: 180, imageRendering: "pixelated" }} />
+              <div className="tile-img-checker" style={{ width: 120, height: 120, borderRadius: 4, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                <img src={t.blobSrc ?? t.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated" }} />
               </div>
               <button disabled={!hasNext} onClick={() => hasNext && setInfoTile(navTiles[navIdx + 1].id)}
                 style={{ background: "none", border: `1px solid ${hasNext ? C.border : "transparent"}`, borderRadius: 4, color: hasNext ? C.text : C.muted, fontSize: 18, cursor: hasNext ? "pointer" : "default", padding: "4px 8px", opacity: hasNext ? 1 : 0.25, flexShrink: 0, lineHeight: 1 }}>›</button>
             </div>
           ) : (
-            <div style={{ background: C.panelDeep, borderRadius: 8, padding: 12, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 120 }}>
-              <div className="tile-img-checker" style={{ borderRadius: 4, overflow: "hidden" }}>
-                <img src={t.blobSrc ?? t.src} alt="" style={{ maxWidth: "260px", maxHeight: 180, imageRendering: "pixelated" }} />
+            <div style={{ background: C.panelDeep, borderRadius: 8, padding: 12, display: "flex", alignItems: "center", justifyContent: "center", height: 160, flexShrink: 0 }}>
+              <div className="tile-img-checker" style={{ width: 128, height: 128, borderRadius: 4, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <img src={t.blobSrc ?? t.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated" }} />
               </div>
             </div>
           )}
@@ -3437,10 +3523,22 @@ function App() {
                 style={{ flex: 1, background: !canEditDb ? "transparent" : "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none", cursor: !canEditDb ? "default" : "text" }} />
             </div>
           )}
+          {/* sort_index — only shown for DB tiles, editable by owners/admins */}
+          {t.isDb && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>sort_index</span>
+              <input type="number" value={sortIndexInput}
+                readOnly={!canEditDb}
+                onChange={e => { if (canEditDb) setSortIndexInput(e.target.value); }}
+                onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
+                placeholder="0"
+                style={{ width: 72, background: !canEditDb ? "transparent" : "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none", cursor: !canEditDb ? "default" : "text" }} />
+            </div>
+          )}
 
           {/* Size multiplier */}
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Size multiplier (%)</span>
+            <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Size multiplier (%)<FlagTip id="size_multiplier" /></span>
             <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepMult(-0.05)}>−</button>
             <input type="number" value={multInput} step="0.05"
               onChange={e => setMultInput(e.target.value)}
@@ -3458,7 +3556,7 @@ function App() {
           {/* Offsets */}
           <span style={{ fontSize: 11, color: C.muted, fontWeight: 600 }}>Offsets (%) 📐</span>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Horizontal</span>
+            <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Horizontal<FlagTip id="offset_h" /></span>
             <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepOx(-1)}>−</button>
             <input type="number" value={oxInput} onChange={e => setOxInput(e.target.value)}
               onBlur={() => commitOffset()} onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
@@ -3471,7 +3569,7 @@ function App() {
             ); })()}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Vertical</span>
+            <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Vertical<FlagTip id="offset_v" /></span>
             <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepOy(-1)}>−</button>
             <input type="number" value={oyInput} onChange={e => setOyInput(e.target.value)}
               onBlur={() => commitOffset()} onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
@@ -3505,7 +3603,7 @@ function App() {
                       }
                     }}
                     style={{ width: 13, height: 13, flexShrink: 0, accentColor: isSpinDefault ? "#4ade80" : "#f97316", cursor: "pointer" }} />
-                  <span style={{ fontSize: 10, color: spinColor, fontFamily: "monospace" }}>rotatable</span>
+                  <span style={{ fontSize: 10, color: spinColor, fontFamily: "monospace" }}>rotatable</span><FlagTip id="rotatable" />
                 </label>
               );
             })()}
@@ -3527,7 +3625,7 @@ function App() {
                       }
                     }}
                     style={{ width: 13, height: 13, flexShrink: 0, accentColor: isFlipDefault ? "#4ade80" : "#f97316", cursor: "pointer" }} />
-                  <span style={{ fontSize: 10, color: flipColor, fontFamily: "monospace" }}>flippable</span>
+                  <span style={{ fontSize: 10, color: flipColor, fontFamily: "monospace" }}>flippable</span><FlagTip id="flippable" />
                 </label>
               );
             })()}
@@ -3547,7 +3645,7 @@ function App() {
                       return n;
                     })}
                     style={{ width: 13, height: 13, flexShrink: 0, accentColor: isOtgDefault ? "#4ade80" : "#f97316", cursor: "pointer" }} />
-                  <span style={{ fontSize: 10, color: otgColor, fontFamily: "monospace" }}>otg_passable</span>
+                  <span style={{ fontSize: 10, color: otgColor, fontFamily: "monospace" }}>otg_passable</span><FlagTip id="otg_passable" />
                 </label>
               );
             })()}
@@ -3560,13 +3658,13 @@ function App() {
                   <input type="checkbox" checked={isMirrorOffset(t)}
                     onChange={ev => setMirrorOffsetTiles(prev => ({ ...prev, [t.id]: ev.target.checked }))}
                     style={{ width: 13, height: 13, flexShrink: 0, accentColor: isMirrorOffDefault ? "#4ade80" : "#f97316", cursor: "pointer" }} />
-                  <span style={{ fontSize: 10, color: moColor, fontFamily: "monospace" }}>mirror_offset</span>
+                  <span style={{ fontSize: 10, color: moColor, fontFamily: "monospace" }}>mirror_offset</span><FlagTip id="mirror_offset" />
                 </label>
               );
             })()}
             {/* bottom_render */}
             {(() => {
-              const bottomDefault = !!(t.src && TILE_SETTINGS.bottomRender.some(p => t.src.includes(p)));
+              const bottomDefault = t.isDb ? !!t.dbBottomRender : !!(t.src && TILE_SETTINGS.bottomRender.some(p => t.src.includes(p)));
               const isBottomDefault = !!bottomTiles[t.id] === bottomDefault;
               const botColor = isBottomDefault ? "#4ade80" : "#f97316";
               return (
@@ -3577,13 +3675,13 @@ function App() {
                       if (ev.target.checked) setPriorityTiles(prev => { const n = { ...prev }; delete n[t.id]; return n; });
                     }}
                     style={{ width: 13, height: 13, flexShrink: 0, accentColor: isBottomDefault ? "#4ade80" : "#f97316", cursor: "pointer" }} />
-                  <span style={{ fontSize: 10, color: botColor, fontFamily: "monospace" }}>bottom_render</span>
+                  <span style={{ fontSize: 10, color: botColor, fontFamily: "monospace" }}>bottom_render</span><FlagTip id="bottom_render" />
                 </label>
               );
             })()}
             {/* priority */}
             {(() => {
-              const topDefault = !!(t.src && TILE_SETTINGS.priority.some(p => t.src.includes(p)));
+              const topDefault = t.isDb ? !!t.dbPriority : !!(t.src && TILE_SETTINGS.priority.some(p => t.src.includes(p)));
               const isTopDefault = isPriority === topDefault;
               const topColor = isTopDefault ? "#4ade80" : "#f97316";
               return (
@@ -3594,20 +3692,22 @@ function App() {
                       if (ev.target.checked) setBottomTiles(prev => { const n = { ...prev }; delete n[t.id]; return n; });
                     }}
                     style={{ width: 13, height: 13, flexShrink: 0, accentColor: isTopDefault ? "#4ade80" : "#f97316", cursor: "pointer" }} />
-                  <span style={{ fontSize: 10, color: topColor, fontFamily: "monospace" }}>priority</span>
+                  <span style={{ fontSize: 10, color: topColor, fontFamily: "monospace" }}>priority</span><FlagTip id="priority" />
                 </label>
               );
             })()}
             {/* auto_shadow */}
             {(() => {
               const shadowOn = !!autoShadowTiles[t.id];
-              const shadowColor = !shadowOn ? "#4ade80" : "#f97316";
+              const shadowDefault = t.isDb ? !!t.dbAutoShadow : false;
+              const isShadowDefault = shadowOn === shadowDefault;
+              const shadowColor = isShadowDefault ? "#4ade80" : "#f97316";
               return (
                 <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", userSelect: "none" }}>
                   <input type="checkbox" checked={shadowOn}
                     onChange={ev => setAutoShadowTiles(prev => { const n = { ...prev }; if (ev.target.checked) n[t.id] = true; else delete n[t.id]; return n; })}
-                    style={{ width: 13, height: 13, flexShrink: 0, accentColor: !shadowOn ? "#4ade80" : "#f97316", cursor: "pointer" }} />
-                  <span style={{ fontSize: 10, color: shadowColor, fontFamily: "monospace" }}>auto_shadow</span>
+                    style={{ width: 13, height: 13, flexShrink: 0, accentColor: isShadowDefault ? "#4ade80" : "#f97316", cursor: "pointer" }} />
+                  <span style={{ fontSize: 10, color: shadowColor, fontFamily: "monospace" }}>auto_shadow</span><FlagTip id="auto_shadow" />
                 </label>
               );
             })()}
@@ -3621,7 +3721,7 @@ function App() {
                 <input type="checkbox" checked={!!countEnabled}
                   onChange={ev => setTileCountMap(prev => ({ ...prev, [t.id]: ev.target.checked }))}
                   style={{ width: 14, height: 14, accentColor: "#34d399", cursor: "pointer" }} />
-                <span style={{ fontSize: 11, color: "#34d399" }}>Show map count 🧮</span>
+                <span style={{ fontSize: 11, color: "#34d399" }}>Show map count 🧮<FlagTip id="show_count" /></span>
               </label>
             );
           })()}
@@ -3630,7 +3730,7 @@ function App() {
             <input type="checkbox" checked={starredTiles.includes(t.id)}
               onChange={() => toggleStar(t.id)}
               style={{ width: 14, height: 14, accentColor: C.accent, cursor: "pointer" }} />
-            <span style={{ fontSize: 11, color: C.text }}>Starred shortcut ⭐</span>
+            <span style={{ fontSize: 11, color: C.text }}>Starred shortcut ⭐<FlagTip id="starred" /></span>
           </label>
 
           {/* Save to Database — visible to admins and the tileset owner */}
@@ -3653,6 +3753,7 @@ function App() {
                     otg_passable: !isOTGWall(t),
                     codename: codenameInput.trim() || t.codename,
                     folder_key: folderKeyInput.trim() || null,
+                    sort_index: sortIndexInput !== '' ? parseInt(sortIndexInput, 10) : null,
                   };
                   const token = await getValidToken();
                   const resp = await fetch(`${WORKER_URL}/rest/v1/tiles?id=eq.${t.dbId}`, {
@@ -3670,6 +3771,23 @@ function App() {
                       if (!prev[tsId]) return prev;
                       return { ...prev, [tsId]: prev[tsId].map(row => row.id === t.dbId ? { ...row, ...body } : row) };
                     });
+                    // Update infoTile's db* fields so isDefault comparisons reflect new saved values
+                    setInfoTile(prev => prev ? {
+                      ...prev,
+                      dbBottomRender: body.bottom_render,
+                      dbPriority: body.priority,
+                      dbAutoShadow: body.auto_shadow,
+                      dbOtgPassable: body.otg_passable,
+                      dbRotatable: body.rotatable,
+                      dbFlippable: body.flippable,
+                      dbMirrorOffset: body.mirror_offset,
+                      dbSizeMultiplier: body.size_multiplier,
+                      dbOffsetX: body.offset_x,
+                      dbOffsetY: body.offset_y,
+                      codename: body.codename,
+                      folderLabel: body.folder_key ?? null,
+                      sortIndex: body.sort_index,
+                    } : prev);
                   }
                   setSaveStatus(resp.ok ? 'ok' : 'err');
                 } catch {
@@ -3677,7 +3795,7 @@ function App() {
                 }
                 setTimeout(() => setSaveStatus(null), 3000);
               }}
-              style={{ ...btn(false, saveStatus === 'ok' ? '#4ade80' : saveStatus === 'err' ? C.danger : C.accent, saveStatus === 'ok' ? 'rgba(74,222,128,0.15)' : saveStatus === 'err' ? 'rgba(248,113,113,0.15)' : C.accentDim), width: '100%', justifyContent: 'center', fontSize: 11 }}>
+              style={{ ...btn(false, saveStatus === 'err' ? C.danger : '#4ade80', saveStatus === 'err' ? 'rgba(248,113,113,0.15)' : 'rgba(74,222,128,0.15)'), width: '100%', justifyContent: 'center', fontSize: 11 }}>
               {saveStatus === 'saving' ? 'Saving…' : saveStatus === 'ok' ? '✓ Saved to Database' : saveStatus === 'err' ? '✗ Save failed' : '💾 Save to Database'}
             </button>
           )}
@@ -3711,22 +3829,28 @@ function App() {
                   e.target.value = '';
                 }} />
               <button onClick={() => document.getElementById('replace-img-input').click()}
-                style={{ ...btn(false, C.accent, C.accentDim), width: '100%', justifyContent: 'center', fontSize: 11 }}>
+                style={{ ...btn(false, '#f59e0b', 'rgba(245,158,11,0.15)'), width: '100%', justifyContent: 'center', fontSize: 11 }}>
                 🖼 Replace Image
               </button>
             </>
           )}
 
-          {/* Delete — DB-owned tiles (admins and owners), local user tiles, default tiles */}
-          {t.isDb && currentUser && (userProfile?.role === 'admin' || t.tilesetOwnerId === currentUser.id) ? (
+          {/* Delete — DB-owned tiles (admins and owners), hidden for atlas tilesets */}
+          {t.isDb && currentUser && (userProfile?.role === 'admin' || t.tilesetOwnerId === currentUser.id) && t.tilesetType !== 'atlas' && t.tilesetType !== 'atlas2' ? (
             deleteConfirmId === t.id ? (
               <div style={{ display: "flex", flexDirection: "column", gap: 5, padding: "6px 0" }}>
-                <span style={{ fontSize: 11, color: C.danger, textAlign: "center" }}>Delete this tile from the database?</span>
+                <span style={{ fontSize: 11, color: C.danger, textAlign: "center" }}>Type the codename to confirm:</span>
+                <code style={{ fontSize: 10, color: C.muted, textAlign: "center", background: "rgba(255,255,255,0.06)", padding: "2px 6px", borderRadius: 4 }}>{t.codename}</code>
+                <input value={deleteConfirmInput} onChange={e => setDeleteConfirmInput(e.target.value)}
+                  placeholder="codename…"
+                  style={{ background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 11, padding: "4px 7px", outline: "none" }} />
                 <div style={{ display: "flex", gap: 6 }}>
-                  <button style={{ ...btn(false), flex: 1, fontSize: 11 }} onClick={() => setDeleteConfirmId(null)}>Cancel</button>
+                  <button style={{ ...btn(false), flex: 1, fontSize: 11 }} onClick={() => { setDeleteConfirmId(null); setDeleteConfirmInput(''); }}>Cancel</button>
                   <button style={{ ...btn(true, C.danger, "rgba(248,113,113,0.18)"), flex: 1, fontSize: 11 }}
+                    disabled={deleteConfirmInput !== t.codename}
                     onClick={async () => {
                       setDeleteConfirmId(null);
+                      setDeleteConfirmInput('');
                       try {
                         const token = await getValidToken();
                         await fetch(`${WORKER_URL}/rest/v1/tiles?id=eq.${t.dbId}`, {
@@ -3757,7 +3881,7 @@ function App() {
               </div>
             ) : (
               <button style={{ ...btn(false, C.danger, "rgba(248,113,113,0.14)"), width: "100%", justifyContent: "center", fontSize: 11 }}
-                onClick={() => setDeleteConfirmId(t.id)}>🗑 Delete from Database</button>
+                onClick={() => { setDeleteConfirmId(t.id); setDeleteConfirmInput(''); }}>🗑 Delete from Database</button>
             )
           ) : !t.isDefault && !t.isDb ? (
             deleteConfirmId === t.id ? (
@@ -4349,33 +4473,11 @@ function App() {
     );
   };
 
-  // ── Create Tileset modal (Task 6d) ───────────────────────────────
-  const createTilesetModal = !createTsOpen ? null : (
-    <div className="modal-backdrop" onClick={() => { if (!createTsLoading) setCreateTsOpen(false); }}>
-      <div className="modal-box" style={{ maxWidth: 320 }} onClick={e => e.stopPropagation()}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Create Tileset</span>
-          <button onClick={() => { if (!createTsLoading) setCreateTsOpen(false); }} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          <label style={{ fontSize: 11, color: C.muted }}>Tileset name</label>
-          <input value={createTsName} onChange={e => setCreateTsName(e.target.value)}
-            onKeyDown={e => { if (e.key === "Enter" && createTsName.trim()) doCreateTs(); }}
-            placeholder="My Tileset"
-            style={{ background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "'Inter', monospace", fontSize: 12, padding: "6px 8px", outline: "none", width: "100%" }} />
-        </div>
-        <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
-          <button style={{ ...btn(false), flex: 1, justifyContent: "center" }} disabled={createTsLoading} onClick={() => setCreateTsOpen(false)}>Cancel</button>
-          <button style={{ ...btn(true, C.accent, C.accentDim), flex: 1, justifyContent: "center" }} disabled={createTsLoading || !createTsName.trim()} onClick={doCreateTs}>
-            {createTsLoading ? 'Creating…' : 'Create'}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
+  // ── Create Tileset (issue 2 fix: function declared before modal that references it) ─
   const doCreateTs = async () => {
     if (!createTsName.trim() || !currentUser) return;
     setCreateTsLoading(true);
+    setCreateTsError('');
     try {
       const token = await getValidToken();
       const resp = await fetch(`${WORKER_URL}/rest/v1/tilesets`, {
@@ -4387,14 +4489,42 @@ function App() {
         setTsFetchTrigger(n => n + 1);
         setCreateTsOpen(false);
         setCreateTsName('');
+        setCreateTsError('');
       } else {
-        alert('Failed to create tileset.');
+        let msg = 'Failed to create tileset.';
+        try { const d = await resp.json(); if (d.message) msg = d.message; } catch {}
+        setCreateTsError(msg);
       }
     } catch (err) {
-      alert('Error: ' + err.message);
+      setCreateTsError('Error: ' + err.message);
     }
     setCreateTsLoading(false);
   };
+  // Modal for create tileset (must come after doCreateTs to avoid TDZ)
+  const createTilesetModal = !createTsOpen ? null : (
+    <div className="modal-backdrop" onClick={() => { if (!createTsLoading) { setCreateTsOpen(false); setCreateTsError(''); } }}>
+      <div className="modal-box" style={{ maxWidth: 320 }} onClick={e => e.stopPropagation()}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Create Tileset</span>
+          <button onClick={() => { if (!createTsLoading) { setCreateTsOpen(false); setCreateTsError(''); } }} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <label style={{ fontSize: 11, color: C.muted }}>Tileset name</label>
+          <input value={createTsName} onChange={e => { setCreateTsName(e.target.value); setCreateTsError(''); }}
+            onKeyDown={e => { if (e.key === "Enter" && createTsName.trim()) doCreateTs(); }}
+            placeholder="My Tileset"
+            style={{ background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "'Inter', monospace", fontSize: 12, padding: "6px 8px", outline: "none", width: "100%" }} />
+          {createTsError && <span style={{ fontSize: 11, color: C.danger }}>{createTsError}</span>}
+        </div>
+        <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+          <button style={{ ...btn(false), flex: 1, justifyContent: "center" }} disabled={createTsLoading} onClick={() => { setCreateTsOpen(false); setCreateTsError(''); }}>Cancel</button>
+          <button style={{ ...btn(true, C.accent, C.accentDim), flex: 1, justifyContent: "center" }} disabled={createTsLoading || !createTsName.trim()} onClick={() => doCreateTs()}>
+            {createTsLoading ? 'Creating…' : 'Create'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 
   // ── Add Tile modal (Task 6e) ──────────────────────────────────────
   const AddTileModal = () => {
@@ -4530,6 +4660,8 @@ function App() {
       setTsGearSaving(false);
     };
 
+    const isWip = tsData.is_wip ?? false;
+
     const togglePublish = async () => {
       if (!canManage) return;
       const newPub = !isPub;
@@ -4542,6 +4674,21 @@ function App() {
         });
         if (r.ok) setDbTilesets(prev => prev.map(ts => ts.id === tsGearTsId ? { ...ts, is_published: newPub } : ts));
         else alert('Failed to update publish status.');
+      } catch (err) { alert('Error: ' + err.message); }
+    };
+
+    const toggleWip = async () => {
+      if (!canManage) return;
+      const newWip = !isWip;
+      try {
+        const token = await getValidToken();
+        const r = await fetch(`${WORKER_URL}/rest/v1/tilesets?id=eq.${tsGearTsId}`, {
+          method: 'PATCH',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+          body: JSON.stringify({ is_wip: newWip }),
+        });
+        if (r.ok) setDbTilesets(prev => prev.map(ts => ts.id === tsGearTsId ? { ...ts, is_wip: newWip } : ts));
+        else alert('Failed to update WIP status.');
       } catch (err) { alert('Error: ' + err.message); }
     };
 
@@ -4603,6 +4750,16 @@ function App() {
                 disabled={!canManage}
                 style={{ ...btn(isPub, '#4ade80', 'rgba(74,222,128,0.15)'), fontSize: 11, padding: "3px 12px" }}>
                 {isPub ? 'Published' : 'Draft'}
+              </button>
+            </div>
+            {/* WIP toggle (issue 1) */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <span style={{ fontSize: 11, color: C.muted }}>WIP</span>
+              <button
+                onClick={toggleWip}
+                disabled={!canManage}
+                style={{ ...btn(isWip, '#fbbf24', 'rgba(251,191,36,0.15)'), fontSize: 11, padding: "3px 12px" }}>
+                {isWip ? 'WIP' : 'Stable'}
               </button>
             </div>
             {/* Add tile button */}
@@ -4706,6 +4863,62 @@ function App() {
       {createTilesetModal}
       <AddTileModal />
       <TilesetGearModal />
+
+      {/* ── Admin Dashboard modal (issue 3) ── */}
+      {adminOpen && (
+        <div className="modal-backdrop" onClick={() => setAdminOpen(false)}>
+          <div className="modal-box" style={{ maxWidth: 480, maxHeight: '85vh', overflowY: 'auto' }} onClick={e => e.stopPropagation()}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: "#fbbf24" }}>🛡 Admin Dashboard</span>
+              <button onClick={() => setAdminOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
+            </div>
+            {/* Profiles */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: C.accent, textTransform: "uppercase", letterSpacing: 0.8 }}>Users ({adminProfiles.length})</span>
+              {adminLoading ? (
+                <span style={{ fontSize: 11, color: C.muted }}>Loading…</span>
+              ) : adminProfiles.length === 0 ? (
+                <span style={{ fontSize: 11, color: C.muted }}>No profiles found.</span>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 3, maxHeight: 220, overflowY: "auto", border: `1px solid ${C.border}`, borderRadius: 6, padding: "4px 6px" }}>
+                  {adminProfiles.map(p => (
+                    <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 4px", borderRadius: 4, background: "rgba(255,255,255,0.03)" }}>
+                      {p.avatar_hash
+                        ? <img src={`https://cdn.discordapp.com/avatars/${p.id}/${p.avatar_hash}.png?size=32`} alt="" style={{ width: 22, height: 22, borderRadius: "50%", flexShrink: 0 }} />
+                        : <div style={{ width: 22, height: 22, borderRadius: "50%", background: C.accent, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, color: "#fff", fontWeight: 700 }}>{(p.username || '?')[0].toUpperCase()}</div>
+                      }
+                      <span style={{ fontSize: 11, color: C.text, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.username || p.id}</span>
+                      <span style={{ fontSize: 10, color: p.role === 'admin' ? "#fbbf24" : C.muted, background: p.role === 'admin' ? "rgba(251,191,36,0.12)" : "transparent", border: p.role === 'admin' ? "1px solid rgba(251,191,36,0.3)" : "none", borderRadius: 3, padding: "1px 5px", flexShrink: 0 }}>{p.role || 'user'}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            {/* Tilesets */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, borderTop: `1px solid ${C.border}`, paddingTop: 10 }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: C.accent, textTransform: "uppercase", letterSpacing: 0.8 }}>Tilesets ({dbTilesets.length})</span>
+              <div style={{ display: "flex", flexDirection: "column", gap: 2, maxHeight: 200, overflowY: "auto", border: `1px solid ${C.border}`, borderRadius: 6, padding: "4px 6px" }}>
+                {dbTilesets.map(ts => (
+                  <div key={ts.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 4px", borderRadius: 4, background: "rgba(255,255,255,0.03)" }}>
+                    <span style={{ fontSize: 11, color: C.text, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ts.name}</span>
+                    <span style={{ fontSize: 9, color: C.muted }}>{ts.type}</span>
+                    {ts.is_wip && <span style={{ fontSize: 9, color: "#fbbf24", background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.35)", borderRadius: 3, padding: "0 3px" }}>WIP</span>}
+                    {!ts.is_published && <span style={{ fontSize: 9, color: "#f97316", background: "rgba(249,115,22,0.12)", border: "1px solid rgba(249,115,22,0.3)", borderRadius: 3, padding: "0 3px" }}>DRAFT</span>}
+                    <button style={{ ...btn(false), fontSize: 9, padding: "1px 6px" }}
+                      onClick={() => { setAdminOpen(false); setTsGearOpen(true); setTsGearTsId(ts.id); setTsGearName(ts.name); setTsGearDeleteConfirm(false); }}>
+                      ⚙
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <button style={{ ...btn(false, C.accent, C.accentDim), fontSize: 11, justifyContent: "center" }}
+                onClick={() => { setAdminOpen(false); setCreateTsName(''); setCreateTsOpen(true); }}>
+                + Create Tileset
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Grid load warning banner */}
       {gridLoadWarning && (
@@ -4990,6 +5203,7 @@ function App() {
                 {/* Admin Dashboard — only visible to admins */}
                 {userProfile?.role === 'admin' && (
                   <button
+                    onMouseDown={e => e.stopPropagation()}
                     onClick={() => { setAdminOpen(true); setUserDropOpen(false); }}
                     style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 12px", background: "none", border: "none", cursor: "pointer", color: "#fbbf24", fontSize: 12, fontFamily: "'Inter', sans-serif" }}
                     onMouseEnter={e => { e.currentTarget.style.background = "rgba(251,191,36,0.08)"; }}
@@ -6713,58 +6927,75 @@ function App() {
 
           {/* Row 3: Background colour selector */}
           {(() => {
-            const allBgPresets = {};
-            dbTilesets.forEach(ts => { allBgPresets[ts.name] = OPHELIA_BG[ts.name] ?? { bg1: "#1a2332", bg2: "#1e2838" }; });
-            const defaultBg = activeTileset ? (OPHELIA_BG[activeTileset] ?? null) : null;
-            const bgMismatch = defaultBg?.bg1 && activeTileset && (
-              bg1.toLowerCase() !== defaultBg.bg1.toLowerCase() || bg2.toLowerCase() !== defaultBg.bg2.toLowerCase()
+            const byAlpha = (a, b) => a.name.localeCompare(b.name);
+            const opheliaTilesets = [...dbTilesets].filter(ts => ts.type === 'base' || ts.type === 'custom').sort((a, b) => (a.type === b.type ? byAlpha(a, b) : a.type === 'base' ? -1 : 1));
+            const atlasTilesets   = [...dbTilesets].filter(ts => ts.type === 'atlas' || ts.type === 'atlas2').sort((a, b) => (a.type === b.type ? byAlpha(a, b) : a.type === 'atlas' ? -1 : 1));
+            const getBgForTs = ts => {
+              if (ts.bg_color_1 && ts.bg_color_2) return { bg1: ts.bg_color_1, bg2: ts.bg_color_2 };
+              return OPHELIA_BG[ts.name] ?? { bg1: "#1a2332", bg2: "#1e2838" };
+            };
+            const isAdmin = userProfile?.role === 'admin';
+            const activePresetLabel = selectedBgPreset === 'custom' ? '✏ Custom' : (selectedBgPreset ?? 'Custom');
+            const sectionLabel = txt => (
+              <div key={txt} style={{ padding: "4px 9px 2px", fontSize: 9, color: C.muted, textTransform: "uppercase", letterSpacing: 1.2, fontWeight: 700, userSelect: "none" }}>{txt}</div>
             );
-            const resetDisplayName = activeTileset ?? null;
+            const renderBgItem = ts => {
+              const checked = selectedBgPreset === ts.name;
+              const nameColor = ts.type === 'custom' ? (checked ? '#67e8f9' : '#7dd3fc') : ts.type === 'atlas2' ? (checked ? '#fcd34d' : '#d4b896') : (checked ? C.accentBright : C.text);
+              return (
+                <div key={ts.name}
+                  style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 9px", cursor: "pointer", userSelect: "none", background: checked ? "rgba(255,255,255,0.05)" : "transparent" }}
+                  onClick={() => {
+                    const p = getBgForTs(ts);
+                    histLabelRef.current = "Background";
+                    pushHistorySnapshot();
+                    applyBgPreset(ts.name, p.bg1, p.bg2);
+                    setBgDropOpen(false);
+                  }}>
+                  {(() => { const p = getBgForTs(ts); return (<><div style={{ width: 10, height: 10, borderRadius: 2, background: p.bg1, border: `1px solid ${C.border}`, flexShrink: 0 }} /><div style={{ width: 10, height: 10, borderRadius: 2, background: p.bg2, border: `1px solid ${C.border}`, flexShrink: 0 }} /></>); })()}
+                  <span style={{ fontSize: 11, color: nameColor, fontWeight: checked ? 600 : 400 }}>
+                    {ts.name}
+                    {ts.is_wip && <span style={{ marginLeft: 4, fontSize: 8, fontWeight: 700, color: "#fbbf24", background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.35)", borderRadius: 3, padding: "0 3px", verticalAlign: "middle" }}>WIP</span>}
+                    {isAdmin && !ts.is_published && <span style={{ marginLeft: 4, fontSize: 8, fontWeight: 700, color: "#f97316", background: "rgba(249,115,22,0.12)", border: "1px solid rgba(249,115,22,0.3)", borderRadius: 3, padding: "0 3px", verticalAlign: "middle" }}>UNPUBLISHED</span>}
+                  </span>
+                </div>
+              );
+            };
             return (
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, padding: "3px 14px 5px", alignItems: "center" }}>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, padding: "3px 14px 5px", alignItems: "center", position: "relative" }}>
                 <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1, userSelect: "none" }}>Background</span>
-                {/* Two small colour swatches showing current bg1/bg2 */}
-                <div style={{ display: "flex", alignItems: "center", gap: 3, cursor: "pointer" }}
-                  onClick={() => { if (selectedBgPreset === "custom") setCustomBgModalOpen(true); }}
-                  title={selectedBgPreset === "custom" ? "Edit custom background…" : undefined}>
+                {/* Swatches */}
+                <div style={{ display: "flex", alignItems: "center", gap: 3 }}>
                   <div style={{ width: 14, height: 14, borderRadius: 3, background: bg1, border: `1px solid ${C.border}`, flexShrink: 0 }} />
                   <div style={{ width: 14, height: 14, borderRadius: 3, background: bg2, border: `1px solid ${C.border}`, flexShrink: 0 }} />
                 </div>
-                {/* Preset selector */}
-                <select value={selectedBgPreset}
-                  onChange={e => {
-                    const key = e.target.value;
-                    if (key === "custom") {
-                      applyBgPreset("custom", customBg.bg1, customBg.bg2);
-                      setCustomBgModalOpen(true);
-                    } else {
-                      const p = allBgPresets[key];
-                      if (p?.bg1) {
-                        histLabelRef.current = "Background";
-                        pushHistorySnapshot();
-                        applyBgPreset(key, p.bg1, p.bg2);
-                      }
-                    }
-                  }}
-                  style={{ background: C.panel, color: selectedBgPreset === "custom" ? C.accent : C.accentBright, border: `1px solid ${C.border}`, borderRadius: 5, fontSize: 10, padding: "2px 4px", cursor: "pointer", outline: "none", fontStyle: selectedBgPreset === "custom" ? "italic" : "normal" }}>
-                  <option value="custom" style={{ color: C.accent, fontStyle: "italic" }}>✏ Custom…</option>
-                  {Object.keys(allBgPresets).length > 0 && (
-                    <optgroup label="Tilesets">
-                      {Object.keys(allBgPresets).map(k => <option key={k} value={k} style={{ color: C.text, fontStyle: "normal" }}>{k}</option>)}
-                    </optgroup>
+                {/* Custom dropdown trigger */}
+                <div style={{ position: "relative" }}>
+                  <button
+                    style={{ ...btn(false, selectedBgPreset === 'custom' ? C.accent : C.accentBright, selectedBgPreset === 'custom' ? C.accentDim : "rgba(74,222,128,0.08)"), fontSize: 10, padding: "2px 7px", fontStyle: selectedBgPreset === 'custom' ? "italic" : "normal" }}
+                    onClick={() => setBgDropOpen(v => !v)}>
+                    {activePresetLabel} ▾
+                  </button>
+                  {bgDropOpen && (
+                    <div onMouseDown={e => e.stopPropagation()} style={{ position: "absolute", top: "100%", left: 0, background: C.panelDeep, border: `1px solid ${C.border}`, borderRadius: 6, zIndex: 300, padding: "4px 0", minWidth: 180, maxHeight: 260, overflowY: "auto", boxShadow: "0 4px 16px rgba(0,0,0,0.45)" }}>
+                      {/* Custom */}
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 9px", cursor: "pointer", userSelect: "none", background: selectedBgPreset === 'custom' ? "rgba(255,255,255,0.05)" : "transparent" }}
+                        onClick={() => { applyBgPreset("custom", customBg.bg1, customBg.bg2); setCustomBgDraft({ bg1, bg2 }); setCustomBgModalOpen(true); setBgDropOpen(false); }}>
+                        <div style={{ width: 10, height: 10, borderRadius: 2, background: customBg.bg1, border: `1px solid ${C.border}`, flexShrink: 0 }} />
+                        <div style={{ width: 10, height: 10, borderRadius: 2, background: customBg.bg2, border: `1px solid ${C.border}`, flexShrink: 0 }} />
+                        <span style={{ fontSize: 11, color: selectedBgPreset === 'custom' ? C.accent : C.text, fontStyle: "italic" }}>✏ Custom…</span>
+                      </div>
+                      {opheliaTilesets.length > 0 && sectionLabel("Opheliapp")}
+                      {opheliaTilesets.map(renderBgItem)}
+                      {atlasTilesets.length > 0 && sectionLabel("Atlas")}
+                      {atlasTilesets.map(renderBgItem)}
+                    </div>
                   )}
-                </select>
+                </div>
                 {selectedBgPreset === "custom" && (
                   <button style={{ ...btn(false), fontSize: 10, padding: "2px 7px" }}
-                    onClick={() => setCustomBgModalOpen(true)}>
+                    onClick={() => { setCustomBgDraft({ bg1, bg2 }); setCustomBgModalOpen(true); }}>
                     Edit…
-                  </button>
-                )}
-                {bgMismatch && resetDisplayName && (
-                  <button style={{ ...btn(false), fontSize: 10, padding: "2px 7px", whiteSpace: "nowrap" }}
-                    onClick={() => { pushHistorySnapshot(); applyBgPreset(activeTileset, defaultBg.bg1, defaultBg.bg2); }}
-                    title={`Reset background colours to ${resetDisplayName} defaults`}>
-                    ↩ {resetDisplayName}
                   </button>
                 )}
               </div>
@@ -6772,49 +7003,61 @@ function App() {
           })()}
 
           {/* Custom Background modal */}
-          {customBgModalOpen && (
-            <div className="modal-backdrop" onClick={() => setCustomBgModalOpen(false)}>
-              <div className="modal-box" style={{ maxWidth: 280 }} onClick={e => e.stopPropagation()}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                  <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Custom Background</span>
-                  <button onClick={() => setCustomBgModalOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18 }}>×</button>
-                </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <span style={{ fontSize: 11, color: C.muted, width: 14, textAlign: "center", fontWeight: 600 }}>A</span>
-                    <input type="color" value={customBg.bg1}
-                      onPointerDown={() => pushHistorySnapshot()}
-                      onChange={e => applyBg1(e.target.value)}
-                      style={{ width: 32, height: 32, border: "none", borderRadius: 5, cursor: "pointer", padding: 2, background: "none", flexShrink: 0 }} />
-                    <input type="text" value={hex1} maxLength={7}
-                      onFocus={() => pushHistorySnapshot()}
-                      onChange={e => { const v = e.target.value; setHex1(v); if (validHex(v)) applyBg1(v); }}
-                      onBlur={() => { if (!validHex(hex1)) setHex1(customBg.bg1); }}
-                      style={{ flex: 1, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 11, padding: "5px 8px", outline: "none" }}
-                      spellCheck={false} />
+          {customBgModalOpen && (() => {
+            const cancelBg = () => {
+              if (customBgDraft) {
+                setBg1(customBgDraft.bg1); setHex1(customBgDraft.bg1);
+                setBg2(customBgDraft.bg2); setHex2(customBgDraft.bg2);
+                setCustomBg(prev => { const n = { ...prev, bg1: customBgDraft.bg1, bg2: customBgDraft.bg2 }; save("oph_custom_bg", n); return n; });
+              }
+              setCustomBgModalOpen(false);
+              setCustomBgDraft(null);
+            };
+            const applyBg = () => { setCustomBgModalOpen(false); setCustomBgDraft(null); };
+            return (
+              <div className="modal-backdrop" onClick={cancelBg}>
+                <div className="modal-box" style={{ maxWidth: 280 }} onClick={e => e.stopPropagation()}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Custom Background</span>
+                    <button onClick={applyBg} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18 }}>×</button>
                   </div>
-                  <div style={{ display: "flex", justifyContent: "center" }}>
-                    <button style={{ ...btn(false), fontSize: 11, padding: "3px 14px" }}
-                      onClick={() => { pushHistorySnapshot(); applyBg1(customBg.bg2); applyBg2(customBg.bg1); }}
-                      title="Swap colours">⇄ Swap</button>
-                  </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <span style={{ fontSize: 11, color: C.muted, width: 14, textAlign: "center", fontWeight: 600 }}>B</span>
-                    <input type="color" value={customBg.bg2}
-                      onPointerDown={() => pushHistorySnapshot()}
-                      onChange={e => applyBg2(e.target.value)}
-                      style={{ width: 32, height: 32, border: "none", borderRadius: 5, cursor: "pointer", padding: 2, background: "none", flexShrink: 0 }} />
-                    <input type="text" value={hex2} maxLength={7}
-                      onFocus={() => pushHistorySnapshot()}
-                      onChange={e => { const v = e.target.value; setHex2(v); if (validHex(v)) applyBg2(v); }}
-                      onBlur={() => { if (!validHex(hex2)) setHex2(customBg.bg2); }}
-                      style={{ flex: 1, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 11, padding: "5px 8px", outline: "none" }}
-                      spellCheck={false} />
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ fontSize: 11, color: C.muted, width: 14, textAlign: "center", fontWeight: 600 }}>A</span>
+                      <input type="color" value={customBg.bg1}
+                        onChange={e => applyBg1(e.target.value)}
+                        style={{ width: 32, height: 32, border: "none", borderRadius: 5, cursor: "pointer", padding: 2, background: "none", flexShrink: 0 }} />
+                      <input type="text" value={hex1} maxLength={7}
+                        onChange={e => { const v = e.target.value; setHex1(v); if (validHex(v)) applyBg1(v); }}
+                        onBlur={() => { if (!validHex(hex1)) setHex1(customBg.bg1); }}
+                        style={{ flex: 1, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 11, padding: "5px 8px", outline: "none" }}
+                        spellCheck={false} />
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "center" }}>
+                      <button style={{ ...btn(false), fontSize: 11, padding: "3px 14px" }}
+                        onClick={() => { applyBg1(customBg.bg2); applyBg2(customBg.bg1); }}
+                        title="Swap colours">⇄ Swap</button>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ fontSize: 11, color: C.muted, width: 14, textAlign: "center", fontWeight: 600 }}>B</span>
+                      <input type="color" value={customBg.bg2}
+                        onChange={e => applyBg2(e.target.value)}
+                        style={{ width: 32, height: 32, border: "none", borderRadius: 5, cursor: "pointer", padding: 2, background: "none", flexShrink: 0 }} />
+                      <input type="text" value={hex2} maxLength={7}
+                        onChange={e => { const v = e.target.value; setHex2(v); if (validHex(v)) applyBg2(v); }}
+                        onBlur={() => { if (!validHex(hex2)) setHex2(customBg.bg2); }}
+                        style={{ flex: 1, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 11, padding: "5px 8px", outline: "none" }}
+                        spellCheck={false} />
+                    </div>
+                    <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+                      <button style={{ ...btn(false), flex: 1, fontSize: 11, justifyContent: "center" }} onClick={cancelBg}>Cancel</button>
+                      <button style={{ ...btn(false, '#4ade80', 'rgba(74,222,128,0.15)'), flex: 1, fontSize: 11, justifyContent: "center" }} onClick={applyBg}>Apply</button>
+                    </div>
                   </div>
                 </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {/* Row 4: Map size */}
           <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 14px" }}>
