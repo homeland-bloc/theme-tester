@@ -5093,7 +5093,7 @@ function App() {
                                 <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
                                   <span style={{ fontSize: 11, color: nameColor, fontWeight: checked ? 600 : 400 }}>
                                     {ts.name}
-                                    {WIP_TILESETS.has(ts.name) && <span style={{ marginLeft: 4, fontSize: 8, fontWeight: 700, color: "#fbbf24", background: "rgba(251,191,36,0.15)", border: "1px solid rgba(251,191,36,0.4)", borderRadius: 3, padding: "0 3px", verticalAlign: "middle" }}>WIP</span>}
+                                    {ts.is_wip && <span style={{ marginLeft: 4, fontSize: 8, fontWeight: 700, color: "#fbbf24", background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.35)", borderRadius: 3, padding: "0 3px", verticalAlign: "middle" }}>WIP</span>}
                                     {isAdmin && !ts.is_published && <span style={{ marginLeft: 4, fontSize: 8, fontWeight: 700, color: "#f97316", background: "rgba(249,115,22,0.12)", border: "1px solid rgba(249,115,22,0.3)", borderRadius: 3, padding: "0 3px", verticalAlign: "middle" }}>UNPUBLISHED</span>}
                                   </span>
                                   {ownerUsername && (ts.type === 'base' || ts.type === 'custom') && (
@@ -5518,7 +5518,8 @@ function App() {
                                 style={{ width: "100%", flexBasis: "100%", flexShrink: 0, display: "flex", alignItems: "center", gap: 4, padding: "3px 2px", cursor: "pointer", userSelect: "none", marginTop: 4 }}>
                                 <span style={{ fontSize: 9, color: C.muted, lineHeight: 1 }}>{panelCollapsed[sectionId] ? "▶" : "▼"}</span>
                                 <span style={{ fontSize: 9, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: 0.8 }}>
-                                  {WIP_TILESETS.has(name) ? name + " (WIP)" : name} ({count})
+                                  {name} ({count})
+                                  {tsData?.is_wip && <span style={{ marginLeft: 4, fontSize: 8, fontWeight: 700, color: "#fbbf24", background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.35)", borderRadius: 3, padding: "0 3px" }}>WIP</span>}
                                   {!isPub && (isOwned || userProfile?.role === 'admin') && <span style={{ marginLeft: 4, fontSize: 8, color: "#f97316", background: "rgba(249,115,22,0.12)", border: "1px solid rgba(249,115,22,0.3)", borderRadius: 3, padding: "0 3px" }}>unpublished</span>}
                                 </span>
                                 <div style={{ flex: 1, height: 1, background: C.border, marginLeft: 4 }} />
