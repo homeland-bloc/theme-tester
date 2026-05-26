@@ -157,7 +157,7 @@ const ATLAS_FOLDER_MAP = {
 };
 
 // Tilesets that are still work-in-progress — shown with a WIP badge in the UI.
-const WIP_TILESETS = new Set(["Airport"]);
+const WIP_TILESETS = new Set([]);
 
 // Default per-tile settings: src pattern → property value.
 // Functions like isDefaultRotatable/isDefaultOTGWall read from here.
@@ -343,7 +343,8 @@ function App() {
   });
   // DB tilesets and tiles (fetched from Supabase on mount)
   const [dbTilesets, setDbTilesets] = useState([]);
-  const [dbTilesData, setDbTilesData] = useState([]); // raw tile rows from DB
+  const [dbTilesByTsId, setDbTilesByTsId] = useState({}); // tiles keyed by tileset UUID, loaded on demand
+  const dbTilesByTsIdRef = useRef({}); // always-current ref for cache checks inside async closures
 
   // Auth: Discord login via OAuth + Firebase custom tokens
   const [currentUser, setCurrentUser] = useState(() => { try { return JSON.parse(localStorage.getItem('oph_user')); } catch { return null; } });
@@ -1114,15 +1115,10 @@ function App() {
     // ── DB tilesets — IDs assigned sequentially ──
     const entriesPerTs = [];
     let tsCount = 0;
-    const tilesByTsId = {};
-    dbTilesData.forEach(tile => {
-      if (!tilesByTsId[tile.tileset_id]) tilesByTsId[tile.tileset_id] = [];
-      tilesByTsId[tile.tileset_id].push(tile);
-    });
 
     for (const tsDef of dbTilesets) {
       const isActive = tsDef.name === activeTileset;
-      const tilesForTs = (tilesByTsId[tsDef.id] ?? []).slice().sort((a, b) => a.sort_index - b.sort_index);
+      const tilesForTs = (dbTilesByTsId[tsDef.id] ?? []).slice().sort((a, b) => a.sort_index - b.sort_index);
       const entries = [];
       const folderGroups = {};
       const flatItems = [];
@@ -1205,7 +1201,7 @@ function App() {
 
     const tsEntries = entriesPerTs.flatMap(ts => ts.entries);
     return { tilesetEntriesPerTs: entriesPerTs, tilesetEntries: tsEntries, globalEntries: glbEntries, flatDefaultTiles: flatTiles, tilesetTileCount: tsCount };
-  }, [manifest, activeTileset, dbTilesets, dbTilesData]);
+  }, [manifest, activeTileset, dbTilesets, dbTilesByTsId]);
 
   // Switch tileset — updates the tile panel and BG colours; board tiles are never remapped.
   // To remap tiles on the board use the Convert tool.
@@ -1248,25 +1244,21 @@ function App() {
     }
   }, [flatDefaultTiles]);
 
-  // Load global tiles from manifest and all published tilesets+tiles from Supabase
+  // Load global manifest + tilesets list. Tiles are loaded on demand per tileset.
   useEffect(() => {
-    // Load global tiles from local manifest (Global tileset stays hardcoded)
     fetch("Resources/manifest.json")
       .then(r => r.ok ? r.json() : {})
       .then(data => setManifest({ global: data.global }))
       .catch(() => setManifest({ global: null }));
 
-    // All DB reads require authentication — skip when the user is not logged in.
     if (!isAuthenticated) {
       setDbTilesets([]);
-      setDbTilesData([]);
+      setDbTilesByTsId({});
+      dbTilesByTsIdRef.current = {};
       setTilesLoading(false);
       return;
     }
 
-    // Fetch tilesets from the Worker (never directly to Supabase with an anon key).
-    // Unauthenticated reads use no Authorization header — the Worker forwards the anon key internally.
-    // Authenticated reads include the Firebase token so the Worker can also return private tilesets.
     (async () => {
       const tsBase = new URL(`${WORKER_URL}/rest/v1/tilesets`);
       if (currentUser?.id) {
@@ -1274,53 +1266,90 @@ function App() {
       } else {
         tsBase.searchParams.set('is_published', 'eq.true');
       }
-      tsBase.searchParams.set('type', 'in.(atlas,base,custom)');
+      tsBase.searchParams.set('type', 'in.(atlas,atlas2,base,custom)');
       tsBase.searchParams.set('order', 'name');
-      const tsUrl = tsBase.toString();
       const token = currentUser?.firebaseToken ? await getValidToken() : null;
       const tsHeaders = token
         ? { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
         : { 'Content-Type': 'application/json' };
       try {
-        const tsResp = await fetch(tsUrl, { headers: tsHeaders });
+        const tsResp = await fetch(tsBase.toString(), { headers: tsHeaders });
         if (!tsResp.ok) {
-          const errText = await tsResp.text();
-          console.error('[tilesets] fetch failed:', tsResp.status, tsResp.statusText, errText);
+          console.error('[tilesets] fetch failed:', tsResp.status, tsResp.statusText, await tsResp.text());
         }
         const tilesets = tsResp.ok ? await tsResp.json() : [];
         if (!Array.isArray(tilesets) || tilesets.length === 0) {
-          console.error('[tilesets] empty or invalid response — tilesets will not load. URL:', tsUrl, 'parsed:', tilesets);
+          console.error('[tilesets] empty or invalid response:', tilesets);
           setDbTilesets([]);
-          setDbTilesData([]);
+          setDbTilesByTsId({});
+          dbTilesByTsIdRef.current = {};
           setTilesLoading(false);
           return;
         }
-        const tsIds = tilesets.map(ts => ts.id).join(',');
-        const tilesUrl = new URL(`${WORKER_URL}/rest/v1/tiles`);
-        tilesUrl.searchParams.set('tileset_id', `in.(${tsIds})`);
-        tilesUrl.searchParams.set('order', 'sort_index');
-        const tilesHeaders = token
-          ? { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
-          : { 'Content-Type': 'application/json' };
-        const tilesResp = await fetch(tilesUrl.toString(), { headers: tilesHeaders });
-        if (!tilesResp.ok) {
-          const errText = await tilesResp.text();
-          console.error('[tiles] fetch failed:', tilesResp.status, tilesResp.statusText, errText);
-        }
-        const tilesRows = tilesResp.ok ? await tilesResp.json() : [];
+
+        // Clear tile cache whenever tilesets are re-fetched (re-auth or tsFetchTrigger)
+        setDbTilesByTsId({});
+        dbTilesByTsIdRef.current = {};
         setDbTilesets(tilesets);
-        setDbTilesData(Array.isArray(tilesRows) ? tilesRows : []);
+
+        // Default to saved tileset if still valid; otherwise pick the most recently created published one
         const saved = load(SK.activeTileset, null);
-        const firstName = tilesets[0]?.name ?? null;
-        const name = (saved && tilesets.some(ts => ts.name === saved)) ? saved : firstName;
+        const published = [...tilesets].filter(ts => ts.is_published).sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+        const mostRecent = published[0]?.name ?? tilesets[0]?.name ?? null;
+        const name = (saved && tilesets.some(ts => ts.name === saved)) ? saved : mostRecent;
         setActiveTileset(name);
         setTilesLoading(false);
+
+        // Pre-fetch tiles for the active tileset immediately
+        if (name) {
+          const tsDef = tilesets.find(ts => ts.name === name);
+          if (tsDef) {
+            const tilesUrl = new URL(`${WORKER_URL}/rest/v1/tiles`);
+            tilesUrl.searchParams.set('tileset_id', `eq.${tsDef.id}`);
+            tilesUrl.searchParams.set('order', 'sort_index');
+            try {
+              const tilesResp = await fetch(tilesUrl.toString(), { headers: tsHeaders });
+              const rows = tilesResp.ok ? await tilesResp.json() : [];
+              const tilesData = Array.isArray(rows) ? rows : [];
+              setDbTilesByTsId({ [tsDef.id]: tilesData });
+              dbTilesByTsIdRef.current = { [tsDef.id]: tilesData };
+            } catch (err) {
+              console.error('[tiles] initial fetch exception:', err);
+            }
+          }
+        }
       } catch (err) {
         console.error('[tilesets] exception during fetch:', err);
         setTilesLoading(false);
       }
     })();
   }, [currentUser?.id, tsFetchTrigger]);
+
+  // On-demand tile loading: fetch tiles for the active tileset if not yet cached
+  useEffect(() => {
+    if (!activeTileset || !isAuthenticated || !dbTilesets.length) return;
+    const tsDef = dbTilesets.find(ts => ts.name === activeTileset);
+    if (!tsDef || dbTilesByTsIdRef.current[tsDef.id] !== undefined) return;
+
+    (async () => {
+      const token = currentUser?.firebaseToken ? await getValidToken() : null;
+      const tilesUrl = new URL(`${WORKER_URL}/rest/v1/tiles`);
+      tilesUrl.searchParams.set('tileset_id', `eq.${tsDef.id}`);
+      tilesUrl.searchParams.set('order', 'sort_index');
+      const headers = token
+        ? { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
+        : { 'Content-Type': 'application/json' };
+      try {
+        const resp = await fetch(tilesUrl.toString(), { headers });
+        const rows = resp.ok ? await resp.json() : [];
+        const tilesData = Array.isArray(rows) ? rows : [];
+        setDbTilesByTsId(prev => ({ ...prev, [tsDef.id]: tilesData }));
+        dbTilesByTsIdRef.current = { ...dbTilesByTsIdRef.current, [tsDef.id]: tilesData };
+      } catch (err) {
+        console.error('[tiles] on-demand fetch exception:', err);
+      }
+    })();
+  }, [activeTileset, dbTilesets]);
 
   // Fetch user profile (role) from Supabase when logged in
   useEffect(() => {
@@ -1376,7 +1405,8 @@ function App() {
     setUserProfile(null);
     setUserDropOpen(false);
     setDbTilesets([]);
-    setDbTilesData([]);
+    setDbTilesByTsId({});
+    dbTilesByTsIdRef.current = {};
     setGridRaw(Array.from({ length: gridH }, () => Array(gridW).fill(null)));
   };
 
@@ -3342,7 +3372,7 @@ function App() {
 
     return (
       <div className="modal-backdrop" onClick={() => { setInfoTile(null); setDeleteConfirmId(null); }}>
-        <div className="modal-box" style={{ maxWidth: 500, maxHeight: '85vh', overflowY: 'auto' }} onClick={e => e.stopPropagation()}>
+        <div className="modal-box" style={{ minWidth: 360, maxWidth: 500, maxHeight: '90vh', overflowY: 'auto' }} onClick={e => e.stopPropagation()}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Tile info</span>
             <button onClick={() => { setInfoTile(null); setDeleteConfirmId(null); }} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
@@ -3435,9 +3465,9 @@ function App() {
             ); })()}
           </div>
 
-          {/* Boolean flags — 3-column grid to keep modal compact */}
+          {/* Boolean flags — 3-column grid: col1=Rotatable/Mirror/Shadow, col2=Flippable/Bottom, col3=OTG/Priority */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
-            {/* Allow spinning */}
+            {/* Row 1 col 1: Rotatable */}
             {(() => {
               const curSpin = isTileRotatable(t);
               const isSpinDefault = curSpin === isDefaultRotatable(t);
@@ -3460,7 +3490,7 @@ function App() {
                 </label>
               );
             })()}
-            {/* Allow flipping */}
+            {/* Row 1 col 2: Flippable */}
             {(() => {
               const curFlip = isFlipAllowed(t);
               const isFlipDefault = curFlip === isDefaultFlippable(t);
@@ -3482,7 +3512,27 @@ function App() {
                 </label>
               );
             })()}
-            {/* Allow mirror offset */}
+            {/* Row 1 col 3: OTG Passable */}
+            {(() => {
+              const curPassable = !isOTGWall(t);
+              const defaultPassable = !isDefaultOTGWall(t);
+              const isOtgDefault = otgWallOverrides[t.id] === undefined;
+              const otgColor = isOtgDefault ? "#4ade80" : "#f97316";
+              return (
+                <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", userSelect: "none" }}>
+                  <input type="checkbox" checked={curPassable}
+                    onChange={ev => setOtgWallOverrides(prev => {
+                      const n = { ...prev };
+                      if (ev.target.checked === defaultPassable) delete n[t.id];
+                      else n[t.id] = !ev.target.checked;
+                      return n;
+                    })}
+                    style={{ width: 13, height: 13, flexShrink: 0, accentColor: isOtgDefault ? "#4ade80" : "#f97316", cursor: "pointer" }} />
+                  <span style={{ fontSize: 10, color: otgColor }}>OTG Pass 🚧</span>
+                </label>
+              );
+            })()}
+            {/* Row 2 col 1: Mirror Offset */}
             {(() => {
               const isMirrorOffDefault = isMirrorOffset(t) === isDefaultMirrorOffset(t);
               const moColor = isMirrorOffDefault ? "#4ade80" : "#f97316";
@@ -3495,7 +3545,7 @@ function App() {
                 </label>
               );
             })()}
-            {/* Always render on bottom */}
+            {/* Row 2 col 2: Bottom Render */}
             {(() => {
               const bottomDefault = !!(t.src && TILE_SETTINGS.bottomRender.some(p => t.src.includes(p)));
               const isBottomDefault = !!bottomTiles[t.id] === bottomDefault;
@@ -3512,7 +3562,7 @@ function App() {
                 </label>
               );
             })()}
-            {/* Always render on top */}
+            {/* Row 2 col 3: Priority */}
             {(() => {
               const topDefault = !!(t.src && TILE_SETTINGS.priority.some(p => t.src.includes(p)));
               const isTopDefault = isPriority === topDefault;
@@ -3529,7 +3579,7 @@ function App() {
                 </label>
               );
             })()}
-            {/* Auto shadow */}
+            {/* Row 3 col 1: Auto Shadow */}
             {(() => {
               const shadowOn = !!autoShadowTiles[t.id];
               const shadowColor = !shadowOn ? "#4ade80" : "#f97316";
@@ -3594,9 +3644,11 @@ function App() {
                     body: JSON.stringify(body),
                   });
                   if (resp.ok) {
-                    setDbTilesData(prev => prev.map(row =>
-                      row.id === t.dbId ? { ...row, ...body } : row
-                    ));
+                    setDbTilesByTsId(prev => {
+                      const tsId = t.tilesetId;
+                      if (!prev[tsId]) return prev;
+                      return { ...prev, [tsId]: prev[tsId].map(row => row.id === t.dbId ? { ...row, ...body } : row) };
+                    });
                   }
                   setSaveStatus(resp.ok ? 'ok' : 'err');
                 } catch {
@@ -4448,7 +4500,7 @@ function App() {
               Opheliapp
             </span>
             <span style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>
-              Brawl Stars map theme tester.<br />
+              Custom theme tester.<br />
               Sign in to access tilesets and build maps.
             </span>
           </div>
@@ -4866,29 +4918,40 @@ function App() {
                     </button>
                     {tilesetDropOpen && (
                       <div onMouseDown={e => e.stopPropagation()} style={{ position: "absolute", top: "100%", left: 8, right: 8, background: C.panelDeep, border: `1px solid ${C.border}`, borderRadius: 6, zIndex: 200, padding: "4px 0", maxHeight: 320, overflowY: "auto", boxShadow: "0 4px 16px rgba(0,0,0,0.45)" }}>
-                        {[...dbTilesets].sort((a, b) => {
-                          const order = { atlas: 0, base: 1 };
-                          const oa = order[a.type] ?? 2, ob = order[b.type] ?? 2;
-                          if (oa !== ob) return oa - ob;
-                          return a.name.localeCompare(b.name);
-                        }).map(ts => {
-                          const checked = ts.name === activeTileset;
-                          return (
-                            <label key={ts.name} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", cursor: "pointer", userSelect: "none" }}
-                              onClick={e => {
-                                e.preventDefault();
-                                switchTileset(ts.name);
-                                setTilesetDropOpen(false);
-                              }}>
-                              <input type="checkbox" readOnly checked={checked}
-                                style={{ accentColor: C.accent, cursor: "pointer", width: 13, height: 13, pointerEvents: "none" }} />
-                              <span style={{ fontSize: 11, color: checked ? C.accentBright : C.text, fontWeight: checked ? 600 : 400 }}>
-                                {ts.name}
-                                {WIP_TILESETS.has(ts.name) && <span style={{ marginLeft: 4, fontSize: 8, fontWeight: 700, color: "#fbbf24", background: "rgba(251,191,36,0.15)", border: "1px solid rgba(251,191,36,0.4)", borderRadius: 3, padding: "0 3px", verticalAlign: "middle" }}>WIP</span>}
-                              </span>
-                            </label>
+                        {(() => {
+                          const byAlpha = (a, b) => a.name.localeCompare(b.name);
+                          const opheliaTilesets = [...dbTilesets].filter(ts => ts.type === 'base' || ts.type === 'custom').sort((a, b) => (a.type === b.type ? byAlpha(a, b) : a.type === 'base' ? -1 : 1));
+                          const atlasTilesets   = [...dbTilesets].filter(ts => ts.type === 'atlas' || ts.type === 'atlas2').sort((a, b) => (a.type === b.type ? byAlpha(a, b) : a.type === 'atlas' ? -1 : 1));
+                          const renderItem = ts => {
+                            const checked = ts.name === activeTileset;
+                            const nameColor = ts.type === 'custom'
+                              ? (checked ? '#67e8f9' : '#7dd3fc')
+                              : ts.type === 'atlas2'
+                              ? (checked ? '#fcd34d' : '#d4b896')
+                              : (checked ? C.accentBright : C.text);
+                            return (
+                              <label key={ts.name} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", cursor: "pointer", userSelect: "none" }}
+                                onClick={e => { e.preventDefault(); switchTileset(ts.name); setTilesetDropOpen(false); }}>
+                                <input type="checkbox" readOnly checked={checked} style={{ accentColor: C.accent, cursor: "pointer", width: 13, height: 13, pointerEvents: "none" }} />
+                                <span style={{ fontSize: 11, color: nameColor, fontWeight: checked ? 600 : 400 }}>
+                                  {ts.name}
+                                  {WIP_TILESETS.has(ts.name) && <span style={{ marginLeft: 4, fontSize: 8, fontWeight: 700, color: "#fbbf24", background: "rgba(251,191,36,0.15)", border: "1px solid rgba(251,191,36,0.4)", borderRadius: 3, padding: "0 3px", verticalAlign: "middle" }}>WIP</span>}
+                                </span>
+                              </label>
+                            );
+                          };
+                          const sectionLabel = txt => (
+                            <div key={txt} style={{ padding: "5px 10px 2px", fontSize: 9, color: C.muted, textTransform: "uppercase", letterSpacing: 1.2, fontWeight: 700, userSelect: "none" }}>{txt}</div>
                           );
-                        })}
+                          return (
+                            <>
+                              {opheliaTilesets.length > 0 && sectionLabel("Opheliapp")}
+                              {opheliaTilesets.map(renderItem)}
+                              {atlasTilesets.length > 0 && sectionLabel("Atlas")}
+                              {atlasTilesets.map(renderItem)}
+                            </>
+                          );
+                        })()}
                       </div>
                     )}
                     </div>
