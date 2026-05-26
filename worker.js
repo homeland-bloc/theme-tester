@@ -278,7 +278,7 @@ async function verifyAdmin(request, env) {
   if (!discordUser) return false;
 
   const res = await fetch(
-    `${env.SUPABASE_URL}/rest/v1/profiles?discord_id=eq.${discordUser.id}&select=role`,
+    `${env.SUPABASE_URL}/rest/v1/profiles?id=eq.${discordUser.id}&select=role`,
     {
       headers: {
         'apikey': env.SUPABASE_ANON_KEY,
