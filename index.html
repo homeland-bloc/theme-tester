@@ -309,6 +309,67 @@ function SectionHeader({ label, open, onToggle, left, right }) {
   );
 }
 
+// ── AddTileModal — defined OUTSIDE App so its component identity is stable.
+//    When defined inside App, React sees a new function type every render and
+//    unmounts+remounts the modal (losing input focus on every keystroke).
+function AddTileModal({ open, onClose, tsId, dbTilesets, file, onFileChange,
+    codename, onCodenameChange, folderKey, onFolderKeyChange,
+    sortIdx, onSortIdxChange, loading, error, onSubmit }) {
+  if (!open) return null;
+  const tsName = dbTilesets.find(ts => ts.id === tsId)?.name ?? tsId;
+  const previewUrl = file ? URL.createObjectURL(file) : null;
+  return (
+    <div className="modal-backdrop" onClick={() => { if (!loading) onClose(); }}>
+      <div className="modal-box" style={{ maxWidth: 340 }} onClick={e => e.stopPropagation()}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Add Tile — {tsName}</span>
+          <button onClick={() => { if (!loading) onClose(); }} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {previewUrl && (
+            <div style={{ background: C.panelDeep, borderRadius: 6, padding: 8, display: "flex", justifyContent: "center" }}>
+              <img src={previewUrl} alt="" style={{ maxWidth: 120, maxHeight: 120, imageRendering: "pixelated" }} />
+            </div>
+          )}
+          <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={{ fontSize: 11, color: C.muted }}>Image file *</span>
+            <input type="file" accept="image/*"
+              onChange={e => onFileChange(e.target.files?.[0] ?? null)}
+              style={{ fontSize: 11, color: C.text }} />
+          </label>
+          <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={{ fontSize: 11, color: C.muted }}>Codename *</span>
+            <input value={codename} onChange={e => onCodenameChange(e.target.value)}
+              placeholder="e.g. MyTileset_Wall1"
+              style={{ background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "5px 8px", outline: "none", width: "100%" }} />
+          </label>
+          <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={{ fontSize: 11, color: C.muted }}>Folder key (optional)</span>
+            <input value={folderKey} onChange={e => onFolderKeyChange(e.target.value)}
+              placeholder="e.g. Walls"
+              style={{ background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "5px 8px", outline: "none", width: "100%" }} />
+          </label>
+          <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={{ fontSize: 11, color: C.muted }}>Sort index (optional)</span>
+            <input type="number" value={sortIdx} onChange={e => onSortIdxChange(e.target.value)}
+              placeholder="0"
+              style={{ background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "5px 8px", outline: "none", width: "100%" }} />
+          </label>
+          {error && <span style={{ fontSize: 11, color: C.danger }}>{error}</span>}
+        </div>
+        <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+          <button style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 12px", borderRadius: 5, border: `1px solid ${C.border}`, background: C.panelDeep, color: C.text, cursor: "pointer", fontSize: 11, flex: 1, justifyContent: "center" }}
+            disabled={loading} onClick={onClose}>Cancel</button>
+          <button style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 12px", borderRadius: 5, border: `1px solid ${C.accentDim}`, background: C.accentDim, color: C.accent, cursor: "pointer", fontSize: 11, flex: 1, justifyContent: "center" }}
+            disabled={loading || !file || !codename.trim()} onClick={onSubmit}>
+            {loading ? 'Uploading…' : 'Add Tile'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main App ───────────────────────────────────────────────────────────
 // ── Fit-to-viewport zoom ───────────────────────────────────────────────
 function calcFitZoom(gw, gh) {
@@ -354,6 +415,7 @@ function App() {
   const [adminOpen, setAdminOpen] = useState(false);
   const [adminProfiles, setAdminProfiles] = useState([]);
   const [adminLoading, setAdminLoading] = useState(false);
+  const [adminRoleChanging, setAdminRoleChanging] = useState(new Set()); // profile IDs currently being patched
   // Tileset/tile management (Tasks 6d, 6e, 6f)
   const [createTsOpen, setCreateTsOpen] = useState(false);
   const [createTsName, setCreateTsName] = useState('');
@@ -1040,20 +1102,16 @@ function App() {
     );
   };
 
-  // Pre-computed tile → count in grid (for CountBadge). Only computed when showTileCount is on.
-  const tileCounts = showTileCount ? (() => {
+  // Pre-computed tile → count in grid (for CountBadge).
+  const tileCounts = (() => {
     const counts = {};
     grid.forEach(row => row.forEach(id => { if (id != null) counts[id] = (counts[id] ?? 0) + 1; }));
     return counts;
-  })() : {};
+  })();
 
-  // Count badge shown at bottom-right of tile cards when "Show tile count" is enabled.
-  // Ignores "Hide default tile settings labels" — always shown when the feature is on.
+  // Count badge shown at bottom-right of tile cards — driven by the per-tile DB field show_tile_count.
   const CountBadge = ({ t }) => {
-    if (!showTileCount) return null;
-    const isGlobal = t.codename?.startsWith("Global_");
-    const enabled = tileCountMap[t.id] !== undefined ? tileCountMap[t.id] : isGlobal;
-    if (!enabled) return null;
+    if (!t.dbShowTileCount) return null;
     const count = tileCounts[t.id] ?? 0;
     if (count === 0) return null;
     return (
@@ -1074,9 +1132,10 @@ function App() {
     const isBottom      = !!bottomTiles[t.id];
     const hasMirrorOff  = isMirrorOffset(t);
     const hasShadow     = !!autoShadowTiles[t.id];
-    const prioDefault   = !!(t.src && TILE_SETTINGS.priority.some(p => t.src.includes(p)));
-    const bottomDefault = !!(t.src && TILE_SETTINGS.bottomRender.some(p => t.src.includes(p)));
-    const mirrorOffDefault = !!(t.src && TILE_SETTINGS.mirrorOffset.some(p => t.src.includes(p)));
+    // Use DB value as default for DB tiles; fall back to src-pattern check for non-DB tiles
+    const prioDefault   = t.isDb ? !!t.dbPriority    : !!(t.src && TILE_SETTINGS.priority.some(p => t.src.includes(p)));
+    const bottomDefault = t.isDb ? !!t.dbBottomRender : !!(t.src && TILE_SETTINGS.bottomRender.some(p => t.src.includes(p)));
+    const mirrorOffDefault = t.isDb ? !!t.dbMirrorOffset : !!(t.src && TILE_SETTINGS.mirrorOffset.some(p => t.src.includes(p)));
     const showPrio      = isPrio && (!hideDefaultLabels || !prioDefault);
     const showBottom    = isBottom && (!hideDefaultLabels || !bottomDefault);
     const showMirrorOff = hasMirrorOff && (!hideDefaultLabels || !mirrorOffDefault);
@@ -1178,6 +1237,7 @@ function App() {
           dbBottomRender: row.bottom_render,
           dbPriority: row.priority,
           dbAutoShadow: row.auto_shadow,
+          dbShowTileCount: row.show_tile_count,
         };
         if (row.folder_key) {
           tileObj.folderKey = `${tsDef.name}/${row.folder_key}`;
@@ -1253,7 +1313,29 @@ function App() {
     });
     setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
     setActiveTileset(newTilesetName);
-    if (tsBg?.bg1) applyBgPreset(newTilesetName, tsBg.bg1, tsBg.bg2);
+    // Always update selectedBgPreset label to match the new tileset (even if colours stay the same)
+    applyBgPreset(newTilesetName, tsBg?.bg1 ?? bg1Ref.current, tsBg?.bg2 ?? bg2Ref.current);
+    // Clear per-tile overrides for tileset tile IDs (< USER_ID_START) to prevent stale state
+    // bleeding from one tileset into the next when IDs get reassigned.
+    const keepNonTileset = obj => {
+      const next = {};
+      Object.entries(obj).forEach(([k, v]) => { if (Number(k) >= USER_ID_START) next[Number(k)] = v; });
+      return next;
+    };
+    setCardRotations(prev => keepNonTileset(prev));
+    setCardFlipSteps(prev => keepNonTileset(prev));
+    setCardFlipModes(prev => keepNonTileset(prev));
+    setTileMultipliers(prev => keepNonTileset(prev));
+    setTileOffsets(prev => keepNonTileset(prev));
+    setRotatableMap(prev => keepNonTileset(prev));
+    setAllowFlipMap(prev => keepNonTileset(prev));
+    setMirrorOffsetTiles(prev => keepNonTileset(prev));
+    setOtgWallOverrides(prev => keepNonTileset(prev));
+    // Also clear priority/bottom/shadow maps — the useEffect will rebuild from DB defaults,
+    // but clearing here prevents the old tileset's per-tile values from showing for one frame.
+    setPriorityTiles(prev => keepNonTileset(prev));
+    setBottomTiles(prev => keepNonTileset(prev));
+    setAutoShadowTiles(prev => keepNonTileset(prev));
   };
 
   // Sync defaultTiles and nextId whenever flatDefaultTiles changes.
@@ -1425,6 +1507,36 @@ function App() {
       }).then(r => r.ok ? r.json() : []).then(rows => { setAdminProfiles(rows); setAdminLoading(false); }).catch(() => setAdminLoading(false));
     })();
   }, [adminOpen, currentUser]);
+
+  // Change a user's role (admin only; cannot set to 'admin')
+  const changeUserRole = async (profileId, newRole) => {
+    if (newRole === 'admin') return; // client-side guard
+    setAdminRoleChanging(prev => new Set([...prev, profileId]));
+    try {
+      const token = await getValidToken();
+      const resp = await fetch(`${WORKER_URL}/rest/v1/profiles?id=eq.${profileId}`, {
+        method: 'PATCH',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          'Prefer': 'return=representation',
+        },
+        body: JSON.stringify({ role: newRole }),
+      });
+      if (resp.ok) {
+        setAdminProfiles(prev => prev.map(p => p.id === profileId ? { ...p, role: newRole } : p));
+      } else {
+        const errData = await resp.json().catch(() => ({}));
+        console.error('[changeUserRole] PATCH failed:', resp.status, errData);
+        alert(`Role change failed: ${errData.message || resp.status}`);
+      }
+    } catch (e) {
+      console.error('[changeUserRole] error:', e);
+      alert('Role change failed: network error');
+    } finally {
+      setAdminRoleChanging(prev => { const n = new Set(prev); n.delete(profileId); return n; });
+    }
+  };
 
   // Close user dropdown on outside click; reset logout confirmation state when closed
   useEffect(() => {
@@ -3428,29 +3540,29 @@ function App() {
     const FLAG_TIPS = {
       rotatable: "Tile can be rotated in 90° steps on the map.",
       flippable: "Tile can be flipped horizontally on the map.",
-      otg_passable: "Tile is passable for Over-the-Ground (OTG) movement — characters can walk on top of it.",
+      otg_passable: "Tile is treated as a one-tile-gap passable object, rendered above the ground layer.",
       mirror_offset: "When the tile is flipped, its render offset is mirrored along the horizontal axis.",
       bottom_render: "Tile renders below the player/unit layer (e.g. floor details, shadows).",
       priority: "Tile renders above the player/unit layer (e.g. tall objects that overlap characters).",
       auto_shadow: "Tile automatically casts a drop-shadow onto the layer below.",
+      show_tile_count: "Show a ×N badge on this tile card counting how many times it appears on the map.",
       size_multiplier: "Scales the tile's display size. 1.0 = normal, 1.5 = 50% larger, etc.",
       offset_h: "Shifts the tile horizontally (% of tile width). Positive = right.",
       offset_v: "Shifts the tile vertically (% of tile height). Positive = down.",
-      show_count: "Display a counter badge showing how many times this tile has been placed on the map.",
       starred: "Pin this tile to the starred shortcuts bar for instant access.",
     };
+    // Inline ⓘ button — clicking toggles an inline description row that appears below the flag row
     const FlagTip = ({ id }) => (
-      <span style={{ position: "relative", display: "inline-flex", alignItems: "center" }}>
-        <button
-          onClick={e => { e.stopPropagation(); setFlagTooltip(prev => prev === id ? null : id); }}
-          style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 10, padding: "0 2px", lineHeight: 1, opacity: 0.7 }}
-          title="Info">ⓘ</button>
-        {flagTooltip === id && (
-          <span style={{ position: "absolute", left: "100%", top: "50%", transform: "translateY(-50%)", marginLeft: 4, zIndex: 200, background: C.panel, border: `1px solid ${C.border}`, borderRadius: 6, padding: "5px 8px", fontSize: 10, color: C.text, whiteSpace: "nowrap", maxWidth: 220, boxShadow: "0 4px 16px rgba(0,0,0,0.4)", pointerEvents: "none" }}>
-            {FLAG_TIPS[id]}
-          </span>
-        )}
-      </span>
+      <button
+        onClick={e => { e.stopPropagation(); setFlagTooltip(prev => prev === id ? null : id); }}
+        style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 10, padding: "0 2px", lineHeight: 1, opacity: 0.7 }}
+        title="Info">ⓘ</button>
+    );
+    // Inline description row — rendered as a full-width grid item after the flag row
+    const FlagDesc = ({ id }) => flagTooltip !== id ? null : (
+      <div style={{ gridColumn: "1 / -1", padding: "4px 6px", background: "rgba(255,255,255,0.04)", borderRadius: 4, fontSize: 10, color: C.muted, lineHeight: 1.5, marginTop: -2 }}>
+        {FLAG_TIPS[id]}
+      </div>
     );
     // Issue 13: navigation follows panel order — flat tiles sorted by sortIndex, folder tiles within same folder only
     const navTiles = (() => {
@@ -3554,6 +3666,8 @@ function App() {
             ); })()}
           </div>
 
+          <FlagDesc id="size_multiplier" />
+
           {/* Offsets */}
           <span style={{ fontSize: 11, color: C.muted, fontWeight: 600 }}>Offsets (%) 📐</span>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -3582,17 +3696,43 @@ function App() {
                 onClick={() => { setOyInput(String(defaultOff.oy)); setTileOffsets(prev => { const n = {...prev}; const o = {...(prev[t.id] ?? {}), oy: defaultOff.oy}; n[t.id] = o; return n; }); }}>Reset</button>
             ); })()}
           </div>
+          {(flagTooltip === 'offset_h' || flagTooltip === 'offset_v') && (
+            <div style={{ padding: "4px 6px", background: "rgba(255,255,255,0.04)", borderRadius: 4, fontSize: 10, color: C.muted, lineHeight: 1.5 }}>{FLAG_TIPS[flagTooltip]}</div>
+          )}
 
-          {/* Boolean flags — 2-column grid with exact DB field names */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
-            {/* rotatable */}
-            {(() => {
-              const curSpin = isTileRotatable(t);
-              const isSpinDefault = curSpin === isDefaultRotatable(t);
-              const spinColor = isSpinDefault ? "#4ade80" : "#f97316";
-              return (
-                <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", userSelect: "none" }}>
-                  <input type="checkbox" checked={curSpin}
+          {/* Boolean flags — 2-column grid.
+               Each pair of flag labels occupies one row; the inline tooltip description
+               is placed as the NEXT grid item with gridColumn:"1/-1" so it spans both
+               columns correctly. Using React.Fragment caused descriptions to land in col 2
+               instead of spanning the full row — this explicit pairing fixes that. */}
+          {(() => {
+            const curSpin = isTileRotatable(t);
+            const spinColor = (curSpin === isDefaultRotatable(t)) ? "#4ade80" : "#f97316";
+            const curFlip = isFlipAllowed(t);
+            const flipColor = (curFlip === isDefaultFlippable(t)) ? "#4ade80" : "#f97316";
+            const curPassable = !isOTGWall(t);
+            const defaultPassable = !isDefaultOTGWall(t);
+            const otgColor = (otgWallOverrides[t.id] === undefined) ? "#4ade80" : "#f97316";
+            const mirrorOn = isMirrorOffset(t);
+            const moColor = (mirrorOn === isDefaultMirrorOffset(t)) ? "#4ade80" : "#f97316";
+            const botOn = !!bottomTiles[t.id];
+            const bottomDef = t.isDb ? !!t.dbBottomRender : !!(t.src && TILE_SETTINGS.bottomRender.some(p => t.src.includes(p)));
+            const botColor = (botOn === bottomDef) ? "#4ade80" : "#f97316";
+            const topDef = t.isDb ? !!t.dbPriority : !!(t.src && TILE_SETTINGS.priority.some(p => t.src.includes(p)));
+            const topColor = (isPriority === topDef) ? "#4ade80" : "#f97316";
+            const shadowOn = !!autoShadowTiles[t.id];
+            const shadowDef = t.isDb ? !!t.dbAutoShadow : false;
+            const shadowColor = (shadowOn === shadowDef) ? "#4ade80" : "#f97316";
+            const countOn = !!t.dbShowTileCount;
+            const ft = flagTooltip;
+            const ls = { display: "flex", alignItems: "center", gap: 5, cursor: "pointer", userSelect: "none" };
+            const cs = col => ({ width: 13, height: 13, flexShrink: 0, accentColor: col, cursor: "pointer" });
+            const ds = { gridColumn: "1 / -1", padding: "4px 6px", background: "rgba(255,255,255,0.04)", borderRadius: 4, fontSize: 10, color: C.muted, lineHeight: 1.5, marginTop: -2 };
+            return (
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "4px 6px" }}>
+                {/* Row 1 — rotatable | flippable */}
+                <label style={ls}>
+                  <input type="checkbox" checked={curSpin} style={cs(spinColor)}
                     onChange={ev => {
                       setRotatableMap(prev => ({ ...prev, [t.id]: ev.target.checked }));
                       if (!ev.target.checked) {
@@ -3602,128 +3742,81 @@ function App() {
                           setCardFlipModes(prev => { const n = {...prev}; delete n[t.id]; return n; });
                         }
                       }
-                    }}
-                    style={{ width: 13, height: 13, flexShrink: 0, accentColor: isSpinDefault ? "#4ade80" : "#f97316", cursor: "pointer" }} />
-                  <span style={{ fontSize: 10, color: spinColor, fontFamily: "monospace" }}>rotatable</span><FlagTip id="rotatable" />
+                    }} />
+                  <span style={{ fontSize: 10, color: spinColor, fontFamily: "monospace" }}>rotatable 🐬</span><FlagTip id="rotatable" />
                 </label>
-              );
-            })()}
-            {/* flippable */}
-            {(() => {
-              const curFlip = isFlipAllowed(t);
-              const isFlipDefault = curFlip === isDefaultFlippable(t);
-              const flipColor = isFlipDefault ? "#4ade80" : "#f97316";
-              return (
-                <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", userSelect: "none" }}>
-                  <input type="checkbox" checked={curFlip}
+                <label style={ls}>
+                  <input type="checkbox" checked={curFlip} style={cs(flipColor)}
                     onChange={ev => {
                       setAllowFlipMap(prev => ({ ...prev, [t.id]: ev.target.checked }));
                       if (!ev.target.checked) {
                         setCardFlipSteps(prev => { const n = {...prev}; delete n[t.id]; return n; });
-                        if ((cardFlipModes[t.id] ?? 'flip') === 'flip') {
-                          setCardFlipModes(prev => { const n = {...prev}; delete n[t.id]; return n; });
-                        }
+                        if ((cardFlipModes[t.id] ?? 'flip') === 'flip') { setCardFlipModes(prev => { const n = {...prev}; delete n[t.id]; return n; }); }
                       }
-                    }}
-                    style={{ width: 13, height: 13, flexShrink: 0, accentColor: isFlipDefault ? "#4ade80" : "#f97316", cursor: "pointer" }} />
-                  <span style={{ fontSize: 10, color: flipColor, fontFamily: "monospace" }}>flippable</span><FlagTip id="flippable" />
+                    }} />
+                  <span style={{ fontSize: 10, color: flipColor, fontFamily: "monospace" }}>flippable 🦭</span><FlagTip id="flippable" />
                 </label>
-              );
-            })()}
-            {/* otg_passable */}
-            {(() => {
-              const curPassable = !isOTGWall(t);
-              const defaultPassable = !isDefaultOTGWall(t);
-              const isOtgDefault = otgWallOverrides[t.id] === undefined;
-              const otgColor = isOtgDefault ? "#4ade80" : "#f97316";
-              return (
-                <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", userSelect: "none" }}>
-                  <input type="checkbox" checked={curPassable}
+                {(ft === 'rotatable' || ft === 'flippable') && <div style={ds}>{FLAG_TIPS[ft]}</div>}
+
+                {/* Row 2 — otg_passable | mirror_offset */}
+                <label style={ls}>
+                  <input type="checkbox" checked={curPassable} style={cs(otgColor)}
                     onChange={ev => setOtgWallOverrides(prev => {
                       const n = { ...prev };
-                      if (ev.target.checked === defaultPassable) delete n[t.id];
-                      else n[t.id] = !ev.target.checked;
+                      if (ev.target.checked === defaultPassable) delete n[t.id]; else n[t.id] = !ev.target.checked;
                       return n;
-                    })}
-                    style={{ width: 13, height: 13, flexShrink: 0, accentColor: isOtgDefault ? "#4ade80" : "#f97316", cursor: "pointer" }} />
+                    })} />
                   <span style={{ fontSize: 10, color: otgColor, fontFamily: "monospace" }}>otg_passable</span><FlagTip id="otg_passable" />
                 </label>
-              );
-            })()}
-            {/* mirror_offset */}
-            {(() => {
-              const isMirrorOffDefault = isMirrorOffset(t) === isDefaultMirrorOffset(t);
-              const moColor = isMirrorOffDefault ? "#4ade80" : "#f97316";
-              return (
-                <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", userSelect: "none" }}>
-                  <input type="checkbox" checked={isMirrorOffset(t)}
-                    onChange={ev => setMirrorOffsetTiles(prev => ({ ...prev, [t.id]: ev.target.checked }))}
-                    style={{ width: 13, height: 13, flexShrink: 0, accentColor: isMirrorOffDefault ? "#4ade80" : "#f97316", cursor: "pointer" }} />
-                  <span style={{ fontSize: 10, color: moColor, fontFamily: "monospace" }}>mirror_offset</span><FlagTip id="mirror_offset" />
+                <label style={ls}>
+                  <input type="checkbox" checked={mirrorOn} style={cs(moColor)}
+                    onChange={ev => setMirrorOffsetTiles(prev => ({ ...prev, [t.id]: ev.target.checked }))} />
+                  <span style={{ fontSize: 10, color: moColor, fontFamily: "monospace" }}>mirror_offset 🌪️</span><FlagTip id="mirror_offset" />
                 </label>
-              );
-            })()}
-            {/* bottom_render */}
-            {(() => {
-              const bottomDefault = t.isDb ? !!t.dbBottomRender : !!(t.src && TILE_SETTINGS.bottomRender.some(p => t.src.includes(p)));
-              const isBottomDefault = !!bottomTiles[t.id] === bottomDefault;
-              const botColor = isBottomDefault ? "#4ade80" : "#f97316";
-              return (
-                <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", userSelect: "none" }}>
-                  <input type="checkbox" checked={!!bottomTiles[t.id]}
+                {(ft === 'otg_passable' || ft === 'mirror_offset') && <div style={ds}>{FLAG_TIPS[ft]}</div>}
+
+                {/* Row 3 — bottom_render | priority */}
+                <label style={ls}>
+                  <input type="checkbox" checked={botOn} style={cs(botColor)}
                     onChange={ev => {
                       setBottomTiles(prev => { const n = { ...prev }; if (ev.target.checked) n[t.id] = true; else delete n[t.id]; return n; });
                       if (ev.target.checked) setPriorityTiles(prev => { const n = { ...prev }; delete n[t.id]; return n; });
-                    }}
-                    style={{ width: 13, height: 13, flexShrink: 0, accentColor: isBottomDefault ? "#4ade80" : "#f97316", cursor: "pointer" }} />
-                  <span style={{ fontSize: 10, color: botColor, fontFamily: "monospace" }}>bottom_render</span><FlagTip id="bottom_render" />
+                    }} />
+                  <span style={{ fontSize: 10, color: botColor, fontFamily: "monospace" }}>bottom_render ⚓</span><FlagTip id="bottom_render" />
                 </label>
-              );
-            })()}
-            {/* priority */}
-            {(() => {
-              const topDefault = t.isDb ? !!t.dbPriority : !!(t.src && TILE_SETTINGS.priority.some(p => t.src.includes(p)));
-              const isTopDefault = isPriority === topDefault;
-              const topColor = isTopDefault ? "#4ade80" : "#f97316";
-              return (
-                <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", userSelect: "none" }}>
-                  <input type="checkbox" checked={isPriority}
+                <label style={ls}>
+                  <input type="checkbox" checked={isPriority} style={cs(topColor)}
                     onChange={ev => {
                       setPriorityTiles(prev => { const n = { ...prev }; if (ev.target.checked) n[t.id] = true; else delete n[t.id]; return n; });
                       if (ev.target.checked) setBottomTiles(prev => { const n = { ...prev }; delete n[t.id]; return n; });
-                    }}
-                    style={{ width: 13, height: 13, flexShrink: 0, accentColor: isTopDefault ? "#4ade80" : "#f97316", cursor: "pointer" }} />
-                  <span style={{ fontSize: 10, color: topColor, fontFamily: "monospace" }}>priority</span><FlagTip id="priority" />
+                    }} />
+                  <span style={{ fontSize: 10, color: topColor, fontFamily: "monospace" }}>priority 🚨</span><FlagTip id="priority" />
                 </label>
-              );
-            })()}
-            {/* auto_shadow */}
-            {(() => {
-              const shadowOn = !!autoShadowTiles[t.id];
-              const shadowDefault = t.isDb ? !!t.dbAutoShadow : false;
-              const isShadowDefault = shadowOn === shadowDefault;
-              const shadowColor = isShadowDefault ? "#4ade80" : "#f97316";
-              return (
-                <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", userSelect: "none" }}>
-                  <input type="checkbox" checked={shadowOn}
-                    onChange={ev => setAutoShadowTiles(prev => { const n = { ...prev }; if (ev.target.checked) n[t.id] = true; else delete n[t.id]; return n; })}
-                    style={{ width: 13, height: 13, flexShrink: 0, accentColor: isShadowDefault ? "#4ade80" : "#f97316", cursor: "pointer" }} />
-                  <span style={{ fontSize: 10, color: shadowColor, fontFamily: "monospace" }}>auto_shadow</span><FlagTip id="auto_shadow" />
+                {(ft === 'bottom_render' || ft === 'priority') && <div style={ds}>{FLAG_TIPS[ft]}</div>}
+
+                {/* Row 4 — auto_shadow | show_tile_count (DB tiles only) */}
+                <label style={ls}>
+                  <input type="checkbox" checked={shadowOn} style={cs(shadowColor)}
+                    onChange={ev => setAutoShadowTiles(prev => { const n = { ...prev }; if (ev.target.checked) n[t.id] = true; else delete n[t.id]; return n; })} />
+                  <span style={{ fontSize: 10, color: shadowColor, fontFamily: "monospace" }}>auto_shadow 👻</span><FlagTip id="auto_shadow" />
                 </label>
-              );
-            })()}
-          </div>
-          {/* Show map count */}
-          {(() => {
-            const isGlobal = t.codename?.startsWith("Global_");
-            const countEnabled = tileCountMap[t.id] !== undefined ? tileCountMap[t.id] : isGlobal;
-            return (
-              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
-                <input type="checkbox" checked={!!countEnabled}
-                  onChange={ev => setTileCountMap(prev => ({ ...prev, [t.id]: ev.target.checked }))}
-                  style={{ width: 14, height: 14, accentColor: "#34d399", cursor: "pointer" }} />
-                <span style={{ fontSize: 11, color: "#34d399" }}>Show map count 🧮<FlagTip id="show_count" /></span>
-              </label>
+                {t.isDb ? (
+                  <label style={{ ...ls, cursor: canEditDb ? "pointer" : "default" }}>
+                    <input type="checkbox" checked={countOn} disabled={!canEditDb}
+                      style={{ width: 13, height: 13, flexShrink: 0, accentColor: "#34d399", cursor: canEditDb ? "pointer" : "default" }}
+                      onChange={ev => {
+                        setDbTilesByTsId(prev => {
+                          const tsId = t.tilesetId;
+                          if (!prev[tsId]) return prev;
+                          return { ...prev, [tsId]: prev[tsId].map(row => row.id === t.dbId ? { ...row, show_tile_count: ev.target.checked } : row) };
+                        });
+                        setInfoTile(prev => prev ? { ...prev, dbShowTileCount: ev.target.checked } : prev);
+                      }} />
+                    <span style={{ fontSize: 10, color: "#34d399", fontFamily: "monospace" }}>show_tile_count 🧮</span><FlagTip id="show_tile_count" />
+                  </label>
+                ) : <div />}
+                {(ft === 'auto_shadow' || ft === 'show_tile_count') && <div style={ds}>{FLAG_TIPS[ft]}</div>}
+              </div>
             );
           })()}
           {/* Starred shortcut */}
@@ -3733,6 +3826,7 @@ function App() {
               style={{ width: 14, height: 14, accentColor: C.accent, cursor: "pointer" }} />
             <span style={{ fontSize: 11, color: C.text }}>Starred shortcut ⭐<FlagTip id="starred" /></span>
           </label>
+          <FlagDesc id="starred" />
 
           {/* Save to Database — visible to admins and the tileset owner */}
           {canEditDb && (
@@ -3752,6 +3846,7 @@ function App() {
                     priority: !!priorityTiles[t.id],
                     auto_shadow: !!autoShadowTiles[t.id],
                     otg_passable: !isOTGWall(t),
+                    show_tile_count: !!t.dbShowTileCount,
                     codename: codenameInput.trim() || t.codename,
                     folder_key: folderKeyInput.trim() || null,
                     sort_index: sortIndexInput !== '' ? parseInt(sortIndexInput, 10) : null,
@@ -3785,6 +3880,7 @@ function App() {
                       dbSizeMultiplier: body.size_multiplier,
                       dbOffsetX: body.offset_x,
                       dbOffsetY: body.offset_y,
+                      dbShowTileCount: body.show_tile_count,
                       codename: body.codename,
                       folderLabel: body.folder_key ?? null,
                       sortIndex: body.sort_index,
@@ -4517,65 +4613,7 @@ function App() {
     </div>
   );
 
-  // ── Add Tile modal (Task 6e) ──────────────────────────────────────
-  const AddTileModal = () => {
-    if (!addTileOpen) return null;
-    const tsName = dbTilesets.find(ts => ts.id === addTileTsId)?.name ?? addTileTsId;
-    const previewUrl = addTileFile ? URL.createObjectURL(addTileFile) : null;
-    return (
-      <div className="modal-backdrop" onClick={() => { if (!addTileLoading) { setAddTileOpen(false); setAddTileFile(null); } }}>
-        <div className="modal-box" style={{ maxWidth: 340 }} onClick={e => e.stopPropagation()}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Add Tile — {tsName}</span>
-            <button onClick={() => { if (!addTileLoading) { setAddTileOpen(false); setAddTileFile(null); } }} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {/* Image preview */}
-            {previewUrl && (
-              <div style={{ background: C.panelDeep, borderRadius: 6, padding: 8, display: "flex", justifyContent: "center" }}>
-                <img src={previewUrl} alt="" style={{ maxWidth: 120, maxHeight: 120, imageRendering: "pixelated" }} />
-              </div>
-            )}
-            {/* File picker */}
-            <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <span style={{ fontSize: 11, color: C.muted }}>Image file *</span>
-              <input type="file" accept="image/*"
-                onChange={e => setAddTileFile(e.target.files?.[0] ?? null)}
-                style={{ fontSize: 11, color: C.text }} />
-            </label>
-            {/* Codename */}
-            <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <span style={{ fontSize: 11, color: C.muted }}>Codename *</span>
-              <input value={addTileCodename} onChange={e => setAddTileCodename(e.target.value)}
-                placeholder="e.g. MyTileset_Wall1"
-                style={{ background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "5px 8px", outline: "none", width: "100%" }} />
-            </label>
-            {/* Folder key */}
-            <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <span style={{ fontSize: 11, color: C.muted }}>Folder key (optional)</span>
-              <input value={addTileFolderKey} onChange={e => setAddTileFolderKey(e.target.value)}
-                placeholder="e.g. Walls"
-                style={{ background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "5px 8px", outline: "none", width: "100%" }} />
-            </label>
-            {/* Sort index */}
-            <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <span style={{ fontSize: 11, color: C.muted }}>Sort index (optional)</span>
-              <input type="number" value={addTileSortIdx} onChange={e => setAddTileSortIdx(e.target.value)}
-                placeholder="0"
-                style={{ background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "5px 8px", outline: "none", width: "100%" }} />
-            </label>
-            {addTileError && <span style={{ fontSize: 11, color: C.danger }}>{addTileError}</span>}
-          </div>
-          <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
-            <button style={{ ...btn(false), flex: 1, justifyContent: "center" }} disabled={addTileLoading} onClick={() => { setAddTileOpen(false); setAddTileFile(null); }}>Cancel</button>
-            <button style={{ ...btn(true, C.accent, C.accentDim), flex: 1, justifyContent: "center" }} disabled={addTileLoading || !addTileFile || !addTileCodename.trim()} onClick={doAddTile}>
-              {addTileLoading ? 'Uploading…' : 'Add Tile'}
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  };
+  // ── Add Tile (doAddTile must be defined before the JSX expression that references it) ──
   const doAddTile = async () => {
     if (!addTileFile || !addTileCodename.trim() || !currentUser || !addTileTsId) return;
     setAddTileLoading(true);
@@ -4599,14 +4637,28 @@ function App() {
           codename: addTileCodename.trim(),
           image_url: publicUrl,
           folder_key: addTileFolderKey.trim() || null,
-          sort_index: addTileSortIdx !== '' ? Number(addTileSortIdx) : null,
+          sort_index: addTileSortIdx !== '' ? Number(addTileSortIdx) : 0,
+          // All boolean flags default to false; numeric props default to sensible values
+          rotatable: false,
+          flippable: false,
+          otg_passable: false,
+          mirror_offset: false,
+          bottom_render: false,
+          priority: false,
+          auto_shadow: false,
+          show_tile_count: false,
+          size_multiplier: 1.0,
+          offset_x: 0,
+          offset_y: 0,
         }),
       });
       if (!insResp.ok) {
         let msg = 'DB insert failed';
         try {
           const errData = await insResp.json();
-          if (errData.code === '23505') msg = 'A tile with this codename already exists in this tileset.';
+          console.error('[doAddTile] insert error:', insResp.status, errData);
+          if (errData.message) msg = errData.message;
+          else if (errData.code === '23505') msg = 'A tile with this codename already exists in this tileset.';
         } catch {}
         throw new Error(msg);
       }
@@ -4631,6 +4683,14 @@ function App() {
     const isOwned = currentUser && tsData.owner_id === currentUser.id;
     const isAdmin = userProfile?.role === 'admin';
     const canManage = isAdmin || isOwned;
+    const isWip = tsData.is_wip ?? false;
+
+    const [gearBg1, setGearBg1] = React.useState(tsData.bg_color_1 ?? '');
+    const [gearBg2, setGearBg2] = React.useState(tsData.bg_color_2 ?? '');
+    const [gearHex1, setGearHex1] = React.useState(tsData.bg_color_1 ?? '');
+    const [gearHex2, setGearHex2] = React.useState(tsData.bg_color_2 ?? '');
+    const [bgSaveStatus, setBgSaveStatus] = React.useState(null); // null | 'saving' | 'ok' | 'err'
+    const [deleteNameInput, setDeleteNameInput] = React.useState('');
 
     const closGear = () => { setTsGearOpen(false); setTsGearTsId(null); setTsGearSaving(false); setTsGearDeleteConfirm(false); };
 
@@ -4650,8 +4710,6 @@ function App() {
       } catch (err) { alert('Error: ' + err.message); }
       setTsGearSaving(false);
     };
-
-    const isWip = tsData.is_wip ?? false;
 
     const togglePublish = async () => {
       if (!canManage) return;
@@ -4681,6 +4739,29 @@ function App() {
         if (r.ok) setDbTilesets(prev => prev.map(ts => ts.id === tsGearTsId ? { ...ts, is_wip: newWip } : ts));
         else alert('Failed to update WIP status.');
       } catch (err) { alert('Error: ' + err.message); }
+    };
+
+    const saveBgColours = async () => {
+      if (!canManage) return;
+      const b1 = validHex(gearBg1) ? gearBg1 : null;
+      const b2 = validHex(gearBg2) ? gearBg2 : null;
+      if (!b1 || !b2) { alert('Enter valid hex colours for both A and B.'); return; }
+      setBgSaveStatus('saving');
+      try {
+        const token = await getValidToken();
+        const r = await fetch(`${WORKER_URL}/rest/v1/tilesets?id=eq.${tsGearTsId}`, {
+          method: 'PATCH',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+          body: JSON.stringify({ bg_color_1: b1, bg_color_2: b2 }),
+        });
+        if (r.ok) {
+          setDbTilesets(prev => prev.map(ts => ts.id === tsGearTsId ? { ...ts, bg_color_1: b1, bg_color_2: b2 } : ts));
+          setBgSaveStatus('ok');
+        } else {
+          setBgSaveStatus('err');
+        }
+      } catch { setBgSaveStatus('err'); }
+      setTimeout(() => setBgSaveStatus(null), 3000);
     };
 
     const doDeleteTileset = async () => {
@@ -4733,46 +4814,88 @@ function App() {
                   onClick={saveName}>Save</button>
               </div>
             </label>
-            {/* Published toggle */}
+            {/* Published toggle — green when published, yellow when unpublished */}
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
               <span style={{ fontSize: 11, color: C.muted }}>Published</span>
               <button
                 onClick={togglePublish}
                 disabled={!canManage}
-                style={{ ...btn(isPub, '#4ade80', 'rgba(74,222,128,0.15)'), fontSize: 11, padding: "3px 12px" }}>
-                {isPub ? 'Published' : 'Draft'}
+                style={{ ...btn(true, isPub ? '#4ade80' : '#fbbf24', isPub ? 'rgba(74,222,128,0.15)' : 'rgba(251,191,36,0.15)'), fontSize: 11, padding: "3px 12px" }}>
+                {isPub ? 'Published' : 'Unpublished'}
               </button>
             </div>
-            {/* WIP toggle (issue 1) */}
+            {/* WIP toggle — yellow when WIP, green when complete */}
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
               <span style={{ fontSize: 11, color: C.muted }}>WIP</span>
               <button
                 onClick={toggleWip}
                 disabled={!canManage}
-                style={{ ...btn(isWip, '#fbbf24', 'rgba(251,191,36,0.15)'), fontSize: 11, padding: "3px 12px" }}>
-                {isWip ? 'WIP' : 'Stable'}
+                style={{ ...btn(true, isWip ? '#fbbf24' : '#4ade80', isWip ? 'rgba(251,191,36,0.15)' : 'rgba(74,222,128,0.15)'), fontSize: 11, padding: "3px 12px" }}>
+                {isWip ? 'WIP' : 'Complete'}
               </button>
             </div>
+            {/* Bg colour pickers */}
+            {canManage && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, borderTop: `1px solid ${C.border}`, paddingTop: 8 }}>
+                <span style={{ fontSize: 11, color: C.muted, fontWeight: 600 }}>Background colours</span>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontSize: 11, color: C.muted, width: 14, textAlign: "center", fontWeight: 600, flexShrink: 0 }}>A</span>
+                  <input type="color" value={validHex(gearBg1) ? gearBg1 : '#000000'}
+                    onChange={e => { setGearBg1(e.target.value); setGearHex1(e.target.value); }}
+                    style={{ width: 32, height: 28, border: "none", borderRadius: 5, cursor: "pointer", padding: 2, background: "none", flexShrink: 0 }} />
+                  <input type="text" value={gearHex1} maxLength={7}
+                    onChange={e => { const v = e.target.value; setGearHex1(v); if (validHex(v)) setGearBg1(v); }}
+                    onBlur={() => { if (!validHex(gearHex1)) setGearHex1(gearBg1); }}
+                    placeholder="#rrggbb"
+                    style={{ flex: 1, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 11, padding: "4px 6px", outline: "none" }}
+                    spellCheck={false} />
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontSize: 11, color: C.muted, width: 14, textAlign: "center", fontWeight: 600, flexShrink: 0 }}>B</span>
+                  <input type="color" value={validHex(gearBg2) ? gearBg2 : '#000000'}
+                    onChange={e => { setGearBg2(e.target.value); setGearHex2(e.target.value); }}
+                    style={{ width: 32, height: 28, border: "none", borderRadius: 5, cursor: "pointer", padding: 2, background: "none", flexShrink: 0 }} />
+                  <input type="text" value={gearHex2} maxLength={7}
+                    onChange={e => { const v = e.target.value; setGearHex2(v); if (validHex(v)) setGearBg2(v); }}
+                    onBlur={() => { if (!validHex(gearHex2)) setGearHex2(gearBg2); }}
+                    placeholder="#rrggbb"
+                    style={{ flex: 1, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 11, padding: "4px 6px", outline: "none" }}
+                    spellCheck={false} />
+                </div>
+                <button
+                  disabled={bgSaveStatus === 'saving'}
+                  onClick={saveBgColours}
+                  style={{ ...btn(false, bgSaveStatus === 'err' ? C.danger : '#4ade80', bgSaveStatus === 'err' ? 'rgba(248,113,113,0.15)' : 'rgba(74,222,128,0.15)'), width: '100%', justifyContent: 'center', fontSize: 11 }}>
+                  {bgSaveStatus === 'saving' ? 'Saving…' : bgSaveStatus === 'ok' ? '✓ Saved' : bgSaveStatus === 'err' ? '✗ Failed' : '💾 Save bg colours'}
+                </button>
+              </div>
+            )}
             {/* Add tile button */}
             <button
               onClick={() => { closGear(); setAddTileTsId(tsGearTsId); setAddTileOpen(true); setAddTileFile(null); setAddTileCodename(''); setAddTileFolderKey(''); setAddTileSortIdx(''); setAddTileError(''); }}
               style={{ ...btn(false, C.accent, C.accentDim), justifyContent: "center", fontSize: 11 }}>
               + Add Tile
             </button>
-            {/* Delete tileset */}
+            {/* Delete tileset — red button, requires typing tileset name to confirm */}
             {tsGearDeleteConfirm ? (
               <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "6px 0", borderTop: `1px solid ${C.border}`, marginTop: 2 }}>
-                <span style={{ fontSize: 11, color: C.danger, textAlign: "center" }}>All tiles must be deleted first. Delete this tileset?</span>
+                <span style={{ fontSize: 11, color: C.danger, textAlign: "center" }}>Type the tileset name to confirm deletion:</span>
+                <code style={{ fontSize: 10, color: C.muted, textAlign: "center", background: "rgba(255,255,255,0.06)", padding: "2px 6px", borderRadius: 4 }}>{tsData.name}</code>
+                <input value={deleteNameInput} onChange={e => setDeleteNameInput(e.target.value)}
+                  placeholder="tileset name…"
+                  style={{ background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 11, padding: "4px 7px", outline: "none" }} />
                 <div style={{ display: "flex", gap: 6 }}>
-                  <button style={{ ...btn(false), flex: 1, fontSize: 11 }} onClick={() => setTsGearDeleteConfirm(false)}>Cancel</button>
-                  <button style={{ ...btn(true, C.danger, "rgba(248,113,113,0.18)"), flex: 1, fontSize: 11 }} onClick={doDeleteTileset}>Delete Tileset</button>
+                  <button style={{ ...btn(false), flex: 1, fontSize: 11 }} onClick={() => { setTsGearDeleteConfirm(false); setDeleteNameInput(''); }}>Cancel</button>
+                  <button style={{ ...btn(true, C.danger, "rgba(248,113,113,0.18)"), flex: 1, fontSize: 11 }}
+                    disabled={deleteNameInput !== tsData.name}
+                    onClick={doDeleteTileset}>Delete</button>
                 </div>
               </div>
             ) : (
               <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 8 }}>
-                <button style={{ ...btn(false, C.danger, "rgba(248,113,113,0.14)"), justifyContent: "center", fontSize: 11, width: "100%" }}
+                <button style={{ ...btn(true, C.danger, "rgba(248,113,113,0.18)"), justifyContent: "center", fontSize: 11, width: "100%" }}
                   onClick={() => setTsGearDeleteConfirm(true)}>
-                  Delete Tileset
+                  🗑 Delete Tileset
                 </button>
               </div>
             )}
@@ -4852,7 +4975,23 @@ function App() {
       <ConvertModal />
       <HotkeysModal />
       {createTilesetModal}
-      <AddTileModal />
+      <AddTileModal
+        open={addTileOpen}
+        onClose={() => { setAddTileOpen(false); setAddTileFile(null); setAddTileError(''); }}
+        tsId={addTileTsId}
+        dbTilesets={dbTilesets}
+        file={addTileFile}
+        onFileChange={setAddTileFile}
+        codename={addTileCodename}
+        onCodenameChange={setAddTileCodename}
+        folderKey={addTileFolderKey}
+        onFolderKeyChange={setAddTileFolderKey}
+        sortIdx={addTileSortIdx}
+        onSortIdxChange={setAddTileSortIdx}
+        loading={addTileLoading}
+        error={addTileError}
+        onSubmit={doAddTile}
+      />
       <TilesetGearModal />
 
       {/* ── Admin Dashboard modal (issue 3) ── */}
@@ -4870,20 +5009,49 @@ function App() {
                 <span style={{ fontSize: 11, color: C.muted }}>Loading…</span>
               ) : adminProfiles.length === 0 ? (
                 <span style={{ fontSize: 11, color: C.muted }}>No profiles found.</span>
-              ) : (
-                <div style={{ display: "flex", flexDirection: "column", gap: 3, maxHeight: 220, overflowY: "auto", border: `1px solid ${C.border}`, borderRadius: 6, padding: "4px 6px" }}>
-                  {adminProfiles.map(p => (
-                    <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 4px", borderRadius: 4, background: "rgba(255,255,255,0.03)" }}>
-                      {p.avatar_hash
-                        ? <img src={`https://cdn.discordapp.com/avatars/${p.id}/${p.avatar_hash}.png?size=32`} alt="" style={{ width: 22, height: 22, borderRadius: "50%", flexShrink: 0 }} />
-                        : <div style={{ width: 22, height: 22, borderRadius: "50%", background: C.accent, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, color: "#fff", fontWeight: 700 }}>{(p.username || '?')[0].toUpperCase()}</div>
-                      }
-                      <span style={{ fontSize: 11, color: C.text, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.username || p.id}</span>
-                      <span style={{ fontSize: 10, color: p.role === 'admin' ? "#fbbf24" : C.muted, background: p.role === 'admin' ? "rgba(251,191,36,0.12)" : "transparent", border: p.role === 'admin' ? "1px solid rgba(251,191,36,0.3)" : "none", borderRadius: 3, padding: "1px 5px", flexShrink: 0 }}>{p.role || 'user'}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
+              ) : (() => {
+                // Role badge styles
+                const roleBadgeStyle = (role) => {
+                  if (role === 'admin') return { color: "#fbbf24", background: "rgba(251,191,36,0.15)", border: "1px solid rgba(251,191,36,0.4)" };
+                  if (role === 'creator') return { color: "#60a5fa", background: "rgba(96,165,250,0.15)", border: "1px solid rgba(96,165,250,0.4)" };
+                  return { color: C.muted, background: "rgba(255,255,255,0.07)", border: `1px solid ${C.border}` };
+                };
+                return (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 3, maxHeight: 260, overflowY: "auto", border: `1px solid ${C.border}`, borderRadius: 6, padding: "4px 6px" }}>
+                    {adminProfiles.map(p => {
+                      const role = p.role || 'user';
+                      const isSelf = p.id === currentUser?.id;
+                      const isChanging = adminRoleChanging.has(p.id);
+                      const bs = roleBadgeStyle(role);
+                      return (
+                        <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 6px", borderRadius: 4, background: "rgba(255,255,255,0.03)" }}>
+                          {p.avatar_hash
+                            ? <img src={`https://cdn.discordapp.com/avatars/${p.id}/${p.avatar_hash}.png?size=32`} alt="" style={{ width: 24, height: 24, borderRadius: "50%", flexShrink: 0 }} />
+                            : <div style={{ width: 24, height: 24, borderRadius: "50%", background: C.accent, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, color: "#fff", fontWeight: 700 }}>{(p.username || '?')[0].toUpperCase()}</div>
+                          }
+                          <span style={{ fontSize: 11, color: C.text, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.username || p.id}</span>
+                          {/* Role badge */}
+                          <span style={{ fontSize: 10, borderRadius: 3, padding: "1px 5px", flexShrink: 0, fontWeight: 600, ...bs }}>
+                            {role === 'admin' ? '👑 admin' : role === 'creator' ? '🎨 creator' : '👤 user'}
+                          </span>
+                          {/* Role change dropdown — admins only; cannot change to/from admin */}
+                          {role !== 'admin' && !isSelf && (
+                            <select
+                              value={role}
+                              disabled={isChanging}
+                              onChange={e => changeUserRole(p.id, e.target.value)}
+                              style={{ fontSize: 10, background: "rgba(255,255,255,0.08)", border: `1px solid ${C.border}`, borderRadius: 3, color: C.text, padding: "1px 2px", cursor: "pointer", opacity: isChanging ? 0.5 : 1 }}>
+                              <option value="user">user</option>
+                              <option value="creator">creator</option>
+                            </select>
+                          )}
+                          {isChanging && <span style={{ fontSize: 9, color: C.muted }}>…</span>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
             </div>
             {/* Tilesets */}
             <div style={{ display: "flex", flexDirection: "column", gap: 6, borderTop: `1px solid ${C.border}`, paddingTop: 10 }}>
@@ -5285,9 +5453,7 @@ function App() {
                           const isAdmin = userProfile?.role === 'admin';
                           const renderItem = ts => {
                             const checked = ts.name === activeTileset;
-                            const nameColor = ts.type === 'custom'
-                              ? (checked ? '#67e8f9' : '#7dd3fc')
-                              : ts.type === 'atlas2'
+                            const nameColor = ts.type === 'atlas2'
                               ? (checked ? '#fcd34d' : '#d4b896')
                               : (checked ? C.accentBright : C.text);
                             const ownerUsername = ts.profiles?.username;
@@ -5719,10 +5885,13 @@ function App() {
                       );
                       return (<>
                         {/* ── Per-tileset sections (one per shown Ophelia tileset) ── */}
-                        {tilesetEntriesPerTs.map(({ name, entries, count, tilesetId, tilesetOwnerId }) => {
-                          if (entries.length === 0) return null;
-                          const sectionId = `tileset_${name}`;
+                        {tilesetEntriesPerTs.map(({ name, entries, count, tilesetId, tilesetOwnerId, tilesetType }) => {
+                          const isAdmin = userProfile?.role === 'admin';
                           const isOwned = currentUser && tilesetOwnerId === currentUser.id;
+                          const canManageSec = isAdmin || isOwned;
+                          // Always render section for owners/admins even when empty (so they can add tiles)
+                          if (entries.length === 0 && !canManageSec) return null;
+                          const sectionId = `tileset_${name}`;
                           const tsData = dbTilesets.find(ts => ts.id === tilesetId);
                           const isPub = tsData?.is_published ?? true;
                           return (
@@ -5733,10 +5902,10 @@ function App() {
                                 <span style={{ fontSize: 9, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: 0.8 }}>
                                   {name} ({count})
                                   {tsData?.is_wip && <span style={{ marginLeft: 4, fontSize: 8, fontWeight: 700, color: "#fbbf24", background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.35)", borderRadius: 3, padding: "0 3px" }}>WIP</span>}
-                                  {!isPub && (isOwned || userProfile?.role === 'admin') && <span style={{ marginLeft: 4, fontSize: 8, color: "#f97316", background: "rgba(249,115,22,0.12)", border: "1px solid rgba(249,115,22,0.3)", borderRadius: 3, padding: "0 3px" }}>unpublished</span>}
+                                  {!isPub && canManageSec && <span style={{ marginLeft: 4, fontSize: 8, color: "#f97316", background: "rgba(249,115,22,0.12)", border: "1px solid rgba(249,115,22,0.3)", borderRadius: 3, padding: "0 3px" }}>unpublished</span>}
                                 </span>
                                 <div style={{ flex: 1, height: 1, background: C.border, marginLeft: 4 }} />
-                                {(isOwned || userProfile?.role === 'admin') && (
+                                {canManageSec && (
                                   <button
                                     onClick={e => { e.stopPropagation(); setTsGearTsId(tilesetId); setTsGearName(name); setTsGearOpen(true); setTsGearDeleteConfirm(false); }}
                                     style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 4, padding: "1px 5px", fontSize: 10, color: C.muted, cursor: "pointer", flexShrink: 0, lineHeight: 1.2 }}
@@ -5745,7 +5914,19 @@ function App() {
                                   </button>
                                 )}
                               </div>
-                              {!panelCollapsed[sectionId] && entries.map(renderEntry)}
+                              {!panelCollapsed[sectionId] && (<>
+                                {entries.map(renderEntry)}
+                                {/* + Add Tile card — shown to owners and admins at end of section */}
+                                {canManageSec && (
+                                  <div
+                                    onClick={() => { setAddTileTsId(tilesetId); setAddTileOpen(true); setAddTileFile(null); setAddTileCodename(''); setAddTileFolderKey(''); setAddTileSortIdx(''); setAddTileError(''); }}
+                                    style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: "pointer", border: `2px dashed ${C.border}`, background: "rgba(255,255,255,0.03)", overflow: "hidden", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2 }}
+                                    title={`Add tile to ${name}`}>
+                                    <span style={{ fontSize: 22, color: C.muted, lineHeight: 1, fontWeight: 300 }}>+</span>
+                                    <span style={{ fontSize: 9, color: C.muted, textTransform: "uppercase", letterSpacing: 0.8, lineHeight: 1 }}>Add Tile</span>
+                                  </div>
+                                )}
+                              </>)}
                             </React.Fragment>
                           );
                         })}
@@ -6753,13 +6934,7 @@ function App() {
                   <span style={{ fontSize: 12, color: C.text }}>Hide default tile settings labels</span>
                 </label>
                 <p style={{ fontSize: 11, color: C.muted, lineHeight: 1.5, margin: 0 }}>Hides size and offset badges on tile cards when those values are already the computed defaults. User-customized values are always shown.</p>
-                <div style={{ height: 1, background: C.border, margin: "4px 0" }} />
-                <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
-                  <input type="checkbox" checked={showTileCount} onChange={e => setShowTileCount(e.target.checked)}
-                    style={{ width: 14, height: 14, accentColor: "#34d399", cursor: "pointer", flexShrink: 0 }} />
-                  <span style={{ fontSize: 12, color: C.text }}>Show tile count 🧮</span>
-                </label>
-                <p style={{ fontSize: 11, color: C.muted, lineHeight: 1.5, margin: 0 }}>Shows how many times each tile appears on the map as a ×N badge (top-left of card). Enabled per-tile via the info modal. On by default for global tiles.</p>
+                <p style={{ fontSize: 11, color: C.muted, lineHeight: 1.5, margin: 0, paddingTop: 4 }}>Tile count badges (🧮) are controlled per-tile via the <em>show_tile_count</em> flag in each tile's info modal.</p>
               </div>
             </div>
           )}
@@ -6931,7 +7106,7 @@ function App() {
             );
             const renderBgItem = ts => {
               const checked = selectedBgPreset === ts.name;
-              const nameColor = ts.type === 'custom' ? (checked ? '#67e8f9' : '#7dd3fc') : ts.type === 'atlas2' ? (checked ? '#fcd34d' : '#d4b896') : (checked ? C.accentBright : C.text);
+              const nameColor = ts.type === 'atlas2' ? (checked ? '#fcd34d' : '#d4b896') : (checked ? C.accentBright : C.text);
               return (
                 <div key={ts.name}
                   style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 9px", cursor: "pointer", userSelect: "none", background: checked ? "rgba(255,255,255,0.05)" : "transparent" }}
@@ -6967,7 +7142,7 @@ function App() {
                     {activePresetLabel} ▾
                   </button>
                   {bgDropOpen && (
-                    <div onMouseDown={e => e.stopPropagation()} style={{ position: "absolute", top: "100%", left: 0, background: C.panelDeep, border: `1px solid ${C.border}`, borderRadius: 6, zIndex: 300, padding: "4px 0", minWidth: 180, maxHeight: 260, overflowY: "auto", boxShadow: "0 4px 16px rgba(0,0,0,0.45)" }}>
+                    <div onMouseDown={e => e.stopPropagation()} style={{ position: "absolute", bottom: "100%", top: "auto", left: 0, background: C.panelDeep, border: `1px solid ${C.border}`, borderRadius: 6, zIndex: 300, padding: "4px 0", minWidth: 180, maxHeight: "60vh", overflowY: "auto", boxShadow: "0 -4px 16px rgba(0,0,0,0.45)" }}>
                       {/* Custom */}
                       <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 9px", cursor: "pointer", userSelect: "none", background: selectedBgPreset === 'custom' ? "rgba(255,255,255,0.05)" : "transparent" }}
                         onClick={() => { applyBgPreset("custom", customBg.bg1, customBg.bg2); setCustomBgDraft({ bg1, bg2 }); setCustomBgModalOpen(true); setBgDropOpen(false); }}>
