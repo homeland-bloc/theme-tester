@@ -306,14 +306,23 @@ async function fetchDiscordUser(token) {
 
 function sanitiseBody(body, firebaseUid) {
   if (Array.isArray(body)) return body.map(item => sanitiseBody(item, firebaseUid));
-  const ownerFields = ['owner_id'];
   const patched = { ...body };
+
+  // Prevent owner_id spoofing
+  const ownerFields = ['owner_id'];
   for (const field of ownerFields) {
     if (field in patched && patched[field] !== firebaseUid) {
       console.warn(`Body sanitisation: ${field} overwritten with verified uid`);
       patched[field] = firebaseUid;
     }
   }
+
+  // Prevent privilege escalation — role can never be set to 'admin' via client request
+  if ('role' in patched && patched.role === 'admin') {
+    console.warn(`Body sanitisation: role='admin' stripped from request by uid=${firebaseUid}`);
+    delete patched.role;
+  }
+
   return patched;
 }
 
