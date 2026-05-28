@@ -371,14 +371,19 @@ function TilesetGearModal({
   currentUser, userProfile, getValidToken,
   onClose, onTsFetchTrigger, onActiveTilesetChange,
 }) {
-  const [saving,          setSaving]          = React.useState(false);
-  const [deleteConfirm,   setDeleteConfirm]   = React.useState(false);
-  const [gearBg1,         setGearBg1]         = React.useState('');
-  const [gearBg2,         setGearBg2]         = React.useState('');
-  const [gearHex1,        setGearHex1]        = React.useState('');
-  const [gearHex2,        setGearHex2]        = React.useState('');
-  const [bgSaveStatus,    setBgSaveStatus]    = React.useState(null);
-  const [deleteNameInput, setDeleteNameInput] = React.useState('');
+  const [saving,            setSaving]            = React.useState(false);
+  const [saveNameStatus,    setSaveNameStatus]    = React.useState(null);
+  const [deleteConfirm,     setDeleteConfirm]     = React.useState(false);
+  const [gearBg1,           setGearBg1]           = React.useState('');
+  const [gearBg2,           setGearBg2]           = React.useState('');
+  const [gearHex1,          setGearHex1]          = React.useState('');
+  const [gearHex2,          setGearHex2]          = React.useState('');
+  const [bgSaveStatus,      setBgSaveStatus]      = React.useState(null);
+  const [deleteNameInput,   setDeleteNameInput]   = React.useState('');
+  const [transferUsername,  setTransferUsername]  = React.useState('');
+  const [transferStatus,    setTransferStatus]    = React.useState(null); // null|'looking'|'confirm'|'saving'|'ok'|'err'
+  const [transferTargetId,  setTransferTargetId]  = React.useState(null);
+  const [transferTargetName, setTransferTargetName] = React.useState('');
 
   const tsData = (open && tsId) ? dbTilesets.find(ts => ts.id === tsId) : null;
 
@@ -393,6 +398,10 @@ function TilesetGearModal({
     setDeleteConfirm(false);
     setDeleteNameInput('');
     setBgSaveStatus(null);
+    setTransferUsername('');
+    setTransferStatus(null);
+    setTransferTargetId(null);
+    setTransferTargetName('');
   }, [tsId]);
 
   if (!open || !tsId || !tsData) return null;
@@ -430,6 +439,8 @@ function TilesetGearModal({
       if (r.ok) {
         onDbTilesetsChange(prev => prev.map(ts => ts.id === tsId ? { ...ts, name: trimmed } : ts));
         onActiveTilesetChange(prev => prev === tsData.name ? trimmed : prev);
+        setSaveNameStatus('ok');
+        setTimeout(() => setSaveNameStatus(null), 2000);
       } else { alert('Failed to rename tileset.'); }
     } catch (err) { alert('Error: ' + err.message); }
     setSaving(false);
@@ -532,9 +543,9 @@ function TilesetGearModal({
                 onKeyDown={e => { if (e.key === "Enter") saveName(); }}
                 disabled={!canManage || saving}
                 style={{ flex: 1, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "'Inter', monospace", fontSize: 12, padding: "5px 8px", outline: "none" }} />
-              <button style={{ ...btn(true, C.accent, C.accentDim), fontSize: 11, padding: "4px 10px" }}
+              <button style={{ ...btn(true, saveNameStatus === 'ok' ? '#4ade80' : C.accent, saveNameStatus === 'ok' ? 'rgba(74,222,128,0.15)' : C.accentDim), fontSize: 11, padding: "4px 10px" }}
                 disabled={!canManage || saving || !name.trim() || name.trim() === tsData.name}
-                onClick={saveName}>Save</button>
+                onClick={saveName}>{saveNameStatus === 'ok' ? '✓ Saved' : 'Save'}</button>
             </div>
           </label>
           {/* GitHub folder path (read-only) */}
@@ -601,6 +612,76 @@ function TilesetGearModal({
                 style={{ ...btn(true, bgSaveStatus === 'err' ? C.danger : '#4ade80', bgSaveStatus === 'err' ? 'rgba(248,113,113,0.15)' : 'rgba(74,222,128,0.15)'), width: '100%', justifyContent: 'center', fontSize: 11 }}>
                 {bgSaveStatus === 'saving' ? 'Saving…' : bgSaveStatus === 'ok' ? '✓ Saved' : bgSaveStatus === 'err' ? '✗ Failed' : 'Save BG Colours'}
               </button>
+            </div>
+          )}
+          {/* Owner transfer — admins only */}
+          {isAdmin && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, borderTop: `1px solid ${C.border}`, paddingTop: 8 }}>
+              <span style={{ fontSize: 11, color: C.muted, fontWeight: 600 }}>Transfer Ownership</span>
+              <div style={{ fontSize: 10, color: C.muted }}>
+                Current owner: <span style={{ color: C.text, fontFamily: "monospace" }}>{tsData.profiles?.username ?? tsData.owner_id}</span>
+              </div>
+              {transferStatus === 'confirm' ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                  <span style={{ fontSize: 11, color: "#fbbf24" }}>Transfer to <b>{transferTargetName}</b>?</span>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <button style={{ ...btn(false), flex: 1, fontSize: 11 }}
+                      onClick={() => { setTransferStatus(null); setTransferTargetId(null); setTransferTargetName(''); }}>Cancel</button>
+                    <button style={{ ...btn(true, '#fbbf24', 'rgba(251,191,36,0.15)'), flex: 1, fontSize: 11 }}
+                      onClick={async () => {
+                        setTransferStatus('saving');
+                        try {
+                          const token = await getValidToken();
+                          const r = await fetch(`${WORKER_URL}/rest/v1/tilesets?id=eq.${tsId}`, {
+                            method: 'PATCH',
+                            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+                            body: JSON.stringify({ owner_id: transferTargetId }),
+                          });
+                          if (r.ok) {
+                            onDbTilesetsChange(prev => prev.map(ts => ts.id === tsId ? { ...ts, owner_id: transferTargetId, profiles: { username: transferTargetName } } : ts));
+                            setTransferStatus('ok');
+                            setTimeout(() => { setTransferStatus(null); setTransferUsername(''); setTransferTargetId(null); setTransferTargetName(''); }, 2000);
+                          } else {
+                            setTransferStatus('err');
+                          }
+                        } catch { setTransferStatus('err'); }
+                      }}>Confirm Transfer</button>
+                  </div>
+                  {transferStatus === 'err' && <span style={{ fontSize: 10, color: C.danger }}>Transfer failed.</span>}
+                </div>
+              ) : transferStatus === 'ok' ? (
+                <span style={{ fontSize: 11, color: '#4ade80' }}>✓ Ownership transferred</span>
+              ) : (
+                <div style={{ display: "flex", gap: 6 }}>
+                  <input value={transferUsername} onChange={e => setTransferUsername(e.target.value)}
+                    placeholder="username…"
+                    style={{ flex: 1, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 11, padding: "4px 7px", outline: "none" }} />
+                  <button style={{ ...btn(true, '#fbbf24', 'rgba(251,191,36,0.15)'), fontSize: 11, padding: "4px 10px" }}
+                    disabled={!transferUsername.trim() || transferStatus === 'looking'}
+                    onClick={async () => {
+                      if (!transferUsername.trim()) return;
+                      setTransferStatus('looking');
+                      try {
+                        const token = await getValidToken();
+                        const r = await fetch(`${WORKER_URL}/rest/v1/profiles?username=eq.${encodeURIComponent(transferUsername.trim())}&select=id`, {
+                          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                        });
+                        const rows = r.ok ? await r.json() : [];
+                        if (Array.isArray(rows) && rows.length > 0) {
+                          setTransferTargetId(rows[0].id);
+                          setTransferTargetName(transferUsername.trim());
+                          setTransferStatus('confirm');
+                        } else {
+                          setTransferStatus('err');
+                          setTimeout(() => setTransferStatus(null), 2000);
+                        }
+                      } catch { setTransferStatus('err'); setTimeout(() => setTransferStatus(null), 2000); }
+                    }}>
+                    {transferStatus === 'looking' ? '…' : 'Look Up'}
+                  </button>
+                </div>
+              )}
+              {transferStatus === 'err' && !transferTargetId && <span style={{ fontSize: 10, color: C.danger }}>User not found.</span>}
             </div>
           )}
           {/* Delete tileset — red button, requires typing tileset name to confirm */}
@@ -704,9 +785,8 @@ function App() {
   // Custom bg modal draft (null = not open; { bg1, bg2 } = current draft while open)
   const [customBgDraft, setCustomBgDraft] = useState(null);
   // Delete-from-db confirmation input (codename the user must type)
-  const [deleteConfirmInput, setDeleteConfirmInput] = useState('');
-  // Inline flag tooltip state inside InfoModal
-  const [flagTooltip, setFlagTooltip] = useState(null); // key string or null
+  // deleteConfirmInput, flagTooltip, deleteConfirmId live inside InfoModal (local state) to prevent App re-renders on every keystroke
+  // flagTooltip lives inside InfoModal (local state) — see Bug 3 fix
   // Theme DB persistence debounce timer
   const themeDbTimerRef = useRef(null);
 
@@ -890,7 +970,7 @@ function App() {
   const [replaceStep, setReplaceStep] = useState(1); // 1=pick tile on map, 2=pick replacement
   const [replaceA,    setReplaceA]  = useState(null);
   const [replaceB,    setReplaceB]  = useState(null);
-  const [deleteConfirmId, setDeleteConfirmId] = useState(null);
+  // deleteConfirmId lives inside InfoModal (local state) — see Bug 3 fix
   const [historyModalOpen, setHistoryModalOpen] = useState(false);
   // OTG (One Tile Gap) detection
   const [showOTG,          setShowOTG]          = useState(false);
@@ -3804,20 +3884,32 @@ function App() {
   const InfoModal = () => {
     if (!infoTile) return null;
     const t = getTile(infoTile);
-    if (!t) { setInfoTile(null); return null; }
+    if (!t) return null;
     const defaultMult = getDefaultMultiplier(t);
     const currentMult = getTileMultiplier(t);
     const defaultOff  = getDefaultOffset(t);
     const currentOff  = getTileOffset(t);
     const defaultCodename_ = t.isDefault ? (deriveCodename(t.src) ?? "") : t.isAtlas ? (t.baseCodename ?? t.codename ?? "") : "";
     const canEditDb = !!(currentUser && t.isDb && t.dbId && (userProfile?.role === 'admin' || t.tilesetOwnerId === currentUser.id));
-    const [multInput,      setMultInput]      = React.useState(String(currentMult));
-    const [oxInput,        setOxInput]        = React.useState(String(currentOff.ox));
-    const [oyInput,        setOyInput]        = React.useState(String(currentOff.oy));
-    const [codenameInput,  setCodenameInput]  = React.useState(t.isDb ? (t.codename ?? '') : (tileNames[t.id] || defaultCodename_));
-    const [folderKeyInput, setFolderKeyInput] = React.useState(t.folderLabel ?? '');
-    const [sortIndexInput, setSortIndexInput] = React.useState(t.sortIndex != null ? String(t.sortIndex) : '');
+    const [multInput,         setMultInput]         = React.useState(String(currentMult));
+    const [oxInput,           setOxInput]           = React.useState(String(currentOff.ox));
+    const [oyInput,           setOyInput]           = React.useState(String(currentOff.oy));
+    const [codenameInput,     setCodenameInput]     = React.useState(t.isDb ? (t.codename ?? '') : (tileNames[t.id] || defaultCodename_));
+    const [folderKeyInput,    setFolderKeyInput]    = React.useState(t.folderLabel ?? '');
+    const [sortIndexInput,    setSortIndexInput]    = React.useState(t.sortIndex != null ? String(t.sortIndex) : '');
+    const [flagTooltip,       setFlagTooltip]       = React.useState(null);
+    const [deleteConfirmId,   setDeleteConfirmId]   = React.useState(null);
+    const [deleteConfirmInput, setDeleteConfirmInput] = React.useState('');
     const isPriority = !!priorityTiles[t.id];
+    const modalScrollRef = React.useRef(null);
+    const pendingScrollRef = React.useRef(null);
+    // Restore scroll position after flagTooltip-triggered layout shifts
+    React.useLayoutEffect(() => {
+      if (pendingScrollRef.current !== null && modalScrollRef.current) {
+        modalScrollRef.current.scrollTop = pendingScrollRef.current;
+        pendingScrollRef.current = null;
+      }
+    });
 
     const commitMult = val => {
       const v = parseFloat(val ?? multInput);
@@ -3880,7 +3972,11 @@ function App() {
     // Inline ⓘ button — clicking toggles an inline description row that appears below the flag row
     const FlagTip = ({ id }) => (
       <button
-        onClick={e => { e.stopPropagation(); setFlagTooltip(prev => prev === id ? null : id); }}
+        onClick={e => {
+          e.stopPropagation();
+          if (modalScrollRef.current) pendingScrollRef.current = modalScrollRef.current.scrollTop;
+          setFlagTooltip(prev => prev === id ? null : id);
+        }}
         style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 10, padding: "0 2px", lineHeight: 1, opacity: 0.7 }}
         title="Info">ⓘ</button>
     );
@@ -3908,7 +4004,7 @@ function App() {
 
     return (
       <div className="modal-backdrop" onClick={() => { setInfoTile(null); setDeleteConfirmId(null); }}>
-        <div className="modal-box" style={{ minWidth: 360, maxWidth: 500, maxHeight: '90vh', overflowY: 'auto' }} onClick={e => e.stopPropagation()}>
+        <div ref={modalScrollRef} className="modal-box" style={{ minWidth: 360, maxWidth: 500, maxHeight: '90vh', overflowY: 'auto' }} onClick={e => e.stopPropagation()}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Tile info</span>
             <button onClick={() => { setInfoTile(null); setDeleteConfirmId(null); }} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
@@ -4193,24 +4289,7 @@ function App() {
                       if (!prev[tsId]) return prev;
                       return { ...prev, [tsId]: prev[tsId].map(row => row.id === t.dbId ? { ...row, ...body } : row) };
                     });
-                    // Update infoTile's db* fields so isDefault comparisons reflect new saved values
-                    setInfoTile(prev => prev ? {
-                      ...prev,
-                      dbBottomRender: body.bottom_render,
-                      dbPriority: body.priority,
-                      dbAutoShadow: body.auto_shadow,
-                      dbOtgPassable: body.otg_passable,
-                      dbRotatable: body.rotatable,
-                      dbFlippable: body.flippable,
-                      dbMirrorOffset: body.mirror_offset,
-                      dbSizeMultiplier: body.size_multiplier,
-                      dbOffsetX: body.offset_x,
-                      dbOffsetY: body.offset_y,
-                      dbShowTileCount: body.show_tile_count,
-                      codename: body.codename,
-                      folderLabel: body.folder_key ?? null,
-                      sortIndex: body.sort_index,
-                    } : prev);
+
                   }
                   setSaveStatus(resp.ok ? 'ok' : 'err');
                 } catch {
@@ -4223,8 +4302,8 @@ function App() {
             </button>
           )}
 
-          {/* Replace image (owned DB tiles) */}
-          {t.isDb && currentUser && (userProfile?.role === 'admin' || t.tilesetOwnerId === currentUser.id) && (
+          {/* Replace image (owned DB tiles, not atlas) */}
+          {t.isDb && currentUser && (userProfile?.role === 'admin' || t.tilesetOwnerId === currentUser.id) && t.tilesetType !== 'atlas' && t.tilesetType !== 'atlas2' && (
             <>
               <input type="file" accept="image/*" id="replace-img-input" style={{ display: "none" }}
                 onChange={async e => {
@@ -5069,11 +5148,16 @@ function App() {
   // ── Add Tile (doAddTile must be defined before the JSX expression that references it) ──
   const doAddTile = async () => {
     if (!addTileFile || !addTileCodename.trim() || !currentUser || !addTileTsId) return;
+    const ts = dbTilesets.find(ts => ts.id === addTileTsId);
+    if (ts?.type === 'atlas' || ts?.type === 'atlas2') {
+      setAddTileError('Cannot add tiles to atlas tilesets.');
+      return;
+    }
     setAddTileLoading(true);
     setAddTileError('');
     try {
       const token = await getValidToken();
-      const tilesetFolderPath = dbTilesets.find(ts => ts.id === addTileTsId)?.folder_path;
+      const tilesetFolderPath = ts?.folder_path;
       if (!tilesetFolderPath) throw new Error('This tileset has no GitHub folder path configured.');
 
       const filePath = `Resources/${tilesetFolderPath}/${addTileFile.name}`;
@@ -6159,8 +6243,8 @@ function App() {
                               </div>
                               {!panelCollapsed[sectionId] && (<>
                                 {entries.map(renderEntry)}
-                                {/* + Add Tile card — shown to owners and admins at end of section */}
-                                {canManageSec && (
+                                {/* + Add Tile card — shown to owners/admins at end of section, hidden for atlas tilesets */}
+                                {canManageSec && tilesetType !== 'atlas' && tilesetType !== 'atlas2' && (
                                   <div
                                     onClick={() => { setAddTileTsId(tilesetId); setAddTileOpen(true); setAddTileFile(null); setAddTileCodename(''); setAddTileFolderKey(''); setAddTileSortIdx(''); setAddTileError(''); }}
                                     style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: "pointer", border: `2px dashed ${C.border}`, background: "rgba(255,255,255,0.03)", overflow: "hidden", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2 }}
