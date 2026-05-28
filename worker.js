@@ -12,6 +12,7 @@
  *   SUPABASE_ANON_KEY
  *   DISCORD_CLIENT_SECRET
  *   FIREBASE_SERVICE_ACCOUNT
+ *   GITHUB_BOT_TOKEN — fine-grained PAT for opheliapp-bot, Contents r/w on bicipikay/ophelia
  */
 
 const ALLOWED_ORIGIN = 'https://bicipikay.github.io';
@@ -59,6 +60,14 @@ export default {
 
       if (!env.SUPABASE_URL || !env.SUPABASE_ANON_KEY) {
         return corsResponse({ error: 'Worker misconfigured' }, 500);
+      }
+
+      if (path === '/github/upload') {
+        return handleGithubUpload(request, env);
+      }
+
+      if (path === '/github/delete') {
+        return handleGithubDelete(request, env);
       }
 
       if (path.startsWith('/rest/v1/') || path.startsWith('/storage/v1/')) {
@@ -194,6 +203,129 @@ async function handleFirebaseRefresh(request, env) {
 
   const firebaseToken = await mintFirebaseCustomToken(serviceAccount, discordUser.id);
   return corsResponse({ firebase_token: firebaseToken }, 200);
+}
+
+async function getUserRole(firebaseUid, env) {
+  try {
+    const res = await fetch(
+      `${env.SUPABASE_URL}/rest/v1/profiles?id=eq.${firebaseUid}&select=role`,
+      {
+        headers: {
+          'apikey': env.SUPABASE_ANON_KEY,
+          'Authorization': `Bearer ${env.SUPABASE_ANON_KEY}`,
+        }
+      }
+    );
+    if (!res.ok) return null;
+    const rows = await res.json();
+    return Array.isArray(rows) && rows.length > 0 ? rows[0].role : null;
+  } catch {
+    return null;
+  }
+}
+
+async function handleGithubUpload(request, env) {
+  if (request.method !== 'POST') return corsResponse({ error: 'Method not allowed' }, 405);
+
+  const authHeader = request.headers.get('Authorization');
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return corsResponse({ error: 'Authentication required' }, 401);
+  }
+  const payload = decodeJwtPayload(authHeader.slice(7));
+  if (!payload || !payload.sub) return corsResponse({ error: 'Invalid token' }, 401);
+  const uid = payload.sub;
+
+  const role = await getUserRole(uid, env);
+  if (role !== 'admin' && role !== 'creator') {
+    return corsResponse({ error: 'Forbidden' }, 403);
+  }
+
+  let body;
+  try { body = await request.json(); }
+  catch { return corsResponse({ error: 'Invalid JSON body' }, 400); }
+
+  const { filePath, contentBase64, commitMessage } = body;
+  if (!filePath || !contentBase64) return corsResponse({ error: 'Missing filePath or contentBase64' }, 400);
+  if (!filePath.startsWith('Resources/')) return corsResponse({ error: 'Forbidden: filePath must start with Resources/' }, 403);
+
+  const apiUrl = `https://api.github.com/repos/bicipikay/ophelia/contents/${encodeURIComponent(filePath).replace(/%2F/g, '/')}`;
+  const ghHeaders = {
+    'Authorization': `Bearer ${env.GITHUB_BOT_TOKEN}`,
+    'User-Agent': 'opheliapp-bot',
+    'Accept': 'application/vnd.github+json',
+  };
+
+  let sha;
+  const getRes = await fetch(apiUrl, { headers: ghHeaders });
+  if (getRes.ok) {
+    const existing = await getRes.json();
+    sha = existing.sha;
+  } else if (getRes.status !== 404) {
+    const errBody = await getRes.text();
+    return corsResponse({ error: 'GitHub GET failed', detail: errBody }, getRes.status);
+  }
+
+  const putBody = { message: commitMessage || `Upload ${filePath}`, content: contentBase64 };
+  if (sha) putBody.sha = sha;
+
+  const putRes = await fetch(apiUrl, {
+    method: 'PUT',
+    headers: { ...ghHeaders, 'Content-Type': 'application/json' },
+    body: JSON.stringify(putBody),
+  });
+
+  const putJson = await putRes.json();
+  return corsResponse(putJson, putRes.status);
+}
+
+async function handleGithubDelete(request, env) {
+  if (request.method !== 'POST') return corsResponse({ error: 'Method not allowed' }, 405);
+
+  const authHeader = request.headers.get('Authorization');
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return corsResponse({ error: 'Authentication required' }, 401);
+  }
+  const payload = decodeJwtPayload(authHeader.slice(7));
+  if (!payload || !payload.sub) return corsResponse({ error: 'Invalid token' }, 401);
+  const uid = payload.sub;
+
+  const role = await getUserRole(uid, env);
+  if (role !== 'admin' && role !== 'creator') {
+    return corsResponse({ error: 'Forbidden' }, 403);
+  }
+
+  let body;
+  try { body = await request.json(); }
+  catch { return corsResponse({ error: 'Invalid JSON body' }, 400); }
+
+  const { filePath, commitMessage } = body;
+  if (!filePath) return corsResponse({ error: 'Missing filePath' }, 400);
+  if (!filePath.startsWith('Resources/')) return corsResponse({ error: 'Forbidden: filePath must start with Resources/' }, 403);
+
+  const apiUrl = `https://api.github.com/repos/bicipikay/ophelia/contents/${encodeURIComponent(filePath).replace(/%2F/g, '/')}`;
+  const ghHeaders = {
+    'Authorization': `Bearer ${env.GITHUB_BOT_TOKEN}`,
+    'User-Agent': 'opheliapp-bot',
+    'Accept': 'application/vnd.github+json',
+  };
+
+  const getRes = await fetch(apiUrl, { headers: ghHeaders });
+  if (getRes.status === 404) return corsResponse({ error: 'File not found' }, 404);
+  if (!getRes.ok) {
+    const errBody = await getRes.text();
+    return corsResponse({ error: 'GitHub GET failed', detail: errBody }, getRes.status);
+  }
+  const existing = await getRes.json();
+  const sha = existing.sha;
+
+  const delRes = await fetch(apiUrl, {
+    method: 'DELETE',
+    headers: { ...ghHeaders, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message: commitMessage || `Delete ${filePath}`, sha }),
+  });
+
+  const delJson = await delRes.json();
+  return corsResponse(delJson, delRes.status);
 }
 
 async function handleSupabaseProxy(request, url, normalizedPath, env) {
