@@ -28,6 +28,9 @@ const ADMIN_SENSITIVE_TABLES = new Set([
   'tiles',
 ]);
 
+// Populated on first use; lives for the duration of the Worker instance.
+let firebasePublicKeysCache = null;
+
 export default {
   async fetch(request, env) {
     try {
@@ -232,7 +235,7 @@ async function handleGithubUpload(request, env) {
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return corsResponse({ error: 'Authentication required' }, 401);
   }
-  const payload = decodeJwtPayload(authHeader.slice(7));
+  const payload = await verifyFirebaseJwt(authHeader.slice(7));
   if (!payload || !payload.sub) return corsResponse({ error: 'Invalid token' }, 401);
   const uid = payload.sub;
 
@@ -295,7 +298,7 @@ async function handleGithubDelete(request, env) {
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return corsResponse({ error: 'Authentication required' }, 401);
   }
-  const payload = decodeJwtPayload(authHeader.slice(7));
+  const payload = await verifyFirebaseJwt(authHeader.slice(7));
   if (!payload || !payload.sub) return corsResponse({ error: 'Invalid token' }, 401);
   const uid = payload.sub;
 
@@ -489,6 +492,73 @@ async function sanitiseBody(body, firebaseUid, env, token = null) {
   }
 
   return patched;
+}
+
+async function getFirebasePublicKeys() {
+  if (firebasePublicKeysCache) return firebasePublicKeysCache;
+  const res = await fetch(
+    'https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com'
+  );
+  if (!res.ok) return null;
+  firebasePublicKeysCache = await res.json();
+  return firebasePublicKeysCache;
+}
+
+// Extracts the SubjectPublicKeyInfo (SPKI) DER buffer from a PEM X.509 certificate.
+// Works by locating the RSA OID inside the DER and reading the enclosing SEQUENCE.
+function pemCertToSpki(pem) {
+  const b64 = pem.replace(/-----[^-]+-----/g, '').replace(/\s+/g, '');
+  const der = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+  // RSA OID 1.2.840.113549.1.1.1 — 9 bytes, no tag/length prefix
+  const rsaOid = [0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01];
+  for (let i = 0; i <= der.length - rsaOid.length; i++) {
+    if (!rsaOid.every((b, j) => der[i + j] === b)) continue;
+    // OID tag (0x06) + length (0x09) sit 2 bytes before the OID value bytes
+    if (i < 2 || der[i - 2] !== 0x06 || der[i - 1] !== 0x09) continue;
+    // AlgorithmIdentifier SEQUENCE (0x30) sits 2 bytes before the OID tag
+    const algIdOff = i - 4;
+    if (algIdOff < 4 || der[algIdOff] !== 0x30) continue;
+    // SubjectPublicKeyInfo SEQUENCE uses long-form length (0x30 0x82 nn nn), 4 bytes before AlgId
+    const spkiOff = algIdOff - 4;
+    if (spkiOff < 0 || der[spkiOff] !== 0x30 || der[spkiOff + 1] !== 0x82) continue;
+    const spkiLen = (der[spkiOff + 2] << 8) | der[spkiOff + 3];
+    if (spkiOff + 4 + spkiLen > der.length) continue;
+    return der.slice(spkiOff, spkiOff + 4 + spkiLen).buffer;
+  }
+  return null;
+}
+
+async function verifyFirebaseJwt(token) {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    const decode = s => JSON.parse(atob(s.replace(/-/g, '+').replace(/_/g, '/')));
+    const header  = decode(parts[0]);
+    const payload = decode(parts[1]);
+    if (!header.kid || header.alg !== 'RS256') return null;
+    if (payload.aud !== 'opheliapp-wow') return null;
+    if (payload.iss !== 'https://securetoken.google.com/opheliapp-wow') return null;
+    const keys = await getFirebasePublicKeys();
+    if (!keys || !keys[header.kid]) return null;
+    const spki = pemCertToSpki(keys[header.kid]);
+    if (!spki) return null;
+    const cryptoKey = await crypto.subtle.importKey(
+      'spki', spki,
+      { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
+      false, ['verify']
+    );
+    const sigBytes = Uint8Array.from(
+      atob(parts[2].replace(/-/g, '+').replace(/_/g, '/')),
+      c => c.charCodeAt(0)
+    );
+    const valid = await crypto.subtle.verify(
+      'RSASSA-PKCS1-v1_5', cryptoKey, sigBytes,
+      new TextEncoder().encode(`${parts[0]}.${parts[1]}`)
+    );
+    return valid ? payload : null;
+  } catch {
+    return null;
+  }
 }
 
 function decodeJwtPayload(token) {
