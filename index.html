@@ -380,10 +380,12 @@ function TilesetGearModal({
   const [gearHex2,          setGearHex2]          = React.useState('');
   const [bgSaveStatus,      setBgSaveStatus]      = React.useState(null);
   const [deleteNameInput,   setDeleteNameInput]   = React.useState('');
-  const [transferUsername,  setTransferUsername]  = React.useState('');
-  const [transferStatus,    setTransferStatus]    = React.useState(null); // null|'looking'|'confirm'|'saving'|'ok'|'err'
-  const [transferTargetId,  setTransferTargetId]  = React.useState(null);
-  const [transferTargetName, setTransferTargetName] = React.useState('');
+  const [transferStatus,        setTransferStatus]        = React.useState(null); // null|'confirm'|'saving'|'ok'|'err'
+  const [transferTargetId,      setTransferTargetId]      = React.useState(null);
+  const [transferTargetName,    setTransferTargetName]    = React.useState('');
+  const [selectedTransferUserId, setSelectedTransferUserId] = React.useState('');
+  const [profilesList,          setProfilesList]          = React.useState([]);
+  const [profilesLoading,       setProfilesLoading]       = React.useState(false);
 
   const tsData = (open && tsId) ? dbTilesets.find(ts => ts.id === tsId) : null;
 
@@ -398,11 +400,32 @@ function TilesetGearModal({
     setDeleteConfirm(false);
     setDeleteNameInput('');
     setBgSaveStatus(null);
-    setTransferUsername('');
     setTransferStatus(null);
     setTransferTargetId(null);
     setTransferTargetName('');
+    setSelectedTransferUserId('');
   }, [tsId]);
+
+  React.useEffect(() => {
+    if (!open || userProfile?.role !== 'admin') return;
+    let cancelled = false;
+    setProfilesLoading(true);
+    setProfilesList([]);
+    (async () => {
+      try {
+        const token = await getValidToken();
+        const r = await fetch(`${WORKER_URL}/rest/v1/profiles?select=id,username&order=username`, {
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        });
+        const rows = r.ok ? await r.json() : [];
+        if (!cancelled) setProfilesList(Array.isArray(rows) ? rows : []);
+      } catch {
+        if (!cancelled) setProfilesList([]);
+      }
+      if (!cancelled) setProfilesLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, [open, tsId]);
 
   if (!open || !tsId || !tsData) return null;
 
@@ -640,7 +663,7 @@ function TilesetGearModal({
                           if (r.ok) {
                             onDbTilesetsChange(prev => prev.map(ts => ts.id === tsId ? { ...ts, owner_id: transferTargetId, profiles: { username: transferTargetName } } : ts));
                             setTransferStatus('ok');
-                            setTimeout(() => { setTransferStatus(null); setTransferUsername(''); setTransferTargetId(null); setTransferTargetName(''); }, 2000);
+                            setTimeout(() => { setTransferStatus(null); setSelectedTransferUserId(''); setTransferTargetId(null); setTransferTargetName(''); }, 2000);
                           } else {
                             setTransferStatus('err');
                           }
@@ -653,35 +676,30 @@ function TilesetGearModal({
                 <span style={{ fontSize: 11, color: '#4ade80' }}>✓ Ownership transferred</span>
               ) : (
                 <div style={{ display: "flex", gap: 6 }}>
-                  <input value={transferUsername} onChange={e => setTransferUsername(e.target.value)}
-                    placeholder="username…"
-                    style={{ flex: 1, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 11, padding: "4px 7px", outline: "none" }} />
-                  <button style={{ ...btn(true, '#fbbf24', 'rgba(251,191,36,0.15)'), fontSize: 11, padding: "4px 10px" }}
-                    disabled={!transferUsername.trim() || transferStatus === 'looking'}
-                    onClick={async () => {
-                      if (!transferUsername.trim()) return;
-                      setTransferStatus('looking');
-                      try {
-                        const token = await getValidToken();
-                        const r = await fetch(`${WORKER_URL}/rest/v1/profiles?username=eq.${encodeURIComponent(transferUsername.trim())}&select=id`, {
-                          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-                        });
-                        const rows = r.ok ? await r.json() : [];
-                        if (Array.isArray(rows) && rows.length > 0) {
-                          setTransferTargetId(rows[0].id);
-                          setTransferTargetName(transferUsername.trim());
-                          setTransferStatus('confirm');
-                        } else {
-                          setTransferStatus('err');
-                          setTimeout(() => setTransferStatus(null), 2000);
-                        }
-                      } catch { setTransferStatus('err'); setTimeout(() => setTransferStatus(null), 2000); }
+                  <select
+                    value={selectedTransferUserId}
+                    onChange={e => setSelectedTransferUserId(e.target.value)}
+                    disabled={profilesLoading}
+                    style={{ flex: 1, background: "rgba(30,15,15,0.85)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 11, padding: "4px 7px", outline: "none" }}>
+                    <option value="">{profilesLoading ? 'Loading…' : '— select user —'}</option>
+                    {profilesList.filter(p => p.id !== tsData.owner_id).map(p => (
+                      <option key={p.id} value={p.id}>{p.username}</option>
+                    ))}
+                  </select>
+                  <button
+                    style={{ ...btn(true, '#fbbf24', 'rgba(251,191,36,0.15)'), fontSize: 11, padding: "4px 10px" }}
+                    disabled={!selectedTransferUserId || profilesLoading}
+                    onClick={() => {
+                      const profile = profilesList.find(p => p.id === selectedTransferUserId);
+                      if (!profile) return;
+                      setTransferTargetId(profile.id);
+                      setTransferTargetName(profile.username);
+                      setTransferStatus('confirm');
                     }}>
-                    {transferStatus === 'looking' ? '…' : 'Look Up'}
+                    Transfer
                   </button>
                 </div>
               )}
-              {transferStatus === 'err' && !transferTargetId && <span style={{ fontSize: 10, color: C.danger }}>User not found.</span>}
             </div>
           )}
           {/* Delete tileset — red button, requires typing tileset name to confirm */}
