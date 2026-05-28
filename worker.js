@@ -205,14 +205,15 @@ async function handleFirebaseRefresh(request, env) {
   return corsResponse({ firebase_token: firebaseToken }, 200);
 }
 
-async function getUserRole(firebaseUid, env) {
+async function getUserRole(firebaseUid, env, token = null) {
   try {
+    const authHeader = token ? `Bearer ${token}` : `Bearer ${env.SUPABASE_ANON_KEY}`;
     const res = await fetch(
       `${env.SUPABASE_URL}/rest/v1/profiles?id=eq.${firebaseUid}&select=role`,
       {
         headers: {
           'apikey': env.SUPABASE_ANON_KEY,
-          'Authorization': `Bearer ${env.SUPABASE_ANON_KEY}`,
+          'Authorization': authHeader,
         }
       }
     );
@@ -235,7 +236,7 @@ async function handleGithubUpload(request, env) {
   if (!payload || !payload.sub) return corsResponse({ error: 'Invalid token' }, 401);
   const uid = payload.sub;
 
-  const role = await getUserRole(uid, env);
+  const role = await getUserRole(uid, env, authHeader.slice(7));
   if (role !== 'admin' && role !== 'creator') {
     return corsResponse({ error: 'Forbidden' }, 403);
   }
@@ -289,7 +290,7 @@ async function handleGithubDelete(request, env) {
   if (!payload || !payload.sub) return corsResponse({ error: 'Invalid token' }, 401);
   const uid = payload.sub;
 
-  const role = await getUserRole(uid, env);
+  const role = await getUserRole(uid, env, authHeader.slice(7));
   if (role !== 'admin' && role !== 'creator') {
     return corsResponse({ error: 'Forbidden' }, 403);
   }
@@ -363,7 +364,7 @@ async function handleSupabaseProxy(request, url, normalizedPath, env) {
       const cloned = request.clone();
       try {
         const bodyJson = await request.json();
-        const sanitised = sanitiseBody(bodyJson, firebaseUid);
+        const sanitised = await sanitiseBody(bodyJson, firebaseUid, env, authHeader.slice(7));
         request = new Request(request.url, {
           method,
           headers: request.headers,
@@ -404,11 +405,21 @@ async function handleSupabaseProxy(request, url, normalizedPath, env) {
 }
 
 async function verifyAdmin(request, env) {
+  // Prefer Firebase JWT (consistent with GitHub routes, no extra Discord header needed)
+  const authHeader = request.headers.get('Authorization');
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const token = authHeader.slice(7);
+    const payload = decodeJwtPayload(token);
+    if (payload && payload.sub) {
+      const role = await getUserRole(payload.sub, env, token);
+      if (role === 'admin') return true;
+    }
+  }
+  // Fallback: legacy Discord token check
   const discordToken = request.headers.get('X-Discord-Token');
   if (!discordToken) return false;
   const discordUser = await fetchDiscordUser(discordToken);
   if (!discordUser) return false;
-
   const res = await fetch(
     `${env.SUPABASE_URL}/rest/v1/profiles?id=eq.${discordUser.id}&select=role`,
     {
@@ -436,16 +447,18 @@ async function fetchDiscordUser(token) {
   }
 }
 
-function sanitiseBody(body, firebaseUid) {
-  if (Array.isArray(body)) return body.map(item => sanitiseBody(item, firebaseUid));
+async function sanitiseBody(body, firebaseUid, env, token = null) {
+  if (Array.isArray(body)) {
+    return Promise.all(body.map(item => sanitiseBody(item, firebaseUid, env, token)));
+  }
   const patched = { ...body };
 
-  // Prevent owner_id spoofing
-  const ownerFields = ['owner_id'];
-  for (const field of ownerFields) {
-    if (field in patched && patched[field] !== firebaseUid) {
-      console.warn(`Body sanitisation: ${field} overwritten with verified uid`);
-      patched[field] = firebaseUid;
+  // Admins may transfer ownership; everyone else cannot set owner_id to another uid
+  if ('owner_id' in patched && patched.owner_id !== firebaseUid) {
+    const role = await getUserRole(firebaseUid, env, token);
+    if (role !== 'admin') {
+      console.warn(`Body sanitisation: owner_id overwritten with verified uid (non-admin)`);
+      patched.owner_id = firebaseUid;
     }
   }
 
