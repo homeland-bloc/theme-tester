@@ -147,15 +147,6 @@ const OPHELIA_BG = {
   Cafe:      { bg1: "#AD6B45", bg2: "#B5714A" },
   Pharmacy:  { bg1: "#95a4ae", bg2: "#a2b0b8" },
 };
-// Atlas tileset folder-name overrides (tileset name → GitHub Resources subfolder)
-const ATLAS_FOLDER_MAP = {
-  BrawlClub:  'Z_BrawlClub',
-  Casino:     'Z_CasinoTheme',
-  Jurassic:   'Z_JurassicTheme',
-  Sky:        'Z_SkyTheme',
-  Underwater: 'Z_UnderwaterTheme',
-};
-
 // Tilesets that are still work-in-progress — shown with a WIP badge in the UI.
 const WIP_TILESETS = new Set([]);
 
@@ -336,6 +327,7 @@ function AddTileModal({ open, onClose, tsId, dbTilesets, file, onFileChange,
             <input type="file" accept="image/*"
               onChange={e => onFileChange(e.target.files?.[0] ?? null)}
               style={{ fontSize: 11, color: C.text }} />
+            <span style={{ fontSize: 10, color: C.muted }}>⏱ Newly uploaded tiles may take ~5 minutes to appear due to CDN caching.</span>
           </label>
           <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
             <span style={{ fontSize: 11, color: C.muted }}>Codename *</span>
@@ -545,6 +537,16 @@ function TilesetGearModal({
                 onClick={saveName}>Save</button>
             </div>
           </label>
+          {/* GitHub folder path (read-only) */}
+          <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={{ fontSize: 11, color: C.muted }}>GitHub folder path</span>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ fontSize: 13, color: C.muted }}>🔒</span>
+              <input value={tsData.folder_path ?? '—'} disabled
+                style={{ flex: 1, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.muted, fontFamily: "monospace", fontSize: 12, padding: "5px 8px", outline: "none", cursor: "default" }} />
+            </div>
+            <span style={{ fontSize: 10, color: C.muted }}>The folder name in the repo. Fixed at creation — rename the tileset display name freely above.</span>
+          </label>
           {/* Published toggle — green when published, yellow when unpublished */}
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <span style={{ fontSize: 11, color: C.muted }}>Published</span>
@@ -679,6 +681,11 @@ function App() {
   // Tileset/tile management (Tasks 6d, 6e, 6f)
   const [createTsOpen, setCreateTsOpen] = useState(false);
   const [createTsName, setCreateTsName] = useState('');
+  const [createTsFolderPath, setCreateTsFolderPath] = useState('');
+  const [createTsFile, setCreateTsFile] = useState(null);
+  const [createTsCodename, setCreateTsCodename] = useState('');
+  const [createTsFolderKey, setCreateTsFolderKey] = useState('');
+  const [createTsSortIdx, setCreateTsSortIdx] = useState('');
   const [createTsLoading, setCreateTsLoading] = useState(false);
   const [addTileOpen, setAddTileOpen] = useState(false);
   const [addTileTsId, setAddTileTsId] = useState(null);
@@ -4223,16 +4230,24 @@ function App() {
                 onChange={async e => {
                   const file = e.target.files?.[0];
                   if (!file) return;
-                  const newPath = `${currentUser.id}/${t.tilesetId}/${Date.now()}_${file.name}`;
                   try {
                     const token = await getValidToken();
-                    const upResp = await fetch(`${WORKER_URL}/storage/v1/object/tiles/${newPath}`, {
-                      method: 'PUT',
-                      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': file.type, 'X-Upsert': 'true' },
-                      body: file,
+                    const tilesetFolderPath = dbTilesets.find(ts => ts.id === t.tilesetId)?.folder_path;
+                    if (!tilesetFolderPath) throw new Error('This tileset has no GitHub folder path configured.');
+                    const filePath = `Resources/${tilesetFolderPath}/${file.name}`;
+                    const contentBase64 = await new Promise((resolve, reject) => {
+                      const reader = new FileReader();
+                      reader.onload = () => resolve(reader.result.split(',')[1]);
+                      reader.onerror = reject;
+                      reader.readAsDataURL(file);
                     });
-                    if (!upResp.ok) throw new Error('Upload failed');
-                    const newUrl = `${SUPABASE_URL}/storage/v1/object/public/tiles/${newPath}`;
+                    const upResp = await fetch(`${WORKER_URL}/github/upload`, {
+                      method: 'POST',
+                      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ filePath, contentBase64, commitMessage: `Replace tile image: ${t.codename}` }),
+                    });
+                    if (!upResp.ok) throw new Error('GitHub upload failed');
+                    const newUrl = `https://raw.githubusercontent.com/bicipikay/ophelia/main/${filePath}?v=${Date.now()}`;
                     const patchResp = await fetch(`${WORKER_URL}/rest/v1/tiles?id=eq.${t.dbId}`, {
                       method: 'PATCH',
                       headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
@@ -4267,28 +4282,37 @@ function App() {
                     onClick={async () => {
                       setDeleteConfirmId(null);
                       setDeleteConfirmInput('');
+                      // Block deletion of the last tile in a tileset
+                      const tilesInTs = dbTilesByTsId[t.tilesetId] ?? [];
+                      if (tilesInTs.length === 1) {
+                        alert('This is the last tile in the tileset. To remove it, delete the entire tileset from Tileset Settings.');
+                        return;
+                      }
                       try {
                         const token = await getValidToken();
-                        await fetch(`${WORKER_URL}/rest/v1/tiles?id=eq.${t.dbId}`, {
+                        const delResp = await fetch(`${WORKER_URL}/rest/v1/tiles?id=eq.${t.dbId}`, {
                           method: 'DELETE',
                           headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
                         });
-                        const sbTilesPrefix = `${SUPABASE_TILES_PREFIX}/`;
-                        const ikPrefix = `${IMAGEKIT_URL}/`;
-                        const storagePath = t.src?.startsWith(ikPrefix)
-                          ? t.src.slice(ikPrefix.length)
-                          : t.src?.startsWith(sbTilesPrefix)
-                            ? t.src.slice(sbTilesPrefix.length)
-                            : null;
-                        if (storagePath) {
-                          await fetch(`${WORKER_URL}/storage/v1/object/tiles`, {
-                            method: 'DELETE',
-                            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ prefixes: [storagePath] }),
-                          });
-                        }
+                        if (!delResp.ok) throw new Error('DB delete failed');
                         setTsFetchTrigger(n => n + 1);
                         setInfoTile(null);
+                        // Silently delete file from GitHub
+                        try {
+                          const tilesetFolderPath = dbTilesets.find(ts => ts.id === t.tilesetId)?.folder_path;
+                          if (tilesetFolderPath && t.src) {
+                            const srcNoQuery = t.src.split('?')[0];
+                            const filename = srcNoQuery.split('/').pop();
+                            const filePath = `Resources/${tilesetFolderPath}/${filename}`;
+                            await fetch(`${WORKER_URL}/github/delete`, {
+                              method: 'POST',
+                              headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ filePath, commitMessage: `Delete tile: ${t.codename}` }),
+                            });
+                          }
+                        } catch (ghErr) {
+                          console.error('[tile delete] GitHub delete failed:', ghErr);
+                        }
                       } catch (err) {
                         alert('Failed to delete tile: ' + err.message);
                       }
@@ -4879,53 +4903,163 @@ function App() {
     );
   };
 
-  // ── Create Tileset (issue 2 fix: function declared before modal that references it) ─
+  // ── Create Tileset ─────────────────────────────────────────────────
+  const deriveFolder = name => name.replace(/ /g, '_').replace(/[^a-zA-Z0-9_-]/g, '');
+
   const doCreateTs = async () => {
-    if (!createTsName.trim() || !currentUser) return;
+    const name = createTsName.trim();
+    const folderPath = createTsFolderPath.trim();
+    if (!name || !folderPath || !createTsCodename.trim() || !createTsFile || !currentUser) return;
     setCreateTsLoading(true);
     setCreateTsError('');
     try {
       const token = await getValidToken();
-      const resp = await fetch(`${WORKER_URL}/rest/v1/tilesets`, {
+
+      // 1. Convert file to base64
+      const contentBase64 = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result.split(',')[1]);
+        reader.onerror = reject;
+        reader.readAsDataURL(createTsFile);
+      });
+
+      // 2. Upload image to GitHub
+      const filePath = `Resources/${folderPath}/${createTsFile.name}`;
+      const upResp = await fetch(`${WORKER_URL}/github/upload`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filePath, contentBase64, commitMessage: `Add tileset: ${name}` }),
+      });
+      if (!upResp.ok) {
+        let msg = 'GitHub upload failed.';
+        try { const d = await upResp.json(); if (d.message) msg = d.message; } catch {}
+        setCreateTsError(msg);
+        setCreateTsLoading(false);
+        return;
+      }
+      const imageUrl = `https://raw.githubusercontent.com/bicipikay/ophelia/main/${filePath}?v=${Date.now()}`;
+
+      // 3. Create tileset row
+      const tsResp = await fetch(`${WORKER_URL}/rest/v1/tilesets`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=representation' },
+        body: JSON.stringify({ name, folder_path: folderPath, type: 'custom', owner_id: currentUser.id, is_published: false }),
+      });
+      if (!tsResp.ok) {
+        let msg = 'Failed to create tileset.';
+        try { const d = await tsResp.json(); if (d.message) msg = d.message; } catch {}
+        setCreateTsError(msg);
+        setCreateTsLoading(false);
+        return;
+      }
+      const tsRows = await tsResp.json();
+      const newTsId = Array.isArray(tsRows) ? tsRows[0]?.id : tsRows?.id;
+
+      // 4. Create tile row
+      await fetch(`${WORKER_URL}/rest/v1/tiles`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
-        body: JSON.stringify({ name: createTsName.trim(), type: 'custom', owner_id: currentUser.id, is_published: false }),
+        body: JSON.stringify({
+          tileset_id: newTsId,
+          codename: createTsCodename.trim(),
+          image_url: imageUrl,
+          folder_key: createTsFolderKey.trim() || null,
+          sort_index: createTsSortIdx !== '' ? Number(createTsSortIdx) : 0,
+          rotatable: false, flippable: false, otg_passable: false,
+          mirror_offset: false, bottom_render: false, priority: false,
+          auto_shadow: false, show_tile_count: false,
+          size_multiplier: 1.0, offset_x: 0, offset_y: 0,
+        }),
       });
-      if (resp.ok) {
-        setTsFetchTrigger(n => n + 1);
-        setCreateTsOpen(false);
-        setCreateTsName('');
-        setCreateTsError('');
-      } else {
-        let msg = 'Failed to create tileset.';
-        try { const d = await resp.json(); if (d.message) msg = d.message; } catch {}
-        setCreateTsError(msg);
-      }
+
+      setTsFetchTrigger(n => n + 1);
+      setCreateTsOpen(false);
+      setCreateTsName(''); setCreateTsFolderPath(''); setCreateTsFile(null);
+      setCreateTsCodename(''); setCreateTsFolderKey(''); setCreateTsSortIdx('');
+      setCreateTsError('');
     } catch (err) {
       setCreateTsError('Error: ' + err.message);
     }
     setCreateTsLoading(false);
   };
+
+  const resetCreateTs = () => {
+    setCreateTsOpen(false); setCreateTsName(''); setCreateTsFolderPath('');
+    setCreateTsFile(null); setCreateTsCodename(''); setCreateTsFolderKey('');
+    setCreateTsSortIdx(''); setCreateTsError('');
+  };
+
   // Modal for create tileset (must come after doCreateTs to avoid TDZ)
+  const createTsPreviewUrl = createTsFile ? URL.createObjectURL(createTsFile) : null;
   const createTilesetModal = !createTsOpen ? null : (
-    <div className="modal-backdrop" onClick={() => { if (!createTsLoading) { setCreateTsOpen(false); setCreateTsError(''); } }}>
-      <div className="modal-box" style={{ maxWidth: 320 }} onClick={e => e.stopPropagation()}>
+    <div className="modal-backdrop" onClick={() => { if (!createTsLoading) resetCreateTs(); }}>
+      <div className="modal-box" style={{ maxWidth: 340 }} onClick={e => e.stopPropagation()}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Create Tileset</span>
-          <button onClick={() => { if (!createTsLoading) { setCreateTsOpen(false); setCreateTsError(''); } }} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
+          <button onClick={() => { if (!createTsLoading) resetCreateTs(); }} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
         </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          <label style={{ fontSize: 11, color: C.muted }}>Tileset name</label>
-          <input value={createTsName} onChange={e => { setCreateTsName(e.target.value); setCreateTsError(''); }}
-            onKeyDown={e => { if (e.key === "Enter" && createTsName.trim()) doCreateTs(); }}
-            placeholder="My Tileset"
-            style={{ background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "'Inter', monospace", fontSize: 12, padding: "6px 8px", outline: "none", width: "100%" }} />
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {/* Tileset name */}
+          <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={{ fontSize: 11, color: C.muted }}>Tileset name *</span>
+            <input value={createTsName} onChange={e => {
+                const v = e.target.value;
+                setCreateTsName(v);
+                setCreateTsFolderPath(deriveFolder(v));
+                setCreateTsError('');
+              }}
+              placeholder="My Tileset"
+              style={{ background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "'Inter', monospace", fontSize: 12, padding: "6px 8px", outline: "none", width: "100%" }} />
+          </label>
+          {/* Folder path */}
+          <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={{ fontSize: 11, color: C.muted }}>GitHub folder path *</span>
+            <input value={createTsFolderPath} onChange={e => { setCreateTsFolderPath(e.target.value); setCreateTsError(''); }}
+              placeholder="My_Tileset"
+              style={{ background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "6px 8px", outline: "none", width: "100%" }} />
+            <span style={{ fontSize: 10, color: C.muted }}>Used as the GitHub folder name. Cannot be changed after creation.</span>
+          </label>
+          {/* Divider */}
+          <div style={{ borderTop: `1px solid ${C.border}`, margin: "2px 0" }} />
+          {/* First tile section */}
+          {createTsPreviewUrl && (
+            <div style={{ background: C.panelDeep, borderRadius: 6, padding: 8, display: "flex", justifyContent: "center" }}>
+              <img src={createTsPreviewUrl} alt="" style={{ maxWidth: 120, maxHeight: 120, imageRendering: "pixelated" }} />
+            </div>
+          )}
+          <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={{ fontSize: 11, color: C.muted }}>First tile image *</span>
+            <input type="file" accept="image/*"
+              onChange={e => setCreateTsFile(e.target.files?.[0] ?? null)}
+              style={{ fontSize: 11, color: C.text }} />
+            <span style={{ fontSize: 10, color: C.muted }}>⏱ Newly uploaded tiles may take ~5 minutes to appear due to CDN caching.</span>
+          </label>
+          <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={{ fontSize: 11, color: C.muted }}>Codename *</span>
+            <input value={createTsCodename} onChange={e => setCreateTsCodename(e.target.value)}
+              placeholder="e.g. MyTileset_Wall1"
+              style={{ background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "5px 8px", outline: "none", width: "100%" }} />
+          </label>
+          <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={{ fontSize: 11, color: C.muted }}>Folder key (optional)</span>
+            <input value={createTsFolderKey} onChange={e => setCreateTsFolderKey(e.target.value)}
+              placeholder="e.g. Walls"
+              style={{ background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "5px 8px", outline: "none", width: "100%" }} />
+          </label>
+          <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={{ fontSize: 11, color: C.muted }}>Sort index (optional)</span>
+            <input type="number" value={createTsSortIdx} onChange={e => setCreateTsSortIdx(e.target.value)}
+              placeholder="0"
+              style={{ background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "5px 8px", outline: "none", width: "100%" }} />
+          </label>
           {createTsError && <span style={{ fontSize: 11, color: C.danger }}>{createTsError}</span>}
         </div>
         <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
-          <button style={{ ...btn(false), flex: 1, justifyContent: "center" }} disabled={createTsLoading} onClick={() => { setCreateTsOpen(false); setCreateTsError(''); }}>Cancel</button>
-          <button style={{ ...btn(true, C.accent, C.accentDim), flex: 1, justifyContent: "center" }} disabled={createTsLoading || !createTsName.trim()} onClick={() => doCreateTs()}>
-            {createTsLoading ? 'Creating…' : 'Create'}
+          <button style={{ ...btn(false), flex: 1, justifyContent: "center" }} disabled={createTsLoading} onClick={resetCreateTs}>Cancel</button>
+          <button style={{ ...btn(true, C.accent, C.accentDim), flex: 1, justifyContent: "center" }}
+            disabled={createTsLoading || !createTsName.trim() || !createTsFolderPath.trim() || !createTsCodename.trim() || !createTsFile}
+            onClick={doCreateTs}>
+            {createTsLoading ? 'Creating…' : 'Create Tileset'}
           </button>
         </div>
       </div>
@@ -4939,36 +5073,42 @@ function App() {
     setAddTileError('');
     try {
       const token = await getValidToken();
-      const storageName = `${Date.now()}_${addTileFile.name}`;
-      const storagePath = `${currentUser.id}/${addTileTsId}/${storageName}`;
-      const upResp = await fetch(`${WORKER_URL}/storage/v1/object/tiles/${storagePath}`, {
-        method: 'PUT',
-        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': addTileFile.type, 'X-Upsert': 'true' },
-        body: addTileFile,
+      const tilesetFolderPath = dbTilesets.find(ts => ts.id === addTileTsId)?.folder_path;
+      if (!tilesetFolderPath) throw new Error('This tileset has no GitHub folder path configured.');
+
+      const filePath = `Resources/${tilesetFolderPath}/${addTileFile.name}`;
+      const contentBase64 = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result.split(',')[1]);
+        reader.onerror = reject;
+        reader.readAsDataURL(addTileFile);
       });
-      if (!upResp.ok) throw new Error('Storage upload failed');
-      const publicUrl = `${SUPABASE_URL}/storage/v1/object/public/tiles/${storagePath}`;
+
+      const upResp = await fetch(`${WORKER_URL}/github/upload`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filePath, contentBase64, commitMessage: `Add tile: ${addTileCodename.trim()}` }),
+      });
+      if (!upResp.ok) {
+        let msg = 'GitHub upload failed';
+        try { const d = await upResp.json(); if (d.message) msg = d.message; } catch {}
+        throw new Error(msg);
+      }
+      const imageUrl = `https://raw.githubusercontent.com/bicipikay/ophelia/main/${filePath}?v=${Date.now()}`;
+
       const insResp = await fetch(`${WORKER_URL}/rest/v1/tiles`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
         body: JSON.stringify({
           tileset_id: addTileTsId,
           codename: addTileCodename.trim(),
-          image_url: publicUrl,
+          image_url: imageUrl,
           folder_key: addTileFolderKey.trim() || null,
           sort_index: addTileSortIdx !== '' ? Number(addTileSortIdx) : 0,
-          // All boolean flags default to false; numeric props default to sensible values
-          rotatable: false,
-          flippable: false,
-          otg_passable: false,
-          mirror_offset: false,
-          bottom_render: false,
-          priority: false,
-          auto_shadow: false,
-          show_tile_count: false,
-          size_multiplier: 1.0,
-          offset_x: 0,
-          offset_y: 0,
+          rotatable: false, flippable: false, otg_passable: false,
+          mirror_offset: false, bottom_render: false, priority: false,
+          auto_shadow: false, show_tile_count: false,
+          size_multiplier: 1.0, offset_x: 0, offset_y: 0,
         }),
       });
       if (!insResp.ok) {
