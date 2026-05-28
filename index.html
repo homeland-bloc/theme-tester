@@ -5790,9 +5790,7 @@ function App() {
                           const isAdmin = userProfile?.role === 'admin';
                           const renderItem = ts => {
                             const checked = ts.name === activeTileset;
-                            const nameColor = ts.type === 'atlas2'
-                              ? (checked ? '#fcd34d' : '#d4b896')
-                              : (checked ? C.accentBright : C.text);
+                            const nameColor = checked ? C.accentBright : C.text;
                             const ownerUsername = ts.profiles?.username;
                             return (
                               <label key={ts.name} data-active-ts={checked ? "true" : undefined} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", cursor: "pointer", userSelect: "none" }}
@@ -5806,6 +5804,9 @@ function App() {
                                   </span>
                                   {ownerUsername && (ts.type === 'base' || ts.type === 'custom') && (
                                     <span style={{ fontSize: 9, color: C.muted }}>by {ownerUsername}</span>
+                                  )}
+                                  {ts.type === 'atlas2' && (
+                                    <span style={{ fontSize: 9, color: C.muted }}>Community Tileset</span>
                                   )}
                                 </div>
                               </label>
