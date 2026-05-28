@@ -247,7 +247,16 @@ async function handleGithubUpload(request, env) {
 
   const { filePath, contentBase64, commitMessage } = body;
   if (!filePath || !contentBase64) return corsResponse({ error: 'Missing filePath or contentBase64' }, 400);
+  if (contentBase64.length > 10_000_000) return corsResponse({ error: 'File too large' }, 400);
   if (!filePath.startsWith('Resources/')) return corsResponse({ error: 'Forbidden: filePath must start with Resources/' }, 403);
+  const normalisedUploadPath = filePath.split('/').reduce((acc, seg) => {
+    if (seg === '..') acc.pop();
+    else if (seg !== '.') acc.push(seg);
+    return acc;
+  }, []).join('/');
+  if (normalisedUploadPath !== filePath || !normalisedUploadPath.startsWith('Resources/')) {
+    return corsResponse({ error: 'Forbidden: invalid filePath' }, 403);
+  }
 
   const apiUrl = `https://api.github.com/repos/bicipikay/ophelia/contents/${encodeURIComponent(filePath).replace(/%2F/g, '/')}`;
   const ghHeaders = {
@@ -266,7 +275,7 @@ async function handleGithubUpload(request, env) {
     return corsResponse({ error: 'GitHub GET failed', detail: errBody }, getRes.status);
   }
 
-  const putBody = { message: commitMessage || `Upload ${filePath}`, content: contentBase64 };
+  const putBody = { message: (commitMessage || `Upload ${filePath}`).replace(/[\x00-\x1f]/g, '').slice(0, 256), content: contentBase64 };
   if (sha) putBody.sha = sha;
 
   const putRes = await fetch(apiUrl, {
@@ -302,6 +311,14 @@ async function handleGithubDelete(request, env) {
   const { filePath, commitMessage } = body;
   if (!filePath) return corsResponse({ error: 'Missing filePath' }, 400);
   if (!filePath.startsWith('Resources/')) return corsResponse({ error: 'Forbidden: filePath must start with Resources/' }, 403);
+  const normalisedDeletePath = filePath.split('/').reduce((acc, seg) => {
+    if (seg === '..') acc.pop();
+    else if (seg !== '.') acc.push(seg);
+    return acc;
+  }, []).join('/');
+  if (normalisedDeletePath !== filePath || !normalisedDeletePath.startsWith('Resources/')) {
+    return corsResponse({ error: 'Forbidden: invalid filePath' }, 403);
+  }
 
   const apiUrl = `https://api.github.com/repos/bicipikay/ophelia/contents/${encodeURIComponent(filePath).replace(/%2F/g, '/')}`;
   const ghHeaders = {
@@ -322,7 +339,7 @@ async function handleGithubDelete(request, env) {
   const delRes = await fetch(apiUrl, {
     method: 'DELETE',
     headers: { ...ghHeaders, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message: commitMessage || `Delete ${filePath}`, sha }),
+    body: JSON.stringify({ message: (commitMessage || `Delete ${filePath}`).replace(/[\x00-\x1f]/g, '').slice(0, 256), sha }),
   });
 
   const delJson = await delRes.json();
@@ -462,10 +479,13 @@ async function sanitiseBody(body, firebaseUid, env, token = null) {
     }
   }
 
-  // Prevent privilege escalation — role can never be set to 'admin' via client request
-  if ('role' in patched && patched.role === 'admin') {
-    console.warn(`Body sanitisation: role='admin' stripped from request by uid=${firebaseUid}`);
-    delete patched.role;
+  // Non-admins cannot set role to any value; admins may change role freely
+  if ('role' in patched) {
+    const callerRole = await getUserRole(firebaseUid, env, token);
+    if (callerRole !== 'admin') {
+      console.warn(`Body sanitisation: role stripped from non-admin request by uid=${firebaseUid}`);
+      delete patched.role;
+    }
   }
 
   return patched;
