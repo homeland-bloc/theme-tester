@@ -1761,11 +1761,11 @@ function App() {
         return next;
       };
       setPriorityTiles(prev => rebuildDefaultFlags(prev, t =>
-        t.dbPriority ?? !!(t.src && TILE_SETTINGS.priority.some(p => t.src.includes(p)))));
+        t.dbPriority != null ? !!t.dbPriority : !!(t.src && TILE_SETTINGS.priority.some(p => t.src.includes(p)))));
       setBottomTiles(prev => rebuildDefaultFlags(prev, t =>
-        t.dbBottomRender ?? !!(t.src && TILE_SETTINGS.bottomRender.some(p => t.src.includes(p)))));
+        t.dbBottomRender != null ? !!t.dbBottomRender : !!(t.src && TILE_SETTINGS.bottomRender.some(p => t.src.includes(p)))));
       setAutoShadowTiles(prev => rebuildDefaultFlags(prev, t =>
-        t.dbAutoShadow ?? false));
+        t.dbAutoShadow != null ? !!t.dbAutoShadow : false));
     }
   }, [flatDefaultTiles]);
 
@@ -6290,14 +6290,17 @@ function App() {
                           setGridOffsets({});
                           setPriorityTiles(() => {
                             const n = {};
-                            flatDefaultTiles.forEach(t => { if (t.src && TILE_SETTINGS.priority.some(p => t.src.includes(p))) n[t.id] = true; });
+                            flatDefaultTiles.forEach(t => {
+                              const val = t.dbPriority != null ? !!t.dbPriority : !!(t.src && TILE_SETTINGS.priority.some(p => t.src.includes(p)));
+                              if (val) n[t.id] = true;
+                            });
                             return n;
                           });
                           setBottomTiles(() => {
                             const n = {};
                             flatDefaultTiles.forEach(t => {
-                              if (!t.src) return;
-                              if (TILE_SETTINGS.bottomRender.some(p => t.src.includes(p))) n[t.id] = true;
+                              const val = t.dbBottomRender != null ? !!t.dbBottomRender : !!(t.src && TILE_SETTINGS.bottomRender.some(p => t.src.includes(p)));
+                              if (val) n[t.id] = true;
                             });
                             return n;
                           });
