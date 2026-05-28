@@ -4244,7 +4244,7 @@ function App() {
                     const upResp = await fetch(`${WORKER_URL}/github/upload`, {
                       method: 'POST',
                       headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ filePath, contentBase64, commitMessage: `Replace tile image: ${t.codename}` }),
+                      body: JSON.stringify({ filePath, contentBase64, commitMessage: `[${currentUser.username}] Replace tile: ${tilesetFolderPath}/${file.name}` }),
                     });
                     if (!upResp.ok) throw new Error('GitHub upload failed');
                     const newUrl = `https://raw.githubusercontent.com/bicipikay/ophelia/main/${filePath}?v=${Date.now()}`;
@@ -4307,7 +4307,7 @@ function App() {
                             await fetch(`${WORKER_URL}/github/delete`, {
                               method: 'POST',
                               headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-                              body: JSON.stringify({ filePath, commitMessage: `Delete tile: ${t.codename}` }),
+                              body: JSON.stringify({ filePath, commitMessage: `[${currentUser.username}] Delete tile: ${tilesetFolderPath}/${filename}` }),
                             });
                           }
                         } catch (ghErr) {
@@ -4928,7 +4928,7 @@ function App() {
       const upResp = await fetch(`${WORKER_URL}/github/upload`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filePath, contentBase64, commitMessage: `Add tileset: ${name}` }),
+        body: JSON.stringify({ filePath, contentBase64, commitMessage: `[${currentUser.username}] New tileset: ${folderPath}` }),
       });
       if (!upResp.ok) {
         let msg = 'GitHub upload failed.';
@@ -5087,7 +5087,7 @@ function App() {
       const upResp = await fetch(`${WORKER_URL}/github/upload`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filePath, contentBase64, commitMessage: `Add tile: ${addTileCodename.trim()}` }),
+        body: JSON.stringify({ filePath, contentBase64, commitMessage: `[${currentUser.username}] Add tile: ${tilesetFolderPath}/${addTileFile.name}` }),
       });
       if (!upResp.ok) {
         let msg = 'GitHub upload failed';
