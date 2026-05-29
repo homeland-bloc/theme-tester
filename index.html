@@ -998,6 +998,7 @@ function App() {
   const [mapName, setMapName] = useState(() => load("oph_map_name", ""));
   // Pending map size change awaiting confirmation
   const [pendingSize, setPendingSize] = useState(null); // { w, h }
+  const [tilesetSwitchPending, setTilesetSwitchPending] = useState(null); // { newTilesetName, newTsDef, oldTsDef, oldIdToCodename, futureCodenameToId, newTilesCached, tsBg, mismatches, remaps }
   // Tile size multipliers
   const [tileMultipliers, setTileMultipliers] = useState(() => load(SK.multipliers, {}));
   // Priority tiles: rendered in a second DOM pass at z-index 9999 (always on top)
@@ -1713,6 +1714,38 @@ function App() {
     const currentGrid = gridRef.current;
     const hasOldTiles = oldIds.size > 0 &&
       currentGrid.some(row => row.some(id => id !== null && oldIds.has(id)));
+
+    // Check for codename mismatches before applying switch
+    if (hasOldTiles && newTsDef) {
+      const mismatches = [];
+      const seenCodenames = new Set();
+      currentGrid.forEach(row => row.forEach(id => {
+        if (id === null || !oldIds.has(id)) return;
+        const cn = oldIdToCodename[id];
+        if (!cn || seenCodenames.has(cn)) return;
+        if (futureCodenameToId[cn] === undefined) {
+          seenCodenames.add(cn);
+          const tile = flatDefaultTiles.find(t => t.id === id);
+          mismatches.push({ id, codename: cn, src: tile?.src });
+        }
+      }));
+      if (mismatches.length > 0) {
+        setTilesetSwitchPending({
+          newTilesetName, newTsDef, oldTsDef,
+          oldIdToCodename, futureCodenameToId,
+          newTilesCached, tsBg: null, mismatches,
+          remaps: Object.fromEntries(mismatches.map(m => [m.codename, WARN_TILE_ID])),
+        });
+        // Compute tsBg now and update the pending state
+        const dbBg_ = (newTsDef?.bg_color_light && newTsDef?.bg_color_dark)
+          ? { bg1: newTsDef.bg_color_light, bg2: newTsDef.bg_color_dark } : null;
+        const opheliaBg_ = OPHELIA_BG[newTilesetName] ?? null;
+        const tsBg_ = dbBg_ ?? opheliaBg_ ?? tilesetBgColors[newTilesetName] ?? { bg1: "#1a2332", bg2: "#1e2838" };
+        setTilesetSwitchPending(prev => prev ? { ...prev, tsBg: tsBg_ } : prev);
+        return;
+      }
+    }
+
     const newGrid = (hasOldTiles && newTsDef) ? currentGrid.map(row =>
       row.map(id => {
         if (id === null || !oldIds.has(id)) return id;
@@ -1731,7 +1764,7 @@ function App() {
     const tsBg = dbBg ?? opheliaBg ?? tilesetBgColors[newTilesetName] ?? { bg1: "#1a2332", bg2: "#1e2838" };
 
     // ── 5. Push history snap with converted grid, then apply state ───────
-    const snap = { grid: newGrid, w: gridWRef.current, h: gridHRef.current, tileset: newTilesetName, bg1: tsBg.bg1, bg2: tsBg.bg2, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current, label: `Switch to ${newTilesetName}` };
+    const snap = { grid: newGrid, w: gridWRef.current, h: gridHRef.current, tileset: newTilesetName, bg1: tsBg.bg1, bg2: tsBg.bg2, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current, label: `Switch from ${activeTileset ?? '(none)'} to ${newTilesetName}` };
     setHistory(h => {
       const trimmed = h.slice(0, histIdxRef.current + 1);
       const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
@@ -3965,6 +3998,11 @@ function App() {
     const [codenameInput,     setCodenameInput]     = React.useState(t.isDb ? (t.codename ?? '') : (tileNames[t.id] || defaultCodename_));
     const [folderKeyInput,    setFolderKeyInput]    = React.useState(t.folderLabel ?? '');
     const [sortIndexInput,    setSortIndexInput]    = React.useState(t.sortIndex != null ? String(t.sortIndex) : '');
+    React.useEffect(() => {
+      setCodenameInput(t.isDb ? (t.codename ?? '') : (tileNames[t.id] || defaultCodename_));
+      setFolderKeyInput(t.folderLabel ?? '');
+      setSortIndexInput(t.sortIndex != null ? String(t.sortIndex) : '');
+    }, [t.dbId]);
     const [flagTooltip,       setFlagTooltip]       = React.useState(null);
     const [deleteConfirmId,   setDeleteConfirmId]   = React.useState(null);
     const [deleteConfirmInput, setDeleteConfirmInput] = React.useState('');
@@ -4112,6 +4150,9 @@ function App() {
               onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
               placeholder={defaultCodename_ || "Enter codename…"}
               style={{ flex: 1, background: (t.isDb && !canEditDb) ? "transparent" : "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none", cursor: (t.isDb && !canEditDb) ? "default" : "text" }} />
+            {t.isDb && canEditDb && (() => { const dbVal = t.codename ?? ''; const isDefault = codenameInput === dbVal; const stl = isDefault ? { color: "#4ade80", borderColor: "#4ade80", background: "rgba(74,222,128,0.12)" } : { color: "#f97316", borderColor: "#f97316", background: "rgba(249,115,22,0.12)" }; return (
+              <button style={{ ...btn(false), fontSize: 10, padding: "3px 7px", ...stl }} disabled={isDefault} title={isDefault ? "Already at DB value" : "Reset to DB value"} onClick={() => setCodenameInput(dbVal)}>Reset</button>
+            ); })()}
           </div>
 
           {/* folder_key — only shown for DB tiles */}
@@ -4124,6 +4165,9 @@ function App() {
                 onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
                 placeholder="e.g. Walls"
                 style={{ flex: 1, background: !canEditDb ? "transparent" : "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none", cursor: !canEditDb ? "default" : "text" }} />
+              {canEditDb && (() => { const dbVal = t.folderLabel ?? ''; const isDefault = folderKeyInput === dbVal; const stl = isDefault ? { color: "#4ade80", borderColor: "#4ade80", background: "rgba(74,222,128,0.12)" } : { color: "#f97316", borderColor: "#f97316", background: "rgba(249,115,22,0.12)" }; return (
+                <button style={{ ...btn(false), fontSize: 10, padding: "3px 7px", ...stl }} disabled={isDefault} title={isDefault ? "Already at DB value" : "Reset to DB value"} onClick={() => setFolderKeyInput(dbVal)}>Reset</button>
+              ); })()}
             </div>
           )}
           {/* sort_index — only shown for DB tiles, editable by owners/admins */}
@@ -4136,6 +4180,9 @@ function App() {
                 onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
                 placeholder="0"
                 style={{ width: 72, background: !canEditDb ? "transparent" : "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none", cursor: !canEditDb ? "default" : "text" }} />
+              {canEditDb && (() => { const dbVal = t.sortIndex != null ? String(t.sortIndex) : ''; const isDefault = sortIndexInput === dbVal; const stl = isDefault ? { color: "#4ade80", borderColor: "#4ade80", background: "rgba(74,222,128,0.12)" } : { color: "#f97316", borderColor: "#f97316", background: "rgba(249,115,22,0.12)" }; return (
+                <button style={{ ...btn(false), fontSize: 10, padding: "3px 7px", ...stl }} disabled={isDefault} title={isDefault ? "Already at DB value" : "Reset to DB value"} onClick={() => setSortIndexInput(dbVal)}>Reset</button>
+              ); })()}
             </div>
           )}
 
@@ -4295,12 +4342,15 @@ function App() {
                     <input type="checkbox" checked={countOn} disabled={!canEditDb}
                       style={{ width: 13, height: 13, flexShrink: 0, accentColor: "#34d399", cursor: canEditDb ? "pointer" : "default" }}
                       onChange={ev => {
-                        setDbTilesByTsId(prev => {
-                          const tsId = t.tilesetId;
-                          if (!prev[tsId]) return prev;
-                          return { ...prev, [tsId]: prev[tsId].map(row => row.id === t.dbId ? { ...row, show_tile_count: ev.target.checked } : row) };
-                        });
-                        setInfoTile(prev => prev ? { ...prev, dbShowTileCount: ev.target.checked } : prev);
+                        const checked = ev.target.checked;
+                        setTimeout(() => {
+                          setDbTilesByTsId(prev => {
+                            const tsId = t.tilesetId;
+                            if (!prev[tsId]) return prev;
+                            return { ...prev, [tsId]: prev[tsId].map(row => row.id === t.dbId ? { ...row, show_tile_count: checked } : row) };
+                          });
+                          setInfoTile(prev => prev ? { ...prev, dbShowTileCount: checked } : prev);
+                        }, 0);
                       }} />
                     <span style={{ fontSize: 10, color: "#34d399", fontFamily: "monospace" }}>show_tile_count 🧮</span><FlagTip id="show_tile_count" />
                   </label>
@@ -4323,6 +4373,7 @@ function App() {
             <button
               disabled={saveStatus === 'saving'}
               onClick={async () => {
+                const savedScroll = modalScrollRef.current?.scrollTop ?? 0;
                 setSaveStatus('saving');
                 try {
                   const body = {
@@ -4340,6 +4391,8 @@ function App() {
                     codename: codenameInput.trim() || t.codename,
                     folder_key: folderKeyInput.trim() || null,
                     sort_index: sortIndexInput !== '' ? parseInt(sortIndexInput, 10) : null,
+                    last_updated_at: new Date().toISOString(),
+                    last_updated_by: currentUser.id,
                   };
                   const token = await getValidToken();
                   const resp = await fetch(`${WORKER_URL}/rest/v1/tiles?id=eq.${t.dbId}`, {
@@ -4363,6 +4416,7 @@ function App() {
                 } catch {
                   setSaveStatus('err');
                 }
+                requestAnimationFrame(() => { if (modalScrollRef.current) modalScrollRef.current.scrollTop = savedScroll; });
                 setTimeout(() => setSaveStatus(null), 3000);
               }}
               style={{ ...btn(false, saveStatus === 'err' ? C.danger : '#4ade80', saveStatus === 'err' ? 'rgba(248,113,113,0.15)' : 'rgba(74,222,128,0.15)'), width: '100%', justifyContent: 'center', fontSize: 11 }}>
@@ -5061,6 +5115,80 @@ function App() {
     );
   };
 
+  // ── Tileset Compatibility Modal ─────────────────────────────────────
+  const TilesetCompatModal = () => {
+    if (!tilesetSwitchPending) return null;
+    const { newTilesetName, newTsDef, oldIdToCodename, futureCodenameToId, newTilesCached, tsBg, mismatches, remaps } = tilesetSwitchPending;
+    const newTilesForDropdown = flatDefaultTiles.filter(ft => ft.isDb && ft.dbTilesetId === newTsDef?.id);
+
+    const handleConfirm = () => {
+      const pending = tilesetSwitchPending;
+      if (!pending) return;
+      const { newTilesetName: tsName, newTsDef: tsDef, oldIdToCodename: oldMap, futureCodenameToId: futureMap, newTilesCached: cached, tsBg: bg, remaps: finalRemaps } = pending;
+      const oldIds2 = new Set(Object.keys(oldMap).map(Number));
+      const cGrid = gridRef.current;
+      const hasOld = oldIds2.size > 0 && cGrid.some(row => row.some(id => id !== null && oldIds2.has(id)));
+      const resolvedBg = bg ?? { bg1: "#1a2332", bg2: "#1e2838" };
+      const nGrid = (hasOld && tsDef) ? cGrid.map(row =>
+        row.map(id => {
+          if (id === null || !oldIds2.has(id)) return id;
+          const cn = oldMap[id];
+          if (!cn) return WARN_TILE_ID;
+          // Check user remap first, then auto-map
+          if (finalRemaps[cn] !== undefined) return finalRemaps[cn];
+          const newId = futureMap[cn];
+          return newId !== undefined ? newId : WARN_TILE_ID;
+        })
+      ) : cGrid;
+      const snap = { grid: nGrid, w: gridWRef.current, h: gridHRef.current, tileset: tsName, bg1: resolvedBg.bg1, bg2: resolvedBg.bg2, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current, label: `Switch from ${activeTileset ?? '(none)'} to ${tsName}` };
+      setHistory(h => {
+        const trimmed = h.slice(0, histIdxRef.current + 1);
+        const capped = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
+        return [...capped, snap];
+      });
+      setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
+      if (nGrid !== cGrid) setGridRaw(nGrid);
+      setActiveTileset(tsName);
+      applyBgPreset(tsName, resolvedBg.bg1, resolvedBg.bg2);
+      setTilesetSwitchPending(null);
+    };
+
+    return (
+      <div className="modal-backdrop" onClick={() => setTilesetSwitchPending(null)}>
+        <div className="modal-box" style={{ maxWidth: 480, maxHeight: '80vh', display: 'flex', flexDirection: 'column' }} onClick={e => e.stopPropagation()}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Tileset Compatibility</span>
+            <button onClick={() => setTilesetSwitchPending(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.muted, fontSize: 18 }}>×</button>
+          </div>
+          <p style={{ fontSize: 11, color: C.muted, margin: '0 0 10px' }}>
+            Some tiles on the board don't exist in <strong style={{ color: C.text }}>{newTilesetName}</strong>. Choose a replacement for each:
+          </p>
+          <div style={{ overflowY: 'auto', flex: 1, display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 10 }}>
+            {mismatches.map(m => (
+              <div key={m.codename} style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'rgba(255,255,255,0.04)', borderRadius: 6, padding: '6px 8px' }}>
+                {m.src && <img src={m.src} style={{ width: 32, height: 32, objectFit: 'contain', imageRendering: 'pixelated', flexShrink: 0 }} />}
+                <code style={{ fontSize: 11, color: C.text, flex: 1 }}>{m.codename}</code>
+                <select
+                  value={remaps[m.codename] ?? WARN_TILE_ID}
+                  onChange={e => setTilesetSwitchPending(prev => prev ? { ...prev, remaps: { ...prev.remaps, [m.codename]: Number(e.target.value) } } : prev)}
+                  style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 4, color: C.text, fontSize: 11, padding: '2px 4px' }}>
+                  <option value={WARN_TILE_ID}>— warn tile —</option>
+                  {newTilesForDropdown.map(ft => (
+                    <option key={ft.id} value={ft.id}>{ft.codename ?? ft.id}</option>
+                  ))}
+                </select>
+              </div>
+            ))}
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button style={{ ...btn(false), flex: 1 }} onClick={() => setTilesetSwitchPending(null)}>Cancel</button>
+            <button style={{ ...btn(true, '#4ade80', 'rgba(74,222,128,0.15)'), flex: 1 }} onClick={handleConfirm}>Confirm Switch</button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   // ── Create Tileset ─────────────────────────────────────────────────
   const deriveFolder = name => name.replace(/ /g, '_').replace(/[^a-zA-Z0-9_-]/g, '');
 
@@ -5366,6 +5494,7 @@ function App() {
       <ToolInfoModal />
       <MemoryModal />
       <ConvertModal />
+      <TilesetCompatModal />
       <HotkeysModal />
       {createTilesetModal}
       <AddTileModal
