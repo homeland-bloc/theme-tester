@@ -5133,6 +5133,46 @@ function App() {
   const TilesetCompatModal = () => {
     if (!tilesetSwitchPending) return null;
     const { newTilesetName, newTsDef, oldIdToCodename, futureCodenameToId, newTilesCached, tsBg, mismatches, remaps } = tilesetSwitchPending;
+
+    // If the incoming tileset's tiles haven't landed in React state yet, show a loading
+    // indicator. switchTileset already called setDbTilesByTsId, so they will arrive on
+    // the next render. If somehow they never arrive (e.g. a stale close-over), trigger
+    // the fetch once via effect.
+    const tilesReady = newTsDef ? dbTilesByTsId[newTsDef.id] !== undefined : true;
+    React.useEffect(() => {
+      if (tilesReady || !newTsDef || !isAuthenticated) return;
+      let cancelled = false;
+      (async () => {
+        const token = currentUser?.firebaseToken ? await getValidToken() : null;
+        const tilesUrl = new URL(`${WORKER_URL}/rest/v1/tiles`);
+        tilesUrl.searchParams.set('tileset_id', `eq.${newTsDef.id}`);
+        tilesUrl.searchParams.set('order', 'sort_index');
+        const hdrs = token
+          ? { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
+          : { 'Content-Type': 'application/json' };
+        try {
+          const resp = await fetch(tilesUrl.toString(), { headers: hdrs });
+          const rows = resp.ok ? await resp.json() : [];
+          const data = Array.isArray(rows) ? rows : [];
+          if (!cancelled) {
+            setDbTilesByTsId(prev => ({ ...prev, [newTsDef.id]: data }));
+            dbTilesByTsIdRef.current = { ...dbTilesByTsIdRef.current, [newTsDef.id]: data };
+          }
+        } catch {}
+      })();
+      return () => { cancelled = true; };
+    }, [tilesReady, newTsDef?.id]);
+
+    if (!tilesReady) {
+      return (
+        <div className="modal-backdrop">
+          <div className="modal-box" style={{ maxWidth: 480, alignItems: 'center' }} onClick={e => e.stopPropagation()}>
+            <span style={{ fontSize: 12, color: C.muted }}>Loading tileset tiles…</span>
+          </div>
+        </div>
+      );
+    }
+
     const newTilesForDropdown = flatDefaultTiles.filter(ft => ft.isDb && ft.dbTilesetId === newTsDef?.id);
 
     const handleConfirm = () => {
