@@ -2091,11 +2091,11 @@ function App() {
     }
     const pending = pendingGridLoadRef.current;
     pendingGridLoadRef.current = null; // clear before setGridRaw so save effect runs correctly
-    const { palette, grid: indexGrid } = pending;
+    const { palette: resolvedPalette, grid: indexGrid } = pending;
     const unresolved = [];
     // Resolve against flatDefaultTiles directly (always current) plus persisted user/atlas tiles.
     const allTiles = [...flatDefaultTiles, ...userTiles];
-    const idFromPaletteIdx = [null, ...palette.map(cn => {
+    const idFromPaletteIdx = [null, ...resolvedPalette.map(cn => {
       const tile = resolveCodename(cn, allTiles);
       if (!tile) unresolved.push(cn);
       return tile?.id ?? null;
