@@ -2075,9 +2075,20 @@ function App() {
   // Guard on flatDefaultTiles.length rather than tiles.length: if the user has atlas tiles persisted in
   // localStorage, tiles is non-empty from the very first render (before the setDefaultTiles useEffect
   // runs), so tiles.length === 0 is not a reliable signal that default tiles are available yet.
-  // flatDefaultTiles is computed in the same render that sets tilesLoading=false, so it is always ready.
+  //
+  // Race-condition fix: tilesLoading=false and setDbTilesByTsId are called in the same async block, but
+  // React may fire this effect before flatDefaultTiles recomputes from the new dbTilesByTsId. Instead of
+  // trusting tilesLoading, verify that flatDefaultTiles actually contains at least one d: tile for every
+  // tileset UUID referenced in the pending palette — only then is it safe to resolve.
   useEffect(() => {
-    if (!pendingGridLoadRef.current || tilesLoading || flatDefaultTiles.length === 0) return;
+    if (!pendingGridLoadRef.current || flatDefaultTiles.length === 0) return;
+    // If any d: UUID in the palette belongs to a tileset whose tiles are not yet in flatDefaultTiles, wait.
+    const palette = pendingGridLoadRef.current.palette;
+    const dbUuids = palette.filter(cn => typeof cn === 'string' && cn.startsWith('d:')).map(cn => cn.slice(2));
+    if (dbUuids.length > 0) {
+      const flatDbIds = new Set(flatDefaultTiles.filter(t => t.isDb).map(t => t.dbId));
+      if (!dbUuids.every(uuid => flatDbIds.has(uuid))) return; // tiles not yet in flatDefaultTiles
+    }
     const pending = pendingGridLoadRef.current;
     pendingGridLoadRef.current = null; // clear before setGridRaw so save effect runs correctly
     const { palette, grid: indexGrid } = pending;
@@ -2097,7 +2108,7 @@ function App() {
       console.warn(`[map load] ${unresolved.length} tile(s) could not be resolved:`, unresolved);
       setGridLoadWarning(unresolved.length);
     }
-  }, [tiles, tilesLoading, flatDefaultTiles]); // eslint-disable-line
+  }, [tiles, flatDefaultTiles]); // eslint-disable-line
   useEffect(() => { if (activeTileset) save(SK.activeTileset, activeTileset); }, [activeTileset]);
 
   // Close tileset dropdown on outside click (bubble phase so stopPropagation inside the dropdown works)
