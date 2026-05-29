@@ -491,6 +491,16 @@ async function sanitiseBody(body, firebaseUid, env, token = null) {
     }
   }
 
+  // Always overwrite last_updated_at with server timestamp
+  if ('last_updated_at' in patched) {
+    patched.last_updated_at = new Date().toISOString();
+  }
+
+  // Always overwrite last_updated_by with verified uid (cannot be spoofed)
+  if ('last_updated_by' in patched) {
+    patched.last_updated_by = firebaseUid;
+  }
+
   return patched;
 }
 
