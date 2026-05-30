@@ -875,6 +875,31 @@ function App() {
     (currentUser.tokenExpiry ?? 0) - 60000 > Date.now()
   );
 
+  // Track whether user was authenticated on previous render; debounce login screen to avoid tab-focus flash
+  const wasAuthenticatedRef = useRef(isAuthenticated);
+  const [showLogin, setShowLogin] = useState(!isAuthenticated);
+  const showLoginTimerRef = useRef(null);
+  useEffect(() => {
+    if (isAuthenticated) {
+      wasAuthenticatedRef.current = true;
+      if (showLoginTimerRef.current) { clearTimeout(showLoginTimerRef.current); showLoginTimerRef.current = null; }
+      setShowLogin(false);
+    } else {
+      if (wasAuthenticatedRef.current) {
+        // Was logged in — debounce 50 ms before showing login to swallow transient null on tab refocus
+        if (!showLoginTimerRef.current) {
+          showLoginTimerRef.current = setTimeout(() => {
+            showLoginTimerRef.current = null;
+            wasAuthenticatedRef.current = false;
+            setShowLogin(true);
+          }, 50);
+        }
+      } else {
+        setShowLogin(true);
+      }
+    }
+  }, [isAuthenticated]);
+
   // Check Firebase auth state on mount; mark authChecked after minimum 1 s to prevent login flash
   useEffect(() => {
     const minDelay = new Promise(resolve => setTimeout(resolve, 1000));
@@ -921,6 +946,7 @@ function App() {
   const [mirrorH,     setMirrorH]   = useState(false);
   const [mirrorD,     setMirrorD]   = useState(false);
   const [showGuides,    setShowGuides]    = useState(false);
+  const [showMapCenter, setShowMapCenter] = useState(() => load("oph_show_map_center", false));
   const [mirrorSettings, setMirrorSettings] = useState({ mirrorSpawns: true, mirrorRotation: true, allowSwap: false });
   const [mirrorSettingsOpen, setMirrorSettingsOpen] = useState(false);
   const [tilesSettingsOpen,  setTilesSettingsOpen]  = useState(false);
@@ -952,6 +978,19 @@ function App() {
   const [rotateMode, setRotateMode] = useState(false);
   const rotateModeRef = useRef(false);
   const rotatePendingCellRef = useRef(null);
+  const [magnetMode, setMagnetMode] = useState(false);
+  const magnetModeRef = useRef(false);
+  const [customCenter, setCustomCenter] = useState(() => {
+    const v = load("oph_custom_center", null);
+    if (!v || typeof v.r !== "number" || typeof v.c !== "number") return null;
+    return v;
+  });
+  const customCenterRef = useRef(null);
+  const [customCenterSize, setCustomCenterSize] = useState(() => {
+    const v = load("oph_custom_center_size", 1);
+    return (v >= 1 && v <= 4) ? v : 1;
+  });
+  const customCenterSizeRef = useRef(1);
   const [rectPreview,   setRectPreview]   = useState(null);     // {r1,c1,r2,c2} during rect drag
   const [previewCells,  setPreviewCells]  = useState(null);     // [[r,c],...] during single/line drag
   // Drag-to-move
@@ -1132,6 +1171,9 @@ function App() {
   useEffect(() => { eyedropperModeRef.current = eyedropperMode; }, [eyedropperMode]);
   useEffect(() => { highlightModeRef.current = highlightMode; }, [highlightMode]);
   useEffect(() => { rotateModeRef.current = rotateMode; }, [rotateMode]);
+  useEffect(() => { magnetModeRef.current = magnetMode; }, [magnetMode]);
+  useEffect(() => { customCenterRef.current = customCenter; }, [customCenter]);
+  useEffect(() => { customCenterSizeRef.current = customCenterSize; }, [customCenterSize]);
   useEffect(() => { exploreModeRef.current = exploreMode; }, [exploreMode]);
   useEffect(() => { highlightedCellsRef.current = highlightedCells; }, [highlightedCells]);
   useEffect(() => { primaryHighlightedCellsRef.current = primaryHighlightedCells; }, [primaryHighlightedCells]);
@@ -2257,6 +2299,10 @@ function App() {
       setGridFlips(snap.flips);
       gridFlipsRef.current = snap.flips;
     }
+    if ("customCenter" in snap) {
+      setCustomCenter(snap.customCenter);
+      customCenterRef.current = snap.customCenter;
+    }
   };
 
   // Apply a duplicate: place copy of primary highlighted cells at current drag-offset position, with mirroring
@@ -2334,7 +2380,7 @@ function App() {
   const pushHistorySnapshot = useCallback(() => {
     const label = histLabelRef.current || "Draw";
     histLabelRef.current = "Draw";
-    const snap = { grid, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1, bg2, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current, label };
+    const snap = { grid, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1, bg2, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current, customCenter: customCenterRef.current, label };
     setHistory(h => {
       const trimmed = h.slice(0, histIdx + 1);
       const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
@@ -2387,22 +2433,37 @@ function App() {
   };
 
 
+  // Returns the geometric centre of the grid (may be fractional for even dims)
+  const getTrueCenter = () => ({ cR: (gridH - 1) / 2, cC: (gridW - 1) / 2 });
+
+  // Returns the effective mirror origin: custom centre if set (clamped to grid), else true centre
+  const getEffectiveCenter = () => {
+    const cc = customCenterRef.current;
+    if (cc !== null) {
+      const sz = (customCenterSizeRef.current ?? 1) - 1; // extra cells on each side
+      const cR = Math.max(sz / 2, Math.min(gridHRef.current - 1 - sz / 2, cc.r + sz / 2));
+      const cC = Math.max(sz / 2, Math.min(gridWRef.current - 1 - sz / 2, cc.c + sz / 2));
+      return { cR, cC };
+    }
+    return { cR: (gridHRef.current - 1) / 2, cC: (gridWRef.current - 1) / 2 };
+  };
+
   // Returns [pos] — just positions (used by existing drag/drop code)
   const getMirrorPositions = useCallback((r, c) => {
     return getMirrorMeta(r, c).map(m => m.pos);
-  }, [mirrorV, mirrorH, mirrorD, gridW, gridH]); // eslint-disable-line
+  }, [mirrorV, mirrorH, mirrorD, gridW, gridH, customCenter]); // eslint-disable-line
 
   // Returns [{pos, fV, fH, fD}] — positions + which mirror flags apply
   function getMirrorMeta(r, c) {
-    const cR = (gridH - 1) / 2, cC = (gridW - 1) / 2;
+    const { cR, cC } = getEffectiveCenter();
     const oR = r - cR, oC = c - cC;
     const entries = [{ pos: [r, c], fV: false, fH: false, fD: false }];
-    if (mirrorV) entries.push({ pos: [r, gridW - 1 - c],               fV: true,  fH: false, fD: false });
-    if (mirrorH) entries.push({ pos: [gridH - 1 - r, c],               fV: false, fH: true,  fD: false });
+    if (mirrorV) entries.push({ pos: [r, Math.round(2*cC - c)],               fV: true,  fH: false, fD: false });
+    if (mirrorH) entries.push({ pos: [Math.round(2*cR - r), c],               fV: false, fH: true,  fD: false });
     if (mirrorD) entries.push({ pos: [Math.round(cR - oR), Math.round(cC - oC)], fV: false, fH: false, fD: true });
-    if (mirrorV && mirrorD) entries.push({ pos: [Math.round(cR - oR), gridW - 1 - c],   fV: true,  fH: false, fD: true });
-    if (mirrorH && mirrorD) entries.push({ pos: [gridH - 1 - r, Math.round(cC - oC)],   fV: false, fH: true,  fD: true });
-    if (mirrorV && mirrorH && mirrorD) entries.push({ pos: [gridH - 1 - r, gridW - 1 - c], fV: true, fH: true, fD: true });
+    if (mirrorV && mirrorD) entries.push({ pos: [Math.round(cR - oR), Math.round(2*cC - c)],   fV: true,  fH: false, fD: true });
+    if (mirrorH && mirrorD) entries.push({ pos: [Math.round(2*cR - r), Math.round(cC - oC)],   fV: false, fH: true,  fD: true });
+    if (mirrorV && mirrorH && mirrorD) entries.push({ pos: [Math.round(2*cR - r), Math.round(2*cC - c)], fV: true, fH: true, fD: true });
     const seen = new Set();
     return entries.filter(({ pos: [pr, pc] }) => {
       if (pr < 0 || pr >= gridH || pc < 0 || pc >= gridW) return false;
@@ -2774,6 +2835,17 @@ function App() {
       if (e.type === "mousedown") { e.preventDefault(); rotatePendingCellRef.current = [r, c]; }
       return;
     }
+    if (magnetModeRef.current) {
+      if (e.type === "mousedown") {
+        e.preventDefault();
+        const clampedR = Math.max(0, Math.min(gridHRef.current - 1, r));
+        const clampedC = Math.max(0, Math.min(gridWRef.current - 1, c));
+        setCustomCenter({ r: clampedR, c: clampedC });
+        customCenterRef.current = { r: clampedR, c: clampedC };
+        save("oph_custom_center", { r: clampedR, c: clampedC });
+      }
+      return;
+    }
     if (e.type === "mousedown") {
       e.preventDefault(); // prevent native browser drag + text selection
 
@@ -3124,8 +3196,7 @@ function App() {
           // Compute per-cell mirrored offset so symmetric structures move in opposite directions
           const anchorCell = highlightDragAnchorCell.current;
           const [ar, ac] = anchorCell ?? [0, 0];
-          const cR = (gridHRef.current - 1) / 2;
-          const cC = (gridWRef.current - 1) / 2;
+          const { cR, cC } = getEffectiveCenter();
           const anchorRowSign = ar < cR ? -1 : (ar > cR ? 1 : 0);
           const anchorColSign = ac < cC ? -1 : (ac > cC ? 1 : 0);
           const getEffectiveDelta = (r, c) => {
@@ -3443,6 +3514,14 @@ function App() {
       // ── IMMEDIATE PICK-UP: occupied cell, no eraser → remove tile + mirror counterparts, start drag ──
       // History written once at touchend (drop/discard), not here.
       if (rotateModeRef.current) return; // rotate mode: no drag on touch
+      if (magnetModeRef.current) {
+        const clampedR = Math.max(0, Math.min(gridHRef.current - 1, r));
+        const clampedC = Math.max(0, Math.min(gridWRef.current - 1, c));
+        setCustomCenter({ r: clampedR, c: clampedC });
+        customCenterRef.current = { r: clampedR, c: clampedC };
+        save("oph_custom_center", { r: clampedR, c: clampedC });
+        return;
+      }
       const existingId = gridRef.current?.[r]?.[c];
       if (existingId && !eraserRef.current && !mirrorSettingsRef.current.allowSwap) {
         // Pick up for drag (block overwrite off); remove tile and mirror counterparts
@@ -3593,8 +3672,7 @@ function App() {
             // Compute per-cell mirrored offset so symmetric structures move in opposite directions
             const anchorCell = highlightDragAnchorCell.current;
             const [ar, ac] = anchorCell ?? [0, 0];
-            const cR = (gridHRef.current - 1) / 2;
-            const cC = (gridWRef.current - 1) / 2;
+            const { cR, cC } = getEffectiveCenter();
             const anchorRowSign = ar < cR ? -1 : (ar > cR ? 1 : 0);
             const anchorColSign = ac < cC ? -1 : (ac > cC ? 1 : 0);
             const getEffectiveDelta = (r, c) => {
@@ -3982,9 +4060,11 @@ function App() {
   const gColor  = uiTheme === 'warm' ? '#f472b6' : '#c084fc'; // Guides: pink / purple
   const ocColor = uiTheme === 'warm' ? '#e879f9' : '#a78bfa'; // Offset Centers: fuchsia / violet
   const owColor = uiTheme === 'warm' ? '#fb7185' : '#818cf8'; // Block Overwrite: rose / indigo
+  const mcColor = uiTheme === 'warm' ? '#f9a8d4' : '#d8b4fe'; // Map Center: pastel pink / pastel violet
   const gDim    = uiTheme === 'warm' ? 'rgba(244,114,182,0.16)' : 'rgba(192,132,252,0.16)';
   const ocDim   = uiTheme === 'warm' ? 'rgba(232,121,249,0.16)' : 'rgba(167,139,250,0.16)';
   const owDim   = uiTheme === 'warm' ? 'rgba(251,113,133,0.16)' : 'rgba(129,140,248,0.16)';
+  const mcDim   = uiTheme === 'warm' ? 'rgba(249,168,212,0.16)' : 'rgba(216,180,254,0.16)';
 
   // ── Shared styles ─────────────────────────────────────────────────
   const cardImgBgStyle = tileCardLightBg ? {
@@ -4919,7 +4999,9 @@ function App() {
       selectionMode: { label: "Selection Mode", icon: "🖌️", color: C.accent, desc: "Controls how tiles are placed on the grid. Single: freehand paint. Line: draw a straight line between two points. Rectangle: fill a rectangular area. Fill: flood-fill all connected empty cells.", iconColor: null },
       mirroring: { label: "Mirroring", icon: "🪞", color: C.pale, desc: "Mirrors every paint action across one or more axes. Horizontal mirrors left↔right. Vertical mirrors top↔bottom. Diagonal applies a 180° point reflection. All three can be combined.", iconColor: null },
       convert: { label: "Convert", icon: "🔄", color: C.soft, desc: "Remaps tiles on the board from one tileset to another by matching tile names. Tiles with no equivalent in the target tileset are left as-is.", iconColor: null },
-      rotate: { label: "Rotate", icon: "🌀", color: "#2563eb", desc: "Click a rotatable tile on the map to rotate it one step. Spinning tiles (water, jumppads) cycle through 4 rotation steps; flippable tiles (fence, rope) cycle through 4 flip states. Non-rotatable tiles are skipped. Drag to pan the canvas like the Hand tool. If cells are highlighted, clicking anywhere rotates all rotatable tiles in the highlighted region.", iconColor: null },
+      rotate: { label: "Rotate", icon: "🌊", color: "#2dd4bf", desc: "Click a rotatable tile on the map to rotate it one step. Spinning tiles (water, jumppads) cycle through 4 rotation steps; flippable tiles (fence, rope) cycle through 4 flip states. Non-rotatable tiles are skipped. Drag to pan the canvas like the Hand tool. If cells are highlighted, clicking anywhere rotates all rotatable tiles in the highlighted region.", iconColor: null },
+      magnet: { label: "Magnet", icon: "🧲", color: "#2563eb", desc: "Sets a custom mirror origin point. Click any cell on the canvas to move the mirror centre to that cell. All mirror modes (H, V, D) reflect around this custom origin instead of the grid centre. Use the size selector to set a 2×2, 3×3, or 4×4 centre zone for even-dimension symmetry. Click Reset on the card to revert to the default grid centre.", iconColor: null },
+      mapCenter: { label: "Map Center", icon: "📍", color: mcColor, desc: "Shows the current mirror origin on the canvas as a dashed outline. The origin defaults to the map centre but can be moved using the Magnet tool.", iconColor: null },
       hotkeys: { label: "Hotkeys", icon: "⌨️", color: C.text, desc: "Keyboard shortcuts: E = Erase, W = Eyedropper, R = Rotate selected tile, Z = Undo, X = Redo, Ctrl+Z = Undo, Ctrl+Y = Redo, Escape = Clear highlight.", iconColor: null },
       explore: { label: "Explore", icon: "🌻", color: "#9ADF1C", desc: "Cycle through tile variants within a folder. Click a folder tile on the canvas to pick the next variant. If cells are highlighted, clicking cycles variants across all highlighted folder tiles at once.", iconColor: null },
       warn: { label: "Warn", icon: "⚠️", color: "#f97316", desc: "Places an invisible warning marker tile. Warning markers appear as semi-transparent ⚠️ overlays on the canvas but are not exported as tiles — useful for marking hazardous or incomplete areas.", iconColor: null },
@@ -5577,7 +5659,7 @@ function App() {
   }
 
   // Login gate — show a centered login screen when the user is not authenticated
-  if (!isAuthenticated) {
+  if (showLogin) {
     return (
       <div style={{
         display: "flex", alignItems: "center", justifyContent: "center",
@@ -6448,12 +6530,12 @@ function App() {
                   {(() => {
                     const isStarredRotate = starredTiles.includes("rotate");
                     const rotateHint = !rotateMode && highlightMode && highlightedCells.size > 0;
-                    const rotateBorderColor = rotateMode ? "#2563eb" : rotateHint ? "rgba(124,58,237,0.28)" : C.border;
-                    const rotateBgColor = rotateMode ? "rgba(37,99,235,0.15)" : rotateHint ? "rgba(124,58,237,0.04)" : "rgba(255,255,255,0.03)";
-                    const rotateHeaderBg = rotateMode ? "rgba(37,99,235,0.28)" : rotateHint ? "rgba(124,58,237,0.07)" : "rgba(37,99,235,0.08)";
-                    const rotateLabelColor = rotateMode ? "#2563eb" : rotateHint ? "rgba(167,139,250,0.45)" : C.muted;
+                    const rotateBorderColor = rotateMode ? "#2dd4bf" : rotateHint ? "rgba(124,58,237,0.28)" : C.border;
+                    const rotateBgColor = rotateMode ? "rgba(45,212,191,0.15)" : rotateHint ? "rgba(124,58,237,0.04)" : "rgba(255,255,255,0.03)";
+                    const rotateHeaderBg = rotateMode ? "rgba(45,212,191,0.28)" : rotateHint ? "rgba(124,58,237,0.07)" : "rgba(45,212,191,0.08)";
+                    const rotateLabelColor = rotateMode ? "#2dd4bf" : rotateHint ? "rgba(167,139,250,0.45)" : C.muted;
                     return (
-                      <div onClick={() => { const turningOn = !rotateMode; setRotateMode(r => !r); setEraser(false); setHandMode(false); setEyedropperMode(false); setExploreMode(false); setDuplicateMode(false); if (turningOn) setSel(null); }}
+                      <div onClick={() => { const turningOn = !rotateMode; setRotateMode(r => !r); setEraser(false); setHandMode(false); setEyedropperMode(false); setExploreMode(false); setDuplicateMode(false); setMagnetMode(false); if (turningOn) setSel(null); }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer",
                           border: `2px solid ${rotateBorderColor}`,
                           background: rotateBgColor,
@@ -6464,7 +6546,7 @@ function App() {
                             <span style={{ fontSize: 9, fontWeight: 700, color: rotateLabelColor }}>Rotate</span>
                           </div>
                           <div style={{ height: cardSz - 18, background: C.panelDeep, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                            <span style={{ fontSize: 20, lineHeight: 1, opacity: (rotateMode || rotateHint) ? 1 : 0.55 }}>🌀</span>
+                            <span style={{ fontSize: 20, lineHeight: 1, opacity: (rotateMode || rotateHint) ? 1 : 0.55 }}>🌊</span>
                           </div>
                         </div>
                         <span onClick={e => { e.stopPropagation(); setInfoTool("rotate"); }}
@@ -6475,11 +6557,50 @@ function App() {
                       </div>
                     );
                   })()}
+                  {/* 1e2. Magnet */}
+                  {(() => {
+                    const isStarredMagnet = starredTiles.includes("magnet");
+                    const hasCustomCenter = customCenter !== null;
+                    return (
+                      <div onClick={() => { const turningOn = !magnetMode; setMagnetMode(m => !m); setEraser(false); setHandMode(false); setEyedropperMode(false); setExploreMode(false); setDuplicateMode(false); setRotateMode(false); if (turningOn) setSel(null); }}
+                        style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer",
+                          border: `2px solid ${magnetMode ? "#2563eb" : C.border}`,
+                          background: magnetMode ? "rgba(37,99,235,0.15)" : "rgba(255,255,255,0.03)",
+                          transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
+                        <div style={{ borderRadius: 6, overflow: "hidden" }}>
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 3,
+                            background: magnetMode ? "rgba(37,99,235,0.28)" : "rgba(37,99,235,0.08)", padding: "2px 4px" }}>
+                            <span style={{ fontSize: 9, fontWeight: 700, color: magnetMode ? "#2563eb" : C.muted }}>Magnet</span>
+                            {hasCustomCenter && (
+                              <button onClick={e => { e.stopPropagation(); setCustomCenter(null); customCenterRef.current = null; save("oph_custom_center", null); }}
+                                style={{ fontSize: 7, fontWeight: 700, color: "#2563eb", background: "rgba(37,99,235,0.18)", border: "1px solid #2563eb", borderRadius: 3, padding: "0px 3px", cursor: "pointer", lineHeight: 1.4 }}>Reset</button>
+                            )}
+                          </div>
+                          <div style={{ height: cardSz - 18, background: C.panelDeep, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2 }}>
+                            <span style={{ fontSize: 20, lineHeight: 1, opacity: magnetMode ? 1 : 0.55 }}>🧲</span>
+                            <div style={{ display: "flex", gap: 2 }}>
+                              {[1,2,3,4].map(sz => (
+                                <div key={sz} onClick={e => { e.stopPropagation(); setCustomCenterSize(sz); customCenterSizeRef.current = sz; save("oph_custom_center_size", sz); }}
+                                  style={{ width: 10, height: 10, borderRadius: 2, border: `1px solid ${customCenterSize === sz ? "#2563eb" : "rgba(255,255,255,0.25)"}`, background: customCenterSize === sz ? "rgba(37,99,235,0.5)" : "rgba(255,255,255,0.07)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                                  <span style={{ fontSize: 6, color: customCenterSize === sz ? "#fff" : "rgba(255,255,255,0.45)" }}>{sz}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                        <span onClick={e => { e.stopPropagation(); setInfoTool("magnet"); }}
+                          style={{ position: "absolute", top: -7, right: -7, width: 18, height: 18, fontSize: 15, cursor: "pointer",
+                            color: "rgba(255,255,255,0.85)", lineHeight: "18px", textAlign: "center",
+                            zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
+                          title={isStarredMagnet ? "Starred — click for info" : "Magnet info"}>{isStarredMagnet ? "★" : "ⓘ"}</span>
+                      </div>
+                    );
+                  })()}
                   {/* 1f. Highlight */}
                   {(() => {
                     const isStarredHighlight = starredTiles.includes("highlight");
                     return (
-                      <div onClick={() => { const turningOn = !highlightMode; setHighlightMode(h => !h); setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); if (turningOn) { setSel(null); } else { setDuplicateMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); setSel(WARN_TILE_ID); } }}
+                      <div onClick={() => { const turningOn = !highlightMode; setHighlightMode(h => !h); setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); if (turningOn) { setSel(null); } else { setDuplicateMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); } }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer",
                           border: `2px solid ${highlightMode ? "#a78bfa" : C.border}`,
                           background: highlightMode ? "rgba(167,139,250,0.15)" : "rgba(255,255,255,0.03)",
@@ -6839,7 +6960,7 @@ function App() {
                     </div>
                   );
                   if (sid === "highlight") return (
-                    <div key="highlight" onClick={() => { const on = !highlightMode; setHighlightMode(h => !h); setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); if (!on) { setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); setSel(WARN_TILE_ID); } }}
+                    <div key="highlight" onClick={() => { const on = !highlightMode; setHighlightMode(h => !h); setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); if (!on) { setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); } }}
                       style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
                         border: `1px solid ${highlightMode ? "#a78bfa" : C.border}`, background: highlightMode ? "rgba(167,139,250,0.22)" : "rgba(255,255,255,0.04)" }}
                       title="Highlight">
@@ -7230,7 +7351,7 @@ function App() {
                     const inHighlight = highlightedCells.size > 0 && highlightedCells.has(`${r},${c}`);
                     badges.push(
                       <div key={`rbadge${r}-${c}`} style={{ position: "absolute", left: c * cellPx, top: (r + 1) * cellPx, width: cellPx, height: cellPx, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none", zIndex: 10002 }}>
-                        <span style={{ fontSize, lineHeight: 1, opacity: inHighlight ? 1 : 0.65, filter: inHighlight ? "drop-shadow(0 0 3px rgba(37,99,235,0.9))" : "none" }}>{canSpin ? "🐬" : "🦭"}</span>
+                        <span style={{ fontSize, lineHeight: 1, opacity: inHighlight ? 1 : 0.65, filter: inHighlight ? "drop-shadow(0 0 3px rgba(45,212,191,0.9))" : "none" }}>{canSpin ? "🐬" : "🦭"}</span>
                       </div>
                     );
                   }));
@@ -7304,16 +7425,39 @@ function App() {
                 })()}
 
                 {/* Mirror guide lines — always shown when Guides is on */}
-                {showGuides && (
-                  <svg style={{ position: "absolute", left: 0, top: CELL * zoom, width: gW, height: gH, pointerEvents: "none", zIndex: 200, overflow: "visible" }}>
-                    {/* Vertical */}
-                    <line x1={gW / 2} y1={0} x2={gW / 2} y2={gH}
-                      stroke={mirrorV ? C.pale : "rgba(255,255,255,0.38)"} strokeWidth={mirrorV ? 2 : 1.5} opacity={1} strokeDasharray="6 3" />
-                    {/* Horizontal */}
-                    <line x1={0} y1={gH / 2} x2={gW} y2={gH / 2}
-                      stroke={mirrorH ? C.soft : "rgba(255,255,255,0.38)"} strokeWidth={mirrorH ? 2 : 1.5} opacity={1} strokeDasharray="6 3" />
-                  </svg>
-                )}
+                {showGuides && (() => {
+                  const { cR, cC } = getEffectiveCenter();
+                  const cellPx = CELL * zoom;
+                  const guideX = (cC + 0.5) * cellPx;
+                  const guideY = (cR + 0.5) * cellPx;
+                  return (
+                    <svg style={{ position: "absolute", left: 0, top: CELL * zoom, width: gW, height: gH, pointerEvents: "none", zIndex: 200, overflow: "visible" }}>
+                      {/* Vertical */}
+                      <line x1={guideX} y1={0} x2={guideX} y2={gH}
+                        stroke={mirrorV ? C.pale : "rgba(255,255,255,0.38)"} strokeWidth={mirrorV ? 2 : 1.5} opacity={1} strokeDasharray="6 3" />
+                      {/* Horizontal */}
+                      <line x1={0} y1={guideY} x2={gW} y2={guideY}
+                        stroke={mirrorH ? C.soft : "rgba(255,255,255,0.38)"} strokeWidth={mirrorH ? 2 : 1.5} opacity={1} strokeDasharray="6 3" />
+                    </svg>
+                  );
+                })()}
+
+                {/* Map center overlay — shown when showMapCenter is on */}
+                {showMapCenter && (() => {
+                  const { cR, cC } = getEffectiveCenter();
+                  const cellPx = CELL * zoom;
+                  const sz = customCenter !== null ? (customCenterSize ?? 1) : 1;
+                  const halfSz = (sz - 1) / 2;
+                  const x = (cC - halfSz) * cellPx;
+                  const y = (cR - halfSz) * cellPx;
+                  const w = sz * cellPx;
+                  return (
+                    <svg style={{ position: "absolute", left: 0, top: CELL * zoom, width: gW, height: gH, pointerEvents: "none", zIndex: 201, overflow: "visible" }}>
+                      <rect x={x} y={y} width={w} height={w}
+                        fill="rgba(255,255,255,0.08)" stroke="rgba(255,255,255,0.60)" strokeWidth={2} strokeDasharray="6 3" rx={1} />
+                    </svg>
+                  );
+                })()}
 
                 {/* Offset center markers — full-cell square at each cell with non-zero offset */}
                 {showOffsetCenters && (() => {
@@ -7471,7 +7615,8 @@ function App() {
                 mirrorV: "H", mirrorH: "V", mirrorD: "D",
                 guides: "🧭", offsetCenters: "🎯", replace: "♻️", overwrite: "🧱",
                 otg: "🧩",
-                eyedropper: "🧪", highlight: "🪄", rotate: "🌀",
+                eyedropper: "🧪", highlight: "🪄", rotate: "🌊", magnet: "🧲",
+                mapCenter: "📍",
                 convert: "🔄",
               };
               const toolActionMap = {
@@ -7489,8 +7634,10 @@ function App() {
                 overwrite: () => setMirrorSettings(p => ({ ...p, allowSwap: !p.allowSwap })),
                 otg: () => setShowOTG(v => !v),
                 eyedropper: () => { setEyedropperMode(v => !v); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); },
-                highlight: () => { const on = !highlightMode; setHighlightMode(h => !h); setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); if (!on) { setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); setSel(WARN_TILE_ID); } },
-                rotate: () => { setRotateMode(r => !r); setEraser(false); setHandMode(false); setHighlightMode(false); setEyedropperMode(false); },
+                highlight: () => { const on = !highlightMode; setHighlightMode(h => !h); setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); if (!on) { setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); } },
+                rotate: () => { setRotateMode(r => !r); setEraser(false); setHandMode(false); setHighlightMode(false); setEyedropperMode(false); setMagnetMode(false); },
+                magnet: () => { setMagnetMode(m => !m); setEraser(false); setHandMode(false); setHighlightMode(false); setEyedropperMode(false); setRotateMode(false); },
+                mapCenter: () => { const v = !showMapCenter; setShowMapCenter(v); save("oph_show_map_center", v); },
                 convert: () => setConvertOpen(true),
               };
               const toolActiveMap = {
@@ -7508,6 +7655,8 @@ function App() {
                 eyedropper: eyedropperMode,
                 highlight: highlightMode,
                 rotate: rotateMode,
+                magnet: magnetMode,
+                mapCenter: showMapCenter,
                 convert: false,
               };
               const toolColorMap = {
@@ -7516,7 +7665,8 @@ function App() {
                 mirrorV: C.pale, mirrorH: C.soft, mirrorD: C.accentBright,
                 guides: gColor, offsetCenters: ocColor, replace: C.soft, overwrite: owColor,
                 otg: C.danger,
-                eyedropper: "#39ff14", highlight: "#a78bfa", rotate: "#2563eb",
+                eyedropper: "#39ff14", highlight: "#a78bfa", rotate: "#2dd4bf", magnet: "#2563eb",
+                mapCenter: mcColor,
                 convert: C.soft,
               };
               // Only show tool-key starred items (not numeric tile IDs)
@@ -7525,7 +7675,7 @@ function App() {
               const _mirTools = new Set(['mirrorV', 'mirrorH', 'mirrorD']);
               const _seen = new Set();
               const starredTools = starredTiles
-                .filter(s => typeof s === "string" && (toolIconMap[s] || s === "selectionGroup" || s === "mirrorGroup"))
+                .filter(s => typeof s === "string" && (toolIconMap[s] || s === "selectionGroup" || s === "mirrorGroup" || s === "mapCenter"))
                 .map(s => _selTools.has(s) ? 'selectionGroup' : _mirTools.has(s) ? 'mirrorGroup' : s)
                 .filter(s => { if (_seen.has(s)) return false; _seen.add(s); return true; });
               if (!starredTools.length) return null;
@@ -7720,6 +7870,14 @@ function App() {
                       OTG Check
                     </button>
                     <span onClick={() => setInfoTool("otg")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
+                  </div>
+                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
+                    <button style={btn(showMapCenter, mcColor, mcDim)}
+                      onClick={() => { const v = !showMapCenter; setShowMapCenter(v); save("oph_show_map_center", v); }}
+                      title="Show map mirror origin">
+                      📍 Map Center
+                    </button>
+                    <span onClick={() => setInfoTool("mapCenter")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>{starredTiles.includes("mapCenter") ? "★" : "ⓘ"}</span>
                   </div>
                 </div>
                 <div style={{ height: 1, background: C.border }} />
