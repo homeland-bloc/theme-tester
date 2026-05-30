@@ -770,6 +770,7 @@ function App() {
 
   // Auth: Discord login via OAuth + Firebase custom tokens
   const [currentUser, setCurrentUser] = useState(() => { try { return JSON.parse(localStorage.getItem('oph_user')); } catch { return null; } });
+  const [authChecked, setAuthChecked] = useState(false); // true once Firebase auth state has been checked
   const [userProfile, setUserProfile] = useState(null); // { role, ... } fetched from Supabase
   const [userDropOpen, setUserDropOpen] = useState(false);
   const [logoutConfirming, setLogoutConfirming] = useState(false);
@@ -874,6 +875,15 @@ function App() {
     (currentUser.tokenExpiry ?? 0) - 60000 > Date.now()
   );
 
+  // Check Firebase auth state on mount; mark authChecked after minimum 1 s to prevent login flash
+  useEffect(() => {
+    const minDelay = new Promise(resolve => setTimeout(resolve, 1000));
+    const authReady = new Promise(resolve => {
+      const unsubscribe = firebase.auth().onAuthStateChanged(() => { unsubscribe(); resolve(); });
+    });
+    Promise.all([minDelay, authReady]).then(() => setAuthChecked(true));
+  }, []);
+
   const tiles = useMemo(() => [...defaultTiles, ...userTiles], [defaultTiles, userTiles]);
 
   const [gridW, setGridW] = useState(() => load(SK.gridW, GRID_W));
@@ -906,7 +916,7 @@ function App() {
   const [selectedBgPreset, setSelectedBgPreset] = useState(() => load("oph_bg_preset_key", "custom"));
   const [sel,         setSel]       = useState(null);
   const [eraser,      setEraser]    = useState(false);
-  const [handMode,    setHandMode]  = useState(false);
+  const [handMode,    setHandMode]  = useState(true);
   const [mirrorV,     setMirrorV]   = useState(false);
   const [mirrorH,     setMirrorH]   = useState(false);
   const [mirrorD,     setMirrorD]   = useState(false);
@@ -1099,7 +1109,7 @@ function App() {
   const getMirrorMetaRef  = useRef(null);     // always-current getMirrorMeta for drag-drop handlers
   const pendingSwapRef    = useRef(null);     // { r, c, existingId, x, y } — pending allowSwap tap-vs-drag decision
 
-  const handModeRef = useRef(false);
+  const handModeRef = useRef(true);
   const activeTilesetRef = useRef(null);
   const gridWRef = useRef(gridW);
   const gridHRef = useRef(gridH);
@@ -2104,6 +2114,9 @@ function App() {
       row.map(idx => idx == null ? null : (idFromPaletteIdx[idx] ?? null))
     );
     setGridRaw(resolvedGrid);
+    setHistory([{ grid: resolvedGrid, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [], rots: gridRotationsRef.current ?? {}, flips: gridFlipsRef.current ?? {}, label: "Load" }]);
+    setHistIdx(0);
+    histIdxRef.current = 0;
     if (unresolved.length > 0) {
       console.warn(`[map load] ${unresolved.length} tile(s) could not be resolved:`, unresolved);
       setGridLoadWarning(unresolved.length);
@@ -2204,9 +2217,19 @@ function App() {
     if (snap.w !== undefined) { setGridW(snap.w); setGridH(snap.h); }
     if (snap.tileset != null) setActiveTileset(snap.tileset);
     if (snap.bg1 !== undefined) {
-      setBg1(snap.bg1); setHex1(snap.bg1); setBg2(snap.bg2); setHex2(snap.bg2);
-      save(SK.colors, { bg1: snap.bg1, bg2: snap.bg2 });
-      setSelectedBgPreset("custom"); save("oph_bg_preset_key", "custom");
+      if (snap.tileset != null) {
+        // Check if bg colors match a known tileset preset (case-insensitive) to restore the correct dropdown entry
+        const normHex = h => (h ?? '').toLowerCase();
+        const tsBg = OPHELIA_BG[snap.tileset];
+        const matchesTileset = tsBg &&
+          normHex(tsBg.bg1) === normHex(snap.bg1) &&
+          normHex(tsBg.bg2) === normHex(snap.bg2);
+        applyBgPreset(matchesTileset ? snap.tileset : "custom", snap.bg1, snap.bg2);
+      } else {
+        setBg1(snap.bg1); setHex1(snap.bg1); setBg2(snap.bg2); setHex2(snap.bg2);
+        save(SK.colors, { bg1: snap.bg1, bg2: snap.bg2 });
+        setSelectedBgPreset("custom"); save("oph_bg_preset_key", "custom");
+      }
     } else if (snap.tileset != null && snap.tileset !== activeTilesetRef.current) {
       const tsBg = OPHELIA_BG[snap.tileset];
       if (tsBg) applyBgPreset(snap.tileset, tsBg.bg1, tsBg.bg2);
@@ -2760,10 +2783,7 @@ function App() {
         if (pickedId != null) {
           setSel(pickedId);
           setEraser(false);
-          setHandMode(false);
-          setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set();
         }
-        setEyedropperMode(false);
         return;
       }
 
@@ -2855,6 +2875,7 @@ function App() {
         return;
       }
 
+      if (rotateModeRef.current) return; // rotate mode handled by scroll-container onMouseDown
       if (existingId && !eraserRef.current && !mirrorSettingsRef.current.allowSwap) {
         // ── OCCUPIED CELL (non-eraser, block overwrite off): pick up for drag
         const mirrorPositions = getMirrorRef.current ? getMirrorRef.current(r, c) : getMirrorPositions(r, c);
@@ -3381,10 +3402,7 @@ function App() {
         if (pickedId != null) {
           setSel(pickedId);
           setEraser(false);
-          setHandMode(false);
-          setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set();
         }
-        setEyedropperMode(false);
         return;
       }
 
@@ -3424,6 +3442,7 @@ function App() {
 
       // ── IMMEDIATE PICK-UP: occupied cell, no eraser → remove tile + mirror counterparts, start drag ──
       // History written once at touchend (drop/discard), not here.
+      if (rotateModeRef.current) return; // rotate mode: no drag on touch
       const existingId = gridRef.current?.[r]?.[c];
       if (existingId && !eraserRef.current && !mirrorSettingsRef.current.allowSwap) {
         // Pick up for drag (block overwrite off); remove tile and mirror counterparts
@@ -4485,7 +4504,7 @@ function App() {
                   e.target.value = '';
                 }} />
               {replaceImgError && <span style={{ fontSize: 11, color: C.danger }}>{replaceImgError}</span>}
-              <button onClick={() => { setReplaceImgError(null); document.getElementById('replace-img-input').click(); }}
+              <button onClick={() => { const s = modalScrollRef.current?.scrollTop ?? 0; setReplaceImgError(null); document.getElementById('replace-img-input').click(); requestAnimationFrame(() => { if (modalScrollRef.current) modalScrollRef.current.scrollTop = s; }); }}
                 style={{ ...btn(true, '#fbbf24', 'rgba(251,191,36,0.15)'), width: '100%', justifyContent: 'center', fontSize: 11 }}>
                 🖼 Replace Image
               </button>
@@ -4547,7 +4566,7 @@ function App() {
               </div>
             ) : (
               <button style={{ ...btn(true, C.danger, "rgba(248,113,113,0.15)"), width: "100%", justifyContent: "center", fontSize: 11 }}
-                onClick={() => { setDeleteConfirmId(t.id); setDeleteConfirmInput(''); }}>🗑 Delete from Database</button>
+                onClick={() => { const s = modalScrollRef.current?.scrollTop ?? 0; setDeleteConfirmId(t.id); setDeleteConfirmInput(''); requestAnimationFrame(() => { if (modalScrollRef.current) modalScrollRef.current.scrollTop = s; }); }}>🗑 Delete from Database</button>
             )
           ) : !t.isDefault && !t.isDb ? (
             deleteConfirmId === t.id ? (() => {
@@ -4572,7 +4591,7 @@ function App() {
               );
             })() : (
               <button style={{ ...btn(false, C.danger, "rgba(248,113,113,0.14)"), width: "100%", justifyContent: "center" }}
-                onClick={() => { setDeleteConfirmId(t.id); setDeleteConfirmInput(''); }}>Delete tile</button>
+                onClick={() => { const s = modalScrollRef.current?.scrollTop ?? 0; setDeleteConfirmId(t.id); setDeleteConfirmInput(''); requestAnimationFrame(() => { if (modalScrollRef.current) modalScrollRef.current.scrollTop = s; }); }}>Delete tile</button>
             )
           ) : t.isDefault ? (
             <p style={{ fontSize: 11, color: C.muted, textAlign: "center" }}>Default tile — cannot be deleted.</p>
@@ -5142,6 +5161,7 @@ function App() {
 
   // ── Tileset Compatibility Modal ─────────────────────────────────────
   const TilesetCompatModal = () => {
+    const [openPickerFor, setOpenPickerFor] = React.useState(null);
     if (!tilesetSwitchPending) return null;
     const { newTilesetName, newTsDef, oldIdToCodename, futureCodenameToId, newTilesCached, tsBg, mismatches, remaps } = tilesetSwitchPending;
 
@@ -5185,6 +5205,7 @@ function App() {
     }
 
     const newTilesForDropdown = flatDefaultTiles.filter(ft => ft.isDb && ft.dbTilesetId === newTsDef?.id);
+    const globalTilesForDropdown = flatDefaultTiles.filter(t => !t.isDb && !t.isAtlas);
 
     const handleConfirm = () => {
       const pending = tilesetSwitchPending;
@@ -5229,21 +5250,68 @@ function App() {
             Some tiles on the board don't exist in <strong style={{ color: C.text }}>{newTilesetName}</strong>. Choose a replacement for each:
           </p>
           <div style={{ overflowY: 'auto', flex: 1, display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 10 }}>
-            {mismatches.map(m => (
-              <div key={m.codename} style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'rgba(255,255,255,0.04)', borderRadius: 6, padding: '6px 8px' }}>
-                {m.src && <img src={m.src} style={{ width: 32, height: 32, objectFit: 'contain', imageRendering: 'pixelated', flexShrink: 0 }} />}
-                <code style={{ fontSize: 11, color: C.text, flex: 1 }}>{m.codename}</code>
-                <select
-                  value={remaps[m.codename] ?? WARN_TILE_ID}
-                  onChange={e => setTilesetSwitchPending(prev => prev ? { ...prev, remaps: { ...prev.remaps, [m.codename]: Number(e.target.value) } } : prev)}
-                  style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 4, color: C.text, fontSize: 11, padding: '2px 4px' }}>
-                  <option value={WARN_TILE_ID}>— warn tile —</option>
-                  {newTilesForDropdown.map(ft => (
-                    <option key={ft.id} value={ft.id}>{ft.codename ?? ft.id}</option>
-                  ))}
-                </select>
-              </div>
-            ))}
+            {mismatches.map(m => {
+              const currentRemapId = remaps[m.codename] ?? WARN_TILE_ID;
+              const currentRemapTile = currentRemapId === WARN_TILE_ID ? null : flatDefaultTiles.find(t => t.id === currentRemapId);
+              const isPickerOpen = openPickerFor === m.codename;
+              const allPickerTiles = [
+                { group: 'Incoming Tileset', tiles: newTilesForDropdown },
+                { group: 'Global Tiles', tiles: globalTilesForDropdown },
+              ];
+              return (
+                <div key={m.codename} style={{ display: 'flex', flexDirection: 'column', gap: 4, background: 'rgba(255,255,255,0.04)', borderRadius: 6, padding: '6px 8px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    {/* Source tile */}
+                    <div className="tile-img-checker" style={{ width: 28, height: 28, borderRadius: 3, flexShrink: 0, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      {m.src ? <img src={m.src} style={{ width: 28, height: 28, objectFit: 'contain', imageRendering: 'pixelated' }} /> : <span style={{ fontSize: 10, color: C.muted }}>?</span>}
+                    </div>
+                    <code style={{ fontSize: 11, color: C.text, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.codename}</code>
+                    <span style={{ fontSize: 11, color: C.muted, flexShrink: 0 }}>→</span>
+                    {/* Replacement tile picker button */}
+                    <button
+                      onClick={() => setOpenPickerFor(p => p === m.codename ? null : m.codename)}
+                      style={{ display: 'flex', alignItems: 'center', gap: 5, background: C.panel, border: `1px solid ${isPickerOpen ? C.accentBright : C.border}`, borderRadius: 5, padding: '3px 6px', cursor: 'pointer', color: C.text, fontSize: 11, flexShrink: 0 }}>
+                      <div className="tile-img-checker" style={{ width: 24, height: 24, borderRadius: 2, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                        {currentRemapTile?.src
+                          ? <img src={currentRemapTile.blobSrc ?? currentRemapTile.src} style={{ width: 24, height: 24, objectFit: 'contain', imageRendering: 'pixelated' }} />
+                          : <span style={{ fontSize: 9 }}>⚠️</span>}
+                      </div>
+                      <span style={{ maxWidth: 80, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {currentRemapTile ? (currentRemapTile.codename ?? String(currentRemapId)) : '— warn —'}
+                      </span>
+                      <span style={{ fontSize: 9, color: C.muted }}>▾</span>
+                    </button>
+                  </div>
+                  {isPickerOpen && (
+                    <div style={{ border: `1px solid ${C.border}`, borderRadius: 6, padding: 8, background: C.panelDeep, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                        <div
+                          onClick={() => { setTilesetSwitchPending(prev => prev ? { ...prev, remaps: { ...prev.remaps, [m.codename]: WARN_TILE_ID } } : prev); setOpenPickerFor(null); }}
+                          style={{ width: 32, height: 32, borderRadius: 4, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, border: `1px solid ${currentRemapId === WARN_TILE_ID ? C.accentBright : C.border}`, background: currentRemapId === WARN_TILE_ID ? C.accentDim : 'transparent' }}
+                          title="warn tile">⚠️</div>
+                      </div>
+                      {allPickerTiles.map(({ group, tiles }) => tiles.length === 0 ? null : (
+                        <div key={group}>
+                          <div style={{ fontSize: 9, color: C.muted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 }}>{group}</div>
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3 }}>
+                            {tiles.map(ft => (
+                              <div key={ft.id}
+                                onClick={() => { setTilesetSwitchPending(prev => prev ? { ...prev, remaps: { ...prev.remaps, [m.codename]: ft.id } } : prev); setOpenPickerFor(null); }}
+                                title={ft.codename ?? String(ft.id)}
+                                style={{ width: 32, height: 32, borderRadius: 4, cursor: 'pointer', border: `1px solid ${currentRemapId === ft.id ? C.accentBright : C.border}`, background: currentRemapId === ft.id ? C.accentDim : 'transparent', overflow: 'hidden' }}>
+                                <div className="tile-img-checker" style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                  {ft.src ? <img src={ft.blobSrc ?? ft.src} style={{ width: 28, height: 28, objectFit: 'contain', imageRendering: 'pixelated' }} /> : null}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
             <button style={{ ...btn(false), flex: 1 }} onClick={() => setTilesetSwitchPending(null)}>Cancel</button>
@@ -5492,6 +5560,22 @@ function App() {
   // TilesetGearModal is defined outside App (above) — see the module-level definition.
 
   // ─────────────────────────────────────────────────────────────────
+  // Loading screen — show while Firebase auth state is being checked (prevents login flash)
+  if (!authChecked) {
+    return (
+      <div style={{
+        display: "flex", alignItems: "center", justifyContent: "center",
+        height: "100dvh", background: C.bg, fontFamily: "'Inter', sans-serif",
+      }}>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 16 }}>
+          <img src="favicon/apple-touch-icon.png" alt="" style={{ width: 64, height: 64, imageRendering: "auto", opacity: 0.9 }} />
+          <div style={{ width: 32, height: 32, border: `3px solid ${C.border}`, borderTopColor: C.accentBright, borderRadius: "50%", animation: "oph-spin 0.8s linear infinite" }} />
+        </div>
+        <style>{`@keyframes oph-spin { to { transform: rotate(360deg); } }`}</style>
+      </div>
+    );
+  }
+
   // Login gate — show a centered login screen when the user is not authenticated
   if (!isAuthenticated) {
     return (
@@ -5874,7 +5958,7 @@ function App() {
                           if (fMode === 'flip' && canFlipF) { setCardFlipSteps(prev => ({ ...prev, [t.id]: ((prev[t.id] ?? 0) + 1) % 4 })); }
                           else if (fMode !== 'flip' && canSpinF) { setCardRotations(prev => ({ ...prev, [t.id]: (prev[t.id] ?? 0) + 90 })); }
                         }
-                        setSel(t.id); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set();
+                        setSel(t.id); setEraser(false);
                       }}
                       style={{ width: cardSz, height: cardSz, borderRadius: 8, cursor: failed ? "not-allowed" : "pointer",
                         border: `2px solid ${failed ? C.danger : active ? C.accentBright : C.border}`,
@@ -6149,7 +6233,7 @@ function App() {
                               setCardRotations(prev => ({ ...prev, [t.id]: (prev[t.id] ?? 0) + 90 }));
                             }
                           }
-                          setSel(t.id); setEraser(false); setHandMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); setDuplicateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set();
+                          setSel(t.id); setEraser(false);
                         }}
                         style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: failed ? "not-allowed" : "pointer", border: `${active ? 3 : 2}px solid ${failed ? C.danger : active ? C.accentBright : C.border}`, boxShadow: active ? `0 0 0 1px ${C.accentBright}44` : "none", background: failed ? "rgba(248,113,113,0.08)" : active ? C.accentDim : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s, box-shadow 0.12s", opacity: failed ? 0.55 : 1, position: "relative", overflow: "visible" }}>
                         {/* Inner clipped area for image */}
@@ -6734,11 +6818,13 @@ function App() {
                   }
                   if (sid === "mirrorGroup") {
                     const anyMirror = mirrorV || mirrorH || mirrorD;
+                    const activeMirrorCount = [mirrorV, mirrorH, mirrorD].filter(Boolean).length;
+                    const mirrorActiveColor = activeMirrorCount > 1 ? "#4ade80" : mirrorV ? C.pale : mirrorH ? C.soft : C.accentBright;
                     return (
                       <div key="mirrorGroup"
                         onClick={() => { if (anyMirror) { setMirrorV(false); setMirrorH(false); setMirrorD(false); } else setMirrorV(true); }}
                         style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
-                          border: `1px solid ${anyMirror ? C.pale : C.border}`, background: anyMirror ? `${C.pale}22` : "rgba(255,255,255,0.04)" }}
+                          border: `1px solid ${anyMirror ? mirrorActiveColor : C.border}`, background: anyMirror ? `${mirrorActiveColor}22` : "rgba(255,255,255,0.04)" }}
                         title="Mirroring">
                         <span style={{ fontSize: 14 }}>🪞</span>
                       </div>
@@ -7474,11 +7560,12 @@ function App() {
                     // selectionGroup group card
                     if (tid === "selectionGroup") {
                       const anySelActive = selectionMode !== 'single';
+                      const selActiveColor = toolColorMap[selectionMode] ?? C.accent;
                       return (
                         <div key="selectionGroup"
                           onClick={() => setShortcutPopover(p => p === "selectionGroup" ? null : "selectionGroup")}
                           style={{ width: 28, height: 28, margin: "0 auto", borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
-                            border: `1px solid ${anySelActive ? C.accent : C.border}`, background: anySelActive ? `${C.accent}22` : "rgba(255,255,255,0.04)" }}
+                            border: `1px solid ${anySelActive ? selActiveColor : C.border}`, background: anySelActive ? `${selActiveColor}22` : "rgba(255,255,255,0.04)" }}
                           title="Selection modes">
                           <span style={{ fontSize: 13, lineHeight: 1 }}>🖌️</span>
                         </div>
@@ -7487,11 +7574,13 @@ function App() {
                     // mirrorGroup group card
                     if (tid === "mirrorGroup") {
                       const anyMirror = mirrorV || mirrorH || mirrorD;
+                      const activeMirrorCount2 = [mirrorV, mirrorH, mirrorD].filter(Boolean).length;
+                      const mirrorActiveColor2 = activeMirrorCount2 > 1 ? "#4ade80" : mirrorV ? toolColorMap.mirrorV : mirrorH ? toolColorMap.mirrorH : toolColorMap.mirrorD;
                       return (
                         <div key="mirrorGroup"
                           onClick={() => setShortcutPopover(p => p === "mirrorGroup" ? null : "mirrorGroup")}
                           style={{ width: 28, height: 28, margin: "0 auto", borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
-                            border: `1px solid ${anyMirror ? C.pale : C.border}`, background: anyMirror ? `${C.pale}22` : "rgba(255,255,255,0.04)" }}
+                            border: `1px solid ${anyMirror ? mirrorActiveColor2 : C.border}`, background: anyMirror ? `${mirrorActiveColor2}22` : "rgba(255,255,255,0.04)" }}
                           title="Mirroring">
                           <span style={{ fontSize: 13, lineHeight: 1 }}>🪞</span>
                         </div>
