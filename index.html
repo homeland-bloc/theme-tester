@@ -2141,6 +2141,10 @@ function App() {
       const flatDbIds = new Set(flatDefaultTiles.filter(t => t.isDb).map(t => t.dbId));
       if (!dbUuids.every(uuid => flatDbIds.has(uuid))) return; // tiles not yet in flatDefaultTiles
     }
+    // If the palette contains plain src-path codenames (global tiles), wait until manifest is loaded
+    // so that global tiles are present in flatDefaultTiles before resolution.
+    const hasSrcCodenames = palette.some(cn => typeof cn === 'string' && cn !== 'space' && !cn.startsWith('d:') && !cn.startsWith('u:') && !cn.startsWith('a:'));
+    if (hasSrcCodenames && !manifest) return;
     const pending = pendingGridLoadRef.current;
     pendingGridLoadRef.current = null; // clear before setGridRaw so save effect runs correctly
     const { palette: resolvedPalette, grid: indexGrid } = pending;
@@ -2163,7 +2167,7 @@ function App() {
       console.warn(`[map load] ${unresolved.length} tile(s) could not be resolved:`, unresolved);
       setGridLoadWarning(unresolved.length);
     }
-  }, [tiles, flatDefaultTiles]); // eslint-disable-line
+  }, [tiles, flatDefaultTiles, manifest]); // eslint-disable-line
   useEffect(() => { if (activeTileset) save(SK.activeTileset, activeTileset); }, [activeTileset]);
 
   // Close tileset dropdown on outside click (bubble phase so stopPropagation inside the dropdown works)
@@ -2440,9 +2444,12 @@ function App() {
   const getEffectiveCenter = () => {
     const cc = customCenterRef.current;
     if (cc !== null) {
-      const sz = (customCenterSizeRef.current ?? 1) - 1; // extra cells on each side
-      const cR = Math.max(sz / 2, Math.min(gridHRef.current - 1 - sz / 2, cc.r + sz / 2));
-      const cC = Math.max(sz / 2, Math.min(gridWRef.current - 1 - sz / 2, cc.c + sz / 2));
+      const szVal = customCenterSizeRef.current ?? 1;
+      // szVal: 1=1×1, 2=2×2, 3=2×1(wide), 4=1×2(tall)
+      const szR = (szVal === 2 || szVal === 4) ? 1 : 0;
+      const szC = (szVal === 2 || szVal === 3) ? 1 : 0;
+      const cR = Math.max(szR / 2, Math.min(gridHRef.current - 1 - szR / 2, cc.r + szR / 2));
+      const cC = Math.max(szC / 2, Math.min(gridWRef.current - 1 - szC / 2, cc.c + szC / 2));
       return { cR, cC };
     }
     return { cR: (gridHRef.current - 1) / 2, cC: (gridWRef.current - 1) / 2 };
@@ -2947,7 +2954,7 @@ function App() {
         return;
       }
 
-      if (rotateModeRef.current) return; // rotate mode handled by scroll-container onMouseDown
+      if (rotateModeRef.current) { rotatePendingCellRef.current = [r, c]; return; } // rotate mode handled by scroll-container onMouseDown
       if (existingId && !eraserRef.current && !mirrorSettingsRef.current.allowSwap) {
         // ── OCCUPIED CELL (non-eraser, block overwrite off): pick up for drag
         const mirrorPositions = getMirrorRef.current ? getMirrorRef.current(r, c) : getMirrorPositions(r, c);
@@ -3513,7 +3520,7 @@ function App() {
 
       // ── IMMEDIATE PICK-UP: occupied cell, no eraser → remove tile + mirror counterparts, start drag ──
       // History written once at touchend (drop/discard), not here.
-      if (rotateModeRef.current) return; // rotate mode: no drag on touch
+      if (rotateModeRef.current) { rotatePendingCellRef.current = [r, c]; return; } // rotate mode: process on touchend
       if (magnetModeRef.current) {
         const clampedR = Math.max(0, Math.min(gridHRef.current - 1, r));
         const clampedC = Math.max(0, Math.min(gridWRef.current - 1, c));
@@ -3658,6 +3665,57 @@ function App() {
     const onTouchEnd = e => {
       if (e.touches.length < 2) pinchRef.current = null;
       if (e.touches.length === 0) {
+        // ── ROTATE MODE: process tapped cell ─────────────────────────────────
+        if (rotateModeRef.current) {
+          const cell = rotatePendingCellRef.current;
+          rotatePendingCellRef.current = null;
+          if (cell) {
+            const [r, c] = cell;
+            const highlighted = highlightedCellsRef.current;
+            const seedCells = highlighted.size > 0
+              ? [...highlighted].map(k => k.split(',').map(Number))
+              : [[r, c]];
+            const seen = new Set(seedCells.map(([sr, sc]) => `${sr},${sc}`));
+            const cellsToProcess = [...seedCells];
+            if (getMirrorRef.current) {
+              for (const [sr, sc] of seedCells) {
+                for (const [mr, mc] of getMirrorRef.current(sr, sc)) {
+                  const k = `${mr},${mc}`;
+                  if (!seen.has(k)) { seen.add(k); cellsToProcess.push([mr, mc]); }
+                }
+              }
+            }
+            const newRots = { ...gridRotationsRef.current };
+            const newFlips = { ...gridFlipsRef.current };
+            let changed = false;
+            for (const [tr, tc] of cellsToProcess) {
+              const id = gridRef.current?.[tr]?.[tc];
+              if (id == null) continue;
+              const tile = allTilesByIdRef.current[id];
+              if (!tile) continue;
+              const canSpin = rotatableMapRef.current[id] !== undefined ? rotatableMapRef.current[id] : isDefaultRotatable(tile);
+              const canFlip = allowFlipMapRef.current[id] !== undefined ? allowFlipMapRef.current[id] : isDefaultFlippable(tile);
+              if (!canSpin && !canFlip) continue;
+              if (canSpin) {
+                const cur = newRots[`${tr},${tc}`] ?? 0;
+                const next = (cur + 1) % 4;
+                if (next === 0) delete newRots[`${tr},${tc}`]; else newRots[`${tr},${tc}`] = next;
+              } else {
+                const cur = newFlips[`${tr},${tc}`] ?? 0;
+                const next = (cur + 1) % 4;
+                if (next === 0) delete newFlips[`${tr},${tc}`]; else newFlips[`${tr},${tc}`] = next;
+              }
+              changed = true;
+            }
+            if (changed) {
+              setGridRotations(newRots); gridRotationsRef.current = newRots;
+              setGridFlips(newFlips); gridFlipsRef.current = newFlips;
+              histLabelRef.current = "Rotate";
+              pushHistRef.current?.();
+            }
+          }
+          return;
+        }
         // ── DROP: highlight region drag commit ────────────────────────────────
         if (isHighlightDraggingRef.current) {
           const offset = highlightDragOffsetRef.current ?? { dr: 0, dc: 0 };
@@ -3856,12 +3914,10 @@ function App() {
           const id = selRef.current;
           if (id != null) {
             const tile = allTilesByIdRef.current[id];
-            const defaultRot  = tile ? !!(tile.src && TILE_SETTINGS.rotatable.some(p => tile.src.includes(p))) : true;
-            const defaultFlip = tile ? !!(tile.src && TILE_SETTINGS.flippable.some(p => tile.src.includes(p))) : false;
             const rMap = rotatableMapRef.current;
             const fMap = allowFlipMapRef.current;
-            const canSpin = tile ? (rMap[id] !== undefined ? rMap[id] : defaultRot) : true;
-            const canFlip = tile ? (fMap[id] !== undefined ? fMap[id] : defaultFlip) : false;
+            const canSpin = tile ? (rMap[id] !== undefined ? rMap[id] : isDefaultRotatable(tile)) : true;
+            const canFlip = tile ? (fMap[id] !== undefined ? fMap[id] : isDefaultFlippable(tile)) : false;
             const rawMode = cardFlipModesRef.current[id] ?? 'spin';
             const mode = !canFlip ? 'spin' : (!canSpin ? 'flip' : rawMode);
             if (mode === 'flip' && canFlip) {
@@ -5000,7 +5056,7 @@ function App() {
       mirroring: { label: "Mirroring", icon: "🪞", color: C.pale, desc: "Mirrors every paint action across one or more axes. Horizontal mirrors left↔right. Vertical mirrors top↔bottom. Diagonal applies a 180° point reflection. All three can be combined.", iconColor: null },
       convert: { label: "Convert", icon: "🔄", color: C.soft, desc: "Remaps tiles on the board from one tileset to another by matching tile names. Tiles with no equivalent in the target tileset are left as-is.", iconColor: null },
       rotate: { label: "Rotate", icon: "🌊", color: "#2dd4bf", desc: "Click a rotatable tile on the map to rotate it one step. Spinning tiles (water, jumppads) cycle through 4 rotation steps; flippable tiles (fence, rope) cycle through 4 flip states. Non-rotatable tiles are skipped. Drag to pan the canvas like the Hand tool. If cells are highlighted, clicking anywhere rotates all rotatable tiles in the highlighted region.", iconColor: null },
-      magnet: { label: "Magnet", icon: "🧲", color: "#2563eb", desc: "Sets a custom mirror origin point. Click any cell on the canvas to move the mirror centre to that cell. All mirror modes (H, V, D) reflect around this custom origin instead of the grid centre. Use the size selector to set a 2×2, 3×3, or 4×4 centre zone for even-dimension symmetry. Click Reset on the card to revert to the default grid centre.", iconColor: null },
+      magnet: { label: "Magnet", icon: "🧲", color: "#2563eb", desc: "Sets a custom mirror origin for the map. All mirroring axes (H, V, D) pivot around this point instead of the true map centre. Click any cell on the canvas to place the origin. Use the size dropdown on the card to choose a 1×1 or 2×2 centre zone. Useful for asymmetric or experimental Showdown layouts.", iconColor: null },
       mapCenter: { label: "Map Center", icon: "📍", color: mcColor, desc: "Shows the current mirror origin on the canvas as a dashed outline. The origin defaults to the map centre but can be moved using the Magnet tool.", iconColor: null },
       hotkeys: { label: "Hotkeys", icon: "⌨️", color: C.text, desc: "Keyboard shortcuts: E = Erase, W = Eyedropper, R = Rotate selected tile, Z = Undo, X = Redo, Ctrl+Z = Undo, Ctrl+Y = Redo, Escape = Clear highlight.", iconColor: null },
       explore: { label: "Explore", icon: "🌻", color: "#9ADF1C", desc: "Cycle through tile variants within a folder. Click a folder tile on the canvas to pick the next variant. If cells are highlighted, clicking cycles variants across all highlighted folder tiles at once.", iconColor: null },
@@ -6041,6 +6097,7 @@ function App() {
                           else if (fMode !== 'flip' && canSpinF) { setCardRotations(prev => ({ ...prev, [t.id]: (prev[t.id] ?? 0) + 90 })); }
                         }
                         setSel(t.id); setEraser(false);
+                        setHandMode(false); setRotateMode(false); setExploreMode(false); setMagnetMode(false); setEyedropperMode(false);
                       }}
                       style={{ width: cardSz, height: cardSz, borderRadius: 8, cursor: failed ? "not-allowed" : "pointer",
                         border: `2px solid ${failed ? C.danger : active ? C.accentBright : C.border}`,
@@ -6316,6 +6373,7 @@ function App() {
                             }
                           }
                           setSel(t.id); setEraser(false);
+                          setHandMode(false); setRotateMode(false); setExploreMode(false); setMagnetMode(false); setEyedropperMode(false);
                         }}
                         style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: failed ? "not-allowed" : "pointer", border: `${active ? 3 : 2}px solid ${failed ? C.danger : active ? C.accentBright : C.border}`, boxShadow: active ? `0 0 0 1px ${C.accentBright}44` : "none", background: failed ? "rgba(248,113,113,0.08)" : active ? C.accentDim : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s, box-shadow 0.12s", opacity: failed ? 0.55 : 1, position: "relative", overflow: "visible" }}>
                         {/* Inner clipped area for image */}
@@ -6441,7 +6499,7 @@ function App() {
                   {(() => {
                     const isStarredHand = starredTiles.includes("hand");
                     return (
-                      <div onClick={() => { setHandMode(h => !h); setEraser(false); setSel(null); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); setDuplicateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
+                      <div onClick={() => { if (handMode) return; setHandMode(true); setEraser(false); setSel(null); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); setDuplicateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${handMode ? "#fbbf24" : C.border}`, background: handMode ? "rgba(251,191,36,0.14)" : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
                         <div style={{ borderRadius: 6, overflow: "hidden" }}>
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: handMode ? "rgba(251,191,36,0.28)" : "rgba(251,191,36,0.08)", padding: "2px 4px" }}>
@@ -6465,7 +6523,7 @@ function App() {
                     const exploreBgColor = exploreMode ? "rgba(154,223,28,0.15)" : exploreHint ? "rgba(154,223,28,0.04)" : "rgba(255,255,255,0.03)";
                     const isStarredExplore = starredTiles.includes("explore");
                     return (
-                      <div onClick={() => { const turningOn = !exploreMode; setExploreMode(v => !v); setEraser(false); setHandMode(false); setEyedropperMode(false); setRotateMode(false); setDuplicateMode(false); if (turningOn) { setSel(null); setExplorePicker(null); } }}
+                      <div onClick={() => { if (exploreMode) return; setExploreMode(true); setEraser(false); setHandMode(false); setEyedropperMode(false); setRotateMode(false); setDuplicateMode(false); setSel(null); setExplorePicker(null); }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${exploreBorderColor}`, background: exploreBgColor, transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
                         <div style={{ borderRadius: 6, overflow: "hidden" }}>
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: exploreMode ? `rgba(154,223,28,0.28)` : exploreHint ? `rgba(154,223,28,0.06)` : `rgba(154,223,28,0.08)`, padding: "2px 4px" }}>
@@ -6485,7 +6543,7 @@ function App() {
                   {(() => {
                     const isStarredEyedropper = starredTiles.includes("eyedropper");
                     return (
-                      <div onClick={() => { setEyedropperMode(prev => !prev); setEraser(false); setHandMode(false); setRotateMode(false); setExploreMode(false); setExplorePicker(null); if (!eyedropperMode) setSel(null); setDuplicateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
+                      <div onClick={() => { if (eyedropperMode) return; setEyedropperMode(true); setEraser(false); setHandMode(false); setRotateMode(false); setExploreMode(false); setExplorePicker(null); setSel(null); setDuplicateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${eyedropperMode ? "#39ff14" : C.border}`, background: eyedropperMode ? "rgba(57,255,20,0.15)" : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
                         <div style={{ borderRadius: 6, overflow: "hidden" }}>
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: eyedropperMode ? "rgba(57,255,20,0.22)" : "rgba(57,255,20,0.08)", padding: "2px 4px" }}>
@@ -6535,7 +6593,7 @@ function App() {
                     const rotateHeaderBg = rotateMode ? "rgba(45,212,191,0.28)" : rotateHint ? "rgba(124,58,237,0.07)" : "rgba(45,212,191,0.08)";
                     const rotateLabelColor = rotateMode ? "#2dd4bf" : rotateHint ? "rgba(167,139,250,0.45)" : C.muted;
                     return (
-                      <div onClick={() => { const turningOn = !rotateMode; setRotateMode(r => !r); setEraser(false); setHandMode(false); setEyedropperMode(false); setExploreMode(false); setDuplicateMode(false); setMagnetMode(false); if (turningOn) setSel(null); }}
+                      <div onClick={() => { if (rotateMode) return; setRotateMode(true); setEraser(false); setHandMode(false); setEyedropperMode(false); setExploreMode(false); setDuplicateMode(false); setMagnetMode(false); setSel(null); }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer",
                           border: `2px solid ${rotateBorderColor}`,
                           background: rotateBgColor,
@@ -6562,30 +6620,54 @@ function App() {
                     const isStarredMagnet = starredTiles.includes("magnet");
                     const hasCustomCenter = customCenter !== null;
                     return (
-                      <div onClick={() => { const turningOn = !magnetMode; setMagnetMode(m => !m); setEraser(false); setHandMode(false); setEyedropperMode(false); setExploreMode(false); setDuplicateMode(false); setRotateMode(false); if (turningOn) setSel(null); }}
+                      <div onClick={() => { if (magnetMode) return; setMagnetMode(true); setEraser(false); setHandMode(false); setEyedropperMode(false); setExploreMode(false); setDuplicateMode(false); setRotateMode(false); setSel(null); }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer",
                           border: `2px solid ${magnetMode ? "#2563eb" : C.border}`,
                           background: magnetMode ? "rgba(37,99,235,0.15)" : "rgba(255,255,255,0.03)",
                           transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
                         <div style={{ borderRadius: 6, overflow: "hidden" }}>
-                          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 3,
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "center",
                             background: magnetMode ? "rgba(37,99,235,0.28)" : "rgba(37,99,235,0.08)", padding: "2px 4px" }}>
                             <span style={{ fontSize: 9, fontWeight: 700, color: magnetMode ? "#2563eb" : C.muted }}>Magnet</span>
-                            {hasCustomCenter && (
-                              <button onClick={e => { e.stopPropagation(); setCustomCenter(null); customCenterRef.current = null; save("oph_custom_center", null); }}
-                                style={{ fontSize: 7, fontWeight: 700, color: "#2563eb", background: "rgba(37,99,235,0.18)", border: "1px solid #2563eb", borderRadius: 3, padding: "0px 3px", cursor: "pointer", lineHeight: 1.4 }}>Reset</button>
-                            )}
                           </div>
-                          <div style={{ height: cardSz - 18, background: C.panelDeep, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2 }}>
+                          <div style={{ height: cardSz - 18, background: C.panelDeep, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 3 }}>
                             <span style={{ fontSize: 20, lineHeight: 1, opacity: magnetMode ? 1 : 0.55 }}>🧲</span>
-                            <div style={{ display: "flex", gap: 2 }}>
-                              {[1,2,3,4].map(sz => (
-                                <div key={sz} onClick={e => { e.stopPropagation(); setCustomCenterSize(sz); customCenterSizeRef.current = sz; save("oph_custom_center_size", sz); }}
-                                  style={{ width: 10, height: 10, borderRadius: 2, border: `1px solid ${customCenterSize === sz ? "#2563eb" : "rgba(255,255,255,0.25)"}`, background: customCenterSize === sz ? "rgba(37,99,235,0.5)" : "rgba(255,255,255,0.07)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                                  <span style={{ fontSize: 6, color: customCenterSize === sz ? "#fff" : "rgba(255,255,255,0.45)" }}>{sz}</span>
-                                </div>
-                              ))}
-                            </div>
+                            {(() => {
+                              const defaultSz = (gridW % 2 === 0 && gridH % 2 === 0) ? 2 : 1;
+                              const sizeLabels = { 1: "1×1", 2: "2×2", 3: "2×1", 4: "1×2" };
+                              const isNonDefault = customCenterSize !== defaultSz || hasCustomCenter;
+                              return (
+                                <select
+                                  value={String(customCenterSize ?? defaultSz)}
+                                  onClick={e => e.stopPropagation()}
+                                  onChange={e => {
+                                    e.stopPropagation();
+                                    const val = e.target.value;
+                                    if (val === "reset") {
+                                      histLabelRef.current = "Reset Origin";
+                                      pushHistorySnapshot();
+                                      setCustomCenter(null); customCenterRef.current = null; save("oph_custom_center", null);
+                                      const newSz = defaultSz;
+                                      setCustomCenterSize(newSz); customCenterSizeRef.current = newSz; save("oph_custom_center_size", newSz);
+                                      e.target.value = String(newSz);
+                                    } else {
+                                      const sz = parseInt(val, 10);
+                                      setCustomCenterSize(sz); customCenterSizeRef.current = sz; save("oph_custom_center_size", sz);
+                                      if (customCenter !== null) {
+                                        setCustomCenter(prev => prev ? { ...prev } : null);
+                                      }
+                                    }
+                                  }}
+                                  style={{ fontSize: 8, background: isNonDefault ? "rgba(37,99,235,0.18)" : C.panelDeep, border: `1px solid ${isNonDefault ? "#2563eb" : "rgba(255,255,255,0.25)"}`, borderRadius: 3, color: C.text, padding: "1px 2px", cursor: "pointer", maxWidth: cardSz - 8 }}>
+                                  <option value="reset">↩ Reset</option>
+                                  {[1, 2, 3, 4].map(sz => (
+                                    <option key={sz} value={String(sz)}>
+                                      {sz === defaultSz ? `★ ${sizeLabels[sz]}` : sizeLabels[sz]}
+                                    </option>
+                                  ))}
+                                </select>
+                              );
+                            })()}
                           </div>
                         </div>
                         <span onClick={e => { e.stopPropagation(); setInfoTool("magnet"); }}
@@ -6835,8 +6917,8 @@ function App() {
                   </div>
                 );
                 if (selKey === "rotate") return (
-                  <div style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", border: `1px solid #2563eb`, background: "rgba(37,99,235,0.22)" }} title="Rotate (selected)">
-                    <span style={{ fontSize: 14 }}>🌀</span>
+                  <div style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", border: `1px solid #2dd4bf`, background: "rgba(45,212,191,0.22)" }} title="Rotate (selected)">
+                    <span style={{ fontSize: 14 }}>🌊</span>
                   </div>
                 );
                 if (selKey === "explore") return (
@@ -6919,7 +7001,7 @@ function App() {
                     </div>
                   );
                   if (sid === "hand") return (
-                    <div key="hand" onClick={() => { setHandMode(h => !h); setEraser(false); setSel(null); setRotateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
+                    <div key="hand" onClick={() => { if (handMode) return; setHandMode(true); setEraser(false); setSel(null); setRotateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
                       style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
                         border: `1px solid ${handMode ? "#fbbf24" : C.border}`, background: handMode ? "rgba(251,191,36,0.14)" : "rgba(255,255,255,0.04)" }}
                       title="Hand">
@@ -6952,7 +7034,7 @@ function App() {
                     );
                   }
                   if (sid === "eyedropper") return (
-                    <div key="eyedropper" onClick={() => { setEyedropperMode(v => !v); setEraser(false); setHandMode(false); setRotateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
+                    <div key="eyedropper" onClick={() => { if (eyedropperMode) return; setEyedropperMode(true); setEraser(false); setHandMode(false); setRotateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
                       style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
                         border: `1px solid ${eyedropperMode ? "#39ff14" : C.border}`, background: eyedropperMode ? "rgba(57,255,20,0.22)" : "rgba(255,255,255,0.04)" }}
                       title="Eyedropper">
@@ -6968,15 +7050,15 @@ function App() {
                     </div>
                   );
                   if (sid === "rotate") return (
-                    <div key="rotate" onClick={() => { setRotateMode(r => !r); setEraser(false); setHandMode(false); setHighlightMode(false); setEyedropperMode(false); }}
+                    <div key="rotate" onClick={() => { if (rotateMode) return; setRotateMode(true); setEraser(false); setHandMode(false); setHighlightMode(false); setEyedropperMode(false); }}
                       style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
-                        border: `1px solid ${rotateMode ? "#2563eb" : C.border}`, background: rotateMode ? "rgba(37,99,235,0.22)" : "rgba(255,255,255,0.04)" }}
+                        border: `1px solid ${rotateMode ? "#2dd4bf" : C.border}`, background: rotateMode ? "rgba(45,212,191,0.22)" : "rgba(255,255,255,0.04)" }}
                       title="Rotate">
-                      <span style={{ fontSize: 14 }}>🌀</span>
+                      <span style={{ fontSize: 14 }}>🌊</span>
                     </div>
                   );
                   if (sid === "explore") return (
-                    <div key="explore" onClick={() => { const turningOn = !exploreMode; setExploreMode(v => !v); setEraser(false); setHandMode(false); setEyedropperMode(false); setRotateMode(false); setDuplicateMode(false); if (turningOn) { setSel(null); setExplorePicker(null); } }}
+                    <div key="explore" onClick={() => { if (exploreMode) return; setExploreMode(true); setEraser(false); setHandMode(false); setEyedropperMode(false); setRotateMode(false); setDuplicateMode(false); setSel(null); setExplorePicker(null); }}
                       style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
                         border: `1px solid ${exploreMode ? "#9ADF1C" : C.border}`, background: exploreMode ? "rgba(154,223,28,0.22)" : "rgba(255,255,255,0.04)" }}
                       title="Explore">
@@ -7158,7 +7240,7 @@ function App() {
                   const highlighted = highlightedCellsRef.current;
                   const seedCells = highlighted.size > 0
                     ? [...highlighted].map(k => k.split(',').map(Number))
-                    : (pendingCell ? [pendingCell] : []);
+                    : (pendingCell ? [pendingCell] : (rotatePendingCellRef.current ? [rotatePendingCellRef.current] : []));
                   if (seedCells.length > 0) {
                     // Expand seed cells with their mirror positions (deduped)
                     const seen = new Set(seedCells.map(([r, c]) => `${r},${c}`));
@@ -7179,8 +7261,8 @@ function App() {
                       if (id == null) continue;
                       const tile = allTilesByIdRef.current[id];
                       if (!tile) continue;
-                      const canSpin = rotatableMapRef.current[id] !== undefined ? rotatableMapRef.current[id] : !!(tile.src && TILE_SETTINGS.rotatable.some(p => tile.src.includes(p)));
-                      const canFlip = allowFlipMapRef.current[id] !== undefined ? allowFlipMapRef.current[id] : !!(tile.src && TILE_SETTINGS.flippable.some(p => tile.src.includes(p)));
+                      const canSpin = rotatableMapRef.current[id] !== undefined ? rotatableMapRef.current[id] : isDefaultRotatable(tile);
+                      const canFlip = allowFlipMapRef.current[id] !== undefined ? allowFlipMapRef.current[id] : isDefaultFlippable(tile);
                       if (!canSpin && !canFlip) continue;
                       if (canSpin) {
                         const cur = newRots[`${r},${c}`] ?? 0;
@@ -7446,14 +7528,16 @@ function App() {
                 {showMapCenter && (() => {
                   const { cR, cC } = getEffectiveCenter();
                   const cellPx = CELL * zoom;
-                  const sz = customCenter !== null ? (customCenterSize ?? 1) : 1;
-                  const halfSz = (sz - 1) / 2;
-                  const x = (cC - halfSz) * cellPx;
-                  const y = (cR - halfSz) * cellPx;
-                  const w = sz * cellPx;
+                  const szVal = customCenter !== null ? (customCenterSize ?? 1) : 1;
+                  const szH = (szVal === 2 || szVal === 4) ? 2 : 1;
+                  const szW = (szVal === 2 || szVal === 3) ? 2 : 1;
+                  const x = (cC - (szW - 1) / 2) * cellPx;
+                  const y = (cR - (szH - 1) / 2) * cellPx;
+                  const w = szW * cellPx;
+                  const rectH = szH * cellPx;
                   return (
                     <svg style={{ position: "absolute", left: 0, top: CELL * zoom, width: gW, height: gH, pointerEvents: "none", zIndex: 201, overflow: "visible" }}>
-                      <rect x={x} y={y} width={w} height={w}
+                      <rect x={x} y={y} width={w} height={rectH}
                         fill="rgba(255,255,255,0.08)" stroke="rgba(255,255,255,0.60)" strokeWidth={2} strokeDasharray="6 3" rx={1} />
                     </svg>
                   );
@@ -7633,10 +7717,10 @@ function App() {
                 replace: () => { setReplaceOpen(true); setReplaceStep(1); setReplaceA(null); setReplaceB(null); setReplaceMsg(""); },
                 overwrite: () => setMirrorSettings(p => ({ ...p, allowSwap: !p.allowSwap })),
                 otg: () => setShowOTG(v => !v),
-                eyedropper: () => { setEyedropperMode(v => !v); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); },
+                eyedropper: () => { if (eyedropperMode) return; setEyedropperMode(true); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); },
                 highlight: () => { const on = !highlightMode; setHighlightMode(h => !h); setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); if (!on) { setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); } },
-                rotate: () => { setRotateMode(r => !r); setEraser(false); setHandMode(false); setHighlightMode(false); setEyedropperMode(false); setMagnetMode(false); },
-                magnet: () => { setMagnetMode(m => !m); setEraser(false); setHandMode(false); setHighlightMode(false); setEyedropperMode(false); setRotateMode(false); },
+                rotate: () => { if (rotateMode) return; setRotateMode(true); setEraser(false); setHandMode(false); setHighlightMode(false); setEyedropperMode(false); setMagnetMode(false); },
+                magnet: () => { if (magnetMode) return; setMagnetMode(true); setEraser(false); setHandMode(false); setHighlightMode(false); setEyedropperMode(false); setRotateMode(false); },
                 mapCenter: () => { const v = !showMapCenter; setShowMapCenter(v); save("oph_show_map_center", v); },
                 convert: () => setConvertOpen(true),
               };
@@ -7674,9 +7758,9 @@ function App() {
               const _selTools = new Set(['single', 'line', 'rect', 'fill']);
               const _mirTools = new Set(['mirrorV', 'mirrorH', 'mirrorD']);
               const _seen = new Set();
+              const _barExclude = new Set(['selectionGroup', 'mirrorGroup', 'single', 'line', 'rect', 'fill', 'mirrorV', 'mirrorH', 'mirrorD']);
               const starredTools = starredTiles
-                .filter(s => typeof s === "string" && (toolIconMap[s] || s === "selectionGroup" || s === "mirrorGroup" || s === "mapCenter"))
-                .map(s => _selTools.has(s) ? 'selectionGroup' : _mirTools.has(s) ? 'mirrorGroup' : s)
+                .filter(s => typeof s === "string" && !_barExclude.has(s) && (toolIconMap[s] || s === "mapCenter"))
                 .filter(s => { if (_seen.has(s)) return false; _seen.add(s); return true; });
               if (!starredTools.length) return null;
               return (
