@@ -362,20 +362,21 @@ async function handleSupabaseProxy(request, url, normalizedPath, env) {
 
   if (WRITE_METHODS.has(method)) {
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      console.warn('[auth] missing token', method, table);
       return corsResponse({ error: 'Authentication required' }, 401);
     }
 
     const payload = decodeJwtPayload(authHeader.slice(7));
     if (!payload || !payload.sub) {
+      console.warn('[auth] invalid token', method, table);
       return corsResponse({ error: 'Invalid token' }, 401);
     }
     firebaseUid = payload.sub;
-    console.error(`[auth] uid=${firebaseUid} method=${method} table=${table}`);
 
     if (method === 'DELETE' && ADMIN_SENSITIVE_TABLES.has(table)) {
       const isAdmin = await verifyAdmin(request, env);
       if (!isAdmin) {
-        console.warn(`Unauthorized DELETE on ${table} by uid=${firebaseUid}`);
+        console.warn('[auth] unauthorized DELETE', table, 'uid:', firebaseUid);
         return corsResponse({ error: 'Forbidden' }, 403);
       }
     }

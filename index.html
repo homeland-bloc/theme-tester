@@ -816,7 +816,7 @@ function App() {
     const patch = {};
 
     // 1. Refresh Discord access token when within 60 s of expiry.
-    if (Date.now() >= (currentUser.tokenExpiry ?? 0) - 60000) {
+    if (currentUser.refreshToken && Date.now() >= (currentUser.tokenExpiry ?? 0) - 60000) {
       try {
         const res = await fetch(`${WORKER_URL}/discord-refresh`, {
           method: 'POST',
@@ -836,7 +836,7 @@ function App() {
 
     // 2. Refresh Firebase ID token when within 5 min of expiry.
     //    Uses the freshly-refreshed Discord access token when available.
-    if (Date.now() >= (currentUser.firebaseTokenExpiry ?? 0) - 300000) {
+    if ((patch.accessToken ?? currentUser.accessToken) && Date.now() >= (currentUser.firebaseTokenExpiry ?? 0) - 300000) {
       try {
         const accessToken = patch.accessToken ?? currentUser.accessToken;
         const fbRes = await fetch(`${WORKER_URL}/firebase-refresh`, {
@@ -4227,6 +4227,54 @@ function App() {
 
     const [saveStatus, setSaveStatus] = React.useState(null); // null | 'saving' | 'ok' | 'err'
     const [replaceImgError, setReplaceImgError] = React.useState(null);
+    const [replaceImgPending, setReplaceImgPending] = React.useState(null);
+    // Shape: { file, tile, tilesetFolderPath, previewUrl } or null
+    const [replaceImgUploading, setReplaceImgUploading] = React.useState(false);
+
+    const cancelReplace = () => {
+      if (replaceImgPending?.previewUrl) URL.revokeObjectURL(replaceImgPending.previewUrl);
+      setReplaceImgPending(null);
+      setReplaceImgError(null);
+    };
+
+    const confirmReplace = async () => {
+      if (!replaceImgPending) return;
+      const { file, tile, tilesetFolderPath, previewUrl } = replaceImgPending;
+      setReplaceImgUploading(true);
+      try {
+        const token = await getValidToken();
+        const srcNoQuery = tile.src.split('?')[0];
+        const originalFilename = srcNoQuery.split('/').pop();
+        const filePath = `Resources/${tilesetFolderPath}/${originalFilename}`;
+        const contentBase64 = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result.split(',')[1]);
+          reader.onerror = reject;
+          reader.readAsDataURL(file);
+        });
+        const upResp = await fetch(`${WORKER_URL}/github/upload`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ filePath, contentBase64, commitMessage: `[${currentUser.username}] Replace tile: ${tilesetFolderPath}/${originalFilename}` }),
+        });
+        if (!upResp.ok) throw new Error('GitHub upload failed');
+        const newUrl = `https://raw.githubusercontent.com/bicipikay/ophelia/main/${filePath}?v=${Date.now()}`;
+        const patchResp = await fetch(`${WORKER_URL}/rest/v1/tiles?id=eq.${tile.dbId}`, {
+          method: 'PATCH',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+          body: JSON.stringify({ image_url: newUrl }),
+        });
+        if (!patchResp.ok) throw new Error('DB patch failed');
+        URL.revokeObjectURL(previewUrl);
+        setReplaceImgPending(null);
+        setTsFetchTrigger(n => n + 1);
+        setInfoTile(null);
+      } catch (err) {
+        setReplaceImgError('Failed to replace image: ' + err.message);
+      } finally {
+        setReplaceImgUploading(false);
+      }
+    };
 
     const FLAG_TIPS = {
       rotatable: "Tile can be rotated in 90° steps on the map.",
@@ -4595,7 +4643,7 @@ function App() {
           {t.isDb && currentUser && (userProfile?.role === 'admin' || t.tilesetOwnerId === currentUser.id) && t.tilesetType !== 'atlas' && t.tilesetType !== 'atlas2' && (
             <>
               <input type="file" accept="image/*" id="replace-img-input" style={{ display: "none" }}
-                onChange={async e => {
+                onChange={e => {
                   const file = e.target.files?.[0];
                   if (!file) return;
                   setReplaceImgError(null);
@@ -4609,37 +4657,44 @@ function App() {
                     e.target.value = '';
                     return;
                   }
-                  try {
-                    const token = await getValidToken();
-                    const tilesetFolderPath = dbTilesets.find(ts => ts.id === t.tilesetId)?.folder_path;
-                    if (!tilesetFolderPath) throw new Error('This tileset has no GitHub folder path configured.');
-                    const filePath = `Resources/${tilesetFolderPath}/${file.name}`;
-                    const contentBase64 = await new Promise((resolve, reject) => {
-                      const reader = new FileReader();
-                      reader.onload = () => resolve(reader.result.split(',')[1]);
-                      reader.onerror = reject;
-                      reader.readAsDataURL(file);
-                    });
-                    const upResp = await fetch(`${WORKER_URL}/github/upload`, {
-                      method: 'POST',
-                      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ filePath, contentBase64, commitMessage: `[${currentUser.username}] Replace tile: ${tilesetFolderPath}/${file.name}` }),
-                    });
-                    if (!upResp.ok) throw new Error('GitHub upload failed');
-                    const newUrl = `https://raw.githubusercontent.com/bicipikay/ophelia/main/${filePath}?v=${Date.now()}`;
-                    const patchResp = await fetch(`${WORKER_URL}/rest/v1/tiles?id=eq.${t.dbId}`, {
-                      method: 'PATCH',
-                      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
-                      body: JSON.stringify({ image_url: newUrl }),
-                    });
-                    if (patchResp.ok) setTsFetchTrigger(n => n + 1);
-                    else throw new Error('DB patch failed');
-                  } catch (err) {
-                    setReplaceImgError('Failed to replace image: ' + err.message);
+                  const tilesetFolderPath = dbTilesets.find(ts => ts.id === t.tilesetId)?.folder_path;
+                  if (!tilesetFolderPath) {
+                    setReplaceImgError('This tileset has no GitHub folder path configured.');
+                    e.target.value = '';
+                    return;
                   }
+                  const previewUrl = URL.createObjectURL(file);
+                  setReplaceImgPending({ file, tile: t, tilesetFolderPath, previewUrl });
                   e.target.value = '';
                 }} />
-              {replaceImgError && <span style={{ fontSize: 11, color: C.danger }}>{replaceImgError}</span>}
+              {replaceImgPending && (
+                <div style={{ position: 'fixed', inset: 0, zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.6)' }}>
+                  <div style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 10, padding: '20px 24px', minWidth: 280, maxWidth: 380, display: 'flex', flexDirection: 'column', gap: 14 }}>
+                    <span style={{ fontWeight: 700, fontSize: 14, color: C.accentBright }}>Replace Image</span>
+                    <div style={{ display: 'flex', gap: 12 }}>
+                      {[{ label: 'Current', src: replaceImgPending.tile.src }, { label: 'New', src: replaceImgPending.previewUrl }].map(({ label, src }) => (
+                        <div key={label} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+                          <span style={{ fontSize: 10, color: C.muted }}>{label}</span>
+                          <div className="tile-img-checker" style={{ width: 32, height: 32 }}>
+                            <img src={src} style={{ width: 32, height: 32, imageRendering: 'pixelated', display: 'block' }} />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    <span style={{ fontSize: 10, color: C.muted }}>
+                      {`Uploading as: ${replaceImgPending.tile.src.split('?')[0].split('/').pop()}`}
+                    </span>
+                    {replaceImgError && <span style={{ fontSize: 11, color: C.danger }}>{replaceImgError}</span>}
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button disabled={replaceImgUploading} onClick={cancelReplace} style={{ ...btn(false), flex: 1, fontSize: 11 }}>Cancel</button>
+                      <button disabled={replaceImgUploading} onClick={confirmReplace} style={{ ...btn(true, '#fbbf24', 'rgba(251,191,36,0.15)'), flex: 1, fontSize: 11 }}>
+                        {replaceImgUploading ? 'Uploading…' : 'Confirm Replace'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+              {replaceImgError && !replaceImgPending && <span style={{ fontSize: 11, color: C.danger }}>{replaceImgError}</span>}
               <button onClick={() => { const s = modalScrollRef.current?.scrollTop ?? 0; setReplaceImgError(null); document.getElementById('replace-img-input').click(); requestAnimationFrame(() => { if (modalScrollRef.current) modalScrollRef.current.scrollTop = s; }); }}
                 style={{ ...btn(true, '#fbbf24', 'rgba(251,191,36,0.15)'), width: '100%', justifyContent: 'center', fontSize: 11 }}>
                 🖼 Replace Image
