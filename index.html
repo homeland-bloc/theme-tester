@@ -206,6 +206,7 @@ const GRID_FORMAT_VERSION = 2;
 const getTileCodename = tile => {
   if (!tile) return null;
   if (tile.id === SPACE_TILE_ID) return "space";
+  if (tile.id === WARN_TILE_ID) return "warn";
   if (tile.dbId) return "d:" + tile.dbId;
   if (tile.isAtlas) return "a:" + tile.codename;
   if (!tile.isDefault) return "u:" + tile.id;
@@ -214,6 +215,7 @@ const getTileCodename = tile => {
 const resolveCodename = (codename, tiles) => {
   if (!codename) return null;
   if (codename === "space") return { id: SPACE_TILE_ID };
+  if (codename === "warn") return { id: WARN_TILE_ID };
   if (codename.startsWith("u:")) { const uid = parseInt(codename.slice(2), 10); return tiles.find(t => t.id === uid) ?? null; }
   if (codename.startsWith("d:")) { const uuid = codename.slice(2); return tiles.find(t => t.dbId === uuid) ?? null; }
   if (codename.startsWith("a:")) { const cn = codename.slice(2); return tiles.find(t => t.isAtlas && t.codename === cn) ?? null; }
@@ -227,6 +229,7 @@ const encodeGridForStorage = (grid, tiles) => {
   for (const row of grid) for (const id of row) {
     if (id === null) continue;
     if (id === SPACE_TILE_ID) { getIdx(id, "space"); continue; }
+    if (id === WARN_TILE_ID) { getIdx(id, "warn"); continue; }
     if (!idToIdx.has(id)) { const cn = getTileCodename(tileById.get(id)); if (cn) getIdx(id, cn); }
   }
   return { v: GRID_FORMAT_VERSION, palette, grid: grid.map(row => row.map(id => id === null ? null : (idToIdx.get(id) ?? null))) };
@@ -2172,7 +2175,7 @@ function App() {
     }
     // If the palette contains plain src-path codenames (global tiles), wait until manifest is loaded
     // so that global tiles are present in flatDefaultTiles before resolution.
-    const hasSrcCodenames = palette.some(cn => typeof cn === 'string' && cn !== 'space' && !cn.startsWith('d:') && !cn.startsWith('u:') && !cn.startsWith('a:'));
+    const hasSrcCodenames = palette.some(cn => typeof cn === 'string' && cn !== 'space' && cn !== 'warn' && !cn.startsWith('d:') && !cn.startsWith('u:') && !cn.startsWith('a:'));
     if (hasSrcCodenames && !manifest) return;
     const pending = pendingGridLoadRef.current;
     pendingGridLoadRef.current = null; // clear before setGridRaw so save effect runs correctly
@@ -3924,7 +3927,10 @@ function App() {
       el.removeEventListener('touchend',    onTouchEnd);
       el.removeEventListener('touchcancel', onTouchEnd);
     };
-  }, []);
+    // Re-run once the canvas mounts: on first render the app shows the auth splash /
+    // login screen (early returns), so scrollRef.current is null and the listeners
+    // would otherwise never attach on mobile.
+  }, [authChecked, showLogin]);
 
   // ── Keyboard shortcuts ────────────────────────────────────────────
   useEffect(() => {
@@ -6449,7 +6455,7 @@ function App() {
                                   <span style={{ fontSize: 11, color: nameColor, fontWeight: checked ? 600 : 400 }}>
                                     {ts.name}
                                     {ts.is_wip && <span style={{ marginLeft: 4, fontSize: 8, fontWeight: 700, color: "#fbbf24", background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.35)", borderRadius: 3, padding: "0 3px", verticalAlign: "middle" }}>WIP</span>}
-                                    {isAdmin && !ts.is_published && <span style={{ marginLeft: 4, fontSize: 8, fontWeight: 700, color: "#f97316", background: "rgba(249,115,22,0.12)", border: "1px solid rgba(249,115,22,0.3)", borderRadius: 3, padding: "0 3px", verticalAlign: "middle" }}>UNPUBLISHED</span>}
+                                    {isAdmin && !ts.is_published && <span style={{ marginLeft: 4, fontSize: 8, fontWeight: 700, color: "#f97316", background: "rgba(249,115,22,0.12)", border: "1px solid rgba(249,115,22,0.3)", borderRadius: 3, padding: "0 3px", verticalAlign: "middle" }}>HIDDEN</span>}
                                   </span>
                                   {ownerUsername && (ts.type === 'base' || ts.type === 'custom') && (
                                     <span style={{ fontSize: 9, color: C.muted }}>by {ownerUsername}</span>
@@ -8215,7 +8221,7 @@ function App() {
                   <span style={{ fontSize: 11, color: nameColor, fontWeight: checked ? 600 : 400 }}>
                     {ts.name}
                     {ts.is_wip && <span style={{ marginLeft: 4, fontSize: 8, fontWeight: 700, color: "#fbbf24", background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.35)", borderRadius: 3, padding: "0 3px", verticalAlign: "middle" }}>WIP</span>}
-                    {isAdmin && !ts.is_published && <span style={{ marginLeft: 4, fontSize: 8, fontWeight: 700, color: "#f97316", background: "rgba(249,115,22,0.12)", border: "1px solid rgba(249,115,22,0.3)", borderRadius: 3, padding: "0 3px", verticalAlign: "middle" }}>UNPUBLISHED</span>}
+                    {isAdmin && !ts.is_published && <span style={{ marginLeft: 4, fontSize: 8, fontWeight: 700, color: "#f97316", background: "rgba(249,115,22,0.12)", border: "1px solid rgba(249,115,22,0.3)", borderRadius: 3, padding: "0 3px", verticalAlign: "middle" }}>HIDDEN</span>}
                   </span>
                 </div>
               );
