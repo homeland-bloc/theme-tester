@@ -109,6 +109,7 @@
 </head>
 <body>
 <div id="root"></div>
+<script src="map_image_import.js"></script>
 <script type="text/babel">
 const { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } = React;
 
@@ -136,7 +137,6 @@ const REPLACE_ERASE_ID = -1;  // sentinel: replace-with-empty in the Replace mod
 // All Supabase requests go through the Worker (never directly to SUPABASE_URL with an anon key).
 const SUPABASE_URL = "https://eizcooctnlugsxcyrplh.supabase.co";
 const WORKER_URL = "https://oph.opheliapp.workers.dev";
-const IMAGEKIT_URL = "https://ik.imagekit.io/rhu6mphyg";
 const DISCORD_CLIENT_ID = "1503113409678410019";
 // Hardcoded BG colours for Ophelia tilesets (single source of truth)
 const OPHELIA_BG = {
@@ -275,16 +275,6 @@ const THEMES = {
 };
 // C is mutable so App can update it on theme change; Sep/SectionHeader always read the current value
 let C = (() => { try { const t = JSON.parse(localStorage.getItem("oph_theme")); return { ...(THEMES[t] || THEMES.warm) }; } catch { return { ...THEMES.warm }; } })();
-
-// Rewrites a Supabase storage public tile URL to the ImageKit CDN equivalent.
-// All other URLs (GitHub raw, atlas, etc.) are returned unchanged.
-const SUPABASE_TILES_PREFIX = `${SUPABASE_URL}/storage/v1/object/public/tiles`;
-function toImageKitUrl(url) {
-  if (url && url.startsWith(SUPABASE_TILES_PREFIX)) {
-    return IMAGEKIT_URL + url.slice(SUPABASE_TILES_PREFIX.length);
-  }
-  return url;
-}
 
 // ── Tiny helpers ───────────────────────────────────────────────────────
 const Sep = () => <div style={{ width: 1, height: 22, background: C.border, flexShrink: 0, alignSelf: "center" }} />;
@@ -1317,6 +1307,24 @@ function App() {
   useEffect(() => { save(SK.gridW, gridW); setSizeWInput(String(gridW)); }, [gridW]);
   useEffect(() => { save(SK.gridH, gridH); setSizeHInput(String(gridH)); }, [gridH]);
 
+  // Expose app state to the standalone map import module once tiles are loaded.
+  useEffect(() => {
+    if (tilesLoading || !window.MapImport?.init) return;
+    window.MapImport.init({
+      flatDefaultTiles,
+      dbTilesets,
+      getTileMultiplier,
+      getTileOffset,
+      isPriority:     t => priorityTiles[t.id] !== undefined ? !!priorityTiles[t.id]  : (t.isDb ? !!t.dbPriority     : !!(t.src && TILE_SETTINGS.priority.some(p => t.src.includes(p)))),
+      isBottomRender: t => bottomTiles[t.id]   !== undefined ? !!bottomTiles[t.id]    : (t.isDb ? !!t.dbBottomRender : !!(t.src && TILE_SETTINGS.bottomRender.some(p => t.src.includes(p)))),
+      setGrid,
+      setGridW,
+      setGridH,
+      gridW,
+      gridH,
+    });
+  }, [tilesLoading]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const getDefaultMultiplier = t => {
     if (t?.dbSizeMultiplier != null) return Number(t.dbSizeMultiplier);
     if (!t?.src || t.src.startsWith('data:')) return 1.0;
@@ -1648,7 +1656,7 @@ function App() {
           id: idCounter++,
           dbId: row.id,
           dbTilesetId: row.tileset_id,
-          src: toImageKitUrl(row.image_url),
+          src: row.image_url,
           isDefault: true,
           isDb: true,
           codename: row.codename,
@@ -8188,6 +8196,7 @@ function App() {
               style={{ width: 180, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 6, color: C.text, fontFamily: "'Inter', sans-serif", fontSize: 11, padding: "4px 8px", outline: "none" }}
               spellCheck={false} />
             <button style={btn(true, C.soft, C.softDim)} onClick={() => setDownloadConfirmOpen(true)}>Download</button>
+            <button style={btn(true, uiTheme === 'cold' ? '#a78bfa' : '#84cc16', uiTheme === 'cold' ? 'rgba(167,139,250,0.18)' : 'rgba(132,204,22,0.18)')} onClick={() => window.MapImport?.open()}>Import</button>
           </div>
 
           {/* Row 3: Background colour selector */}
