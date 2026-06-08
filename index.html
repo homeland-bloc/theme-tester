@@ -157,7 +157,7 @@ const TILE_SETTINGS = {
   flippable:    ["/Fence/", "/Rope/", "Jumppads/"],  // src substrings → tile is flippable by default
   otgPassable:  ["bush", "Bush", "SpeedTile", "SlowTile", "Objective", "Rope/", "Jumppads/", "Teleporters/", "HealPad", "Spawn", "SpawnPoint", "spawn"],
   mirrorOffset: ["Jumppads/", "Teleporters/", "HealPad"],
-  bottomRender: ["/Water/", "Jumppads/", "Teleporters/", "HealPad"],
+  bottomRender: ["/Water/", "Jumppads/", "Teleporters/", "SlowTile", "SpeedTile"],
   priority:     ["/objectives/", "/Objectives/", "/Objective/"],
 };
 
@@ -871,9 +871,13 @@ function App() {
   // before this field was added are conservatively treated as expired.
   const isAuthenticated = !!(
     currentUser?.firebaseToken &&
-    (currentUser.firebaseTokenExpiry ?? 0) - 60000 > Date.now() &&
-    (currentUser.tokenExpiry ?? 0) - 60000 > Date.now()
+    (currentUser.firebaseTokenExpiry ?? 0) - 90000 > Date.now() &&
+    (currentUser.tokenExpiry ?? 0) - 90000 > Date.now()
   );
+
+  // Keep a live ref so timer callbacks can re-check auth at fire time (avoids stale closure)
+  const isAuthenticatedRef = useRef(isAuthenticated);
+  isAuthenticatedRef.current = isAuthenticated;
 
   // Track whether user was authenticated on previous render; debounce login screen to avoid tab-focus flash
   const wasAuthenticatedRef = useRef(isAuthenticated);
@@ -890,6 +894,8 @@ function App() {
         if (!showLoginTimerRef.current) {
           showLoginTimerRef.current = setTimeout(() => {
             showLoginTimerRef.current = null;
+            // Re-check auth at fire time: if the session is still valid, cancel the login transition
+            if (isAuthenticatedRef.current) return;
             wasAuthenticatedRef.current = false;
             setShowLogin(true);
           }, 50);
@@ -946,7 +952,8 @@ function App() {
   const [mirrorH,     setMirrorH]   = useState(false);
   const [mirrorD,     setMirrorD]   = useState(false);
   const [showGuides,    setShowGuides]    = useState(false);
-  const [showMapCenter, setShowMapCenter] = useState(() => load("oph_show_map_center", false));
+  const [clearMapConfirmOpen, setClearMapConfirmOpen] = useState(false);
+  const [downloadConfirmOpen, setDownloadConfirmOpen] = useState(false);
   const [mirrorSettings, setMirrorSettings] = useState({ mirrorSpawns: true, mirrorRotation: true, allowSwap: false });
   const [mirrorSettingsOpen, setMirrorSettingsOpen] = useState(false);
   const [tilesSettingsOpen,  setTilesSettingsOpen]  = useState(false);
@@ -1312,13 +1319,13 @@ function App() {
     if (!t?.src || t.src.startsWith('data:')) return 1.0;
     const s = t.src;
     // Spawns
-    if (s.includes("Spawns/")) return 1.65;
+    if (s.includes("Spawns/")) return 1.7;
     // Jumppads & Teleporters & HealPad → 2x
     if (s.includes("Jumppads/") || s.includes("Teleporters/") || s.includes("HealPad")) return 2.0;
     // Hot Zone
     if (s.includes("Hot_Zone")) return 7.0;
     // Smoke / poison / gas
-    if (s.includes("Smoke")) return 1.65;
+    if (s.includes("Smoke")) return 1.55;
     // Global Brawl Ball → 1.5x
     if (s.includes("Brawl_Ball")) return 1.5;
     // Goal posts → 7x
@@ -1358,6 +1365,10 @@ function App() {
     if (s.includes("Bounty")) return { ox: 0, oy: 4 };
     // Atlas Post_R / Post_TR rope tiles
     if (s.includes("/Rope/Post_R") || s.includes("/Rope/Post_TR")) return { ox: 25, oy: 0 };
+    if (s.includes("SlowTile")) return { ox: 0, oy: 5 };
+    if (s.includes("SpeedTile")) return { ox: 0, oy: 5 };
+    if (s.includes("Smoke")) return { ox: 0, oy: -10 };
+    if (s.includes("Spikes")) return { ox: 0, oy: -8 };
     return { ox: 0, oy: 0 };
   };
 
@@ -1767,6 +1778,23 @@ function App() {
     const hasOldTiles = oldIds.size > 0 &&
       currentGrid.some(row => row.some(id => id !== null && oldIds.has(id)));
 
+    // For Objectives tiles with no codename match in the new tileset, suggest an
+    // equivalent global tile (Brawl Ball / Gem Grab / Heist) as the default remap.
+    const findObjectiveFallback = tile => {
+      const cn = tile?.codename ?? '';
+      const folderKey = tile?.folderLabel ?? '';
+      const KNOWN = ['BrawlBall', 'GemMine', 'HeistSafe', 'Ball', 'Safe'];
+      const isObjective = folderKey === 'Objectives' || KNOWN.some(k => cn.includes(k));
+      if (!isObjective) return null;
+      let needle = null;
+      if (cn.includes('GemMine')) needle = 'Gem_Grab';
+      else if (cn.includes('BrawlBall') || cn.includes('Ball')) needle = 'Brawl_Ball';
+      else if (cn.includes('HeistSafe') || cn.includes('Safe')) needle = 'Heist';
+      if (!needle) return null;
+      const g = flatDefaultTiles.find(t => !t.isDb && t.src && t.src.includes(needle));
+      return g ? g.id : null;
+    };
+
     // Check for codename mismatches before applying switch
     if (hasOldTiles && newTsDef) {
       const mismatches = [];
@@ -1778,7 +1806,8 @@ function App() {
         if (futureCodenameToId[cn] === undefined) {
           seenCodenames.add(cn);
           const tile = flatDefaultTiles.find(t => t.id === id);
-          mismatches.push({ id, codename: cn, src: tile?.src });
+          const fallbackId = findObjectiveFallback(tile);
+          mismatches.push({ id, codename: cn, src: tile?.src, fallbackId: fallbackId ?? null });
         }
       }));
       if (mismatches.length > 0) {
@@ -1786,7 +1815,7 @@ function App() {
           newTilesetName, newTsDef, oldTsDef,
           oldIdToCodename, futureCodenameToId,
           newTilesCached, tsBg: null, mismatches,
-          remaps: Object.fromEntries(mismatches.map(m => [m.codename, WARN_TILE_ID])),
+          remaps: Object.fromEntries(mismatches.map(m => [m.codename, m.fallbackId ?? WARN_TILE_ID])),
         });
         // Compute tsBg now and update the pending state
         const dbBg_ = (newTsDef?.bg_color_light && newTsDef?.bg_color_dark)
@@ -1926,8 +1955,8 @@ function App() {
 
         // Default to saved tileset if still valid; otherwise pick the most recently created published one
         const saved = load(SK.activeTileset, null);
-        const published = [...tilesets].filter(ts => ts.is_published).sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-        const mostRecent = published[0]?.name ?? tilesets[0]?.name ?? null;
+        const customPublished = [...tilesets].filter(ts => ts.is_published && ts.type === 'custom').sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+        const mostRecent = customPublished[0]?.name ?? tilesets[0]?.name ?? null;
         const name = (saved && tilesets.some(ts => ts.name === saved)) ? saved : mostRecent;
         setActiveTileset(name);
 
@@ -2384,7 +2413,7 @@ function App() {
   const pushHistorySnapshot = useCallback(() => {
     const label = histLabelRef.current || "Draw";
     histLabelRef.current = "Draw";
-    const snap = { grid, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1, bg2, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current, customCenter: customCenterRef.current, label };
+    const snap = { grid, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1, bg2, highlight: [...highlightedCellsRef.current], rots: { ...gridRotationsRef.current }, flips: { ...gridFlipsRef.current }, customCenter: customCenterRef.current, label };
     setHistory(h => {
       const trimmed = h.slice(0, histIdx + 1);
       const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
@@ -2862,6 +2891,9 @@ function App() {
         if (pickedId != null) {
           setSel(pickedId);
           setEraser(false);
+          setEyedropperMode(false);
+          setMagnetMode(false);
+          if (highlightModeRef.current) { setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }
         }
         return;
       }
@@ -2947,8 +2979,8 @@ function App() {
           // ── BLOCK OVERWRITE ON + OCCUPIED: defer until we know if user drags or taps
           pendingSwapRef.current = {
             r, c, existingId, x: e.clientX, y: e.clientY,
-            rot: gridRotations[`${r},${c}`] ?? 0,
-            flip: gridFlips[`${r},${c}`] ?? 0,
+            rot: gridRotationsRef.current[`${r},${c}`] ?? 0,
+            flip: gridFlipsRef.current[`${r},${c}`] ?? 0,
           };
         }
         return;
@@ -3480,6 +3512,9 @@ function App() {
         if (pickedId != null) {
           setSel(pickedId);
           setEraser(false);
+          setEyedropperMode(false);
+          setMagnetMode(false);
+          if (highlightModeRef.current) { setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }
         }
         return;
       }
@@ -3899,7 +3934,7 @@ function App() {
       // Bare-key shortcuts (only when not typing in an input)
       if (!e.ctrlKey && !e.metaKey && !e.altKey) {
         const tag = e.target.tagName;
-        if (tag === "INPUT" || tag === "TEXTAREA" || e.target.isContentEditable) return;
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || e.target.isContentEditable) return;
         if (e.key === "Escape" && highlightModeRef.current) {
           setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set();
         }
@@ -3908,8 +3943,8 @@ function App() {
           setHighlightedCells(new Set());
           highlightedCellsRef.current = new Set();
         }
-        if (e.key === "e" || e.key === "E") { setEraser(true); setSel(null); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); setDuplicateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }
-        if (e.key === "w" || e.key === "W") { setEyedropperMode(true); setEraser(false); setHandMode(false); setRotateMode(false); setExploreMode(false); setExplorePicker(null); setDuplicateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }
+        if (e.key === "e" || e.key === "E") { setEraser(true); setSel(null); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); setDuplicateMode(false); setMagnetMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }
+        if (e.key === "w" || e.key === "W") { setEyedropperMode(true); setEraser(false); setHandMode(false); setRotateMode(false); setExploreMode(false); setExplorePicker(null); setDuplicateMode(false); setMagnetMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }
         if (e.key === "r" || e.key === "R") {
           const id = selRef.current;
           if (id != null) {
@@ -3931,6 +3966,36 @@ function App() {
         if (e.key === "z" || e.key === "Z") { undo(); }
         if (e.key === "x" || e.key === "X") { redo(); }
         if (e.key === "o" || e.key === "O") { setMirrorSettings(p => ({ ...p, allowSwap: !p.allowSwap })); }
+        if (e.key === "b" || e.key === "B") { setMirrorSettings(p => ({ ...p, allowSwap: !p.allowSwap })); }
+        if (e.key === "h" || e.key === "H") {
+          const turningOn = !highlightModeRef.current;
+          setHighlightMode(v => !v);
+          setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); setMagnetMode(false);
+          if (turningOn) { setSel(null); }
+          else { setDuplicateMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }
+        }
+        if (e.key === "m" || e.key === "M") {
+          if (magnetModeRef.current) { setMagnetMode(false); }
+          else { setMagnetMode(true); setEraser(false); setHandMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); setDuplicateMode(false); setRotateMode(false); setHighlightMode(false); setSel(null); }
+        }
+        if (e.key === "[" || e.key === "]") {
+          const id = selRef.current;
+          if (id != null) {
+            const tile = allTilesByIdRef.current[id];
+            const rMap = rotatableMapRef.current;
+            const fMap = allowFlipMapRef.current;
+            const canSpin = tile ? (rMap[id] !== undefined ? rMap[id] : isDefaultRotatable(tile)) : true;
+            const canFlip = tile ? (fMap[id] !== undefined ? fMap[id] : isDefaultFlippable(tile)) : false;
+            const rawMode = cardFlipModesRef.current[id] ?? 'spin';
+            const mode = !canFlip ? 'spin' : (!canSpin ? 'flip' : rawMode);
+            const dir = e.key === "[" ? -1 : 1;
+            if (mode === 'flip' && canFlip) {
+              setCardFlipSteps(prev => ({ ...prev, [id]: (((prev[id] ?? 0) + dir) % 4 + 4) % 4 }));
+            } else if (mode !== 'flip' && canSpin) {
+              setCardRotations(prev => ({ ...prev, [id]: (((prev[id] ?? 0) + dir * 90) % 360 + 360) % 360 }));
+            }
+          }
+        }
         if (e.key === "+" || e.key === "=") { e.preventDefault(); changeZoom(ZOOM_STEP); }
         if (e.key === "-") { e.preventDefault(); changeZoom(-ZOOM_STEP); }
       }
@@ -4036,7 +4101,6 @@ function App() {
 
   // ── Export ────────────────────────────────────────────────────────
   const doExport = () => {
-    if (!confirm("Download the map as a PNG file?")) return;
     const padding = CELL;
     const cv = document.createElement("canvas");
     cv.width  = gridW * CELL;
@@ -4309,7 +4373,13 @@ function App() {
     );
     // Issue 13: navigation follows panel order — flat tiles sorted by sortIndex, folder tiles within same folder only
     const navTiles = (() => {
-      if (!t.tilesetName) return [];
+      if (!t.tilesetName) {
+        // User-uploaded tiles have no tilesetName — navigate across the uploaded section instead
+        if (userTiles.some(u => u.id === t.id)) {
+          return userTiles.slice().sort((a, b) => (a.id ?? 0) - (b.id ?? 0));
+        }
+        return [];
+      }
       const tsFlatTiles = tiles.filter(tile => tile.tilesetName === t.tilesetName && !tile.folderKey);
       const tsFolderTiles = tiles.filter(tile => tile.tilesetName === t.tilesetName && tile.folderKey);
       const sortBySortIndex = arr => arr.slice().sort((a, b) => (a.sortIndex ?? 0) - (b.sortIndex ?? 0));
@@ -5075,10 +5145,7 @@ function App() {
             <button onClick={() => setFailedWarning(false)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
           </div>
           <p style={{ fontSize: 13, color: C.text, lineHeight: 1.6 }}>
-            This tile's image could not be loaded. The file may be missing from the <code style={{ color: C.accentBright }}>Resources/</code> folder.
-          </p>
-          <p style={{ fontSize: 11, color: C.muted }}>
-            To fix this, restore the missing image file to the Resources folder and refresh the page. You can also update <code style={{ color: C.accentBright }}>Resources/manifest.json</code> to remove deleted entries.
+            This tile's image could not be loaded. The image URL may be broken or the file may have been moved or deleted. Try replacing the image using the 🖼 Replace Image option in the tile's info panel.
           </p>
           <button style={{ ...btn(false, C.accent, C.accentDim) }} onClick={() => setFailedWarning(false)}>OK</button>
         </div>
@@ -5112,7 +5179,6 @@ function App() {
       convert: { label: "Convert", icon: "🔄", color: C.soft, desc: "Remaps tiles on the board from one tileset to another by matching tile names. Tiles with no equivalent in the target tileset are left as-is.", iconColor: null },
       rotate: { label: "Rotate", icon: "🌊", color: "#2dd4bf", desc: "Click a rotatable tile on the map to rotate it one step. Spinning tiles (water, jumppads) cycle through 4 rotation steps; flippable tiles (fence, rope) cycle through 4 flip states. Non-rotatable tiles are skipped. Drag to pan the canvas like the Hand tool. If cells are highlighted, clicking anywhere rotates all rotatable tiles in the highlighted region.", iconColor: null },
       magnet: { label: "Magnet", icon: "🧲", color: "#2563eb", desc: "Sets a custom mirror origin for the map. All mirroring axes (H, V, D) pivot around this point instead of the true map centre. Click any cell on the canvas to place the origin. Use the size dropdown on the card to choose a 1×1 or 2×2 centre zone. Useful for asymmetric or experimental Showdown layouts.", iconColor: null },
-      mapCenter: { label: "Map Center", icon: "📍", color: mcColor, desc: "Shows the current mirror origin on the canvas as a dashed outline. The origin defaults to the map centre but can be moved using the Magnet tool.", iconColor: null },
       hotkeys: { label: "Hotkeys", icon: "⌨️", color: C.text, desc: "Keyboard shortcuts: E = Erase, W = Eyedropper, R = Rotate selected tile, Z = Undo, X = Redo, Ctrl+Z = Undo, Ctrl+Y = Redo, Escape = Clear highlight.", iconColor: null },
       explore: { label: "Explore", icon: "🌻", color: "#9ADF1C", desc: "Cycle through tile variants within a folder. Click a folder tile on the canvas to pick the next variant. If cells are highlighted, clicking cycles variants across all highlighted folder tiles at once.", iconColor: null },
       warn: { label: "Warn", icon: "⚠️", color: "#f97316", desc: "Places an invisible warning marker tile. Warning markers appear as semi-transparent ⚠️ overlays on the canvas but are not exported as tiles — useful for marking hazardous or incomplete areas.", iconColor: null },
@@ -5458,7 +5524,12 @@ function App() {
                     <div className="tile-img-checker" style={{ width: 28, height: 28, borderRadius: 3, flexShrink: 0, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                       {m.src ? <img src={m.src} style={{ width: 28, height: 28, objectFit: 'contain', imageRendering: 'pixelated' }} /> : <span style={{ fontSize: 10, color: C.muted }}>?</span>}
                     </div>
-                    <code style={{ fontSize: 11, color: C.text, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.codename}</code>
+                    <code style={{ fontSize: 11, color: C.text, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {m.codename}
+                      {m.fallbackId != null && currentRemapId === m.fallbackId && (
+                        <span style={{ marginLeft: 5, fontSize: 9, fontWeight: 700, color: '#4ade80', background: 'rgba(74,222,128,0.14)', border: '1px solid rgba(74,222,128,0.4)', borderRadius: 3, padding: '0 3px' }}>(Global fallback)</span>
+                      )}
+                    </code>
                     <span style={{ fontSize: 11, color: C.muted, flexShrink: 0 }}>→</span>
                     {/* Replacement tile picker button */}
                     <button
@@ -5838,6 +5909,40 @@ function App() {
       <ConvertModal />
       <TilesetCompatModal />
       <HotkeysModal />
+      {clearMapConfirmOpen && (
+        <div className="modal-backdrop" onClick={() => setClearMapConfirmOpen(false)}>
+          <div className="modal-box" style={{ maxWidth: 340 }} onClick={e => e.stopPropagation()}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: C.danger }}>Clear Map</span>
+              <button onClick={() => setClearMapConfirmOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
+            </div>
+            <p style={{ fontSize: 13, color: C.text, lineHeight: 1.6 }}>
+              This will remove all tiles from the canvas. This cannot be undone.
+            </p>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button style={{ ...btn(false, C.muted, "rgba(255,255,255,0.06)") }} onClick={() => setClearMapConfirmOpen(false)}>Cancel</button>
+              <button style={{ ...btn(true, C.danger, "rgba(239,68,68,0.25)") }} onClick={() => { histLabelRef.current = "Clear Map"; pushHistorySnapshot(); setGrid(Array.from({ length: gridH }, () => Array(gridW).fill(null))); setClearMapConfirmOpen(false); }}>Clear</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {downloadConfirmOpen && (
+        <div className="modal-backdrop" onClick={() => setDownloadConfirmOpen(false)}>
+          <div className="modal-box" style={{ maxWidth: 340 }} onClick={e => e.stopPropagation()}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: C.accent }}>Download Map</span>
+              <button onClick={() => setDownloadConfirmOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
+            </div>
+            <p style={{ fontSize: 13, color: C.text, lineHeight: 1.6 }}>
+              Download the current map as a PNG file?
+            </p>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button style={{ ...btn(false, C.muted, "rgba(255,255,255,0.06)") }} onClick={() => setDownloadConfirmOpen(false)}>Cancel</button>
+              <button style={{ ...btn(true, C.accent, C.accentDim) }} onClick={() => { setDownloadConfirmOpen(false); doExport(); }}>Download</button>
+            </div>
+          </div>
+        </div>
+      )}
       {createTilesetModal}
       <AddTileModal
         open={addTileOpen}
@@ -6153,6 +6258,7 @@ function App() {
                         }
                         setSel(t.id); setEraser(false);
                         setHandMode(false); setRotateMode(false); setExploreMode(false); setMagnetMode(false); setEyedropperMode(false);
+                        if (highlightMode) { setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }
                       }}
                       style={{ width: cardSz, height: cardSz, borderRadius: 8, cursor: failed ? "not-allowed" : "pointer",
                         border: `2px solid ${failed ? C.danger : active ? C.accentBright : C.border}`,
@@ -6293,7 +6399,7 @@ function App() {
         {/* ── LEFT SIDEBAR: Tiles ──────────────────────────────────── */}
         <div style={{ display: "flex", flexDirection: "row", flexShrink: 0, alignSelf: "stretch" }}>
           {tilesOpen && (
-            <div style={{ width: isMobile ? 160 : 240, background: C.panelDeep, borderRight: `1px solid ${C.border}`, borderRadius: "8px 0 0 8px", display: "flex", flexDirection: "column", overflow: "hidden", maxHeight: "min(88vh, 700px)" }}>
+            <div style={{ width: isMobile ? 160 : 305, background: C.panelDeep, borderRight: `1px solid ${C.border}`, borderRadius: "8px 0 0 8px", display: "flex", flexDirection: "column", overflow: "hidden", maxHeight: "min(88vh, 700px)" }}>
               <SectionHeader
                 label={`Tiles (${tilesetTileCount + userTiles.length})`}
                 open={tilesOpen}
@@ -6429,6 +6535,7 @@ function App() {
                           }
                           setSel(t.id); setEraser(false);
                           setHandMode(false); setRotateMode(false); setExploreMode(false); setMagnetMode(false); setEyedropperMode(false);
+                          if (highlightMode) { setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }
                         }}
                         style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: failed ? "not-allowed" : "pointer", border: `${active ? 3 : 2}px solid ${failed ? C.danger : active ? C.accentBright : C.border}`, boxShadow: active ? `0 0 0 1px ${C.accentBright}44` : "none", background: failed ? "rgba(248,113,113,0.08)" : active ? C.accentDim : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s, box-shadow 0.12s", opacity: failed ? 0.55 : 1, position: "relative", overflow: "visible" }}>
                         {/* Inner clipped area for image */}
@@ -6511,7 +6618,7 @@ function App() {
                           // Erase-from-highlight mode: toggle eraser without clearing the highlight
                           setEraser(e => !e);
                         } else {
-                          setEraser(true); setSel(null); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); setDuplicateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set();
+                          setEraser(true); setSel(null); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); setDuplicateMode(false); setMagnetMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set();
                         }
                       }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${eraseBorder}`, background: eraseBg, transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
@@ -6554,7 +6661,7 @@ function App() {
                   {(() => {
                     const isStarredHand = starredTiles.includes("hand");
                     return (
-                      <div onClick={() => { if (handMode) return; setHandMode(true); setEraser(false); setSel(null); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); setDuplicateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
+                      <div onClick={() => { if (handMode) return; setHandMode(true); setEraser(false); setSel(null); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); setDuplicateMode(false); setMagnetMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${handMode ? "#fbbf24" : C.border}`, background: handMode ? "rgba(251,191,36,0.14)" : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
                         <div style={{ borderRadius: 6, overflow: "hidden" }}>
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: handMode ? "rgba(251,191,36,0.28)" : "rgba(251,191,36,0.08)", padding: "2px 4px" }}>
@@ -6578,7 +6685,7 @@ function App() {
                     const exploreBgColor = exploreMode ? "rgba(154,223,28,0.15)" : exploreHint ? "rgba(154,223,28,0.04)" : "rgba(255,255,255,0.03)";
                     const isStarredExplore = starredTiles.includes("explore");
                     return (
-                      <div onClick={() => { if (exploreMode) return; setExploreMode(true); setEraser(false); setHandMode(false); setEyedropperMode(false); setRotateMode(false); setDuplicateMode(false); setSel(null); setExplorePicker(null); }}
+                      <div onClick={() => { if (exploreMode) return; setExploreMode(true); setEraser(false); setHandMode(false); setEyedropperMode(false); setRotateMode(false); setDuplicateMode(false); setMagnetMode(false); setSel(null); setExplorePicker(null); }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${exploreBorderColor}`, background: exploreBgColor, transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
                         <div style={{ borderRadius: 6, overflow: "hidden" }}>
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: exploreMode ? `rgba(154,223,28,0.28)` : exploreHint ? `rgba(154,223,28,0.06)` : `rgba(154,223,28,0.08)`, padding: "2px 4px" }}>
@@ -6598,7 +6705,7 @@ function App() {
                   {(() => {
                     const isStarredEyedropper = starredTiles.includes("eyedropper");
                     return (
-                      <div onClick={() => { if (eyedropperMode) return; setEyedropperMode(true); setEraser(false); setHandMode(false); setRotateMode(false); setExploreMode(false); setExplorePicker(null); setSel(null); setDuplicateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
+                      <div onClick={() => { if (eyedropperMode) return; setEyedropperMode(true); setEraser(false); setHandMode(false); setRotateMode(false); setExploreMode(false); setExplorePicker(null); setSel(null); setDuplicateMode(false); setMagnetMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${eyedropperMode ? "#39ff14" : C.border}`, background: eyedropperMode ? "rgba(57,255,20,0.15)" : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
                         <div style={{ borderRadius: 6, overflow: "hidden" }}>
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: eyedropperMode ? "rgba(57,255,20,0.22)" : "rgba(57,255,20,0.08)", padding: "2px 4px" }}>
@@ -6675,7 +6782,7 @@ function App() {
                     const isStarredMagnet = starredTiles.includes("magnet");
                     const hasCustomCenter = customCenter !== null;
                     return (
-                      <div onClick={() => { if (magnetMode) return; setMagnetMode(true); setEraser(false); setHandMode(false); setEyedropperMode(false); setExploreMode(false); setDuplicateMode(false); setRotateMode(false); setSel(null); }}
+                      <div onClick={() => { if (magnetMode) { setMagnetMode(false); return; } setMagnetMode(true); setEraser(false); setHandMode(false); setEyedropperMode(false); setExploreMode(false); setDuplicateMode(false); setRotateMode(false); setSel(null); }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer",
                           border: `2px solid ${magnetMode ? "#2563eb" : C.border}`,
                           background: magnetMode ? "rgba(37,99,235,0.15)" : "rgba(255,255,255,0.03)",
@@ -6688,7 +6795,10 @@ function App() {
                           <div style={{ height: cardSz - 18, background: C.panelDeep, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 3 }}>
                             <span style={{ fontSize: 20, lineHeight: 1, opacity: magnetMode ? 1 : 0.55 }}>🧲</span>
                             {(() => {
-                              const defaultSz = (gridW % 2 === 0 && gridH % 2 === 0) ? 2 : 1;
+                              const defaultSz = gridW % 2 === 0 && gridH % 2 === 0 ? 2
+                                : gridW % 2 !== 0 && gridH % 2 === 0 ? 4   // 1 wide, 2 tall (value 4 = "1×2")
+                                : gridW % 2 === 0 && gridH % 2 !== 0 ? 3   // 2 wide, 1 tall (value 3 = "2×1")
+                                : 1;
                               const sizeLabels = { 1: "1×1", 2: "2×2", 3: "2×1", 4: "1×2" };
                               const isNonDefault = customCenterSize !== defaultSz || hasCustomCenter;
                               return (
@@ -6713,7 +6823,7 @@ function App() {
                                       }
                                     }
                                   }}
-                                  style={{ fontSize: 8, background: isNonDefault ? "rgba(37,99,235,0.18)" : C.panelDeep, border: `1px solid ${isNonDefault ? "#2563eb" : "rgba(255,255,255,0.25)"}`, borderRadius: 3, color: C.text, padding: "1px 2px", cursor: "pointer", maxWidth: cardSz - 8 }}>
+                                  style={{ fontSize: 8, background: isNonDefault ? "rgba(37,99,235,0.55)" : "rgba(0,0,0,0.55)", border: `1px solid ${isNonDefault ? "#2563eb" : "rgba(255,255,255,0.25)"}`, borderRadius: 3, color: "#ffffff", colorScheme: "dark", padding: "1px 2px", cursor: "pointer", maxWidth: cardSz - 8 }}>
                                   <option value="reset">↩ Reset</option>
                                   {[1, 2, 3, 4].map(sz => (
                                     <option key={sz} value={String(sz)}>
@@ -6778,7 +6888,7 @@ function App() {
                         const turningOn = !duplicateMode;
                         setDuplicateMode(d => !d);
                         if (turningOn) {
-                          setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); setSel(null);
+                          setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); setMagnetMode(false); setSel(null);
                           if (!highlightMode) setHighlightMode(true);
                         } else {
                           setHighlightDragOffset(null); highlightDragOffsetRef.current = null; highlightDragAnchorCell.current = null;
@@ -7048,7 +7158,7 @@ function App() {
                   {/* Tool shortcuts (starred string IDs: erase, hand, eyedropper, highlight, convert, selectionGroup, mirrorGroup) */}
                   {starredTools.map(sid => {
                   if (sid === "erase") return (
-                    <div key="erase" onClick={() => { setEraser(true); setSel(null); setHandMode(false); setRotateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
+                    <div key="erase" onClick={() => { setEraser(true); setSel(null); setHandMode(false); setRotateMode(false); setMagnetMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
                       style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
                         border: `1px solid ${eraser ? C.danger : C.border}`, background: eraser ? "rgba(248,113,113,0.22)" : "rgba(255,255,255,0.04)" }}
                       title="Erase">
@@ -7056,7 +7166,7 @@ function App() {
                     </div>
                   );
                   if (sid === "hand") return (
-                    <div key="hand" onClick={() => { if (handMode) return; setHandMode(true); setEraser(false); setSel(null); setRotateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
+                    <div key="hand" onClick={() => { if (handMode) return; setHandMode(true); setEraser(false); setSel(null); setRotateMode(false); setMagnetMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
                       style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
                         border: `1px solid ${handMode ? "#fbbf24" : C.border}`, background: handMode ? "rgba(251,191,36,0.14)" : "rgba(255,255,255,0.04)" }}
                       title="Hand">
@@ -7089,7 +7199,7 @@ function App() {
                     );
                   }
                   if (sid === "eyedropper") return (
-                    <div key="eyedropper" onClick={() => { if (eyedropperMode) return; setEyedropperMode(true); setEraser(false); setHandMode(false); setRotateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
+                    <div key="eyedropper" onClick={() => { if (eyedropperMode) return; setEyedropperMode(true); setEraser(false); setHandMode(false); setRotateMode(false); setMagnetMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
                       style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
                         border: `1px solid ${eyedropperMode ? "#39ff14" : C.border}`, background: eyedropperMode ? "rgba(57,255,20,0.22)" : "rgba(255,255,255,0.04)" }}
                       title="Eyedropper">
@@ -7105,7 +7215,7 @@ function App() {
                     </div>
                   );
                   if (sid === "rotate") return (
-                    <div key="rotate" onClick={() => { if (rotateMode) return; setRotateMode(true); setEraser(false); setHandMode(false); setHighlightMode(false); setEyedropperMode(false); }}
+                    <div key="rotate" onClick={() => { if (rotateMode) return; setRotateMode(true); setEraser(false); setHandMode(false); setHighlightMode(false); setEyedropperMode(false); setMagnetMode(false); }}
                       style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
                         border: `1px solid ${rotateMode ? "#2dd4bf" : C.border}`, background: rotateMode ? "rgba(45,212,191,0.22)" : "rgba(255,255,255,0.04)" }}
                       title="Rotate">
@@ -7113,7 +7223,7 @@ function App() {
                     </div>
                   );
                   if (sid === "explore") return (
-                    <div key="explore" onClick={() => { if (exploreMode) return; setExploreMode(true); setEraser(false); setHandMode(false); setEyedropperMode(false); setRotateMode(false); setDuplicateMode(false); setSel(null); setExplorePicker(null); }}
+                    <div key="explore" onClick={() => { if (exploreMode) return; setExploreMode(true); setEraser(false); setHandMode(false); setEyedropperMode(false); setRotateMode(false); setDuplicateMode(false); setMagnetMode(false); setSel(null); setExplorePicker(null); }}
                       style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
                         border: `1px solid ${exploreMode ? "#9ADF1C" : C.border}`, background: exploreMode ? "rgba(154,223,28,0.22)" : "rgba(255,255,255,0.04)" }}
                       title="Explore">
@@ -7128,7 +7238,7 @@ function App() {
                         if (!dupAvail && !dupActive) return;
                         const turningOn = !duplicateMode;
                         setDuplicateMode(d => !d);
-                        if (turningOn) { setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); setSel(null); if (!highlightMode) setHighlightMode(true); }
+                        if (turningOn) { setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); setMagnetMode(false); setSel(null); if (!highlightMode) setHighlightMode(true); }
                         else { setHighlightDragOffset(null); highlightDragOffsetRef.current = null; highlightDragAnchorCell.current = null; }
                       }}
                         style={{ width: 32, height: 32, borderRadius: 6, cursor: (dupAvail || dupActive) ? "pointer" : "not-allowed", display: "flex", alignItems: "center", justifyContent: "center",
@@ -7202,7 +7312,7 @@ function App() {
                           if (stMode === 'flip' && stCanFlip) { setCardFlipSteps(prev => ({ ...prev, [sid]: ((prev[sid] ?? 0) + 1) % 4 })); }
                           else if (stMode !== 'flip' && stCanSpin) { setCardRotations(prev => ({ ...prev, [sid]: (prev[sid] ?? 0) + 90 })); }
                         }
-                        setSel(sid); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set();
+                        setSel(sid); setEraser(false); setHandMode(false); setMagnetMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set();
                       }}
                       style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", overflow: "hidden", position: "relative",
                         border: `1px solid ${active ? C.accentBright : C.border}`, background: active ? C.accentDim : C.panelDeep }}
@@ -7240,7 +7350,7 @@ function App() {
                             if (rcMode === 'flip' && rcCanFlip) { setCardFlipSteps(prev => ({ ...prev, [rid]: ((prev[rid] ?? 0) + 1) % 4 })); }
                             else if (rcMode !== 'flip' && rcCanSpin) { setCardRotations(prev => ({ ...prev, [rid]: (prev[rid] ?? 0) + 90 })); }
                           }
-                          setSel(rid); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set();
+                          setSel(rid); setEraser(false); setHandMode(false); setMagnetMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set();
                         }}
                         style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", overflow: "hidden", position: "relative",
                           border: `1px solid ${active ? C.accentBright : "rgba(255,255,255,0.25)"}`, background: active ? C.accentDim : C.panelDeep, opacity: 0.75 }}
@@ -7579,11 +7689,15 @@ function App() {
                   );
                 })()}
 
-                {/* Map center overlay — shown when showMapCenter is on */}
-                {showMapCenter && (() => {
+                {/* Map center overlay — shown whenever the Magnet tool is active */}
+                {magnetMode && (() => {
                   const { cR, cC } = getEffectiveCenter();
                   const cellPx = CELL * zoom;
-                  const szVal = customCenter !== null ? (customCenterSize ?? 1) : 1;
+                  const defaultSz = gridW % 2 === 0 && gridH % 2 === 0 ? 2
+                    : gridW % 2 !== 0 && gridH % 2 === 0 ? 4   // 1 wide, 2 tall (value 4 = "1×2")
+                    : gridW % 2 === 0 && gridH % 2 !== 0 ? 3   // 2 wide, 1 tall (value 3 = "2×1")
+                    : 1;
+                  const szVal = customCenter !== null ? (customCenterSize ?? defaultSz) : defaultSz;
                   const szH = (szVal === 2 || szVal === 4) ? 2 : 1;
                   const szW = (szVal === 2 || szVal === 3) ? 2 : 1;
                   const x = (cC - (szW - 1) / 2) * cellPx;
@@ -7755,7 +7869,6 @@ function App() {
                 guides: "🧭", offsetCenters: "🎯", replace: "♻️", overwrite: "🧱",
                 otg: "🧩",
                 eyedropper: "🧪", highlight: "🪄", rotate: "🌊", magnet: "🧲",
-                mapCenter: "📍",
                 convert: "🔄",
               };
               const toolActionMap = {
@@ -7772,11 +7885,10 @@ function App() {
                 replace: () => { setReplaceOpen(true); setReplaceStep(1); setReplaceA(null); setReplaceB(null); setReplaceMsg(""); },
                 overwrite: () => setMirrorSettings(p => ({ ...p, allowSwap: !p.allowSwap })),
                 otg: () => setShowOTG(v => !v),
-                eyedropper: () => { if (eyedropperMode) return; setEyedropperMode(true); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); },
-                highlight: () => { const on = !highlightMode; setHighlightMode(h => !h); setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); if (!on) { setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); } },
+                eyedropper: () => { if (eyedropperMode) return; setEyedropperMode(true); setEraser(false); setHandMode(false); setHighlightMode(false); setMagnetMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); },
+                highlight: () => { const on = !highlightMode; setHighlightMode(h => !h); setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setMagnetMode(false); if (!on) { setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); } },
                 rotate: () => { if (rotateMode) return; setRotateMode(true); setEraser(false); setHandMode(false); setHighlightMode(false); setEyedropperMode(false); setMagnetMode(false); },
-                magnet: () => { if (magnetMode) return; setMagnetMode(true); setEraser(false); setHandMode(false); setHighlightMode(false); setEyedropperMode(false); setRotateMode(false); },
-                mapCenter: () => { const v = !showMapCenter; setShowMapCenter(v); save("oph_show_map_center", v); },
+                magnet: () => { if (magnetMode) { setMagnetMode(false); return; } setMagnetMode(true); setEraser(false); setHandMode(false); setHighlightMode(false); setEyedropperMode(false); setRotateMode(false); setSel(null); },
                 convert: () => setConvertOpen(true),
               };
               const toolActiveMap = {
@@ -7795,7 +7907,6 @@ function App() {
                 highlight: highlightMode,
                 rotate: rotateMode,
                 magnet: magnetMode,
-                mapCenter: showMapCenter,
                 convert: false,
               };
               const toolColorMap = {
@@ -7805,7 +7916,6 @@ function App() {
                 guides: gColor, offsetCenters: ocColor, replace: C.soft, overwrite: owColor,
                 otg: C.danger,
                 eyedropper: "#39ff14", highlight: "#a78bfa", rotate: "#2dd4bf", magnet: "#2563eb",
-                mapCenter: mcColor,
                 convert: C.soft,
               };
               // Only show tool-key starred items (not numeric tile IDs)
@@ -7815,7 +7925,7 @@ function App() {
               const _seen = new Set();
               const _barExclude = new Set(['selectionGroup', 'mirrorGroup', 'single', 'line', 'rect', 'fill', 'mirrorV', 'mirrorH', 'mirrorD']);
               const starredTools = starredTiles
-                .filter(s => typeof s === "string" && !_barExclude.has(s) && (toolIconMap[s] || s === "mapCenter"))
+                .filter(s => typeof s === "string" && !_barExclude.has(s) && toolIconMap[s])
                 .filter(s => { if (_seen.has(s)) return false; _seen.add(s); return true; });
               if (!starredTools.length) return null;
               return (
@@ -7953,7 +8063,7 @@ function App() {
             </div>
           )}
           {toolsOpen && (
-            <div style={{ width: isMobile ? 160 : 260, background: C.panelDeep, borderLeft: `1px solid ${C.border}`, borderRadius: "0 8px 8px 0", display: "flex", flexDirection: "column", overflow: "hidden", maxHeight: "min(88vh, 700px)" }}>
+            <div style={{ width: isMobile ? 160 : 280, background: C.panelDeep, borderLeft: `1px solid ${C.border}`, borderRadius: "0 8px 8px 0", display: "flex", flexDirection: "column", overflow: "hidden", maxHeight: "min(88vh, 700px)" }}>
               <SectionHeader label="Tools" open={toolsOpen} onToggle={() => setToolsOpen(o => !o)}
                 right={<button onClick={() => setMirrorSettingsOpen(true)} style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 5, cursor: "pointer", color: C.muted, fontSize: 12, padding: "1px 6px", lineHeight: 1.4 }} title="Mirroring settings">⚙</button>}
               />
@@ -8010,14 +8120,6 @@ function App() {
                     </button>
                     <span onClick={() => setInfoTool("otg")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
                   </div>
-                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
-                    <button style={btn(showMapCenter, mcColor, mcDim)}
-                      onClick={() => { const v = !showMapCenter; setShowMapCenter(v); save("oph_show_map_center", v); }}
-                      title="Show map mirror origin">
-                      📍 Map Center
-                    </button>
-                    <span onClick={() => setInfoTool("mapCenter")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>{starredTiles.includes("mapCenter") ? "★" : "ⓘ"}</span>
-                  </div>
                 </div>
                 <div style={{ height: 1, background: C.border }} />
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -8048,13 +8150,13 @@ function App() {
         <div style={{ display: "flex", alignItems: "center", padding: "5px 14px 3px", gap: 6 }}>
           <button style={btn(histIdx > 0, C.accent, C.accentDim)} onClick={undo} disabled={histIdx <= 0} title="Undo (Ctrl+Z)">Undo</button>
           <div style={{ flex: 1, display: "flex", justifyContent: "center", alignItems: "center", gap: 6 }}>
-            <button style={{ ...btn(false), padding: "4px 9px", fontSize: 15, fontWeight: 700, lineHeight: 1 }} onClick={() => changeZoom(-ZOOM_STEP)}>−</button>
+            <button style={{ ...btn(false), padding: "4px 9px", fontSize: 15, fontWeight: 700, lineHeight: 1 }} onClick={e => changeZoom(-ZOOM_STEP * (e.shiftKey ? 5 : 1))}>−</button>
             <span onClick={() => applyZoom(calcFitZoom(gridW, gridH))}
               style={{ minWidth: 52, textAlign: "center", display: "inline-block", fontSize: 13, fontFamily: "monospace", fontWeight: 700, color: C.text, background: "rgba(180,40,40,0.10)", borderRadius: 7, padding: "3px 6px", border: `1px solid ${C.border}`, cursor: "pointer", userSelect: "none" }}
               title="Click to reset zoom to fit">
               {Math.round(zoom / ZOOM_STEP) * 10}%
             </span>
-            <button style={{ ...btn(false), padding: "4px 9px", fontSize: 15, fontWeight: 700, lineHeight: 1 }} onClick={() => changeZoom(ZOOM_STEP)}>+</button>
+            <button style={{ ...btn(false), padding: "4px 9px", fontSize: 15, fontWeight: 700, lineHeight: 1 }} onClick={e => changeZoom(ZOOM_STEP * (e.shiftKey ? 5 : 1))}>+</button>
           </div>
           <button style={btn(histIdx < history.length - 1, C.accent, C.accentDim)} onClick={redo} disabled={histIdx >= history.length - 1} title="Redo (Ctrl+Y)">Redo</button>
           <button onClick={() => setBottomOpen(o => !o)}
@@ -8069,17 +8171,17 @@ function App() {
           {/* Row 2: Clear | History | Map name | Download */}
           <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 8, padding: "3px 14px" }}>
             <button style={btn(true, "#ef4444", "rgba(239,68,68,0.25)")}
-              onClick={() => { if (confirm("Clear the whole grid?")) { histLabelRef.current = "Clear Map"; pushHistorySnapshot(); setGrid(Array.from({ length: gridH }, () => Array(gridW).fill(null))); } }}>
+              onClick={() => setClearMapConfirmOpen(true)}>
               Clear Map
             </button>
             <button style={{ ...btn(true, C.accent, C.accentDim), fontSize: 13, padding: "3px 7px" }}
               title={`History (${histIdx + 1}/${history.length})`}
-              onClick={() => setHistoryModalOpen(true)}>📋</button>
+              onClick={() => setHistoryModalOpen(true)}>🕘 Show History</button>
             <input type="text" value={mapName} onChange={e => setMapName(e.target.value)}
               placeholder="map name…"
               style={{ width: 180, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 6, color: C.text, fontFamily: "'Inter', sans-serif", fontSize: 11, padding: "4px 8px", outline: "none" }}
               spellCheck={false} />
-            <button style={btn(true, C.soft, C.softDim)} onClick={doExport}>Download</button>
+            <button style={btn(true, C.soft, C.softDim)} onClick={() => setDownloadConfirmOpen(true)}>Download</button>
           </div>
 
           {/* Row 3: Background colour selector */}
