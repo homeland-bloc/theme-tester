@@ -175,16 +175,20 @@ const TILE_SETTINGS = {
 // Derives a stable numeric ID for a DB tile from its UUID.
 // The same UUID always produces the same ID within and across sessions.
 // Collisions are resolved by incrementing (with a console warning).
-// IDs are kept in [TILESET_ID_START, USER_ID_START - 1] so they never
+// IDs are kept in [TILESET_ID_START, GLOBAL_ID_START - 1] so they never
 // overlap with global (200–299), atlas (300–499), or user (500+) ranges.
 const uuidToStableId = (() => {
   const cache    = new Map(); // uuid → id
   const occupied = new Map(); // id → uuid (for collision detection)
   return uuid => {
     if (cache.has(uuid)) return cache.get(uuid);
-    let h = 0;
-    for (let i = 0; i < uuid.length; i++) h = (Math.imul(31, h) + uuid.charCodeAt(i)) | 0;
-    const range = USER_ID_START - TILESET_ID_START; // 499 slots
+    // Use a stronger hash (FNV-1a-inspired mix) to spread UUIDs across the slot range
+    let h = 2166136261 | 0;
+    for (let i = 0; i < uuid.length; i++) {
+      h ^= uuid.charCodeAt(i);
+      h = Math.imul(h, 16777619) | 0;
+    }
+    const range = GLOBAL_ID_START - TILESET_ID_START; // 199 slots: [1, 199], strictly below global range
     let id = TILESET_ID_START + (Math.abs(h) % range);
     let attempts = 0;
     while (occupied.has(id) && occupied.get(id) !== uuid) {
@@ -7890,7 +7894,7 @@ function App() {
               const _selTools = new Set(['single', 'line', 'rect', 'fill']);
               const _mirTools = new Set(['mirrorV', 'mirrorH', 'mirrorD']);
               const _seen = new Set();
-              const _barExclude = new Set(['selectionGroup', 'mirrorGroup', 'single', 'line', 'rect', 'fill', 'mirrorV', 'mirrorH', 'mirrorD']);
+              const _barExclude = new Set(['single', 'line', 'rect', 'fill', 'mirrorV', 'mirrorH', 'mirrorD']);
               const starredTools = starredTiles
                 .filter(s => typeof s === "string" && !_barExclude.has(s) && toolIconMap[s])
                 .filter(s => { if (_seen.has(s)) return false; _seen.add(s); return true; });

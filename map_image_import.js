@@ -141,7 +141,7 @@
     let fullImgData = null;       // pre-fetched ImageData for the whole source image
     let detectedOrigin = null;    // { ox, oy, bg1, bg2 }
     let selectedTsId = null;
-    let importGridW = 17, importGridH = 17;
+    let importGridW = 21, importGridH = 33;
     let isExtracting = false;
 
     // ── header ────────────────────────────────────────────────────────────
@@ -190,14 +190,26 @@
       'border-radius:5px', `color:${C.text}`, 'font-size:12px',
       'padding:4px 7px', 'outline:none',
     ].join(';'));
-    (_app.dbTilesets || []).forEach(ts => {
-      const opt = document.createElement('option');
-      opt.value = ts.id;
-      opt.textContent = ts.name;
-      tsSelect.appendChild(opt);
-    });
-    if (_app.dbTilesets?.length) {
-      selectedTsId = _app.dbTilesets[0].id;
+    const byAlpha = (a, b) => a.name.localeCompare(b.name);
+    const opheliaTsList = [...(_app.dbTilesets || [])].filter(ts => ts.type === 'base' || ts.type === 'custom').sort((a, b) => { const si = (a.sort_index ?? 9999) - (b.sort_index ?? 9999); return si !== 0 ? si : byAlpha(a, b); });
+    const atlasTsList   = [...(_app.dbTilesets || [])].filter(ts => ts.type === 'atlas' || ts.type === 'atlas2').sort((a, b) => (a.type === b.type ? byAlpha(a, b) : a.type === 'atlas' ? -1 : 1));
+    const _addGroup = (label, list) => {
+      if (!list.length) return;
+      const grp = document.createElement('optgroup');
+      grp.label = label;
+      list.forEach(ts => {
+        const opt = document.createElement('option');
+        opt.value = ts.id;
+        opt.textContent = ts.name;
+        grp.appendChild(opt);
+      });
+      tsSelect.appendChild(grp);
+    };
+    _addGroup('Opheliapp', opheliaTsList);
+    _addGroup('Atlas', atlasTsList);
+    const firstTs = opheliaTsList[0] ?? atlasTsList[0];
+    if (firstTs) {
+      selectedTsId = firstTs.id;
       tsSelect.value = selectedTsId;
     }
     tsSelect.onchange = () => { selectedTsId = tsSelect.value; updatePreview(); };
@@ -208,13 +220,13 @@
     const sizeLabel = _el('span', `font-size:11px;color:${C.muted};width:90px;flex-shrink:0;`);
     sizeLabel.textContent = 'Grid (W × H)';
     const wIn = _el('input', _inputCss(C));
-    wIn.type = 'number'; wIn.min = '1'; wIn.max = '200'; wIn.value = '17';
+    wIn.type = 'number'; wIn.min = '1'; wIn.max = '200'; wIn.value = '21';
     const xSpan = _el('span', `color:${C.muted};font-size:12px;`);
     xSpan.textContent = '×';
     const hIn = _el('input', _inputCss(C));
-    hIn.type = 'number'; hIn.min = '1'; hIn.max = '200'; hIn.value = '17';
-    wIn.oninput = () => { importGridW = Math.max(1, parseInt(wIn.value) || 17); updatePreview(); };
-    hIn.oninput = () => { importGridH = Math.max(1, parseInt(hIn.value) || 17); updatePreview(); };
+    hIn.type = 'number'; hIn.min = '1'; hIn.max = '200'; hIn.value = '33';
+    wIn.oninput = () => { importGridW = Math.max(1, parseInt(wIn.value) || 21); updatePreview(); };
+    hIn.oninput = () => { importGridH = Math.max(1, parseInt(hIn.value) || 33); updatePreview(); };
     sizeRow.append(sizeLabel, wIn, xSpan, hIn);
 
     // bg colour display
