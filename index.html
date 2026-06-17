@@ -133,7 +133,7 @@ const ACCEPTED = "image/png,image/jpeg,image/gif,image/webp,image/svg+xml,image/
 const MAX_HISTORY = 60;
 // Non-overlapping tile ID ranges — prevents collisions between sections regardless of reordering
 const TILESET_ID_START = 1;   // 001–199: active tileset tiles (Mausoleum wall1=1, etc.)
-const USER_ID_START    = 500; // 500–699: user-uploaded tiles (moved to avoid overlap with tileset IDs 1-499)
+const USER_ID_START    = 500; // 500–699: user-uploaded tiles
 const USER_ID_MAX      = 699;
 const GLOBAL_ID_START  = 200; // 200–299: global tiles (water, spawns, objectives, etc.)
 const ATLAS_ID_START   = 300; // 300–499 (and 700–9999): atlas tiles (She-Fairy/atlas-horizon)
@@ -1363,7 +1363,7 @@ function App() {
       gridW,
       gridH,
     });
-  }, [tilesLoading]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [tilesLoading, flatDefaultTiles, dbTilesets]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const getDefaultMultiplier = t => {
     if (t?.dbSizeMultiplier != null) return Number(t.dbSizeMultiplier);
