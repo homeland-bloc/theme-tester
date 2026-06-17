@@ -133,7 +133,7 @@ const ACCEPTED = "image/png,image/jpeg,image/gif,image/webp,image/svg+xml,image/
 const MAX_HISTORY = 60;
 // Non-overlapping tile ID ranges — prevents collisions between sections regardless of reordering
 const TILESET_ID_START = 1;   // 001–199: active tileset tiles (Mausoleum wall1=1, etc.)
-const USER_ID_START    = 500; // 500–699: user-uploaded tiles (moved to avoid overlap with tileset IDs 1-499)
+const USER_ID_START    = 500; // 500–699: user-uploaded tiles
 const USER_ID_MAX      = 699;
 const GLOBAL_ID_START  = 200; // 200–299: global tiles (water, spawns, objectives, etc.)
 const ATLAS_ID_START   = 300; // 300–499 (and 700–9999): atlas tiles (She-Fairy/atlas-horizon)
@@ -172,24 +172,36 @@ const TILE_SETTINGS = {
 // Default tiles are loaded dynamically from Resources/manifest.json.
 // To add/remove tiles, update that JSON file (or run generate-manifest.sh).
 
-// Derives a stable numeric ID for a DB tile from its UUID.
-// The same UUID always produces the same ID within and across sessions.
-// Collisions are resolved by incrementing (with a console warning).
-// IDs are kept in [TILESET_ID_START, USER_ID_START - 1] so they never
-// overlap with global (200–299), atlas (300–499), or user (500+) ranges.
+// Derives a stable numeric ID for a DB tile from its UUID, scoped per tileset.
+// Each tileset gets its own independent 199-slot pool [1, 199] so tiles from
+// different tilesets never compete for the same slots. Two tilesets can produce
+// the same numeric ID by coincidence, which is harmless because allTilesByIdRef
+// is rebuilt on every activeTileset change with the active tileset written last,
+// ensuring it always wins any cross-tileset numeric collision.
+// IDs stay strictly below GLOBAL_ID_START so they never collide with global
+// (200–299), atlas (300–499), or user (500+) tile ranges.
 const uuidToStableId = (() => {
-  const cache    = new Map(); // uuid → id
-  const occupied = new Map(); // id → uuid (for collision detection)
-  return uuid => {
+  // tilesetId (string UUID) → { cache: Map<uuid, id>, occupied: Map<id, uuid> }
+  const pools = new Map();
+  const getPool = tsId => {
+    if (!pools.has(tsId)) pools.set(tsId, { cache: new Map(), occupied: new Map() });
+    return pools.get(tsId);
+  };
+  return (uuid, tilesetId) => {
+    const { cache, occupied } = getPool(tilesetId ?? '__unknown__');
     if (cache.has(uuid)) return cache.get(uuid);
-    let h = 0;
-    for (let i = 0; i < uuid.length; i++) h = (Math.imul(31, h) + uuid.charCodeAt(i)) | 0;
-    const range = USER_ID_START - TILESET_ID_START; // 499 slots
+    // FNV-1a-inspired mix for good avalanche across the slot range
+    let h = 2166136261 | 0;
+    for (let i = 0; i < uuid.length; i++) {
+      h ^= uuid.charCodeAt(i);
+      h = Math.imul(h, 16777619) | 0;
+    }
+    const range = GLOBAL_ID_START - TILESET_ID_START; // 199 slots: [1, 199]
     let id = TILESET_ID_START + (Math.abs(h) % range);
     let attempts = 0;
     while (occupied.has(id) && occupied.get(id) !== uuid) {
       id = TILESET_ID_START + ((id - TILESET_ID_START + 1) % range);
-      if (++attempts > range) { console.error('[tiles] ID range exhausted for UUID', uuid); break; }
+      if (++attempts > range) { console.error('[tiles] ID range exhausted for UUID', uuid, 'in tileset', tilesetId); break; }
     }
     if (occupied.has(id) && occupied.get(id) !== uuid) console.warn('[tiles] ID collision unresolved for UUID', uuid);
     occupied.set(id, uuid);
@@ -1238,10 +1250,12 @@ function App() {
 
   useEffect(() => {
     const map = {};
-    flatDefaultTiles.forEach(t => { map[t.id] = t; });
+    // Non-active-tileset tiles first so active tileset wins any cross-tileset numeric ID collision
+    flatDefaultTiles.forEach(t => { if (!t.isDb || t.tilesetName !== activeTileset) map[t.id] = t; });
+    flatDefaultTiles.forEach(t => { if (t.isDb && t.tilesetName === activeTileset) map[t.id] = t; });
     userTiles.forEach(t => { map[t.id] = t; });
     allTilesByIdRef.current = map;
-  }, [flatDefaultTiles, userTiles]);
+  }, [flatDefaultTiles, userTiles, activeTileset]);
 
   // Persist
   useEffect(() => { save(SK.userTiles, userTiles.map(({ blobSrc: _b, ...t }) => t)); }, [userTiles]);
@@ -1359,7 +1373,7 @@ function App() {
       gridW,
       gridH,
     });
-  }, [tilesLoading]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [tilesLoading, flatDefaultTiles, dbTilesets]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const getDefaultMultiplier = t => {
     if (t?.dbSizeMultiplier != null) return Number(t.dbSizeMultiplier);
@@ -1688,7 +1702,7 @@ function App() {
 
       for (const row of tilesForTs) {
         const tileObj = {
-          id: uuidToStableId(row.id),
+          id: uuidToStableId(row.id, tsDef.id),
           dbId: row.id,
           dbTilesetId: row.tileset_id,
           src: row.image_url,
@@ -1804,7 +1818,7 @@ function App() {
     if (newTsDef) {
       const tilesForTs = (dbTilesByTsIdRef.current[newTsDef.id] ?? []).slice().sort((a, b) => a.sort_index - b.sort_index);
       for (const row of tilesForTs) {
-        if (row.codename) futureCodenameToId[row.codename] = uuidToStableId(row.id);
+        if (row.codename) futureCodenameToId[row.codename] = uuidToStableId(row.id, newTsDef.id);
       }
     }
 
@@ -7890,7 +7904,7 @@ function App() {
               const _selTools = new Set(['single', 'line', 'rect', 'fill']);
               const _mirTools = new Set(['mirrorV', 'mirrorH', 'mirrorD']);
               const _seen = new Set();
-              const _barExclude = new Set(['selectionGroup', 'mirrorGroup', 'single', 'line', 'rect', 'fill', 'mirrorV', 'mirrorH', 'mirrorD']);
+              const _barExclude = new Set(['single', 'line', 'rect', 'fill', 'mirrorV', 'mirrorH', 'mirrorD']);
               const starredTools = starredTiles
                 .filter(s => typeof s === "string" && !_barExclude.has(s) && toolIconMap[s])
                 .filter(s => { if (_seen.has(s)) return false; _seen.add(s); return true; });
