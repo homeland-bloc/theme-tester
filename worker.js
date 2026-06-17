@@ -28,8 +28,9 @@ const ADMIN_SENSITIVE_TABLES = new Set([
   'tiles',
 ]);
 
-// Populated on first use; lives for the duration of the Worker instance.
+// Populated on first use; re-fetched after 1 hour.
 let firebasePublicKeysCache = null;
+let firebasePublicKeysCacheTime = 0;
 
 export default {
   async fetch(request, env) {
@@ -248,9 +249,19 @@ async function handleGithubUpload(request, env) {
   try { body = await request.json(); }
   catch { return corsResponse({ error: 'Invalid JSON body' }, 400); }
 
-  const { filePath, contentBase64, commitMessage } = body;
-  if (!filePath || !contentBase64) return corsResponse({ error: 'Missing filePath or contentBase64' }, 400);
-  if (contentBase64.length > 10_000_000) return corsResponse({ error: 'File too large' }, 400);
+  const { filePath: rawFilePath, contentBase64, commitMessage } = body;
+  if (!rawFilePath || !contentBase64) return corsResponse({ error: 'Missing filePath or contentBase64' }, 400);
+  // Reject if decoded content exceeds 10 MB
+  if (Math.ceil(contentBase64.length * 3 / 4) > 10 * 1024 * 1024) {
+    return corsResponse({ error: 'File too large' }, 400);
+  }
+  // Decode percent-encoding before path checks to prevent encoded traversal
+  let filePath;
+  try { filePath = decodeURIComponent(rawFilePath); } catch { return corsResponse({ error: 'Invalid filePath encoding' }, 400); }
+  // Restrict to image extensions
+  const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
+  const ext = filePath.slice(filePath.lastIndexOf('.')).toLowerCase();
+  if (!IMAGE_EXTS.has(ext)) return corsResponse({ error: 'Forbidden: unsupported file type' }, 403);
   if (!filePath.startsWith('Resources/')) return corsResponse({ error: 'Forbidden: filePath must start with Resources/' }, 403);
   const normalisedUploadPath = filePath.split('/').reduce((acc, seg) => {
     if (seg === '..') acc.pop();
@@ -278,7 +289,7 @@ async function handleGithubUpload(request, env) {
     return corsResponse({ error: 'GitHub GET failed', detail: errBody }, getRes.status);
   }
 
-  const putBody = { message: (commitMessage || `Upload ${filePath}`).replace(/[\x00-\x1f]/g, '').slice(0, 256), content: contentBase64 };
+  const putBody = { message: (commitMessage || `Upload ${filePath}`).replace(/[\x00-\x1f\[\]]/g, '').slice(0, 256), content: contentBase64 };
   if (sha) putBody.sha = sha;
 
   const putRes = await fetch(apiUrl, {
@@ -311,8 +322,11 @@ async function handleGithubDelete(request, env) {
   try { body = await request.json(); }
   catch { return corsResponse({ error: 'Invalid JSON body' }, 400); }
 
-  const { filePath, commitMessage } = body;
-  if (!filePath) return corsResponse({ error: 'Missing filePath' }, 400);
+  const { filePath: rawFilePath, commitMessage } = body;
+  if (!rawFilePath) return corsResponse({ error: 'Missing filePath' }, 400);
+  // Decode percent-encoding before path checks to prevent encoded traversal
+  let filePath;
+  try { filePath = decodeURIComponent(rawFilePath); } catch { return corsResponse({ error: 'Invalid filePath encoding' }, 400); }
   if (!filePath.startsWith('Resources/')) return corsResponse({ error: 'Forbidden: filePath must start with Resources/' }, 403);
   const normalisedDeletePath = filePath.split('/').reduce((acc, seg) => {
     if (seg === '..') acc.pop();
@@ -342,7 +356,7 @@ async function handleGithubDelete(request, env) {
   const delRes = await fetch(apiUrl, {
     method: 'DELETE',
     headers: { ...ghHeaders, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message: (commitMessage || `Delete ${filePath}`).replace(/[\x00-\x1f]/g, '').slice(0, 256), sha }),
+    body: JSON.stringify({ message: (commitMessage || `Delete ${filePath}`).replace(/[\x00-\x1f\[\]]/g, '').slice(0, 256), sha }),
   });
 
   const delJson = await delRes.json();
@@ -506,12 +520,16 @@ async function sanitiseBody(body, firebaseUid, env, token = null) {
 }
 
 async function getFirebasePublicKeys() {
-  if (firebasePublicKeysCache) return firebasePublicKeysCache;
+  const ONE_HOUR = 3600 * 1000;
+  if (firebasePublicKeysCache && Date.now() - firebasePublicKeysCacheTime < ONE_HOUR) {
+    return firebasePublicKeysCache;
+  }
   const res = await fetch(
     'https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com'
   );
   if (!res.ok) return null;
   firebasePublicKeysCache = await res.json();
+  firebasePublicKeysCacheTime = Date.now();
   return firebasePublicKeysCache;
 }
 
@@ -566,7 +584,11 @@ async function verifyFirebaseJwt(token) {
       'RSASSA-PKCS1-v1_5', cryptoKey, sigBytes,
       new TextEncoder().encode(`${parts[0]}.${parts[1]}`)
     );
-    return valid ? payload : null;
+    if (!valid) return null;
+    const now = Math.floor(Date.now() / 1000);
+    if (typeof payload.exp !== 'number' || now > payload.exp) return null;
+    if (typeof payload.iat !== 'number' || payload.iat > now + 30) return null;
+    return payload;
   } catch {
     return null;
   }
