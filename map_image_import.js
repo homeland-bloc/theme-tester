@@ -35,9 +35,8 @@
     Pharmacy:  { bg1: '#95a4ae', bg2: '#a2b0b8' },
   };
 
-  // SSD acceptance threshold: tile must beat bg SSD by this fraction to win.
-  // Raise to reject weaker matches; lower to accept more.
-  const CONFIDENCE_MARGIN = 0.10;
+  const FAST_THRESHOLD = 15; // max total RGB dist (both bg channels) for fast-path acceptance
+  const SCAN_THRESHOLD = 40; // max total RGB dist for fallback-scan acceptance
 
   // ── Module state ───────────────────────────────────────────────────────
   let _app = null;       // injected app interface
@@ -212,7 +211,13 @@
       selectedTsId = firstTs.id;
       tsSelect.value = selectedTsId;
     }
-    tsSelect.onchange = () => { selectedTsId = tsSelect.value; updatePreview(); };
+    tsSelect.onchange = () => {
+      selectedTsId = tsSelect.value;
+      // When the image had no automatic match, derive bg colors from the chosen tileset
+      // so runExtraction() has usable palette data for SSD comparison.
+      if (detectedOrigin && !detectedOrigin.matched) _applyBgFromTileset(selectedTsId);
+      updatePreview();
+    };
     tsRow.append(tsLabel, tsSelect);
 
     // grid size inputs
@@ -301,29 +306,31 @@
         dropZone.style.color = C.text;
         configSection.style.display = 'flex';
 
-        // Detect grid origin
+        // Detect grid origin + tileset in one step
         const t0 = performance.now();
-        detectedOrigin = _detectOrigin(fullImgData.data, imgW, imgH);
-        if (DEBUG) {
-          console.log(`[MapImport] Origin detected in ${(performance.now() - t0).toFixed(1)}ms:`,
-            detectedOrigin);
-        }
+        const det = _detectOrigin(fullImgData.data, imgW, imgH);
+        if (DEBUG) console.log(`[MapImport] Detection in ${(performance.now() - t0).toFixed(1)}ms:`, det);
 
-        if (detectedOrigin) {
-          bgSwatch1.style.background = detectedOrigin.bg1;
-          bgSwatch2.style.background = detectedOrigin.bg2;
-          bgHexEl.textContent = `${detectedOrigin.bg1}  /  ${detectedOrigin.bg2}`;
-          statusEl.textContent =
-            `Grid detected at origin (${detectedOrigin.ox}, ${detectedOrigin.oy}).`;
-          _autoPickTileset(detectedOrigin.bg1, detectedOrigin.bg2, tsSelect);
-          selectedTsId = tsSelect.value;
+        if (det === null) {
+          // Image too small — still let the user try with manual settings
+          detectedOrigin = { ox: 0, oy: CELL, bg1: null, bg2: null, tilesetId: null, matched: false };
+          bgSwatch1.style.background = 'transparent';
+          bgSwatch2.style.background = 'transparent';
+          bgHexEl.textContent = '—';
+          statusEl.textContent = 'Image too small to detect grid. Check dimensions and set manually.';
+        } else if (det.matched) {
+          detectedOrigin = det;
+          bgSwatch1.style.background = det.bg1;
+          bgSwatch2.style.background = det.bg2;
+          bgHexEl.textContent = `${det.bg1}  /  ${det.bg2}`;
+          statusEl.textContent = `Grid detected at origin (${det.ox}, ${det.oy}).`;
+          if (det.tilesetId) { tsSelect.value = det.tilesetId; selectedTsId = det.tilesetId; }
         } else {
-          // Reasonable fallback
-          detectedOrigin = { ox: 0, oy: CELL, bg1: '#67717d', bg2: '#6e7986' };
-          bgSwatch1.style.background = detectedOrigin.bg1;
-          bgSwatch2.style.background = detectedOrigin.bg2;
-          bgHexEl.textContent = `${detectedOrigin.bg1}  /  ${detectedOrigin.bg2}  (fallback)`;
-          statusEl.textContent = 'Could not auto-detect grid. Adjust settings if needed.';
+          // Processable image but no known-palette match; leave ox/oy at default,
+          // fill bg from whatever tileset the user has selected so extraction still works.
+          detectedOrigin = det;
+          _applyBgFromTileset(selectedTsId);
+          statusEl.textContent = "Couldn't match a known tileset — set origin and tileset manually.";
         }
 
         extractBtn.disabled = false;
@@ -596,109 +603,168 @@
     }
   }
 
-  // ── Grid origin detection ──────────────────────────────────────────────
+  // ── Origin + tileset detection (merged single step) ─────────────────────
   //
-  // Scans the image for the CELL-periodic checkerboard pattern by evaluating
-  // every candidate origin offset (ox ∈ [0,CELL), oy ∈ [0, CELL*5]).
-  // Scores each candidate by the ratio of between-class colour distance to
-  // within-class variance across a SAMPLE_COLS × SAMPLE_ROWS sample grid.
-  // The winning offset identifies the true grid origin, and its class means
-  // give bg1 (cells where (r+c)%2===0) and bg2 (cells where (r+c)%2===1).
+  // Genuine doExport() exports always place the grid at (ox=0, oy=CELL).
   //
-  // Note: transparent regions (alpha < 100) are skipped, so images with
-  // large transparent borders are handled correctly up to ~5 rows of padding.
+  // Fast path: sample that fixed origin immediately and match the two checkerboard
+  // class-means against every known tileset palette (OPHELIA_BG + DB records),
+  // checking both parity orderings. Accepts on the first candidate that clears
+  // FAST_THRESHOLD — lossless flat-filled PNGs should be near-zero distance.
+  //
+  // Fallback: if the fast path misses (cropped / resized / older export), scan
+  // every candidate origin (ox ∈ [0,CELL), oy ∈ [0,CELL*5]) applying the same
+  // known-palette matching at each position. The scan winner is accepted if it
+  // clears SCAN_THRESHOLD.
+  //
+  // Returns { ox, oy, bg1, bg2, tilesetId, matched:true } on success,
+  //         { ox:0, oy:CELL, bg1:null, bg2:null, tilesetId:null, matched:false } when no
+  //         palette entry clears the threshold (caller shows an honest failure message),
+  //         or null when the image is too small to sample.
 
-  function _detectOrigin(pixels, imgW, imgH) {
-    const SAMPLE_COLS = 6;
-    const SAMPLE_ROWS = 5;
-    const minW = SAMPLE_COLS * CELL;
-    const minH = SAMPLE_ROWS * CELL;
-    if (imgW < minW || imgH < minH) return null;
+  function _buildKnownPalette() {
+    const dbTs = _app.dbTilesets || [];
+    const entries = [];
+    const coveredByDb = new Set();
 
-    // Fast pixel sampler reading directly from the pre-fetched pixel array
-    function sampleAvg(cx, cy, w, h) {
-      let r = 0, g = 0, b = 0, a = 0;
-      for (let dy = 0; dy < h; dy++) {
-        for (let dx = 0; dx < w; dx++) {
-          const i = ((cy + dy) * imgW + (cx + dx)) * 4;
-          r += pixels[i]; g += pixels[i + 1]; b += pixels[i + 2]; a += pixels[i + 3];
-        }
-      }
-      const n = w * h;
-      return [r / n, g / n, b / n, a / n];
+    // DB tileset records take priority (more authoritative for custom/newer tilesets)
+    for (const ts of dbTs) {
+      if (!ts.bg_color_light || !ts.bg_color_dark) continue;
+      entries.push({
+        tilesetId: ts.id,
+        bg1Hex: ts.bg_color_light, bg2Hex: ts.bg_color_dark,
+        bg1Rgb: _hexToRgb(ts.bg_color_light), bg2Rgb: _hexToRgb(ts.bg_color_dark),
+      });
+      coveredByDb.add(ts.name);
     }
 
-    const maxOy = Math.min(imgH - minH, CELL * 5);
-    let bestScore = -1;
-    let bestOx = 0, bestOy = 0;
-    let bestBg1 = null, bestBg2 = null;
+    // OPHELIA_BG hardcoded entries for names not covered by DB records
+    for (const [name, c] of Object.entries(OPHELIA_BG)) {
+      if (coveredByDb.has(name)) continue;
+      const ts = dbTs.find(t => t.name === name);
+      if (!ts) continue;
+      entries.push({
+        tilesetId: ts.id,
+        bg1Hex: c.bg1, bg2Hex: c.bg2,
+        bg1Rgb: _hexToRgb(c.bg1), bg2Rgb: _hexToRgb(c.bg2),
+      });
+    }
+
+    return entries;
+  }
+
+  // Sample 4×4 centre patches across a SAMPLE_COLS×SAMPLE_ROWS cell grid at
+  // (ox, oy) and return the two checkerboard class means as plain [R,G,B] triples.
+  // Returns null when there are not enough opaque samples.
+  function _sampleClasses(pixels, imgW, imgH, ox, oy) {
+    const SAMPLE_COLS = 6, SAMPLE_ROWS = 5;
+    const class0 = [], class1 = [];
+    for (let sr = 0; sr < SAMPLE_ROWS; sr++) {
+      for (let sc = 0; sc < SAMPLE_COLS; sc++) {
+        const cx = ox + sc * CELL + CELL / 2 - 2;
+        const cy = oy + sr * CELL + CELL / 2 - 2;
+        if (cx < 0 || cy < 0 || cx + 4 > imgW || cy + 4 > imgH) continue;
+        let r = 0, g = 0, b = 0, a = 0;
+        for (let dy = 0; dy < 4; dy++) for (let dx = 0; dx < 4; dx++) {
+          const i = ((cy + dy) * imgW + (cx + dx)) * 4;
+          r += pixels[i]; g += pixels[i+1]; b += pixels[i+2]; a += pixels[i+3];
+        }
+        const avg = [r/16, g/16, b/16, a/16];
+        if ((sr + sc) % 2 === 0) class0.push(avg); else class1.push(avg);
+      }
+    }
+    const c0 = class0.filter(v => v[3] > 100);
+    const c1 = class1.filter(v => v[3] > 100);
+    if (c0.length < 4 || c1.length < 4) return null;
+    const m0 = _meanRGBA(c0), m1 = _meanRGBA(c1);
+    return { m0: [m0[0], m0[1], m0[2]], m1: [m1[0], m1[1], m1[2]] };
+  }
+
+  // Find the best-matching palette entry for class means m0/m1.
+  // Checks both parity orderings (bg1↔m0 and bg1↔m1) so the checkerboard
+  // phase doesn't have to match any particular convention.
+  // Returns { dist, entry, swapped } where swapped=true means bg1 matched m1.
+  function _bestPaletteMatch(m0, m1, palette) {
+    let bestDist = Infinity, bestEntry = null, bestSwapped = false;
+    for (const e of palette) {
+      const dA = _distRGB(m0, e.bg1Rgb) + _distRGB(m1, e.bg2Rgb); // normal ordering
+      const dB = _distRGB(m0, e.bg2Rgb) + _distRGB(m1, e.bg1Rgb); // swapped ordering
+      if (dA < bestDist) { bestDist = dA; bestEntry = e; bestSwapped = false; }
+      if (dB < bestDist) { bestDist = dB; bestEntry = e; bestSwapped = true; }
+    }
+    return { dist: bestDist, entry: bestEntry, swapped: bestSwapped };
+  }
+
+  function _makeResult(ox, oy, entry, swapped) {
+    return {
+      ox, oy,
+      bg1: swapped ? entry.bg2Hex : entry.bg1Hex,
+      bg2: swapped ? entry.bg1Hex : entry.bg2Hex,
+      tilesetId: entry.tilesetId,
+      matched: true,
+    };
+  }
+
+  function _detectOrigin(pixels, imgW, imgH) {
+    const SAMPLE_COLS = 6, SAMPLE_ROWS = 5;
+    if (imgW < SAMPLE_COLS * CELL || imgH < (SAMPLE_ROWS + 1) * CELL) return null;
+
+    const palette = _buildKnownPalette();
+    if (!palette.length) return { ox: 0, oy: CELL, bg1: null, bg2: null, tilesetId: null, matched: false };
+
+    // ── Fast path: genuine export origin (ox=0, oy=CELL) ─────────────────
+    const fast = _sampleClasses(pixels, imgW, imgH, 0, CELL);
+    if (fast) {
+      const { dist, entry, swapped } = _bestPaletteMatch(fast.m0, fast.m1, palette);
+      if (dist <= FAST_THRESHOLD && entry) {
+        if (DEBUG) console.log(`[MapImport] Fast-path match: dist=${dist.toFixed(1)}`);
+        return _makeResult(0, CELL, entry, swapped);
+      }
+    }
+
+    // ── Fallback: scan candidate origins, palette-match at each ──────────
+    const maxOy = Math.min(imgH - SAMPLE_ROWS * CELL, CELL * 5);
+    let bestDist = Infinity, bestOx = 0, bestOy = CELL, bestEntry = null, bestSwapped = false;
 
     for (let testOy = 0; testOy <= maxOy; testOy++) {
       for (let testOx = 0; testOx < CELL; testOx++) {
-        if (testOx + minW > imgW) break;
-
-        const class0 = []; // cells where (r+c)%2===0  →  should be bg1
-        const class1 = []; // cells where (r+c)%2===1  →  should be bg2
-
-        for (let sr = 0; sr < SAMPLE_ROWS; sr++) {
-          for (let sc = 0; sc < SAMPLE_COLS; sc++) {
-            // Sample the 4×4 centre patch of each cell
-            const cx = testOx + sc * CELL + CELL / 2 - 2;
-            const cy = testOy + sr * CELL + CELL / 2 - 2;
-            if (cx + 4 > imgW || cy + 4 > imgH || cx < 0 || cy < 0) continue;
-            const avg = sampleAvg(cx, cy, 4, 4);
-            if ((sr + sc) % 2 === 0) class0.push(avg); else class1.push(avg);
-          }
-        }
-
-        // Only score positions where most samples are opaque
-        const c0 = class0.filter(v => v[3] > 100);
-        const c1 = class1.filter(v => v[3] > 100);
-        if (c0.length < 4 || c1.length < 4) continue;
-
-        const m0 = _meanRGBA(c0);
-        const m1 = _meanRGBA(c1);
-        const between = _distRGB(m0, m1);
-        const within  = _varianceRGB(c0, m0) + _varianceRGB(c1, m1);
-        const score   = between / (Math.sqrt(within) + 0.1);
-
-        if (score > bestScore) {
-          bestScore = score;
-          bestOx = testOx; bestOy = testOy;
-          bestBg1 = _rgbaToHex(m0);
-          bestBg2 = _rgbaToHex(m1);
-        }
+        if (testOx + SAMPLE_COLS * CELL > imgW) break;
+        const s = _sampleClasses(pixels, imgW, imgH, testOx, testOy);
+        if (!s) continue;
+        const { dist, entry, swapped } = _bestPaletteMatch(s.m0, s.m1, palette);
+        if (dist < bestDist) { bestDist = dist; bestOx = testOx; bestOy = testOy; bestEntry = entry; bestSwapped = swapped; }
       }
     }
 
-    // Require a minimum score to avoid returning noise as an "origin"
-    if (bestScore < 1.5) return null;
-    return { ox: bestOx, oy: bestOy, bg1: bestBg1, bg2: bestBg2 };
+    if (bestDist <= SCAN_THRESHOLD && bestEntry) {
+      if (DEBUG) console.log(`[MapImport] Scan-path match at (${bestOx},${bestOy}): dist=${bestDist.toFixed(1)}`);
+      return _makeResult(bestOx, bestOy, bestEntry, bestSwapped);
+    }
+
+    // ── No confident palette match ────────────────────────────────────────
+    if (DEBUG) console.log(`[MapImport] No palette match; best dist=${bestDist.toFixed(1)}`);
+    return { ox: 0, oy: CELL, bg1: null, bg2: null, tilesetId: null, matched: false };
   }
 
-  // ── Tileset auto-detection ─────────────────────────────────────────────
+  // Returns { bg1, bg2 } for a tileset ID, or null if not found.
+  function _getBgForTileset(tsId) {
+    if (!tsId) return null;
+    const ts = (_app.dbTilesets || []).find(t => t.id === tsId);
+    if (!ts) return null;
+    if (ts.bg_color_light && ts.bg_color_dark) return { bg1: ts.bg_color_light, bg2: ts.bg_color_dark };
+    const known = OPHELIA_BG[ts.name];
+    return known ?? null;
+  }
 
-  function _autoPickTileset(detBg1, detBg2, selectEl) {
-    const dbTs = _app.dbTilesets || [];
-    let bestDist = Infinity;
-    let bestId   = null;
-
-    // Check hardcoded Ophelia tileset colours
-    for (const [name, colours] of Object.entries(OPHELIA_BG)) {
-      const ts = dbTs.find(t => t.name === name);
-      if (!ts) continue;
-      const d = _hexDist(detBg1, colours.bg1) + _hexDist(detBg2, colours.bg2);
-      if (d < bestDist) { bestDist = d; bestId = ts.id; }
-    }
-
-    // Also check bg colours stored on the DB tileset records
-    for (const ts of dbTs) {
-      if (!ts.bg_color_light || !ts.bg_color_dark) continue;
-      const d = _hexDist(detBg1, ts.bg_color_light) + _hexDist(detBg2, ts.bg_color_dark);
-      if (d < bestDist) { bestDist = d; bestId = ts.id; }
-    }
-
-    if (bestId) selectEl.value = bestId;
+  // Updates the bg swatches and detectedOrigin.bg1/bg2 from a tileset's known palette.
+  // Called when the image didn't auto-match so the user can pick the tileset manually.
+  function _applyBgFromTileset(tsId) {
+    const bg = _getBgForTileset(tsId);
+    if (!bg) return;
+    if (detectedOrigin) { detectedOrigin = { ...detectedOrigin, bg1: bg.bg1, bg2: bg.bg2 }; }
+    bgSwatch1.style.background = bg.bg1;
+    bgSwatch2.style.background = bg.bg2;
+    bgHexEl.textContent = `${bg.bg1}  /  ${bg.bg2}  (from tileset)`;
   }
 
   // ── Pixel math helpers ─────────────────────────────────────────────────
@@ -730,15 +796,6 @@
   function _distRGB(a, b) {
     const dr = a[0] - b[0], dg = a[1] - b[1], db = a[2] - b[2];
     return Math.sqrt(dr * dr + dg * dg + db * db);
-  }
-
-  function _varianceRGB(arr, mean) {
-    let v = 0;
-    for (const c of arr) {
-      const dr = c[0]-mean[0], dg = c[1]-mean[1], db = c[2]-mean[2];
-      v += dr*dr + dg*dg + db*db;
-    }
-    return arr.length ? v / arr.length : 0;
   }
 
   function _rgbaToHex(rgba) {
