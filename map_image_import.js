@@ -35,8 +35,9 @@
     Pharmacy:  { bg1: '#95a4ae', bg2: '#a2b0b8' },
   };
 
-  const FAST_THRESHOLD = 15; // max total RGB dist (both bg channels) for fast-path acceptance
-  const SCAN_THRESHOLD = 40; // max total RGB dist for fallback-scan acceptance
+  const FAST_THRESHOLD = 15;    // max total RGB dist (both bg channels) for fast-path acceptance
+  const SCAN_THRESHOLD = 40;    // max total RGB dist for fallback-scan acceptance
+  const CONFIDENCE_MARGIN = 0.15; // winning tile's SSD must beat bg SSD by at least this fraction
 
   // ── Module state ───────────────────────────────────────────────────────
   let _app = null;       // injected app interface

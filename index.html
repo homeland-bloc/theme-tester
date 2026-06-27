@@ -5026,7 +5026,7 @@ function App() {
 
     const TileGridBox = ({ tileList, selected, onSelect, includeSpace }) => (
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(52px, 1fr))", gap: 5 }}>
-        {tileList.map(t => <RCard key={t.id} t={t} selected={selected} onSelect={onSelect} />)}
+        {tileList.map(t => <RCard key={t.dbId ?? t.id} t={t} selected={selected} onSelect={onSelect} />)}
         {includeSpace && <RCard key="space" t={null} selected={selected} onSelect={onSelect} isSpace />}
       </div>
     );
@@ -7470,7 +7470,16 @@ function App() {
                     for (const [r, c] of cellsToProcess) {
                       const id = gridRef.current?.[r]?.[c];
                       if (id == null) continue;
-                      const tile = allTilesByIdRef.current[id];
+                      // allTilesByIdRef resolves cross-tileset numeric-ID collisions in
+                      // favour of the active tileset. The rotate badge uses tiles.find()
+                      // (first match) so it can show 🐬 for a tile whose isDefaultRotatable
+                      // returns true, while this handler looks up the *active-tileset* tile
+                      // for the same numeric id — which may have dbRotatable=null — causing
+                      // canSpin/canFlip to be false and the rotation to be silently skipped.
+                      // Use flatDefaultTilesRef (same source as tiles.find) to stay
+                      // consistent with what the badge already checked.
+                      const tile = flatDefaultTilesRef.current.find(t => t.id === id)
+                        ?? allTilesByIdRef.current[id];
                       if (!tile) continue;
                       const canSpin = rotatableMapRef.current[id] !== undefined ? rotatableMapRef.current[id] : isDefaultRotatable(tile);
                       const canFlip = allowFlipMapRef.current[id] !== undefined ? allowFlipMapRef.current[id] : isDefaultFlippable(tile);
