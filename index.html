@@ -1271,9 +1271,9 @@ function App() {
   useEffect(() => { save("oph_panel_collapsed", panelCollapsed); }, [panelCollapsed]);
   useEffect(() => {
     if (pendingGridLoadRef.current) return; // v2 load in progress — don't overwrite palette data
-    if (tiles.length === 0) return; // default tiles not yet loaded — avoid encoding with empty tile list
-    save(SK.grid, encodeGridForStorage(grid, tiles));
-  }, [grid, tiles]);
+    if (flatDefaultTiles.length === 0) return; // default tiles not yet loaded — avoid encoding with empty tile list
+    save(SK.grid, encodeGridForStorage(grid, [...flatDefaultTiles, ...userTiles]));
+  }, [grid, flatDefaultTiles, userTiles]);
   useEffect(() => { save(SK.multipliers,  tileMultipliers); }, [tileMultipliers]);
   useEffect(() => { save(SK.priority,     priorityTiles);   }, [priorityTiles]);
   useEffect(() => { save(SK.offsets,      tileOffsets);     }, [tileOffsets]);
@@ -3370,7 +3370,7 @@ function App() {
             const tileId_d = tileData.find(d => d.r === or && d.c === oc)?.id ?? null;
             const tileObj_d = tileId_d ? allTilesByIdRef.current[tileId_d] : null;
             if (tileObj_d && !isTileRotatable(tileObj_d)) { delete postDragRots[`${newR},${newC}`]; return; }
-            const rawRot = rot_data[oldKey];
+            const rawRot = rot_data[oldKey] !== undefined ? rot_data[oldKey] : dragRotationRef.current;
             const needsMirror = ms.mirrorRotation && (fV || fH || fD);
             if (rawRot === undefined && !needsMirror) return;
             const newRot = needsMirror ? applyRotMirror(rawRot ?? 0, fV, fH, fD) : (rawRot ?? 0);
@@ -6396,7 +6396,7 @@ function App() {
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 14px", height: 50, flexShrink: 0, background: C.panel, borderBottom: `1px solid ${C.border}` }}>
         <img src="favicon/favicon-32x32.png" alt="Opheliapp" style={{ width: 28, height: 28, flexShrink: 0, imageRendering: "auto" }} />
         <span className="oph-title-text" style={{ fontFamily: "'Lilita One', cursive", fontWeight: 400, fontSize: isMobile ? 15 : 18, letterSpacing: 0.4, whiteSpace: "nowrap", flexShrink: 0, display: "inline-block" }}>
-          Opheliapp — Custom Theme Tester
+          Opheliapp{!isMobile && ' — Custom Theme Tester'}
         </span>
         <div style={{ flex: 1 }} />
         {/* Auth panel */}
@@ -6527,11 +6527,13 @@ function App() {
                                 onClick={e => { e.preventDefault(); switchTileset(ts.name); setTilesetDropOpen(false); }}>
                                 <input type="checkbox" readOnly checked={checked} style={{ accentColor: C.accent, cursor: "pointer", width: 13, height: 13, pointerEvents: "none" }} />
                                 <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
-                                  <span style={{ fontSize: 11, color: nameColor, fontWeight: checked ? 600 : 400 }}>
-                                    {ts.name}
-                                    {ts.is_wip && <span style={{ marginLeft: 4, fontSize: 8, fontWeight: 700, color: "#fbbf24", background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.35)", borderRadius: 3, padding: "0 3px", verticalAlign: "middle" }}>WIP</span>}
-                                    {isAdmin && !ts.is_published && <span style={{ marginLeft: 4, fontSize: 8, fontWeight: 700, color: "#f97316", background: "rgba(249,115,22,0.12)", border: "1px solid rgba(249,115,22,0.3)", borderRadius: 3, padding: "0 3px", verticalAlign: "middle" }}>HIDDEN</span>}
-                                  </span>
+                                  <span style={{ fontSize: 11, color: nameColor, fontWeight: checked ? 600 : 400 }}>{ts.name}</span>
+                                  {(ts.is_wip || (isAdmin && !ts.is_published)) && (
+                                    <div style={{ display: "flex", gap: 3, flexWrap: "wrap" }}>
+                                      {ts.is_wip && <span style={{ fontSize: 8, fontWeight: 700, color: "#fbbf24", background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.35)", borderRadius: 3, padding: "0 3px" }}>WIP</span>}
+                                      {isAdmin && !ts.is_published && <span style={{ fontSize: 8, fontWeight: 700, color: "#f97316", background: "rgba(249,115,22,0.12)", border: "1px solid rgba(249,115,22,0.3)", borderRadius: 3, padding: "0 3px" }}>HIDDEN</span>}
+                                    </div>
+                                  )}
                                   {ownerUsername && (ts.type === 'base' || ts.type === 'custom') && (
                                     <span style={{ fontSize: 9, color: C.muted }}>by {ownerUsername}</span>
                                   )}
@@ -7035,11 +7037,15 @@ function App() {
                               <div onClick={() => setPanelCollapsed(p => ({ ...p, [sectionId]: !p[sectionId] }))}
                                 style={{ width: "100%", flexBasis: "100%", flexShrink: 0, display: "flex", alignItems: "center", gap: 4, padding: "3px 2px", cursor: "pointer", userSelect: "none", marginTop: 4 }}>
                                 <span style={{ fontSize: 9, color: C.muted, lineHeight: 1 }}>{panelCollapsed[sectionId] ? "▶" : "▼"}</span>
-                                <span style={{ fontSize: 9, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: 0.8 }}>
-                                  {name} ({count})
-                                  {tsData?.is_wip && <span style={{ marginLeft: 4, fontSize: 8, fontWeight: 700, color: "#fbbf24", background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.35)", borderRadius: 3, padding: "0 3px" }}>WIP</span>}
-                                  {!isPub && canManageSec && <span style={{ marginLeft: 4, fontSize: 8, color: "#f97316", background: "rgba(249,115,22,0.12)", border: "1px solid rgba(249,115,22,0.3)", borderRadius: 3, padding: "0 3px" }}>hidden</span>}
-                                </span>
+                                <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                                  <span style={{ fontSize: 9, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: 0.8 }}>{name} ({count})</span>
+                                  {(tsData?.is_wip || (!isPub && canManageSec)) && (
+                                    <div style={{ display: "flex", gap: 3 }}>
+                                      {tsData?.is_wip && <span style={{ fontSize: 8, fontWeight: 700, color: "#fbbf24", background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.35)", borderRadius: 3, padding: "0 3px" }}>WIP</span>}
+                                      {!isPub && canManageSec && <span style={{ fontSize: 8, color: "#f97316", background: "rgba(249,115,22,0.12)", border: "1px solid rgba(249,115,22,0.3)", borderRadius: 3, padding: "0 3px" }}>hidden</span>}
+                                    </div>
+                                  )}
+                                </div>
                                 <div style={{ flex: 1, height: 1, background: C.border, marginLeft: 4 }} />
                                 {canManageSec && (
                                   <button
@@ -8179,7 +8185,7 @@ function App() {
             <button style={btn(true, C.accent, C.accentDim)}
               title={`History (${histIdx + 1}/${history.length})`}
               onClick={() => setHistoryModalOpen(true)}>🕘 Show History</button>
-            <button style={btn(true, uiTheme === 'cold' ? '#a78bfa' : '#84cc16', uiTheme === 'cold' ? 'rgba(167,139,250,0.18)' : 'rgba(132,204,22,0.18)')} onClick={() => window.MapImport?.open()}>Import</button>
+            <button style={btn(true, uiTheme === 'cold' ? '#a78bfa' : '#84cc16', uiTheme === 'cold' ? 'rgba(167,139,250,0.18)' : 'rgba(132,204,22,0.18)')} onClick={() => window.MapImport?.open()}>Import Map From Image 🖼️</button>
           </div>
 
           {/* Row 3: Background colour selector */}
