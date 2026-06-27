@@ -1164,6 +1164,7 @@ function App() {
   const rotatableMapRef      = useRef({}); // always-current rotatableMap for keyboard handler
   const allowFlipMapRef      = useRef({}); // always-current allowFlipMap for keyboard handler
   const allTilesByIdRef      = useRef({}); // always-current id→tile lookup for keyboard handler
+  const flatDefaultTilesRef  = useRef([]); // always-current flatDefaultTiles for MapImport
   const cardRotationsRef   = useRef({});
   const mirrorSettingsRef  = useRef({ mirrorSpawns: true, mirrorRotation: true, allowSwap: false });
   const canvasContainerRef = useRef(null); // ref to the relative canvas container for accurate coordinate calc
@@ -1256,6 +1257,63 @@ function App() {
     userTiles.forEach(t => { map[t.id] = t; });
     allTilesByIdRef.current = map;
   }, [flatDefaultTiles, userTiles, activeTileset]);
+  useEffect(() => { flatDefaultTilesRef.current = flatDefaultTiles; }, [flatDefaultTiles]);
+
+  // Fetches and caches tiles for a DB tileset by ID if not already loaded.
+  // Returns the tile-object array (same shape as flatDefaultTiles entries) immediately,
+  // without waiting for a React re-render, so callers can use the tiles right away.
+  const ensureTilesetLoaded = React.useCallback(async (tsId) => {
+    if (!tsId) return [];
+    const tsDef = dbTilesets.find(ts => ts.id === tsId);
+    if (!tsDef) return [];
+    let rows = dbTilesByTsIdRef.current[tsId];
+    if (rows === undefined) {
+      try {
+        const token = currentUser?.firebaseToken ? await getValidToken() : null;
+        const tilesUrl = new URL(`${WORKER_URL}/rest/v1/tiles`);
+        tilesUrl.searchParams.set('tileset_id', `eq.${tsId}`);
+        tilesUrl.searchParams.set('order', 'sort_index');
+        const hdrs = token
+          ? { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
+          : { 'Content-Type': 'application/json' };
+        const resp = await fetch(tilesUrl.toString(), { headers: hdrs });
+        rows = resp.ok ? await resp.json() : [];
+        if (!Array.isArray(rows)) rows = [];
+        setDbTilesByTsId(prev => ({ ...prev, [tsId]: rows }));
+        dbTilesByTsIdRef.current = { ...dbTilesByTsIdRef.current, [tsId]: rows };
+      } catch (err) {
+        console.error('[tiles] ensureTilesetLoaded fetch exception:', err);
+        rows = [];
+      }
+    }
+    // Build tile objects from raw DB rows (same logic as flatDefaultTiles useMemo)
+    // so callers get usable objects without waiting for React to re-render.
+    return rows.map(row => ({
+      id: uuidToStableId(row.id, tsDef.id),
+      dbId: row.id,
+      dbTilesetId: row.tileset_id,
+      src: row.image_url,
+      isDefault: true,
+      isDb: true,
+      codename: row.codename,
+      tilesetName: tsDef.name,
+      tilesetId: tsDef.id,
+      tilesetType: tsDef.type,
+      tilesetOwnerId: tsDef.owner_id,
+      sortIndex: row.sort_index,
+      dbSizeMultiplier: row.size_multiplier,
+      dbOffsetX: row.offset_x,
+      dbOffsetY: row.offset_y,
+      dbRotatable: row.rotatable,
+      dbFlippable: row.flippable,
+      dbOtgPassable: row.otg_passable,
+      dbMirrorOffset: row.mirror_offset,
+      dbBottomRender: row.bottom_render,
+      dbPriority: row.priority,
+      dbAutoShadow: row.auto_shadow,
+      dbShowTileCount: row.show_tile_count,
+    }));
+  }, [dbTilesets, currentUser]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Persist
   useEffect(() => { save(SK.userTiles, userTiles.map(({ blobSrc: _b, ...t }) => t)); }, [userTiles]);
@@ -1363,6 +1421,7 @@ function App() {
     window.MapImport.init({
       flatDefaultTiles,
       dbTilesets,
+      ensureTilesetLoaded,
       getTileMultiplier,
       getTileOffset,
       isPriority:     t => priorityTiles[t.id] !== undefined ? !!priorityTiles[t.id]  : (t.isDb ? !!t.dbPriority     : !!(t.src && TILE_SETTINGS.priority.some(p => t.src.includes(p)))),
@@ -1373,7 +1432,7 @@ function App() {
       gridW,
       gridH,
     });
-  }, [tilesLoading, flatDefaultTiles, dbTilesets]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [tilesLoading, flatDefaultTiles, dbTilesets, ensureTilesetLoaded]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const getDefaultMultiplier = t => {
     if (t?.dbSizeMultiplier != null) return Number(t.dbSizeMultiplier);
@@ -5001,7 +5060,7 @@ function App() {
             ) : (
               <div style={{ overflowY: "auto", maxHeight: 300 }}>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(52px, 1fr))", gap: 5 }}>
-                  {tilesOnMap.map(t => <RCard key={t.id} t={t} selected={replaceA} onSelect={setReplaceA} />)}
+                  {tilesOnMap.map(t => <RCard key={t.dbId ?? t.id} t={t} selected={replaceA} onSelect={setReplaceA} />)}
                   {spaceOnMap && <RCard key="space" t={null} selected={replaceA} onSelect={setReplaceA} isSpace />}
                   {ghostIds.map(id => (
                     <div key={`ghost${id}`} onClick={() => setReplaceA(id)}
@@ -5091,14 +5150,14 @@ function App() {
                   <React.Fragment key={name}>
                     <CollapsibleSepLine label={name} isCollapsed={isCollapsed}
                       onToggle={() => setTsCollapsed(p => ({ ...p, [name]: !p[name] }))} />
-                    {!isCollapsed && tsTs.map(t => <RCard key={t.id} t={t} selected={replaceB} onSelect={onSelect} />)}
+                    {!isCollapsed && tsTs.map(t => <RCard key={t.dbId ?? t.id} t={t} selected={replaceB} onSelect={onSelect} />)}
                   </React.Fragment>
                 );
               })}
               {userTiles_.length > 0 && <SepLine label="Uploaded" />}
-              {userTiles_.map(t => <RCard key={t.id} t={t} selected={replaceB} onSelect={onSelect} />)}
+              {userTiles_.map(t => <RCard key={t.dbId ?? t.id} t={t} selected={replaceB} onSelect={onSelect} />)}
               {globalTiles_.length > 0 && <SepLine label="Global" />}
-              {globalTiles_.map(t => <RCard key={t.id} t={t} selected={replaceB} onSelect={onSelect} />)}
+              {globalTiles_.map(t => <RCard key={t.dbId ?? t.id} t={t} selected={replaceB} onSelect={onSelect} />)}
             </div>
           </div>
           {replaceMsg ? (
