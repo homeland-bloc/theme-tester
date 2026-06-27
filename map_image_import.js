@@ -217,6 +217,9 @@
       // so runExtraction() has usable palette data for SSD comparison.
       if (detectedOrigin && !detectedOrigin.matched) _applyBgFromTileset(selectedTsId);
       updatePreview();
+      // Prefetch tiles in the background so Extract doesn't stall when this tileset
+      // hasn't been loaded in the main editor yet.
+      if (_app.ensureTilesetLoaded) _app.ensureTilesetLoaded(selectedTsId);
     };
     tsRow.append(tsLabel, tsSelect);
 
@@ -387,13 +390,20 @@
       const t0 = DEBUG ? performance.now() : 0;
       const { ox, oy, bg1, bg2 } = detectedOrigin;
 
-      // Filter to tiles belonging to the selected tileset
-      const allTiles = (_app.flatDefaultTiles || [])
-        .filter(t => t.isDb && t.tilesetId === selectedTsId);
+      // Ensure the selected tileset's tiles are loaded (fetches if not already cached).
+      // This handles the case where the user picks a tileset they haven't visited in
+      // the main editor yet, which would otherwise produce an empty tile list.
+      statusEl.textContent = 'Loading tiles…';
+      let allTiles;
+      if (_app.ensureTilesetLoaded) {
+        allTiles = await _app.ensureTilesetLoaded(selectedTsId);
+      } else {
+        allTiles = (_app.flatDefaultTiles || []).filter(t => t.isDb && t.tilesetId === selectedTsId);
+      }
 
       if (!allTiles.length) {
         statusEl.textContent =
-          'No tiles found for this tileset. Load tiles first, then retry.';
+          'No tiles found for this tileset. The tileset may be empty or unavailable.';
         isExtracting = false;
         extractBtn.disabled = false;
         cancelBtn.disabled = false;
@@ -653,16 +663,19 @@
     return entries;
   }
 
-  // Sample 4×4 centre patches across a SAMPLE_COLS×SAMPLE_ROWS cell grid at
-  // (ox, oy) and return the two checkerboard class means as plain [R,G,B] triples.
-  // Returns null when there are not enough opaque samples.
+  // Sample 4×4 patches at the top-left corner of each cell across a
+  // SAMPLE_COLS×SAMPLE_ROWS grid at (ox, oy). Corner pixels sit on the grid
+  // line boundary where tile art is least likely to bleed, so they reliably
+  // reflect the checkerboard background even on dense/fully-covered maps.
+  // Returns two checkerboard class means as plain [R,G,B] triples, or null
+  // when there are not enough opaque samples.
   function _sampleClasses(pixels, imgW, imgH, ox, oy) {
     const SAMPLE_COLS = 6, SAMPLE_ROWS = 5;
     const class0 = [], class1 = [];
     for (let sr = 0; sr < SAMPLE_ROWS; sr++) {
       for (let sc = 0; sc < SAMPLE_COLS; sc++) {
-        const cx = ox + sc * CELL + CELL / 2 - 2;
-        const cy = oy + sr * CELL + CELL / 2 - 2;
+        const cx = ox + sc * CELL;      // grid-line corner x (was: + CELL/2 - 2)
+        const cy = oy + sr * CELL;      // grid-line corner y (was: + CELL/2 - 2)
         if (cx < 0 || cy < 0 || cx + 4 > imgW || cy + 4 > imgH) continue;
         let r = 0, g = 0, b = 0, a = 0;
         for (let dy = 0; dy < 4; dy++) for (let dx = 0; dx < 4; dx++) {
