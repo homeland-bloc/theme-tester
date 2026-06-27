@@ -2104,8 +2104,8 @@ function App() {
         }
         // Scan pendingGridLoadRef palette for d: UUIDs not covered by the active tileset
         try {
-          const palette = pendingGridLoadRef.current?.palette ?? {};
-          const dUuids = Object.keys(palette).filter(k => k.startsWith('d:')).map(k => k.slice(2));
+          const palette = pendingGridLoadRef.current?.palette ?? [];
+          const dUuids = (Array.isArray(palette) ? palette : []).filter(k => typeof k === 'string' && k.startsWith('d:')).map(k => k.slice(2));
           const activeTsDef = name ? tilesets.find(ts => ts.name === name) : null;
           const activeTiles = activeTsDef ? (fetchedTilesMap[activeTsDef.id] ?? []) : [];
           const coveredTileIds = new Set(activeTiles.map(t => t.id));
@@ -4088,7 +4088,7 @@ function App() {
         if (e.key === "r" || e.key === "R") {
           const id = selRef.current;
           if (id != null) {
-            const tile = allTilesByIdRef.current[id];
+            const tile = flatDefaultTilesRef.current.find(t => t.id === id) ?? allTilesByIdRef.current[id];
             const rMap = rotatableMapRef.current;
             const fMap = allowFlipMapRef.current;
             const canSpin = tile ? (rMap[id] !== undefined ? rMap[id] : isDefaultRotatable(tile)) : true;
@@ -4121,7 +4121,7 @@ function App() {
         if (e.key === "[" || e.key === "]") {
           const id = selRef.current;
           if (id != null) {
-            const tile = allTilesByIdRef.current[id];
+            const tile = flatDefaultTilesRef.current.find(t => t.id === id) ?? allTilesByIdRef.current[id];
             const rMap = rotatableMapRef.current;
             const fMap = allowFlipMapRef.current;
             const canSpin = tile ? (rMap[id] !== undefined ? rMap[id] : isDefaultRotatable(tile)) : true;
@@ -5026,7 +5026,7 @@ function App() {
 
     const TileGridBox = ({ tileList, selected, onSelect, includeSpace }) => (
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(52px, 1fr))", gap: 5 }}>
-        {tileList.map(t => <RCard key={t.id} t={t} selected={selected} onSelect={onSelect} />)}
+        {tileList.map(t => <RCard key={t.dbId ?? t.id} t={t} selected={selected} onSelect={onSelect} />)}
         {includeSpace && <RCard key="space" t={null} selected={selected} onSelect={onSelect} isSpace />}
       </div>
     );
@@ -5422,6 +5422,11 @@ function App() {
     const toTsDef   = dbTilesets.find(ts => ts.name === toTs);
     const toDbTiles = toTsDef ? (dbTilesByTsId[toTsDef.id] ?? null) : null;
 
+    // Auto-load "to" tileset tiles when modal opens or target tileset changes
+    React.useEffect(() => {
+      if (toTsDef && toDbTiles === null) ensureTilesetLoaded(toTsDef.id);
+    }, [toTs]); // eslint-disable-line react-hooks/exhaustive-deps
+
     // Build codename→numeric-ID map for the "to" tileset from flatDefaultTiles
     const toCodenameToId = {};
     if (toTsDef) {
@@ -5502,7 +5507,7 @@ function App() {
           {fromTs && toTs && fromTs !== toTs && (
             <div style={{ fontSize: 11, color: C.text, background: C.panelAlt ?? "rgba(0,0,0,0.2)", borderRadius: 6, padding: "6px 10px" }}>
               {toTilesNotLoaded
-                ? <div style={{ color: "#fbbf24" }}>Target tileset tiles not yet loaded — switch to it once to load.</div>
+                ? <div style={{ color: "#fbbf24" }}>Loading target tileset tiles…</div>
                 : <>
                     <div>{mappable.length} tile type{mappable.length !== 1 ? "s" : ""} will be converted.</div>
                     {unmapped.length > 0 && <div style={{ color: "#fbbf24" }}>{unmapped.length} type{unmapped.length !== 1 ? "s" : ""} have no codename match in {toTs} and will stay as-is.</div>}
@@ -5512,7 +5517,7 @@ function App() {
           )}
           <div style={{ display: "flex", gap: 8 }}>
             <button style={{ ...btn(true, C.accent, C.accentDim), flex: 1 }}
-              disabled={!fromTs || !toTs || fromTs === toTs}
+              disabled={!fromTs || !toTs || fromTs === toTs || toTilesNotLoaded}
               onClick={doConvert}>
               Convert
             </button>
@@ -7470,7 +7475,16 @@ function App() {
                     for (const [r, c] of cellsToProcess) {
                       const id = gridRef.current?.[r]?.[c];
                       if (id == null) continue;
-                      const tile = allTilesByIdRef.current[id];
+                      // allTilesByIdRef resolves cross-tileset numeric-ID collisions in
+                      // favour of the active tileset. The rotate badge uses tiles.find()
+                      // (first match) so it can show 🐬 for a tile whose isDefaultRotatable
+                      // returns true, while this handler looks up the *active-tileset* tile
+                      // for the same numeric id — which may have dbRotatable=null — causing
+                      // canSpin/canFlip to be false and the rotation to be silently skipped.
+                      // Use flatDefaultTilesRef (same source as tiles.find) to stay
+                      // consistent with what the badge already checked.
+                      const tile = flatDefaultTilesRef.current.find(t => t.id === id)
+                        ?? allTilesByIdRef.current[id];
                       if (!tile) continue;
                       const canSpin = rotatableMapRef.current[id] !== undefined ? rotatableMapRef.current[id] : isDefaultRotatable(tile);
                       const canFlip = allowFlipMapRef.current[id] !== undefined ? allowFlipMapRef.current[id] : isDefaultFlippable(tile);
