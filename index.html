@@ -1282,7 +1282,13 @@ function App() {
   const fileRef   = useRef();
   const scrollRef = useRef();
   // nextId is for user-uploaded tiles only (range 100–199)
-  const nextId    = useRef(userTiles.length ? Math.max(USER_ID_START, Math.min(USER_ID_MAX, Math.max(...userTiles.map(t => t.id)) + 1)) : USER_ID_START);
+  // Monotonic counter persisted in localStorage so a deleted upload's id is never handed out again (saved maps
+  // reference uploads as "u:<id>"). Never lower than the highest id still in use.
+  const nextId    = useRef(Math.max(
+    USER_ID_START,
+    Number(load("oph_user_next_id", 0)) || 0,
+    userTiles.length ? Math.max(...userTiles.map(t => t.id)) + 1 : 0,
+  ));
   // Pre-decoded ImageBitmap cache for user-uploaded tiles (keyed by tile id)
   const userBitmapCacheRef = useRef(new Map());
 
@@ -2724,6 +2730,7 @@ function App() {
       r.onload = e => {
         if (nextId.current > USER_ID_MAX) { console.warn("User tile limit reached (IDs 500–699)"); return; }
         const id = nextId.current++;
+        save("oph_user_next_id", nextId.current);
         const img = new Image();
         img.onload = () => {
           const scale = Math.min(1, MAX_TILE_DIM / Math.max(img.width, img.height, 1));
