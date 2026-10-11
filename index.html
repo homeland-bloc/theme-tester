@@ -23,8 +23,8 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Lilita+One&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
 
-  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone@7.23.10/babel.min.js"></script>
   <script>
     Babel.registerPreset('oph', {
@@ -127,7 +127,7 @@ const MIN_ZOOM = 0.25, MAX_ZOOM = 4;
 // Zoom buttons snap to nearest 5%
 const ZOOM_STEP = 0.05;
 const snapTo10 = z => Math.round(z * 20) / 20;
-const SK = { tiles: "oph_tiles", grid: "oph_grid", colors: "oph_colors", userTiles: "oph_user_tiles", multipliers: "oph_multipliers", priority: "oph_priority", offsets: "oph_offsets", rotatable: "oph_rotatable", tileRots: "oph_tile_rots", gridW: "oph_gridW", gridH: "oph_gridH", tileNames: "oph_tile_names", bottom: "oph_bottom", mirrorOffset: "oph_mirror_offset", gridOff: "oph_grid_off", activeTileset: "oph_active_ts" };
+const SK = { grid: "oph_grid", colors: "oph_colors", userTiles: "oph_user_tiles", multipliers: "oph_multipliers", priority: "oph_priority", offsets: "oph_offsets", rotatable: "oph_rotatable", tileRots: "oph_tile_rots", gridW: "oph_gridW", gridH: "oph_gridH", tileNames: "oph_tile_names", bottom: "oph_bottom", mirrorOffset: "oph_mirror_offset", gridOff: "oph_grid_off", activeTileset: "oph_active_ts" };
 const ACCEPTED = "image/png,image/jpeg,image/gif,image/webp,image/svg+xml,image/bmp";
 const MAX_HISTORY = 60;
 // Non-overlapping tile ID ranges — prevents collisions between sections regardless of reordering
@@ -135,14 +135,12 @@ const TILESET_ID_START = 1;   // 001–199: active tileset tiles (Mausoleum wall
 const USER_ID_START    = 500; // 500–699: user-uploaded tiles
 const USER_ID_MAX      = 699;
 const GLOBAL_ID_START  = 200; // 200–299: global tiles (water, spawns, objectives, etc.)
-const ATLAS_ID_START   = 300; // 300–499 (and 700–9999): atlas tiles (She-Fairy/atlas-horizon)
-const ATLAS_ID_MAX     = 9999; // upper bound for atlas tile IDs (skips user range 500-699)
+const GLOBAL_ID_MAX    = 299;
 const SPACE_TILE_ID    = 998; // special: makes a cell fully transparent
 const WARN_TILE_ID     = 997; // special: places a warning-marker ghost tile
 const REPLACE_ERASE_ID = -1;  // sentinel: replace-with-empty in the Replace modal
 
-// All Supabase requests go through the Worker (never directly to SUPABASE_URL with an anon key).
-const SUPABASE_URL = "https://eizcooctnlugsxcyrplh.supabase.co";
+// All Supabase requests go through the Worker.
 const WORKER_URL = "https://oph.opheliapp.workers.dev";
 const DISCORD_CLIENT_ID = "1503113409678410019";
 // Hardcoded BG colours for Ophelia tilesets (single source of truth)
@@ -155,7 +153,6 @@ const OPHELIA_BG = {
   Pharmacy:  { bg1: "#95a4ae", bg2: "#a2b0b8" },
 };
 // Tilesets that are still work-in-progress — shown with a WIP badge in the UI.
-const WIP_TILESETS = new Set([]);
 
 // Default per-tile settings: src pattern → property value.
 // Functions like isDefaultRotatable/isDefaultOTGWall read from here.
@@ -178,7 +175,7 @@ const TILE_SETTINGS = {
 // is rebuilt on every activeTileset change with the active tileset written last,
 // ensuring it always wins any cross-tileset numeric collision.
 // IDs stay strictly below GLOBAL_ID_START so they never collide with global
-// (200–299), atlas (300–499), or user (500+) tile ranges.
+// (200–299) or user (500+) tile ranges.
 const uuidToStableId = (() => {
   // tilesetId (string UUID) → { cache: Map<uuid, id>, occupied: Map<id, uuid> }
   const pools = new Map();
@@ -244,7 +241,6 @@ const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } cat
 // ── Palette-based grid serialization ───────────────────────────────────
 // Each tile is identified by a stable codename independent of runtime IDs:
 //   default tiles  → their src path  (e.g. "Resources/Mausoleum/MSLM-wall.png")
-//   atlas tiles    → "a:" + codename (e.g. "a:Arcade_Wall1_wall1")
 //   user tiles     → "u:" + stored id (id is persisted, so it is stable)
 //   space tile     → "space"
 const GRID_FORMAT_VERSION = 2;
@@ -253,7 +249,6 @@ const getTileCodename = tile => {
   if (tile.id === SPACE_TILE_ID) return "space";
   if (tile.id === WARN_TILE_ID) return "warn";
   if (tile.dbId) return "d:" + tile.dbId;
-  if (tile.isAtlas) return "a:" + tile.codename;
   if (!tile.isDefault) return "u:" + tile.id;
   return tile.src;
 };
@@ -263,7 +258,6 @@ const resolveCodename = (codename, tiles) => {
   if (codename === "warn") return { id: WARN_TILE_ID };
   if (codename.startsWith("u:")) { const uid = parseInt(codename.slice(2), 10); return tiles.find(t => t.id === uid) ?? null; }
   if (codename.startsWith("d:")) { const uuid = codename.slice(2); return tiles.find(t => t.dbId === uuid) ?? null; }
-  if (codename.startsWith("a:")) { const cn = codename.slice(2); return tiles.find(t => t.isAtlas && t.codename === cn) ?? null; }
   return tiles.find(t => t.src === codename) ?? null;
 };
 const encodeGridForStorage = (grid, tiles) => {
@@ -406,7 +400,7 @@ function AddTileModal({ open, onClose, tsId, dbTilesets, file, onFileChange,
 function TilesetGearModal({
   open, tsId, name, onNameChange,
   dbTilesets, onDbTilesetsChange,
-  currentUser, userProfile, getValidToken,
+  currentUser, userProfile, getValidToken, workerFetch,
   onClose, onTsFetchTrigger, onActiveTilesetChange,
 }) {
   const [saving,            setSaving]            = React.useState(false);
@@ -452,7 +446,7 @@ function TilesetGearModal({
     (async () => {
       try {
         const token = await getValidToken();
-        const r = await fetch(`${WORKER_URL}/rest/v1/profiles?select=id,username&order=username`, {
+        const r = await workerFetch(`${WORKER_URL}/rest/v1/profiles?select=id,username&order=username`, {
           headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
         });
         const rows = r.ok ? await r.json() : [];
@@ -492,7 +486,7 @@ function TilesetGearModal({
     setSaving(true);
     try {
       const token = await getValidToken();
-      const r = await fetch(`${WORKER_URL}/rest/v1/tilesets?id=eq.${tsId}`, {
+      const r = await workerFetch(`${WORKER_URL}/rest/v1/tilesets?id=eq.${tsId}`, {
         method: 'PATCH',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
         body: JSON.stringify({ name: trimmed }),
@@ -512,7 +506,7 @@ function TilesetGearModal({
     const newPub = !isPub;
     try {
       const token = await getValidToken();
-      const r = await fetch(`${WORKER_URL}/rest/v1/tilesets?id=eq.${tsId}`, {
+      const r = await workerFetch(`${WORKER_URL}/rest/v1/tilesets?id=eq.${tsId}`, {
         method: 'PATCH',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
         body: JSON.stringify({ is_published: newPub }),
@@ -527,7 +521,7 @@ function TilesetGearModal({
     const newWip = !isWip;
     try {
       const token = await getValidToken();
-      const r = await fetch(`${WORKER_URL}/rest/v1/tilesets?id=eq.${tsId}`, {
+      const r = await workerFetch(`${WORKER_URL}/rest/v1/tilesets?id=eq.${tsId}`, {
         method: 'PATCH',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
         body: JSON.stringify({ is_wip: newWip }),
@@ -545,7 +539,7 @@ function TilesetGearModal({
     setBgSaveStatus('saving');
     try {
       const token = await getValidToken();
-      const r = await fetch(`${WORKER_URL}/rest/v1/tilesets?id=eq.${tsId}`, {
+      const r = await workerFetch(`${WORKER_URL}/rest/v1/tilesets?id=eq.${tsId}`, {
         method: 'PATCH',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
         body: JSON.stringify({ bg_color_light: b1, bg_color_dark: b2 }),
@@ -564,7 +558,7 @@ function TilesetGearModal({
     if (!canManage) return;
     try {
       const token = await getValidToken();
-      const tilesCheck = await fetch(`${WORKER_URL}/rest/v1/tiles?tileset_id=eq.${tsId}&select=id`, {
+      const tilesCheck = await workerFetch(`${WORKER_URL}/rest/v1/tiles?tileset_id=eq.${tsId}&select=id`, {
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
       });
       const tiles_ = tilesCheck.ok ? await tilesCheck.json() : [];
@@ -573,7 +567,7 @@ function TilesetGearModal({
         setDeleteConfirm(false);
         return;
       }
-      const r = await fetch(`${WORKER_URL}/rest/v1/tilesets?id=eq.${tsId}`, {
+      const r = await workerFetch(`${WORKER_URL}/rest/v1/tilesets?id=eq.${tsId}`, {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
       });
@@ -693,7 +687,7 @@ function TilesetGearModal({
                         setTransferStatus('saving');
                         try {
                           const token = await getValidToken();
-                          const r = await fetch(`${WORKER_URL}/rest/v1/tilesets?id=eq.${tsId}`, {
+                          const r = await workerFetch(`${WORKER_URL}/rest/v1/tilesets?id=eq.${tsId}`, {
                             method: 'PATCH',
                             headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
                             body: JSON.stringify({ owner_id: transferTargetId }),
@@ -847,102 +841,225 @@ function App() {
   // Theme DB persistence debounce timer
   const themeDbTimerRef = useRef(null);
 
-  // Returns a valid Firebase ID token. Refreshes Discord and/or Firebase tokens
-  // when near expiry, accumulating updates into a single state/localStorage write.
-  const getValidToken = async () => {
-    if (!currentUser?.firebaseToken) return null;
-    const patch = {};
+  // ── Session ───────────────────────────────────────────────────────────────
+  // sessionState: 'restoring' (stored refresh token still usable, refresh in flight),
+  // 'signedIn' (valid Firebase + Discord tokens) or 'signedOut' (show the login card).
+  // tokenExpiry is the Discord access-token expiry; a stored refresh token with a
+  // tokenExpiry in the future is restorable even when the 1 h Firebase ID token has lapsed.
+  const computeSessionState = (u) => {
+    if (!u) return 'signedOut';
+    const now = Date.now();
+    if (u.firebaseToken && (u.firebaseTokenExpiry ?? 0) - 90000 > now && (u.tokenExpiry ?? 0) - 90000 > now) return 'signedIn';
+    if (u.refreshToken && (u.tokenExpiry ?? 0) > now) return 'restoring';
+    return 'signedOut';
+  };
+  const [sessionState, setSessionState] = useState(() => computeSessionState(currentUser));
+  const sessionStateRef = useRef(sessionState);
+  sessionStateRef.current = sessionState;
+  const currentUserRef = useRef(currentUser); // always the latest user (no stale closures)
+  const refreshPromiseRef = useRef(null);      // single-flight refresh
+  const [reconnecting, setReconnecting] = useState(false);
+  const reconnectingRef = useRef(false);
+  const dbTilesetsLenRef = useRef(0);
+  dbTilesetsLenRef.current = dbTilesets.length;
+  const validateSessionRef = useRef(null);
 
-    // 1. Refresh Discord access token when within 60 s of expiry.
-    if (currentUser.refreshToken && Date.now() >= (currentUser.tokenExpiry ?? 0) - 60000) {
+  const applyUser = (u) => {
+    currentUserRef.current = u;
+    setCurrentUser(u);
+    try { if (u) localStorage.setItem('oph_user', JSON.stringify(u)); else localStorage.removeItem('oph_user'); } catch {}
+  };
+  const markReconnecting = (on) => {
+    if (reconnectingRef.current === on) return;
+    reconnectingRef.current = on;
+    setReconnecting(on);
+  };
+
+  // One refresh attempt. Resolves { status: 'ok', token } | { status: 'rejected' } | { status: 'network' }.
+  // 'rejected' = the server refused the credentials (Discord 400/401, Firebase mint 401);
+  // 'network' = fetch failed, 429 or 5xx (credentials may still be good, so never log out for it).
+  // force = re-mint the Firebase ID token even if it is not near expiry (used after a 401).
+  const doRefresh = async (force) => {
+    const u = currentUserRef.current;
+    if (!u || (!u.firebaseToken && !u.refreshToken)) return { status: 'rejected' };
+    const patch = {};
+    const post = (path, body) => fetch(`${WORKER_URL}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const classify = (res) => (res.status === 400 || res.status === 401) ? 'rejected' : 'network';
+
+    const refreshDiscord = async () => {
+      let res;
+      try { res = await post('/discord-refresh', { refresh_token: u.refreshToken }); } catch { return 'network'; }
+      if (!res.ok) return classify(res);
       try {
-        const res = await fetch(`${WORKER_URL}/discord-refresh`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ refresh_token: currentUser.refreshToken }),
-        });
-        if (res.ok) {
-          const data = await res.json();
-          patch.accessToken = data.access_token;
-          patch.refreshToken = data.refresh_token;
-          patch.tokenExpiry = Date.now() + data.expires_in * 1000;
-        }
-      } catch {
-        // proceed with existing Discord token on network error
-      }
+        const data = await res.json();
+        patch.accessToken = data.access_token;
+        patch.refreshToken = data.refresh_token;
+        patch.tokenExpiry = Date.now() + data.expires_in * 1000;
+        return 'ok';
+      } catch { return 'network'; }
+    };
+
+    // 1. Discord access token (rotates the refresh token) when within 2 min of expiry.
+    let discordRefreshed = false;
+    if (u.refreshToken && Date.now() >= (u.tokenExpiry ?? 0) - 120000) {
+      const r = await refreshDiscord();
+      if (r === 'rejected') return { status: 'rejected' };
+      if (r === 'network') {
+        if (Date.now() >= (u.tokenExpiry ?? 0)) return { status: 'network' }; // access token unusable
+      } else discordRefreshed = true;
     }
 
-    // 2. Refresh Firebase ID token when within 5 min of expiry.
-    //    Uses the freshly-refreshed Discord access token when available.
-    if ((patch.accessToken ?? currentUser.accessToken) && Date.now() >= (currentUser.firebaseTokenExpiry ?? 0) - 300000) {
-      try {
-        const accessToken = patch.accessToken ?? currentUser.accessToken;
-        const fbRes = await fetch(`${WORKER_URL}/firebase-refresh`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ access_token: accessToken }),
-        });
-        if (fbRes.ok) {
+    // 2. Firebase ID token when forced, missing, or within 5 min of expiry.
+    if (force || !u.firebaseToken || Date.now() >= (u.firebaseTokenExpiry ?? 0) - 300000) {
+      const mint = async () => {
+        const accessToken = patch.accessToken ?? u.accessToken;
+        if (!accessToken) return 'rejected';
+        let fbRes;
+        try { fbRes = await post('/firebase-refresh', { access_token: accessToken }); } catch { return 'network'; }
+        if (!fbRes.ok) return classify(fbRes);
+        try {
           const { firebase_token: customToken } = await fbRes.json();
           await firebase.auth().signInWithCustomToken(customToken);
           patch.firebaseToken = await firebase.auth().currentUser.getIdToken();
           patch.firebaseTokenExpiry = Date.now() + 3600 * 1000;
-        }
-      } catch {
-        // proceed with existing Firebase token on error
+          return 'ok';
+        } catch { return 'network'; }
+      };
+      let r = await mint();
+      if (r === 'rejected' && !discordRefreshed && u.refreshToken) {
+        // Access token may simply be stale: rotate it once and retry.
+        const d = await refreshDiscord();
+        if (d === 'rejected') return { status: 'rejected' };
+        if (d === 'ok') r = await mint();
+        else r = 'network';
+      }
+      if (r !== 'ok') {
+        if (Object.keys(patch).length > 0) applyUser({ ...currentUserRef.current, ...patch }); // keep a rotated refresh token
+        return { status: r };
       }
     }
 
-    // Persist all updates in one write.
-    if (Object.keys(patch).length > 0) {
-      const updated = { ...currentUser, ...patch };
-      setCurrentUser(updated);
-      localStorage.setItem('oph_user', JSON.stringify(updated));
-    }
-
-    return patch.firebaseToken ?? currentUser.firebaseToken;
+    const updated = { ...currentUserRef.current, ...patch };
+    if (Object.keys(patch).length > 0) applyUser(updated);
+    return { status: 'ok', token: updated.firebaseToken };
   };
 
-  // Treat the user as logged out when either the Firebase ID token (1 h) or the
-  // Discord OAuth token (tokenExpiry, ~7 days) is missing or within 60 s of expiry.
-  // firebaseTokenExpiry is written by auth/callback.html; users who authenticated
-  // before this field was added are conservatively treated as expired.
-  const isAuthenticated = !!(
-    currentUser?.firebaseToken &&
-    (currentUser.firebaseTokenExpiry ?? 0) - 90000 > Date.now() &&
-    (currentUser.tokenExpiry ?? 0) - 90000 > Date.now()
-  );
-
-  // Keep a live ref so timer callbacks can re-check auth at fire time (avoids stale closure)
-  const isAuthenticatedRef = useRef(isAuthenticated);
-  isAuthenticatedRef.current = isAuthenticated;
-
-  // Track whether user was authenticated on previous render; debounce login screen to avoid tab-focus flash
-  const wasAuthenticatedRef = useRef(isAuthenticated);
-  const [showLogin, setShowLogin] = useState(!isAuthenticated);
-  const showLoginTimerRef = useRef(null);
-  useEffect(() => {
-    if (isAuthenticated) {
-      wasAuthenticatedRef.current = true;
-      if (showLoginTimerRef.current) { clearTimeout(showLoginTimerRef.current); showLoginTimerRef.current = null; }
-      setShowLogin(false);
-    } else {
-      if (wasAuthenticatedRef.current) {
-        // Was logged in — debounce 50 ms before showing login to swallow transient null on tab refocus
-        if (!showLoginTimerRef.current) {
-          showLoginTimerRef.current = setTimeout(() => {
-            showLoginTimerRef.current = null;
-            // Re-check auth at fire time: if the session is still valid, cancel the login transition
-            if (isAuthenticatedRef.current) return;
-            wasAuthenticatedRef.current = false;
-            setShowLogin(true);
-          }, 50);
-        }
+  // Single-flight: concurrent callers share one in-flight refresh promise.
+  const refreshSession = (force = false) => {
+    if (refreshPromiseRef.current) return refreshPromiseRef.current;
+    const p = doRefresh(force).then(r => {
+      if (r.status === 'ok') {
+        markReconnecting(false);
+        setSessionState('signedIn');
+      } else if (r.status === 'rejected') {
+        markReconnecting(false);
+        applyUser(null);
+        setSessionState('signedOut');
       } else {
-        setShowLogin(true);
+        markReconnecting(true);
+      }
+      return r;
+    }).finally(() => { refreshPromiseRef.current = null; });
+    refreshPromiseRef.current = p;
+    return p;
+  };
+
+  // Returns a valid Firebase ID token, refreshing when near expiry. Returns null when the
+  // session was rejected (login required); on a network failure returns the existing token.
+  const getValidToken = async () => {
+    const u = currentUserRef.current;
+    if (!u?.firebaseToken && !u?.refreshToken) return null;
+    const now = Date.now();
+    const due = !u.firebaseToken ||
+      now >= (u.firebaseTokenExpiry ?? 0) - 300000 ||
+      (u.refreshToken && now >= (u.tokenExpiry ?? 0) - 120000);
+    if (!due) return u.firebaseToken;
+    const r = await refreshSession();
+    if (r.status === 'ok') return r.token;
+    if (r.status === 'rejected') return null;
+    return currentUserRef.current?.firebaseToken ?? null;
+  };
+
+  // fetch wrapper for worker calls. Requests that carry an Authorization header get the
+  // latest valid token; on 401 the token is force-refreshed and the request retried once.
+  // A rejected refresh ends the session (signedOut); a network failure shows the
+  // "Reconnecting..." banner and the session is re-validated on focus / online.
+  const workerFetch = async (url, init = {}) => {
+    const authed = !!(init.headers && init.headers.Authorization);
+    const send = (token) => fetch(url, authed && token
+      ? { ...init, headers: { ...init.headers, Authorization: `Bearer ${token}` } }
+      : init);
+    let res;
+    try {
+      res = await send(authed ? await getValidToken() : null);
+    } catch (e) {
+      markReconnecting(true);
+      throw e;
+    }
+    if (authed && res.status === 401) {
+      const r = await refreshSession(true);
+      if (r.status === 'ok') {
+        try { res = await send(r.token); } catch (e) { markReconnecting(true); throw e; }
       }
     }
-  }, [isAuthenticated]);
+    if (reconnectingRef.current && res.status < 500) markReconnecting(false);
+    return res;
+  };
+
+  const isAuthenticated = sessionState === 'signedIn';
+  const showLogin = sessionState === 'signedOut';
+
+  // Re-validate on focus / visibility / online and on a timer, so expiry is evaluated while
+  // the tab is idle (not only at render time).
+  validateSessionRef.current = () => {
+    const u = currentUserRef.current;
+    if (!u || sessionStateRef.current === 'signedOut') return;
+    const now = Date.now();
+    const due = !u.firebaseToken ||
+      now >= (u.firebaseTokenExpiry ?? 0) - 300000 ||
+      (u.refreshToken && now >= (u.tokenExpiry ?? 0) - 120000);
+    if (!due && !reconnectingRef.current) return;
+    const wasReconnecting = reconnectingRef.current;
+    refreshSession().then(r => {
+      // A failed initial load (offline boot) is retried once the session is back.
+      if (r.status === 'ok' && wasReconnecting && dbTilesetsLenRef.current === 0) setTsFetchTrigger(t => t + 1);
+    });
+  };
+  useEffect(() => {
+    const run = () => validateSessionRef.current && validateSessionRef.current();
+    const onVisible = () => { if (document.visibilityState === 'visible') run(); };
+    window.addEventListener('focus', run);
+    window.addEventListener('online', run);
+    document.addEventListener('visibilitychange', onVisible);
+    const timer = setInterval(run, 60000);
+    return () => {
+      window.removeEventListener('focus', run);
+      window.removeEventListener('online', run);
+      document.removeEventListener('visibilitychange', onVisible);
+      clearInterval(timer);
+    };
+  }, []);
+
+  // Boot: a stored refresh token with an expired ID token starts in 'restoring'; refresh now.
+  useEffect(() => {
+    if (sessionStateRef.current === 'restoring') refreshSession(true);
+  }, []);
+
+  // Deep-link survival: restore the hash/search stashed before the Discord redirect.
+  useEffect(() => {
+    if (sessionState !== 'signedIn') return;
+    try {
+      const raw = sessionStorage.getItem('oph_return');
+      if (!raw) return;
+      sessionStorage.removeItem('oph_return');
+      const { hash = '', search = '' } = JSON.parse(raw);
+      if (hash || search) history.replaceState(null, '', window.location.pathname + search + hash);
+    } catch {}
+  }, [sessionState]);
 
   // Check Firebase auth state on mount; mark authChecked after minimum 1 s to prevent login flash
   useEffect(() => {
@@ -1004,9 +1121,6 @@ function App() {
   const [painting,    setPainting]  = useState(false);
   const [selectionMode, setSelectionMode] = useState('single'); // 'single' | 'line' | 'rect' | 'fill'
   const [eyedropperMode, setEyedropperMode] = useState(false); // eyedropper pick tool
-  const [exploreMode, setExploreMode] = useState(false);
-  const exploreModeRef = useRef(false);
-  const [explorePicker, setExplorePicker] = useState(null); // { r, c, siblings, x, y, forHighlight }
   const [highlightMode, setHighlightMode] = useState(false);
   const [highlightedCells, setHighlightedCells] = useState(new Set()); // Set of "r,c" strings — primary + mirror
   const highlightedCellsRef = useRef(new Set()); // mirror for closures
@@ -1020,9 +1134,6 @@ function App() {
   const highlightDragAnchorCell = useRef(null); // [r,c] of the cell where drag started
   const highlightModeRef = useRef(false);
   const eyedropperModeRef = useRef(false);
-  const [rotateMode, setRotateMode] = useState(false);
-  const rotateModeRef = useRef(false);
-  const rotatePendingCellRef = useRef(null);
   const [magnetMode, setMagnetMode] = useState(false);
   const magnetModeRef = useRef(false);
   const [customCenter, setCustomCenter] = useState(() => {
@@ -1058,7 +1169,7 @@ function App() {
   const [infoTool,    setInfoTool]  = useState(null); // "erase" | "hand" | "space"
   // Starred tiles: up to 5, shown when tiles panel is collapsed
   // Special IDs: "erase" and "hand"; regular tiles use numeric ID
-  const [starredTiles, setStarredTiles] = useState(() => load("oph_starred", [1, 6, "selectionGroup", "mirrorGroup", "guides", "overwrite"]));
+  const [starredTiles, setStarredTiles] = useState(() => load("oph_starred", [1, 6, "selectionGroup", "mirrorGroup", "guides", "overwrite"]).filter(k => k !== "explore" && k !== "rotate")); // removed tools
   const toggleStar = id => setStarredTiles(prev => {
     if (prev.includes(id)) return prev.filter(s => s !== id);
     return [...prev, id];
@@ -1126,7 +1237,7 @@ function App() {
   const [mirrorOffsetTiles, setMirrorOffsetTiles] = useState(() => load(SK.mirrorOffset, {}));
   const [showOffsetCenters, setShowOffsetCenters] = useState(false);
   // Collapsible tiles panel sections: true = collapsed
-  const [panelCollapsed, setPanelCollapsed] = useState(() => load("oph_panel_collapsed", { essentials: false, tileset: false, user: false, global: false, atlas: false }));
+  const [panelCollapsed, setPanelCollapsed] = useState(() => load("oph_panel_collapsed", { essentials: false, tileset: false, user: false, global: false }));
   // Failed tile tracking
   const [failedTiles,   setFailedTiles]   = useState(new Set());
   const [failedWarning, setFailedWarning] = useState(false);
@@ -1217,11 +1328,9 @@ function App() {
   useEffect(() => { handModeRef.current     = handMode;      }, [handMode]);
   useEffect(() => { eyedropperModeRef.current = eyedropperMode; }, [eyedropperMode]);
   useEffect(() => { highlightModeRef.current = highlightMode; }, [highlightMode]);
-  useEffect(() => { rotateModeRef.current = rotateMode; }, [rotateMode]);
   useEffect(() => { magnetModeRef.current = magnetMode; }, [magnetMode]);
   useEffect(() => { customCenterRef.current = customCenter; }, [customCenter]);
   useEffect(() => { customCenterSizeRef.current = customCenterSize; }, [customCenterSize]);
-  useEffect(() => { exploreModeRef.current = exploreMode; }, [exploreMode]);
   useEffect(() => { highlightedCellsRef.current = highlightedCells; }, [highlightedCells]);
   useEffect(() => { primaryHighlightedCellsRef.current = primaryHighlightedCells; }, [primaryHighlightedCells]);
   useEffect(() => { highlightDragOffsetRef.current = highlightDragOffset; }, [highlightDragOffset]);
@@ -1275,7 +1384,7 @@ function App() {
         const hdrs = token
           ? { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
           : { 'Content-Type': 'application/json' };
-        const resp = await fetch(tilesUrl.toString(), { headers: hdrs });
+        const resp = await workerFetch(tilesUrl.toString(), { headers: hdrs });
         rows = resp.ok ? await resp.json() : [];
         if (!Array.isArray(rows)) rows = [];
         setDbTilesByTsId(prev => ({ ...prev, [tsId]: rows }));
@@ -1373,7 +1482,7 @@ function App() {
       themeDbTimerRef.current = setTimeout(async () => {
         try {
           const token = await getValidToken();
-          await fetch(`${WORKER_URL}/rest/v1/profiles?id=eq.${currentUser.id}`, {
+          await workerFetch(`${WORKER_URL}/rest/v1/profiles?id=eq.${currentUser.id}`, {
             method: 'PATCH',
             headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
             body: JSON.stringify({ theme: themeValue }),
@@ -1433,7 +1542,7 @@ function App() {
     if (s.includes("Gem_Grab") || s.includes("Heist")) return 2.0;
     // Bounty star → 1.2x
     if (s.includes("Bounty")) return 1.2;
-    // Atlas Post_R / Post_TR rope tiles → 1.5×
+    // Rope Post_R / Post_TR tiles → 1.5×
     if (s.includes("/Rope/Post_R") || s.includes("/Rope/Post_TR")) return 1.5;
     return 1.0;
   };
@@ -1462,7 +1571,7 @@ function App() {
     if (s.includes("Heist")) return { ox: 0, oy: -60 };
     if (s.includes("Brawl_Ball")) return { ox: 0, oy: -14 };
     if (s.includes("Bounty")) return { ox: 0, oy: 4 };
-    // Atlas Post_R / Post_TR rope tiles
+    // Rope Post_R / Post_TR tiles
     if (s.includes("/Rope/Post_R") || s.includes("/Rope/Post_TR")) return { ox: 25, oy: 0 };
     if (s.includes("SlowTile")) return { ox: 0, oy: 5 };
     if (s.includes("SpeedTile")) return { ox: 0, oy: 5 };
@@ -1686,8 +1795,6 @@ function App() {
   const [gridLoadWarning, setGridLoadWarning] = useState(null); // null or count of unresolved tiles
   const [customBgModalOpen, setCustomBgModalOpen] = useState(false);
   const [bgDropOpen, setBgDropOpen] = useState(false);
-  // Cached BG colours per tileset name (loaded from DB or sampled)
-  const [tilesetBgColors, setTilesetBgColors] = useState(() => load("oph_ts_bg", {}));
   // Parsed manifest data (globals only)
   const [manifest, setManifest] = useState(null);
   useEffect(() => { openFolderKeyRef.current = openFolderKey; }, [openFolderKey]);
@@ -1800,9 +1907,7 @@ function App() {
         if (!files || files.length === 0) continue;
         const folderPath = gDef.folderPaths?.[key] ?? `Global/${key}/`;
         const label = displayLabel(key, folderPath);
-        const EXCLUDED_GLOBAL_FILES = { jumppads: ["TL.png", "L.png", "BL.png"] };
         const folderTiles = files
-          .filter(fn => !(EXCLUDED_GLOBAL_FILES[key] ?? []).includes(fn))
           .map(fn => {
             const t = makeTile(`${folderPath}${fn}`);
             t.folderKey = `global_${key}`; t.folderLabel = label;
@@ -1838,7 +1943,7 @@ function App() {
         const hdrs = token
           ? { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
           : { 'Content-Type': 'application/json' };
-        const resp = await fetch(tilesUrl.toString(), { headers: hdrs });
+        const resp = await workerFetch(tilesUrl.toString(), { headers: hdrs });
         const rows = resp.ok ? await resp.json() : [];
         newTilesCached = Array.isArray(rows) ? rows : [];
         setDbTilesByTsId(prev => ({ ...prev, [newTsDef.id]: newTilesCached }));
@@ -1914,7 +2019,7 @@ function App() {
         const dbBg_ = (newTsDef?.bg_color_light && newTsDef?.bg_color_dark)
           ? { bg1: newTsDef.bg_color_light, bg2: newTsDef.bg_color_dark } : null;
         const opheliaBg_ = OPHELIA_BG[newTilesetName] ?? null;
-        const tsBg_ = dbBg_ ?? opheliaBg_ ?? tilesetBgColors[newTilesetName] ?? { bg1: "#1a2332", bg2: "#1e2838" };
+        const tsBg_ = dbBg_ ?? opheliaBg_ ?? { bg1: "#1a2332", bg2: "#1e2838" };
         setTilesetSwitchPending(prev => prev ? { ...prev, tsBg: tsBg_ } : prev);
         return;
       }
@@ -1936,7 +2041,7 @@ function App() {
       ? { bg1: newTsDef.bg_color_light, bg2: newTsDef.bg_color_dark }
       : null;
     const opheliaBg = OPHELIA_BG[newTilesetName] ?? null;
-    const tsBg = dbBg ?? opheliaBg ?? tilesetBgColors[newTilesetName] ?? { bg1: "#1a2332", bg2: "#1e2838" };
+    const tsBg = dbBg ?? opheliaBg ?? { bg1: "#1a2332", bg2: "#1e2838" };
 
     // ── 5. Push history snap with converted grid, then apply state ───────
     const snap = { grid: newGrid, w: gridWRef.current, h: gridHRef.current, tileset: newTilesetName, bg1: tsBg.bg1, bg2: tsBg.bg2, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current, label: `Switch from ${activeTileset ?? '(none)'} to ${newTilesetName}` };
@@ -2034,7 +2139,7 @@ function App() {
         ? { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
         : { 'Content-Type': 'application/json' };
       try {
-        const tsResp = await fetch(tsBase.toString(), { headers: tsHeaders });
+        const tsResp = await workerFetch(tsBase.toString(), { headers: tsHeaders });
         if (!tsResp.ok) {
           console.error('[tilesets] fetch failed:', tsResp.status, tsResp.statusText, await tsResp.text());
         }
@@ -2070,7 +2175,7 @@ function App() {
             tilesUrl.searchParams.set('tileset_id', `eq.${tsDef.id}`);
             tilesUrl.searchParams.set('order', 'sort_index');
             try {
-              const tilesResp = await fetch(tilesUrl.toString(), { headers: tsHeaders });
+              const tilesResp = await workerFetch(tilesUrl.toString(), { headers: tsHeaders });
               const rows = tilesResp.ok ? await tilesResp.json() : [];
               const tilesData = Array.isArray(rows) ? rows : [];
               fetchedTilesMap[tsDef.id] = tilesData;
@@ -2093,7 +2198,7 @@ function App() {
             await Promise.all(uncoveredUuids.map(async uuid => {
               try {
                 const tileUrl = `${WORKER_URL}/rest/v1/tiles?id=eq.${uuid}&select=tileset_id`;
-                const resp = await fetch(tileUrl, { headers: tsHeaders });
+                const resp = await workerFetch(tileUrl, { headers: tsHeaders });
                 if (resp.ok) {
                   const rows = await resp.json();
                   if (Array.isArray(rows) && rows[0]?.tileset_id) extraTsIds.add(rows[0].tileset_id);
@@ -2106,7 +2211,7 @@ function App() {
                 const tilesUrl = new URL(`${WORKER_URL}/rest/v1/tiles`);
                 tilesUrl.searchParams.set('tileset_id', `eq.${tsId}`);
                 tilesUrl.searchParams.set('order', 'sort_index');
-                const resp = await fetch(tilesUrl.toString(), { headers: tsHeaders });
+                const resp = await workerFetch(tilesUrl.toString(), { headers: tsHeaders });
                 const rows = resp.ok ? await resp.json() : [];
                 fetchedTilesMap[tsId] = Array.isArray(rows) ? rows : [];
               } catch (err) {
@@ -2125,7 +2230,7 @@ function App() {
         setTilesLoading(false);
       }
     })();
-  }, [currentUser?.id, tsFetchTrigger, userProfile?.role]);
+  }, [currentUser?.id, tsFetchTrigger, userProfile?.role, isAuthenticated]);
 
   // On-demand tile loading: fetch tiles for the active tileset if not yet cached
   useEffect(() => {
@@ -2142,7 +2247,7 @@ function App() {
         ? { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
         : { 'Content-Type': 'application/json' };
       try {
-        const resp = await fetch(tilesUrl.toString(), { headers });
+        const resp = await workerFetch(tilesUrl.toString(), { headers });
         const rows = resp.ok ? await resp.json() : [];
         const tilesData = Array.isArray(rows) ? rows : [];
         setDbTilesByTsId(prev => ({ ...prev, [tsDef.id]: tilesData }));
@@ -2158,7 +2263,7 @@ function App() {
     if (!currentUser?.firebaseToken || !currentUser?.id) { setUserProfile(null); return; }
     (async () => {
       const token = await getValidToken();
-      fetch(`${WORKER_URL}/rest/v1/profiles?id=eq.${currentUser.id}&select=id,username,avatar_hash,role,theme`, {
+      workerFetch(`${WORKER_URL}/rest/v1/profiles?id=eq.${currentUser.id}&select=id,username,avatar_hash,role,theme`, {
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
       }).then(r => r.ok ? r.json() : []).then(rows => {
         const profile = rows[0] ?? null;
@@ -2180,7 +2285,7 @@ function App() {
     setAdminLoading(true);
     (async () => {
       const token = await getValidToken();
-      fetch(`${WORKER_URL}/rest/v1/profiles?select=id,username,avatar_hash,role&order=username`, {
+      workerFetch(`${WORKER_URL}/rest/v1/profiles?select=id,username,avatar_hash,role&order=username`, {
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
       }).then(r => r.ok ? r.json() : []).then(rows => { setAdminProfiles(rows); setAdminLoading(false); }).catch(() => setAdminLoading(false));
     })();
@@ -2192,7 +2297,7 @@ function App() {
     setAdminRoleChanging(prev => new Set([...prev, profileId]));
     try {
       const token = await getValidToken();
-      const resp = await fetch(`${WORKER_URL}/rest/v1/profiles?id=eq.${profileId}`, {
+      const resp = await workerFetch(`${WORKER_URL}/rest/v1/profiles?id=eq.${profileId}`, {
         method: 'PATCH',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -2227,6 +2332,12 @@ function App() {
   const loginWithDiscord = async () => {
     const verifier = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32)))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
     sessionStorage.setItem('pkce_verifier', verifier);
+    // Stash the deep link (hash/search) so it survives the Discord round trip; restored after sign-in.
+    try {
+      if (window.location.hash || window.location.search) {
+        sessionStorage.setItem('oph_return', JSON.stringify({ hash: window.location.hash, search: window.location.search }));
+      }
+    } catch {}
     const encoder = new TextEncoder();
     const digest = await crypto.subtle.digest('SHA-256', encoder.encode(verifier));
     const challenge = btoa(String.fromCharCode(...new Uint8Array(digest))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
@@ -2242,8 +2353,8 @@ function App() {
   };
 
   const logout = () => {
-    localStorage.removeItem('oph_user');
-    setCurrentUser(null);
+    applyUser(null);
+    setSessionState('signedOut');
     setUserProfile(null);
     setUserDropOpen(false);
     setDbTilesets([]);
@@ -2253,7 +2364,7 @@ function App() {
   };
 
   // Resolve a v2 palette-format grid once all tiles (including default tiles from the manifest) are loaded.
-  // Guard on flatDefaultTiles.length rather than tiles.length: if the user has atlas tiles persisted in
+  // Guard on flatDefaultTiles.length rather than tiles.length: if the user has tiles persisted in
   // localStorage, tiles is non-empty from the very first render (before the setDefaultTiles useEffect
   // runs), so tiles.length === 0 is not a reliable signal that default tiles are available yet.
   //
@@ -2272,13 +2383,13 @@ function App() {
     }
     // If the palette contains plain src-path codenames (global tiles), wait until manifest is loaded
     // so that global tiles are present in flatDefaultTiles before resolution.
-    const hasSrcCodenames = palette.some(cn => typeof cn === 'string' && cn !== 'space' && cn !== 'warn' && !cn.startsWith('d:') && !cn.startsWith('u:') && !cn.startsWith('a:'));
+    const hasSrcCodenames = palette.some(cn => typeof cn === 'string' && cn !== 'space' && cn !== 'warn' && !cn.startsWith('d:') && !cn.startsWith('u:'));
     if (hasSrcCodenames && !manifest) return;
     const pending = pendingGridLoadRef.current;
     pendingGridLoadRef.current = null; // clear before setGridRaw so save effect runs correctly
     const { palette: resolvedPalette, grid: indexGrid } = pending;
     const unresolved = [];
-    // Resolve against flatDefaultTiles directly (always current) plus persisted user/atlas tiles.
+    // Resolve against flatDefaultTiles directly (always current) plus persisted user tiles.
     const allTiles = [...flatDefaultTiles, ...userTiles];
     const idFromPaletteIdx = [null, ...resolvedPalette.map(cn => {
       const tile = resolveCodename(cn, allTiles);
@@ -2965,12 +3076,6 @@ function App() {
 
   const onCell = (r, c, e) => {
     if (handModeRef.current) return; // hand mode: let native scroll handle panning
-    if (exploreModeRef.current) return; // explore mode: clicks handled by overlay chevrons only
-    if (rotateModeRef.current) {
-      // rotate mode: record clicked cell for click-vs-drag detection; panning handled at container level
-      if (e.type === "mousedown") { e.preventDefault(); rotatePendingCellRef.current = [r, c]; }
-      return;
-    }
     if (magnetModeRef.current) {
       if (e.type === "mousedown") {
         e.preventDefault();
@@ -3086,7 +3191,6 @@ function App() {
         return;
       }
 
-      if (rotateModeRef.current) { rotatePendingCellRef.current = [r, c]; return; } // rotate mode handled by scroll-container onMouseDown
       if (existingId && !eraserRef.current && !mirrorSettingsRef.current.allowSwap) {
         // ── OCCUPIED CELL (non-eraser, block overwrite off): pick up for drag
         const mirrorPositions = getMirrorRef.current ? getMirrorRef.current(r, c) : getMirrorPositions(r, c);
@@ -3203,13 +3307,6 @@ function App() {
 
   const SPACE_TILE = { id: SPACE_TILE_ID, src: null, label: "Space", isSpace: true };
   const getTile = id => id === SPACE_TILE_ID ? SPACE_TILE : tiles.find(t => t.id === id);
-
-  // Returns a stable folder key for grouping tiles that share a folder, or null for non-folder tiles.
-  const getTileFolderKey = t => {
-    if (!t || t.isSpace) return null;
-    if (t.folderKey) return t.folderKey;                    // tileset + global folder tiles
-    return null;
-  };
 
   // Returns { ox, oy } override if the tile has mirror offset enabled and flags indicate a flip, else undefined.
   const computeMirrorOffsetOverride = (tileId, fV, fH, fD) => {
@@ -3655,7 +3752,6 @@ function App() {
 
       // ── IMMEDIATE PICK-UP: occupied cell, no eraser → remove tile + mirror counterparts, start drag ──
       // History written once at touchend (drop/discard), not here.
-      if (rotateModeRef.current) { rotatePendingCellRef.current = [r, c]; return; } // rotate mode: process on touchend
       if (magnetModeRef.current) {
         const clampedR = Math.max(0, Math.min(gridHRef.current - 1, r));
         const clampedC = Math.max(0, Math.min(gridWRef.current - 1, c));
@@ -3814,57 +3910,6 @@ function App() {
     const onTouchEnd = e => {
       if (e.touches.length < 2) pinchRef.current = null;
       if (e.touches.length === 0) {
-        // ── ROTATE MODE: process tapped cell ─────────────────────────────────
-        if (rotateModeRef.current) {
-          const cell = rotatePendingCellRef.current;
-          rotatePendingCellRef.current = null;
-          if (cell) {
-            const [r, c] = cell;
-            const highlighted = highlightedCellsRef.current;
-            const seedCells = highlighted.size > 0
-              ? [...highlighted].map(k => k.split(',').map(Number))
-              : [[r, c]];
-            const seen = new Set(seedCells.map(([sr, sc]) => `${sr},${sc}`));
-            const cellsToProcess = [...seedCells];
-            if (getMirrorRef.current) {
-              for (const [sr, sc] of seedCells) {
-                for (const [mr, mc] of getMirrorRef.current(sr, sc)) {
-                  const k = `${mr},${mc}`;
-                  if (!seen.has(k)) { seen.add(k); cellsToProcess.push([mr, mc]); }
-                }
-              }
-            }
-            const newRots = { ...gridRotationsRef.current };
-            const newFlips = { ...gridFlipsRef.current };
-            let changed = false;
-            for (const [tr, tc] of cellsToProcess) {
-              const id = gridRef.current?.[tr]?.[tc];
-              if (id == null) continue;
-              const tile = allTilesByIdRef.current[id];
-              if (!tile) continue;
-              const canSpin = rotatableMapRef.current[id] !== undefined ? rotatableMapRef.current[id] : isDefaultRotatable(tile);
-              const canFlip = allowFlipMapRef.current[id] !== undefined ? allowFlipMapRef.current[id] : isDefaultFlippable(tile);
-              if (!canSpin && !canFlip) continue;
-              if (canSpin) {
-                const cur = newRots[`${tr},${tc}`] ?? 0;
-                const next = (cur + 1) % 4;
-                if (next === 0) delete newRots[`${tr},${tc}`]; else newRots[`${tr},${tc}`] = next;
-              } else {
-                const cur = newFlips[`${tr},${tc}`] ?? 0;
-                const next = (cur + 1) % 4;
-                if (next === 0) delete newFlips[`${tr},${tc}`]; else newFlips[`${tr},${tc}`] = next;
-              }
-              changed = true;
-            }
-            if (changed) {
-              setGridRotations(newRots); gridRotationsRef.current = newRots;
-              setGridFlips(newFlips); gridFlipsRef.current = newFlips;
-              histLabelRef.current = "Rotate";
-              pushHistRef.current?.();
-            }
-          }
-          return;
-        }
         // ── DROP: highlight region drag commit ────────────────────────────────
         if (isHighlightDraggingRef.current) {
           const offset = highlightDragOffsetRef.current ?? { dr: 0, dc: 0 };
@@ -4041,7 +4086,7 @@ function App() {
     // Re-run once the canvas mounts: on first render the app shows the auth splash /
     // login screen (early returns), so scrollRef.current is null and the listeners
     // would otherwise never attach on mobile.
-  }, [authChecked, showLogin]);
+  }, [authChecked, showLogin, sessionState]);
 
   // ── Keyboard shortcuts ────────────────────────────────────────────
   useEffect(() => {
@@ -4060,8 +4105,8 @@ function App() {
           setHighlightedCells(new Set());
           highlightedCellsRef.current = new Set();
         }
-        if (e.key === "e" || e.key === "E") { setEraser(true); setSel(null); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); setDuplicateMode(false); setMagnetMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }
-        if (e.key === "w" || e.key === "W") { setEyedropperMode(true); setEraser(false); setHandMode(false); setRotateMode(false); setExploreMode(false); setExplorePicker(null); setDuplicateMode(false); setMagnetMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }
+        if (e.key === "e" || e.key === "E") { setEraser(true); setSel(null); setHandMode(false); setEyedropperMode(false); setDuplicateMode(false); setMagnetMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }
+        if (e.key === "w" || e.key === "W") { setEyedropperMode(true); setEraser(false); setHandMode(false); setDuplicateMode(false); setMagnetMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }
         if (e.key === "r" || e.key === "R") {
           const id = selRef.current;
           if (id != null) {
@@ -4087,13 +4132,13 @@ function App() {
         if (e.key === "h" || e.key === "H") {
           const turningOn = !highlightModeRef.current;
           setHighlightMode(v => !v);
-          setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); setMagnetMode(false);
+          setEraser(false); setHandMode(false); setEyedropperMode(false); setMagnetMode(false);
           if (turningOn) { setSel(null); }
           else { setDuplicateMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }
         }
         if (e.key === "m" || e.key === "M") {
           if (magnetModeRef.current) { setMagnetMode(false); }
-          else { setMagnetMode(true); setEraser(false); setHandMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); setDuplicateMode(false); setRotateMode(false); setHighlightMode(false); setSel(null); }
+          else { setMagnetMode(true); setEraser(false); setHandMode(false); setEyedropperMode(false); setDuplicateMode(false); setHighlightMode(false); setSel(null); }
         }
         if (e.key === "[" || e.key === "]") {
           const id = selRef.current;
@@ -4337,7 +4382,7 @@ function App() {
     const currentMult = getTileMultiplier(t);
     const defaultOff  = getDefaultOffset(t);
     const currentOff  = getTileOffset(t);
-    const defaultCodename_ = t.isDefault ? (deriveCodename(t.src) ?? "") : t.isAtlas ? (t.baseCodename ?? t.codename ?? "") : "";
+    const defaultCodename_ = t.isDefault ? (deriveCodename(t.src) ?? "") : "";
     const canEditDb = !!(currentUser && t.isDb && t.dbId && (userProfile?.role === 'admin' || t.tilesetOwnerId === currentUser.id));
     const [multInput,         setMultInput]         = React.useState(String(currentMult));
     const [oxInput,           setOxInput]           = React.useState(String(currentOff.ox));
@@ -4433,14 +4478,14 @@ function App() {
           reader.onerror = reject;
           reader.readAsDataURL(file);
         });
-        const upResp = await fetch(`${WORKER_URL}/github/upload`, {
+        const upResp = await workerFetch(`${WORKER_URL}/github/upload`, {
           method: 'POST',
           headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ filePath, contentBase64, commitMessage: `[${currentUser.username}] Replace tile: ${tilesetFolderPath}/${originalFilename}` }),
         });
         if (!upResp.ok) throw new Error('GitHub upload failed');
         const newUrl = `https://raw.githubusercontent.com/bicipikay/ophelia/main/${filePath}?v=${Date.now()}`;
-        const patchResp = await fetch(`${WORKER_URL}/rest/v1/tiles?id=eq.${tile.dbId}`, {
+        const patchResp = await workerFetch(`${WORKER_URL}/rest/v1/tiles?id=eq.${tile.dbId}`, {
           method: 'PATCH',
           headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
           body: JSON.stringify({ image_url: newUrl }),
@@ -4796,7 +4841,7 @@ function App() {
                     last_updated_by: currentUser.id,
                   };
                   const token = await getValidToken();
-                  const resp = await fetch(`${WORKER_URL}/rest/v1/tiles?id=eq.${t.dbId}`, {
+                  const resp = await workerFetch(`${WORKER_URL}/rest/v1/tiles?id=eq.${t.dbId}`, {
                     method: 'PATCH',
                     headers: {
                       'Authorization': `Bearer ${token}`,
@@ -4825,7 +4870,7 @@ function App() {
             </button>
           )}
 
-          {/* Replace image (owned DB tiles, not atlas) */}
+          {/* Replace image (owned DB tiles) */}
           {t.isDb && currentUser && (userProfile?.role === 'admin' || t.tilesetOwnerId === currentUser.id) && (
             <>
               <input type="file" accept="image/*" id="replace-img-input" style={{ display: "none" }}
@@ -4888,7 +4933,7 @@ function App() {
             </>
           )}
 
-          {/* Delete — DB-owned tiles (admins and owners), hidden for atlas tilesets */}
+          {/* Delete — DB-owned tiles (admins and owners) */}
           {t.isDb && currentUser && (userProfile?.role === 'admin' || t.tilesetOwnerId === currentUser.id) ? (
             deleteConfirmId === t.id ? (
               <div style={{ display: "flex", flexDirection: "column", gap: 5, padding: "6px 0" }}>
@@ -4912,7 +4957,7 @@ function App() {
                       }
                       try {
                         const token = await getValidToken();
-                        const delResp = await fetch(`${WORKER_URL}/rest/v1/tiles?id=eq.${t.dbId}`, {
+                        const delResp = await workerFetch(`${WORKER_URL}/rest/v1/tiles?id=eq.${t.dbId}`, {
                           method: 'DELETE',
                           headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
                         });
@@ -4926,7 +4971,7 @@ function App() {
                             const srcNoQuery = t.src.split('?')[0];
                             const filename = srcNoQuery.split('/').pop();
                             const filePath = `Resources/${tilesetFolderPath}/${filename}`;
-                            await fetch(`${WORKER_URL}/github/delete`, {
+                            await workerFetch(`${WORKER_URL}/github/delete`, {
                               method: 'POST',
                               headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
                               body: JSON.stringify({ filePath, commitMessage: `[${currentUser.username}] Delete tile: ${tilesetFolderPath}/${filename}` }),
@@ -5064,7 +5109,7 @@ function App() {
     // Step 2: full tile list — tileset tiles grouped with collapsible sections
     const tilesetTiles_  = tiles.filter(t => t.id >= TILESET_ID_START && t.id < GLOBAL_ID_START);
     const userTiles_     = tiles.filter(t => t.id >= USER_ID_START && t.id <= USER_ID_MAX);
-    const globalTiles_   = tiles.filter(t => t.id >= GLOBAL_ID_START && t.id < ATLAS_ID_START);
+    const globalTiles_   = tiles.filter(t => t.id >= GLOBAL_ID_START && t.id <= GLOBAL_ID_MAX);
 
     // Group tileset tiles by tileset name
     const tsByName = {};
@@ -5184,7 +5229,7 @@ function App() {
 
     const tilesetTiles_ = tiles.filter(t => t.id >= TILESET_ID_START && t.id < GLOBAL_ID_START);
     const userTiles_    = tiles.filter(t => t.id >= USER_ID_START && t.id <= USER_ID_MAX);
-    const globalTiles_  = tiles.filter(t => t.id >= GLOBAL_ID_START && t.id < ATLAS_ID_START);
+    const globalTiles_  = tiles.filter(t => t.id >= GLOBAL_ID_START && t.id <= GLOBAL_ID_MAX);
 
     return (
       <div className="modal-backdrop" onClick={close}>
@@ -5293,10 +5338,8 @@ function App() {
       selectionMode: { label: "Selection Mode", icon: "🖌️", color: C.accent, desc: "Controls how tiles are placed on the grid. Single: freehand paint. Line: draw a straight line between two points. Rectangle: fill a rectangular area. Fill: flood-fill all connected empty cells.", iconColor: null },
       mirroring: { label: "Mirroring", icon: "🪞", color: C.pale, desc: "Mirrors every paint action across one or more axes. Horizontal mirrors left↔right. Vertical mirrors top↔bottom. Diagonal applies a 180° point reflection. All three can be combined.", iconColor: null },
       convert: { label: "Convert", icon: "🔄", color: C.soft, desc: "Remaps tiles on the board from one tileset to another by matching tile names. Tiles with no equivalent in the target tileset are left as-is.", iconColor: null },
-      rotate: { label: "Rotate", icon: "🌊", color: "#2dd4bf", desc: "Click a rotatable tile on the map to rotate it one step. Spinning tiles (water, jumppads) cycle through 4 rotation steps; flippable tiles (fence, rope) cycle through 4 flip states. Non-rotatable tiles are skipped. Drag to pan the canvas like the Hand tool. If cells are highlighted, clicking anywhere rotates all rotatable tiles in the highlighted region.", iconColor: null },
       magnet: { label: "Magnet", icon: "🧲", color: "#2563eb", desc: "Sets a custom mirror origin for the map. All mirroring axes (H, V, D) pivot around this point instead of the true map centre. Click any cell on the canvas to place the origin. Use the size dropdown on the card to choose a 1×1 or 2×2 centre zone. Useful for asymmetric or experimental Showdown layouts.", iconColor: null },
       hotkeys: { label: "Hotkeys", icon: "⌨️", color: C.text, desc: "Keyboard shortcuts: E = Erase, W = Eyedropper, R = Rotate selected tile, Z = Undo, X = Redo, Ctrl+Z = Undo, Ctrl+Y = Redo, Escape = Clear highlight.", iconColor: null },
-      explore: { label: "Explore", icon: "🌻", color: "#9ADF1C", desc: "Cycle through tile variants within a folder. Click a folder tile on the canvas to pick the next variant. If cells are highlighted, clicking cycles variants across all highlighted folder tiles at once.", iconColor: null },
       warn: { label: "Warn", icon: "⚠️", color: "#f97316", desc: "Places an invisible warning marker tile. Warning markers appear as semi-transparent ⚠️ overlays on the canvas but are not exported as tiles — useful for marking hazardous or incomplete areas.", iconColor: null },
       duplicate: { label: "Duplicate", icon: "💞", color: "#e879a0", desc: "Copies the highlighted region to a new position without moving the originals. Drag the highlighted area to preview the copy placement, then press Apply. Mirror-aware: if any mirror axis is active, the copy is extended to also cover mirror positions.", iconColor: "#e879a0" },
     };
@@ -5505,7 +5548,6 @@ function App() {
       ["Z / Ctrl+Z", "Undo"],
       ["X / Ctrl+Y", "Redo"],
       ["Escape", "Clear highlight"],
-      ["Arrow keys", "Pan the map"],
       ["+/-", "Zoom in/out"],
     ];
     return (
@@ -5552,7 +5594,7 @@ function App() {
           ? { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
           : { 'Content-Type': 'application/json' };
         try {
-          const resp = await fetch(tilesUrl.toString(), { headers: hdrs });
+          const resp = await workerFetch(tilesUrl.toString(), { headers: hdrs });
           const rows = resp.ok ? await resp.json() : [];
           const data = Array.isArray(rows) ? rows : [];
           if (!cancelled) {
@@ -5575,7 +5617,7 @@ function App() {
     }
 
     const newTilesForDropdown = flatDefaultTiles.filter(ft => ft.isDb && ft.dbTilesetId === newTsDef?.id);
-    const globalTilesForDropdown = flatDefaultTiles.filter(t => !t.isDb && !t.isAtlas);
+    const globalTilesForDropdown = flatDefaultTiles.filter(t => !t.isDb);
 
     const handleConfirm = () => {
       const pending = tilesetSwitchPending;
@@ -5719,7 +5761,7 @@ function App() {
 
       // 2. Upload image to GitHub
       const filePath = `Resources/${folderPath}/${createTsFile.name}`;
-      const upResp = await fetch(`${WORKER_URL}/github/upload`, {
+      const upResp = await workerFetch(`${WORKER_URL}/github/upload`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ filePath, contentBase64, commitMessage: `[${currentUser.username}] New tileset: ${folderPath}` }),
@@ -5734,7 +5776,7 @@ function App() {
       const imageUrl = `https://raw.githubusercontent.com/bicipikay/ophelia/main/${filePath}?v=${Date.now()}`;
 
       // 3. Create tileset row
-      const tsResp = await fetch(`${WORKER_URL}/rest/v1/tilesets`, {
+      const tsResp = await workerFetch(`${WORKER_URL}/rest/v1/tilesets`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=representation' },
         body: JSON.stringify({ name, folder_path: folderPath, owner_id: currentUser.id, is_published: false }),
@@ -5750,7 +5792,7 @@ function App() {
       const newTsId = Array.isArray(tsRows) ? tsRows[0]?.id : tsRows?.id;
 
       // 4. Create tile row
-      await fetch(`${WORKER_URL}/rest/v1/tiles`, {
+      await workerFetch(`${WORKER_URL}/rest/v1/tiles`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
         body: JSON.stringify({
@@ -5879,7 +5921,7 @@ function App() {
         reader.readAsDataURL(addTileFile);
       });
 
-      const upResp = await fetch(`${WORKER_URL}/github/upload`, {
+      const upResp = await workerFetch(`${WORKER_URL}/github/upload`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ filePath, contentBase64, commitMessage: `[${currentUser.username}] Add tile: ${tilesetFolderPath}/${addTileFile.name}` }),
@@ -5891,7 +5933,7 @@ function App() {
       }
       const imageUrl = `https://raw.githubusercontent.com/bicipikay/ophelia/main/${filePath}?v=${Date.now()}`;
 
-      const insResp = await fetch(`${WORKER_URL}/rest/v1/tiles`, {
+      const insResp = await workerFetch(`${WORKER_URL}/rest/v1/tiles`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
         body: JSON.stringify({
@@ -5931,8 +5973,9 @@ function App() {
   // TilesetGearModal is defined outside App (above) — see the module-level definition.
 
   // ─────────────────────────────────────────────────────────────────
-  // Loading screen — show while Firebase auth state is being checked (prevents login flash)
-  if (!authChecked) {
+  // Loading screen — show while Firebase auth state is being checked or a stored session is being
+  // restored (prevents login flash)
+  if (!authChecked || sessionState === 'restoring') {
     return (
       <div style={{
         display: "flex", alignItems: "center", justifyContent: "center",
@@ -6006,6 +6049,14 @@ function App() {
       paddingLeft: "env(safe-area-inset-left)", paddingRight: "env(safe-area-inset-right)",
     }}>
 
+      {reconnecting && (
+        <div role="status" style={{
+          position: "fixed", top: 8, left: "50%", transform: "translateX(-50%)", zIndex: 5000,
+          background: C.panel, color: C.text, border: `1px solid ${C.border}`, borderRadius: 8,
+          padding: "6px 14px", fontSize: 12, fontWeight: 600, pointerEvents: "none",
+          boxShadow: "0 4px 16px rgba(0,0,0,0.4)",
+        }}>Reconnecting…</div>
+      )}
       <InfoModal />
       <ReplaceModal />
       <OTGSettingsModal />
@@ -6078,6 +6129,7 @@ function App() {
         currentUser={currentUser}
         userProfile={userProfile}
         getValidToken={getValidToken}
+        workerFetch={workerFetch}
         onClose={() => { setTsGearOpen(false); setTsGearTsId(null); }}
         onTsFetchTrigger={() => setTsFetchTrigger(n => n + 1)}
         onActiveTilesetChange={setActiveTileset}
@@ -6324,7 +6376,7 @@ function App() {
         const entry = allEntries.find(e => e.type === 'folder' && e.key === openFolderKey);
         if (!entry) return null;
         const cardSz = isMobile ? 56 : 72;
-        const cols = entry.tiles.length > 16 ? 5 : 4; // wider panel for large Atlas folders
+        const cols = entry.tiles.length > 16 ? 5 : 4; // wider panel for large folders
         const panelW = cardSz * cols + 5 * (cols - 1) + 12;
         const maxH = Math.min(480, window.innerHeight - 32);
         const anchorX = Math.min(folderPanelAnchor.x, window.innerWidth - panelW - 8);
@@ -6364,7 +6416,7 @@ function App() {
                           else if (fMode !== 'flip' && canSpinF) { setCardRotations(prev => ({ ...prev, [t.id]: (prev[t.id] ?? 0) + 90 })); }
                         }
                         setSel(t.id); setEraser(false);
-                        setHandMode(false); setRotateMode(false); setExploreMode(false); setMagnetMode(false); setEyedropperMode(false);
+                        setHandMode(false); setMagnetMode(false); setEyedropperMode(false);
                         if (highlightMode) { setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }
                       }}
                       style={{ width: cardSz, height: cardSz, borderRadius: 8, cursor: failed ? "not-allowed" : "pointer",
@@ -6633,7 +6685,7 @@ function App() {
                             }
                           }
                           setSel(t.id); setEraser(false);
-                          setHandMode(false); setRotateMode(false); setExploreMode(false); setMagnetMode(false); setEyedropperMode(false);
+                          setHandMode(false); setMagnetMode(false); setEyedropperMode(false);
                           if (highlightMode) { setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }
                         }}
                         style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: failed ? "not-allowed" : "pointer", border: `${active ? 3 : 2}px solid ${failed ? C.danger : active ? C.accentBright : C.border}`, boxShadow: active ? `0 0 0 1px ${C.accentBright}44` : "none", background: failed ? "rgba(248,113,113,0.08)" : active ? C.accentDim : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s, box-shadow 0.12s", opacity: failed ? 0.55 : 1, position: "relative", overflow: "visible" }}>
@@ -6717,7 +6769,7 @@ function App() {
                           // Erase-from-highlight mode: toggle eraser without clearing the highlight
                           setEraser(e => !e);
                         } else {
-                          setEraser(true); setSel(null); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); setDuplicateMode(false); setMagnetMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set();
+                          setEraser(true); setSel(null); setHandMode(false); setEyedropperMode(false); setDuplicateMode(false); setMagnetMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set();
                         }
                       }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${eraseBorder}`, background: eraseBg, transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
@@ -6740,7 +6792,7 @@ function App() {
                     const warnActive = sel === WARN_TILE_ID && !eraser;
                     const isStarredWarn = starredTiles.includes(WARN_TILE_ID);
                     return (
-                      <div onClick={() => { setSel(WARN_TILE_ID); setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setDuplicateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
+                      <div onClick={() => { setSel(WARN_TILE_ID); setEraser(false); setHandMode(false); setEyedropperMode(false); setDuplicateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${warnActive ? "#f97316" : C.border}`, background: warnActive ? "rgba(249,115,22,0.18)" : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
                         <div style={{ borderRadius: 6, overflow: "hidden" }}>
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: warnActive ? "rgba(249,115,22,0.38)" : "rgba(249,115,22,0.12)", padding: "2px 4px" }}>
@@ -6760,7 +6812,7 @@ function App() {
                   {(() => {
                     const isStarredHand = starredTiles.includes("hand");
                     return (
-                      <div onClick={() => { if (handMode) return; setHandMode(true); setEraser(false); setSel(null); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); setDuplicateMode(false); setMagnetMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
+                      <div onClick={() => { if (handMode) return; setHandMode(true); setEraser(false); setSel(null); setEyedropperMode(false); setDuplicateMode(false); setMagnetMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${handMode ? "#fbbf24" : C.border}`, background: handMode ? "rgba(251,191,36,0.14)" : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
                         <div style={{ borderRadius: 6, overflow: "hidden" }}>
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: handMode ? "rgba(251,191,36,0.28)" : "rgba(251,191,36,0.08)", padding: "2px 4px" }}>
@@ -6776,35 +6828,11 @@ function App() {
                       </div>
                     );
                   })()}
-                  {/* 1b-x. Explore */}
-                  {(() => {
-                    const exploreHint = !exploreMode && highlightMode && highlightedCells.size > 0;
-                    const exploreColor = "#9ADF1C"; // blend of Hand yellow and Pick lime
-                    const exploreBorderColor = exploreMode ? exploreColor : exploreHint ? "rgba(154,223,28,0.28)" : C.border;
-                    const exploreBgColor = exploreMode ? "rgba(154,223,28,0.15)" : exploreHint ? "rgba(154,223,28,0.04)" : "rgba(255,255,255,0.03)";
-                    const isStarredExplore = starredTiles.includes("explore");
-                    return (
-                      <div onClick={() => { if (exploreMode) return; setExploreMode(true); setEraser(false); setHandMode(false); setEyedropperMode(false); setRotateMode(false); setDuplicateMode(false); setMagnetMode(false); setSel(null); setExplorePicker(null); }}
-                        style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${exploreBorderColor}`, background: exploreBgColor, transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
-                        <div style={{ borderRadius: 6, overflow: "hidden" }}>
-                          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: exploreMode ? `rgba(154,223,28,0.28)` : exploreHint ? `rgba(154,223,28,0.06)` : `rgba(154,223,28,0.08)`, padding: "2px 4px" }}>
-                            <span style={{ fontSize: 9, fontWeight: 700, color: exploreMode ? exploreColor : exploreHint ? "rgba(154,223,28,0.4)" : C.muted }}>Explore</span>
-                          </div>
-                          <div style={{ height: cardSz - 18, background: C.panelDeep, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                            <span style={{ fontSize: 20, lineHeight: 1, opacity: (exploreMode || exploreHint) ? 1 : 0.55 }}>🌻</span>
-                          </div>
-                        </div>
-                        <span onClick={e => { e.stopPropagation(); setInfoTool("explore"); }}
-                          style={{ position: "absolute", top: -7, right: -7, width: 18, height: 18, fontSize: 15, cursor: "pointer", color: "rgba(255,255,255,0.85)", lineHeight: "18px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
-                          title={isStarredExplore ? "Starred — click for info" : "Explore info"}>{isStarredExplore ? "★" : "ⓘ"}</span>
-                      </div>
-                    );
-                  })()}
                   {/* 1c. Eyedropper */}
                   {(() => {
                     const isStarredEyedropper = starredTiles.includes("eyedropper");
                     return (
-                      <div onClick={() => { if (eyedropperMode) return; setEyedropperMode(true); setEraser(false); setHandMode(false); setRotateMode(false); setExploreMode(false); setExplorePicker(null); setSel(null); setDuplicateMode(false); setMagnetMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
+                      <div onClick={() => { if (eyedropperMode) return; setEyedropperMode(true); setEraser(false); setHandMode(false); setSel(null); setDuplicateMode(false); setMagnetMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${eyedropperMode ? "#39ff14" : C.border}`, background: eyedropperMode ? "rgba(57,255,20,0.15)" : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
                         <div style={{ borderRadius: 6, overflow: "hidden" }}>
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: eyedropperMode ? "rgba(57,255,20,0.22)" : "rgba(57,255,20,0.08)", padding: "2px 4px" }}>
@@ -6825,7 +6853,7 @@ function App() {
                     const isStarredSpace = starredTiles.includes(SPACE_TILE_ID);
                     const spaceActive = sel === SPACE_TILE_ID && !eraser;
                     return (
-                      <div onClick={() => { setSel(SPACE_TILE_ID); setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); setDuplicateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
+                      <div onClick={() => { setSel(SPACE_TILE_ID); setEraser(false); setHandMode(false); setEyedropperMode(false); setDuplicateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer",
                           border: `2px solid ${spaceActive ? "#60a5fa" : C.border}`,
                           background: spaceActive ? "rgba(96,165,250,0.15)" : "rgba(255,255,255,0.03)",
@@ -6845,43 +6873,12 @@ function App() {
                       </div>
                     );
                   })()}
-                  {/* 1e. Rotate */}
-                  {(() => {
-                    const isStarredRotate = starredTiles.includes("rotate");
-                    const rotateHint = !rotateMode && highlightMode && highlightedCells.size > 0;
-                    const rotateBorderColor = rotateMode ? "#2dd4bf" : rotateHint ? "rgba(124,58,237,0.28)" : C.border;
-                    const rotateBgColor = rotateMode ? "rgba(45,212,191,0.15)" : rotateHint ? "rgba(124,58,237,0.04)" : "rgba(255,255,255,0.03)";
-                    const rotateHeaderBg = rotateMode ? "rgba(45,212,191,0.28)" : rotateHint ? "rgba(124,58,237,0.07)" : "rgba(45,212,191,0.08)";
-                    const rotateLabelColor = rotateMode ? "#2dd4bf" : rotateHint ? "rgba(167,139,250,0.45)" : C.muted;
-                    return (
-                      <div onClick={() => { if (rotateMode) return; setRotateMode(true); setEraser(false); setHandMode(false); setEyedropperMode(false); setExploreMode(false); setDuplicateMode(false); setMagnetMode(false); setSel(null); }}
-                        style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer",
-                          border: `2px solid ${rotateBorderColor}`,
-                          background: rotateBgColor,
-                          transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
-                        <div style={{ borderRadius: 6, overflow: "hidden" }}>
-                          <div style={{ display: "flex", alignItems: "center", justifyContent: "center",
-                            background: rotateHeaderBg, padding: "2px 4px" }}>
-                            <span style={{ fontSize: 9, fontWeight: 700, color: rotateLabelColor }}>Rotate</span>
-                          </div>
-                          <div style={{ height: cardSz - 18, background: C.panelDeep, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                            <span style={{ fontSize: 20, lineHeight: 1, opacity: (rotateMode || rotateHint) ? 1 : 0.55 }}>🌊</span>
-                          </div>
-                        </div>
-                        <span onClick={e => { e.stopPropagation(); setInfoTool("rotate"); }}
-                          style={{ position: "absolute", top: -7, right: -7, width: 18, height: 18, fontSize: 15, cursor: "pointer",
-                            color: "rgba(255,255,255,0.85)", lineHeight: "18px", textAlign: "center",
-                            zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
-                          title={isStarredRotate ? "Starred — click for info" : "Rotate info"}>{isStarredRotate ? "★" : "ⓘ"}</span>
-                      </div>
-                    );
-                  })()}
                   {/* 1e2. Magnet */}
                   {(() => {
                     const isStarredMagnet = starredTiles.includes("magnet");
                     const hasCustomCenter = customCenter !== null;
                     return (
-                      <div onClick={() => { if (magnetMode) { setMagnetMode(false); return; } setMagnetMode(true); setEraser(false); setHandMode(false); setEyedropperMode(false); setExploreMode(false); setDuplicateMode(false); setRotateMode(false); setSel(null); }}
+                      <div onClick={() => { if (magnetMode) { setMagnetMode(false); return; } setMagnetMode(true); setEraser(false); setHandMode(false); setEyedropperMode(false); setDuplicateMode(false); setSel(null); }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer",
                           border: `2px solid ${magnetMode ? "#2563eb" : C.border}`,
                           background: magnetMode ? "rgba(37,99,235,0.15)" : "rgba(255,255,255,0.03)",
@@ -6946,7 +6943,7 @@ function App() {
                   {(() => {
                     const isStarredHighlight = starredTiles.includes("highlight");
                     return (
-                      <div onClick={() => { const turningOn = !highlightMode; setHighlightMode(h => !h); setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); if (turningOn) { setSel(null); } else { setDuplicateMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); } }}
+                      <div onClick={() => { const turningOn = !highlightMode; setHighlightMode(h => !h); setEraser(false); setHandMode(false); setEyedropperMode(false); if (turningOn) { setSel(null); } else { setDuplicateMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); } }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer",
                           border: `2px solid ${highlightMode ? "#a78bfa" : C.border}`,
                           background: highlightMode ? "rgba(167,139,250,0.15)" : "rgba(255,255,255,0.03)",
@@ -6987,7 +6984,7 @@ function App() {
                         const turningOn = !duplicateMode;
                         setDuplicateMode(d => !d);
                         if (turningOn) {
-                          setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); setMagnetMode(false); setSel(null);
+                          setEraser(false); setHandMode(false); setEyedropperMode(false); setMagnetMode(false); setSel(null);
                           if (!highlightMode) setHighlightMode(true);
                         } else {
                           setHighlightDragOffset(null); highlightDragOffsetRef.current = null; highlightDragAnchorCell.current = null;
@@ -7074,7 +7071,7 @@ function App() {
                               </div>
                               {!panelCollapsed[sectionId] && (<>
                                 {entries.map(renderEntry)}
-                                {/* + Add Tile card — shown to owners/admins at end of section, hidden for atlas tilesets */}
+                                {/* + Add Tile card — shown to owners/admins at end of section */}
                                 {canManageSec && (
                                   <div
                                     onClick={() => { setAddTileTsId(tilesetId); setAddTileOpen(true); setAddTileFile(null); setAddTileCodename(''); setAddTileFolderKey(''); setAddTileSortIdx(''); setAddTileError(''); }}
@@ -7159,7 +7156,7 @@ function App() {
             {/* Shortcut bar — selected tile + starred, when panel is collapsed */}
             {!tilesOpen && (() => {
               // Determine current selection key for dedup check
-              const selKey = eraser ? "erase" : handMode ? "hand" : rotateMode ? "rotate" : duplicateMode ? "duplicate" : exploreMode ? "explore" : eyedropperMode ? "eyedropper" : highlightMode ? "highlight" : sel;
+              const selKey = eraser ? "erase" : handMode ? "hand" : duplicateMode ? "duplicate" : eyedropperMode ? "eyedropper" : highlightMode ? "highlight" : sel;
               const selAlreadyStarred = selKey !== null && starredTiles.includes(selKey);
               // Render a mini-card for the currently selected item (if not already starred)
               const SelectedCard = () => {
@@ -7182,16 +7179,6 @@ function App() {
                 if (selKey === "highlight") return (
                   <div style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", border: `1px solid #a78bfa`, background: "rgba(167,139,250,0.22)" }} title="Highlight (selected)">
                     <span style={{ fontSize: 14 }}>🪄</span>
-                  </div>
-                );
-                if (selKey === "rotate") return (
-                  <div style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", border: `1px solid #2dd4bf`, background: "rgba(45,212,191,0.22)" }} title="Rotate (selected)">
-                    <span style={{ fontSize: 14 }}>🌊</span>
-                  </div>
-                );
-                if (selKey === "explore") return (
-                  <div style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", border: `1px solid #9ADF1C`, background: "rgba(154,223,28,0.22)" }} title="Explore (selected)">
-                    <span style={{ fontSize: 14 }}>🌻</span>
                   </div>
                 );
                 if (selKey === "duplicate") return (
@@ -7267,7 +7254,7 @@ function App() {
                     </div>
                   );
                   if (sid === WARN_TILE_ID) return (
-                    <div key="warn" onClick={() => { setSel(WARN_TILE_ID); setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setDuplicateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
+                    <div key="warn" onClick={() => { setSel(WARN_TILE_ID); setEraser(false); setHandMode(false); setEyedropperMode(false); setDuplicateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
                       style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
                         border: `1px solid ${sel === WARN_TILE_ID && !eraser ? "#f97316" : C.border}`, background: sel === WARN_TILE_ID && !eraser ? "rgba(249,115,22,0.22)" : "rgba(255,255,255,0.04)" }}
                       title="Warn">
@@ -7381,86 +7368,23 @@ function App() {
 
         {/* ── CANVAS ───────────────────────────────────────────────── */}
           <div ref={scrollRef}
-            style={{ flex: 1, minWidth: 0, height: "100%", overflow: "auto", background: C.bg, cursor: handMode ? "grab" : rotateMode ? "cell" : (dragTile || highlightDragOffset ? "grabbing" : eyedropperMode ? "cell" : highlightMode ? "copy" : "crosshair") }}
+            style={{ flex: 1, minWidth: 0, height: "100%", overflow: "auto", background: C.bg, cursor: handMode ? "grab" : (dragTile || highlightDragOffset ? "grabbing" : eyedropperMode ? "cell" : highlightMode ? "copy" : "crosshair") }}
             onWheel={onWheel}
             onMouseDown={e => {
               const wantsHand   = handModeRef.current   && !isDraggingRef.current;
-              const wantsRotate = rotateModeRef.current && !isDraggingRef.current;
-              if (!wantsHand && !wantsRotate) return;
+              if (!wantsHand) return;
               const el = scrollRef.current;
               const startX = e.clientX, startY = e.clientY;
               const startScrollLeft = el.scrollLeft, startScrollTop = el.scrollTop;
-              const pendingCell = wantsRotate ? cellFromEvent(e.clientX, e.clientY) : null;
-              let didDrag = false;
               el.style.cursor = "grabbing";
               const onMove = ev => {
-                if (!didDrag && (Math.abs(ev.clientX - startX) > 4 || Math.abs(ev.clientY - startY) > 4)) didDrag = true;
-                if (wantsHand || didDrag) {
-                  el.scrollLeft = startScrollLeft - (ev.clientX - startX);
-                  el.scrollTop  = startScrollTop  - (ev.clientY - startY);
-                }
+                el.scrollLeft = startScrollLeft - (ev.clientX - startX);
+                el.scrollTop  = startScrollTop  - (ev.clientY - startY);
               };
               const onUp = () => {
                 el.style.cursor = "";
                 document.removeEventListener('mousemove', onMove);
                 document.removeEventListener('mouseup',   onUp);
-                if (wantsRotate && !didDrag) {
-                  const highlighted = highlightedCellsRef.current;
-                  const seedCells = highlighted.size > 0
-                    ? [...highlighted].map(k => k.split(',').map(Number))
-                    : (pendingCell ? [pendingCell] : (rotatePendingCellRef.current ? [rotatePendingCellRef.current] : []));
-                  if (seedCells.length > 0) {
-                    // Expand seed cells with their mirror positions (deduped)
-                    const seen = new Set(seedCells.map(([r, c]) => `${r},${c}`));
-                    const cellsToProcess = [...seedCells];
-                    if (getMirrorRef.current) {
-                      for (const [r, c] of seedCells) {
-                        for (const [mr, mc] of getMirrorRef.current(r, c)) {
-                          const k = `${mr},${mc}`;
-                          if (!seen.has(k)) { seen.add(k); cellsToProcess.push([mr, mc]); }
-                        }
-                      }
-                    }
-                    const newRots  = { ...gridRotationsRef.current };
-                    const newFlips = { ...gridFlipsRef.current };
-                    let changed = false;
-                    for (const [r, c] of cellsToProcess) {
-                      const id = gridRef.current?.[r]?.[c];
-                      if (id == null) continue;
-                      // allTilesByIdRef resolves cross-tileset numeric-ID collisions in
-                      // favour of the active tileset. The rotate badge uses tiles.find()
-                      // (first match) so it can show 🐬 for a tile whose isDefaultRotatable
-                      // returns true, while this handler looks up the *active-tileset* tile
-                      // for the same numeric id — which may have dbRotatable=null — causing
-                      // canSpin/canFlip to be false and the rotation to be silently skipped.
-                      // Use flatDefaultTilesRef (same source as tiles.find) to stay
-                      // consistent with what the badge already checked.
-                      const tile = flatDefaultTilesRef.current.find(t => t.id === id)
-                        ?? allTilesByIdRef.current[id];
-                      if (!tile) continue;
-                      const canSpin = rotatableMapRef.current[id] !== undefined ? rotatableMapRef.current[id] : isDefaultRotatable(tile);
-                      const canFlip = allowFlipMapRef.current[id] !== undefined ? allowFlipMapRef.current[id] : isDefaultFlippable(tile);
-                      if (!canSpin && !canFlip) continue;
-                      if (canSpin) {
-                        const cur = newRots[`${r},${c}`] ?? 0;
-                        const next = (cur + 1) % 4;
-                        if (next === 0) delete newRots[`${r},${c}`]; else newRots[`${r},${c}`] = next;
-                      } else {
-                        const cur = newFlips[`${r},${c}`] ?? 0;
-                        const next = (cur + 1) % 4;
-                        if (next === 0) delete newFlips[`${r},${c}`]; else newFlips[`${r},${c}`] = next;
-                      }
-                      changed = true;
-                    }
-                    if (changed) {
-                      setGridRotations(newRots); gridRotationsRef.current = newRots;
-                      setGridFlips(newFlips);    gridFlipsRef.current = newFlips;
-                      histLabelRef.current = "Rotate";
-                      pushHistRef.current?.();
-                    }
-                  }
-                }
-                rotatePendingCellRef.current = null;
               };
               document.addEventListener('mousemove', onMove);
               document.addEventListener('mouseup',   onUp);
@@ -7595,28 +7519,6 @@ function App() {
                   })
                 )}
 
-                {/* Rotate mode badges — 🐬 on spinnable tiles, 🦭 on flip-only tiles */}
-                {rotateMode && (() => {
-                  const cellPx = CELL * zoom;
-                  const fontSize = Math.max(8, Math.min(14, cellPx * 0.38));
-                  const badges = [];
-                  grid.forEach((row, r) => row.forEach((id, c) => {
-                    if (!id) return;
-                    const t = getTile(id);
-                    if (!t || t.isSpace) return;
-                    const canSpin = rotatableMapRef.current[t.id] !== undefined ? rotatableMapRef.current[t.id] : isDefaultRotatable(t);
-                    const canFlip = allowFlipMapRef.current[t.id] !== undefined ? allowFlipMapRef.current[t.id] : isDefaultFlippable(t);
-                    if (!canSpin && !canFlip) return;
-                    const inHighlight = highlightedCells.size > 0 && highlightedCells.has(`${r},${c}`);
-                    badges.push(
-                      <div key={`rbadge${r}-${c}`} style={{ position: "absolute", left: c * cellPx, top: (r + 1) * cellPx, width: cellPx, height: cellPx, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none", zIndex: 10002 }}>
-                        <span style={{ fontSize, lineHeight: 1, opacity: inHighlight ? 1 : 0.65, filter: inHighlight ? "drop-shadow(0 0 3px rgba(45,212,191,0.9))" : "none" }}>{canSpin ? "🐬" : "🦭"}</span>
-                      </div>
-                    );
-                  }));
-                  return badges;
-                })()}
-
                 {/* Ghost tile warning overlay — ⚠️ on cells with deleted tile IDs */}
                 {(() => {
                   const cellPx = CELL * zoom;
@@ -7632,35 +7534,6 @@ function App() {
                     );
                   }));
                   return warnings.length > 0 ? warnings : null;
-                })()}
-
-                {/* Explore mode chevrons — ▸ on folder tiles */}
-                {exploreMode && (() => {
-                  const cellPx = CELL * zoom;
-                  const arrowSz = Math.max(10, Math.min(20, cellPx * 0.45));
-                  const elems = [];
-                  grid.forEach((row, r) => row.forEach((id, c) => {
-                    if (!id || id === SPACE_TILE_ID || id === WARN_TILE_ID) return;
-                    const t = getTile(id);
-                    if (!t || t.isSpace) return;
-                    const fKey = getTileFolderKey(t);
-                    if (!fKey) return;
-                    const siblings = tiles.filter(x => getTileFolderKey(x) === fKey);
-                    if (siblings.length <= 1) return;
-                    const inHighlight = highlightedCells.size > 0 && highlightedCells.has(`${r},${c}`);
-                    if (highlightedCells.size > 0 && !inHighlight) return;
-                    elems.push(
-                      <div key={`exp${r}-${c}`}
-                        onClick={e => { e.stopPropagation(); setExplorePicker({ r, c, siblings, x: e.clientX, y: e.clientY, forHighlight: inHighlight && highlightedCells.size > 1, fKey }); }}
-                        style={{ position: "absolute", left: c * cellPx, top: (r + 1) * cellPx, width: cellPx, height: cellPx,
-                          display: "flex", alignItems: "center", justifyContent: "center",
-                          cursor: "pointer", zIndex: 10004,
-                          background: inHighlight ? "rgba(154,223,28,0.18)" : "rgba(154,223,28,0.08)" }}>
-                        <span style={{ fontSize: arrowSz, lineHeight: 1, color: "#9ADF1C", fontWeight: 700, filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.9))" }}>▸</span>
-                      </div>
-                    );
-                  }));
-                  return elems.length > 0 ? elems : null;
                 })()}
 
 
@@ -7821,53 +7694,6 @@ function App() {
             </div>
           </div>
 
-        {/* Explore picker popup — rendered outside canvasContainerRef so position:fixed is viewport-relative */}
-        {explorePicker && (() => {
-          const { r, c, siblings, x, y, forHighlight, fKey } = explorePicker;
-          const applyExplore = targetId => {
-            histLabelRef.current = "Explore";
-            pushHistRef.current?.();
-            if (forHighlight) {
-              setGrid(prev => prev.map((row, ri) => row.map((id, ci) => {
-                if (!highlightedCellsRef.current.has(`${ri},${ci}`)) return id;
-                const t2 = getTile(id);
-                if (!t2 || getTileFolderKey(t2) !== fKey) return id;
-                return targetId;
-              })));
-            } else {
-              const mirrorPositions = getMirrorRef.current ? getMirrorRef.current(r, c) : [[r, c]];
-              setGrid(prev => prev.map((row, ri) => row.map((id, ci) =>
-                mirrorPositions.some(([mr, mc]) => mr === ri && mc === ci) ? targetId : id
-              )));
-            }
-            setExplorePicker(null);
-          };
-          const MAX_W = 220;
-          const vx = Math.min(x + 8, window.innerWidth - MAX_W - 8);
-          const vy = Math.min(y + 8, window.innerHeight - 200);
-          return (
-            <div style={{ position: "fixed", left: 0, top: 0, width: "100vw", height: "100vh", zIndex: 20000, pointerEvents: "auto" }}
-              onClick={() => setExplorePicker(null)}>
-              <div style={{ position: "fixed", left: vx, top: vy, background: "rgba(22,22,30,0.97)", border: `1px solid #9ADF1C`, borderRadius: 10, padding: 8, maxWidth: MAX_W, boxShadow: "0 4px 24px rgba(0,0,0,0.7)", zIndex: 20001, pointerEvents: "auto" }}
-                onClick={e => e.stopPropagation()}>
-                <div style={{ fontSize: 9, fontWeight: 700, color: "#9ADF1C", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>
-                  {siblings[0]?.folderLabel || fKey || (forHighlight ? "Apply to highlighted" : "Pick variant")}
-                </div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(40px, 1fr))", gap: 4 }}>
-                  {siblings.map(t => (
-                    <div key={t.id} onClick={() => applyExplore(t.id)}
-                      style={{ cursor: "pointer", borderRadius: 5, overflow: "hidden", aspectRatio: "1",
-                        border: `2px solid ${t.id === grid[r]?.[c] ? "#9ADF1C" : "rgba(154,223,28,0.3)"}`,
-                        background: t.id === grid[r]?.[c] ? "rgba(154,223,28,0.2)" : "rgba(255,255,255,0.04)" }}>
-                      <img src={t.blobSrc ?? t.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated" }} />
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          );
-        })()}
-
         {/* ── RIGHT SIDEBAR: Tools ─────────────────────────────────── */}
         <div style={{ display: "flex", flexDirection: "row", flexShrink: 0, alignSelf: "stretch" }}>
           {/* Right toggle strip — shows starred-tool mini-cards when collapsed */}
@@ -7880,7 +7706,7 @@ function App() {
                 mirrorV: "H", mirrorH: "V", mirrorD: "D",
                 guides: "🧭", offsetCenters: "🎯", replace: "♻️", overwrite: "🧱",
                 otg: "🧩",
-                eyedropper: "🧪", highlight: "🪄", rotate: "🌊", magnet: "🧲",
+                eyedropper: "🧪", highlight: "🪄", magnet: "🧲",
                 convert: "🔄",
               };
               const toolActionMap = {
@@ -7898,9 +7724,8 @@ function App() {
                 overwrite: () => setMirrorSettings(p => ({ ...p, allowSwap: !p.allowSwap })),
                 otg: () => setShowOTG(v => !v),
                 eyedropper: () => { if (eyedropperMode) return; setEyedropperMode(true); setEraser(false); setHandMode(false); setHighlightMode(false); setMagnetMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); },
-                highlight: () => { const on = !highlightMode; setHighlightMode(h => !h); setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setMagnetMode(false); if (!on) { setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); } },
-                rotate: () => { if (rotateMode) return; setRotateMode(true); setEraser(false); setHandMode(false); setHighlightMode(false); setEyedropperMode(false); setMagnetMode(false); },
-                magnet: () => { if (magnetMode) { setMagnetMode(false); return; } setMagnetMode(true); setEraser(false); setHandMode(false); setHighlightMode(false); setEyedropperMode(false); setRotateMode(false); setSel(null); },
+                highlight: () => { const on = !highlightMode; setHighlightMode(h => !h); setEraser(false); setHandMode(false); setEyedropperMode(false); setMagnetMode(false); if (!on) { setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); } },
+                magnet: () => { if (magnetMode) { setMagnetMode(false); return; } setMagnetMode(true); setEraser(false); setHandMode(false); setHighlightMode(false); setEyedropperMode(false); setSel(null); },
                 convert: () => setConvertOpen(true),
               };
               const toolActiveMap = {
@@ -7917,7 +7742,6 @@ function App() {
                 otg: showOTG,
                 eyedropper: eyedropperMode,
                 highlight: highlightMode,
-                rotate: rotateMode,
                 magnet: magnetMode,
                 convert: false,
               };
@@ -7927,7 +7751,7 @@ function App() {
                 mirrorV: C.pale, mirrorH: C.soft, mirrorD: C.accentBright,
                 guides: gColor, offsetCenters: ocColor, replace: C.soft, overwrite: owColor,
                 otg: C.danger,
-                eyedropper: "#39ff14", highlight: "#a78bfa", rotate: "#2dd4bf", magnet: "#2563eb",
+                eyedropper: "#39ff14", highlight: "#a78bfa", magnet: "#2563eb",
                 convert: C.soft,
               };
               // Only show tool-key starred items (not numeric tile IDs)
