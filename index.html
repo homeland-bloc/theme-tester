@@ -117,7 +117,6 @@
 </head>
 <body>
 <div id="root"></div>
-<script src="map_image_import.js"></script>
 <script type="text/babel" data-presets="oph">
 const { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } = React;
 
@@ -677,7 +676,7 @@ function TilesetGearModal({
             </div>
           )}
           {/* Owner transfer — admins only */}
-          {isAdmin && tsData.type !== 'atlas' && tsData.type !== 'atlas2' && (
+          {isAdmin && (
             <div style={{ display: "flex", flexDirection: "column", gap: 6, borderTop: `1px solid ${C.border}`, paddingTop: 8 }}>
               <span style={{ fontSize: 11, color: C.muted, fontWeight: 600 }}>Transfer Ownership</span>
               <div style={{ fontSize: 10, color: C.muted }}>
@@ -1164,7 +1163,7 @@ function App() {
   const rotatableMapRef      = useRef({}); // always-current rotatableMap for keyboard handler
   const allowFlipMapRef      = useRef({}); // always-current allowFlipMap for keyboard handler
   const allTilesByIdRef      = useRef({}); // always-current id→tile lookup for keyboard handler
-  const flatDefaultTilesRef  = useRef([]); // always-current flatDefaultTiles for MapImport
+  const flatDefaultTilesRef  = useRef([]); // always-current flatDefaultTiles
   const cardRotationsRef   = useRef({});
   const mirrorSettingsRef  = useRef({ mirrorSpawns: true, mirrorRotation: true, allowSwap: false });
   const canvasContainerRef = useRef(null); // ref to the relative canvas container for accurate coordinate calc
@@ -1298,7 +1297,6 @@ function App() {
       codename: row.codename,
       tilesetName: tsDef.name,
       tilesetId: tsDef.id,
-      tilesetType: tsDef.type,
       tilesetOwnerId: tsDef.owner_id,
       sortIndex: row.sort_index,
       dbSizeMultiplier: row.size_multiplier,
@@ -1414,25 +1412,6 @@ function App() {
   useEffect(() => { save("oph_map_name", mapName); }, [mapName]);
   useEffect(() => { save(SK.gridW, gridW); setSizeWInput(String(gridW)); }, [gridW]);
   useEffect(() => { save(SK.gridH, gridH); setSizeHInput(String(gridH)); }, [gridH]);
-
-  // Expose app state to the standalone map import module once tiles are loaded.
-  useEffect(() => {
-    if (tilesLoading || !window.MapImport?.init) return;
-    window.MapImport.init({
-      flatDefaultTiles,
-      dbTilesets,
-      ensureTilesetLoaded,
-      getTileMultiplier,
-      getTileOffset,
-      isPriority:     t => priorityTiles[t.id] !== undefined ? !!priorityTiles[t.id]  : (t.isDb ? !!t.dbPriority     : !!(t.src && TILE_SETTINGS.priority.some(p => t.src.includes(p)))),
-      isBottomRender: t => bottomTiles[t.id]   !== undefined ? !!bottomTiles[t.id]    : (t.isDb ? !!t.dbBottomRender : !!(t.src && TILE_SETTINGS.bottomRender.some(p => t.src.includes(p)))),
-      setGrid,
-      setGridW,
-      setGridH,
-      gridW,
-      gridH,
-    });
-  }, [tilesLoading, flatDefaultTiles, dbTilesets, ensureTilesetLoaded]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const getDefaultMultiplier = t => {
     if (t?.dbSizeMultiplier != null) return Number(t.dbSizeMultiplier);
@@ -1770,7 +1749,6 @@ function App() {
           codename: row.codename,
           tilesetName: tsDef.name,
           tilesetId: tsDef.id,
-          tilesetType: tsDef.type,
           tilesetOwnerId: tsDef.owner_id,
           sortIndex: row.sort_index,
           dbSizeMultiplier: row.size_multiplier,
@@ -1802,7 +1780,7 @@ function App() {
           entries.push({ type: 'folder', key: `${tsDef.name}/${key}`, label: key, tiles });
         });
         const cnt = entries.reduce((n, e) => n + (e.tiles?.length ?? 1), 0);
-        entriesPerTs.push({ name: tsDef.name, entries, count: cnt, tilesetId: tsDef.id, tilesetType: tsDef.type, tilesetOwnerId: tsDef.owner_id });
+        entriesPerTs.push({ name: tsDef.name, entries, count: cnt, tilesetId: tsDef.id, tilesetOwnerId: tsDef.owner_id });
         tsCount += cnt;
       }
     }
@@ -2049,7 +2027,6 @@ function App() {
       } else {
         tsBase.searchParams.set('is_published', 'eq.true');
       }
-      tsBase.searchParams.set('type', 'in.(atlas,atlas2,base,custom)');
       tsBase.searchParams.set('order', 'name');
       tsBase.searchParams.set('select', '*,profiles(username)');
       const token = currentUser?.firebaseToken ? await getValidToken() : null;
@@ -2076,10 +2053,10 @@ function App() {
         dbTilesByTsIdRef.current = {};
         setDbTilesets(tilesets);
 
-        // Default to saved tileset if still valid; otherwise pick the most recently created published one
+        // Default to saved tileset if still valid; otherwise seed_id 0, else first published by name, else first
         const saved = load(SK.activeTileset, null);
-        const customPublished = [...tilesets].filter(ts => ts.is_published && ts.type === 'custom').sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-        const mostRecent = customPublished[0]?.name ?? tilesets[0]?.name ?? null;
+        const published = tilesets.filter(ts => ts.is_published);
+        const mostRecent = (published.find(ts => ts.seed_id === 0) ?? [...published].sort((a, b) => a.name.localeCompare(b.name))[0] ?? tilesets[0])?.name ?? null;
         const name = (saved && tilesets.some(ts => ts.name === saved)) ? saved : mostRecent;
         setActiveTileset(name);
 
@@ -4774,7 +4751,6 @@ function App() {
                             if (!prev[tsId]) return prev;
                             return { ...prev, [tsId]: prev[tsId].map(row => row.id === t.dbId ? { ...row, show_tile_count: checked } : row) };
                           });
-                          setInfoTile(prev => prev ? { ...prev, dbShowTileCount: checked } : prev);
                         }, 0);
                       }} />
                     <span style={{ fontSize: 10, color: "#34d399", fontFamily: "monospace" }}>show_tile_count 🧮</span><FlagTip id="show_tile_count" />
@@ -4850,7 +4826,7 @@ function App() {
           )}
 
           {/* Replace image (owned DB tiles, not atlas) */}
-          {t.isDb && currentUser && (userProfile?.role === 'admin' || t.tilesetOwnerId === currentUser.id) && t.tilesetType !== 'atlas' && t.tilesetType !== 'atlas2' && (
+          {t.isDb && currentUser && (userProfile?.role === 'admin' || t.tilesetOwnerId === currentUser.id) && (
             <>
               <input type="file" accept="image/*" id="replace-img-input" style={{ display: "none" }}
                 onChange={e => {
@@ -4913,7 +4889,7 @@ function App() {
           )}
 
           {/* Delete — DB-owned tiles (admins and owners), hidden for atlas tilesets */}
-          {t.isDb && currentUser && (userProfile?.role === 'admin' || t.tilesetOwnerId === currentUser.id) && t.tilesetType !== 'atlas' && t.tilesetType !== 'atlas2' ? (
+          {t.isDb && currentUser && (userProfile?.role === 'admin' || t.tilesetOwnerId === currentUser.id) ? (
             deleteConfirmId === t.id ? (
               <div style={{ display: "flex", flexDirection: "column", gap: 5, padding: "6px 0" }}>
                 <span style={{ fontSize: 11, color: C.danger, textAlign: "center" }}>Type the codename to confirm:</span>
@@ -5408,9 +5384,8 @@ function App() {
   const ConvertModal = () => {
     if (!convertOpen) return null;
     const byAlpha = (a, b) => a.name.localeCompare(b.name);
-    const opheliaList = [...dbTilesets].filter(ts => ts.type === 'base' || ts.type === 'custom').sort((a, b) => { const si = (a.sort_index ?? 9999) - (b.sort_index ?? 9999); return si !== 0 ? si : byAlpha(a, b); });
-    const atlasList   = [...dbTilesets].filter(ts => ts.type === 'atlas' || ts.type === 'atlas2').sort((a, b) => (a.type === b.type ? byAlpha(a, b) : a.type === 'atlas' ? -1 : 1));
-    const allAvailableNames = [...opheliaList, ...atlasList].map(ts => ts.name);
+    const sortedTilesets = [...dbTilesets].sort(byAlpha);
+    const allAvailableNames = sortedTilesets.map(ts => ts.name);
 
     const defaultFrom = activeTileset ?? allAvailableNames[0] ?? "";
     const defaultTo   = allAvailableNames.find(n => n !== defaultFrom) ?? "";
@@ -5460,16 +5435,7 @@ function App() {
     const TsSelect = ({ value, onChange }) => (
       <select value={value} onChange={e => onChange(e.target.value)}
         style={{ background: C.panel, color: C.text, border: `1px solid ${C.border}`, borderRadius: 5, fontSize: 11, padding: "3px 6px", cursor: "pointer", outline: "none" }}>
-        {opheliaList.length > 0 && (
-          <optgroup label="Ophelia">
-            {opheliaList.map(ts => <option key={ts.name} value={ts.name}>{ts.name}</option>)}
-          </optgroup>
-        )}
-        {atlasList.length > 0 && (
-          <optgroup label="Atlas">
-            {atlasList.map(ts => <option key={ts.name} value={ts.name}>{ts.name}</option>)}
-          </optgroup>
-        )}
+        {sortedTilesets.map(ts => <option key={ts.name} value={ts.name}>{ts.profiles?.username ? `${ts.name} by ${ts.profiles.username}` : ts.name}</option>)}
       </select>
     );
 
@@ -5771,7 +5737,7 @@ function App() {
       const tsResp = await fetch(`${WORKER_URL}/rest/v1/tilesets`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=representation' },
-        body: JSON.stringify({ name, folder_path: folderPath, type: 'custom', owner_id: currentUser.id, is_published: false }),
+        body: JSON.stringify({ name, folder_path: folderPath, owner_id: currentUser.id, is_published: false }),
       });
       if (!tsResp.ok) {
         let msg = 'Failed to create tileset.';
@@ -5898,10 +5864,6 @@ function App() {
   const doAddTile = async () => {
     if (!addTileFile || !addTileCodename.trim() || !currentUser || !addTileTsId) return;
     const ts = dbTilesets.find(ts => ts.id === addTileTsId);
-    if (ts?.type === 'atlas' || ts?.type === 'atlas2') {
-      setAddTileError('Cannot add tiles to atlas tilesets.');
-      return;
-    }
     setAddTileLoading(true);
     setAddTileError('');
     try {
@@ -6187,7 +6149,7 @@ function App() {
                 {dbTilesets.map(ts => (
                   <div key={ts.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 4px", borderRadius: 4, background: "rgba(255,255,255,0.03)" }}>
                     <span style={{ fontSize: 11, color: C.text, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ts.name}</span>
-                    <span style={{ fontSize: 9, color: C.muted }}>{ts.type}</span>
+                    <span style={{ fontSize: 9, color: C.muted }}>{ts.owner_id == null ? '-' : (ts.profiles?.username ?? '-')}</span>
                     {ts.is_wip && <span style={{ fontSize: 9, color: "#fbbf24", background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.35)", borderRadius: 3, padding: "0 3px" }}>WIP</span>}
                     {!ts.is_published && <span style={{ fontSize: 9, color: "#f97316", background: "rgba(249,115,22,0.12)", border: "1px solid rgba(249,115,22,0.3)", borderRadius: 3, padding: "0 3px" }}>DRAFT</span>}
                     <button style={{ ...btn(false), fontSize: 9, padding: "1px 6px" }}
@@ -6579,8 +6541,7 @@ function App() {
                       <div ref={dropListRef} onMouseDown={e => e.stopPropagation()} style={{ position: "absolute", top: "100%", left: 8, right: 8, background: C.panelDeep, border: `1px solid ${C.border}`, borderRadius: 6, zIndex: 200, padding: "4px 0", maxHeight: 320, overflowY: "auto", boxShadow: "0 4px 16px rgba(0,0,0,0.45)" }}>
                         {(() => {
                           const byAlpha = (a, b) => a.name.localeCompare(b.name);
-                          const opheliaTilesets = [...dbTilesets].filter(ts => ts.type === 'base' || ts.type === 'custom').sort((a, b) => { const si = (a.sort_index ?? 9999) - (b.sort_index ?? 9999); return si !== 0 ? si : byAlpha(a, b); });
-                          const atlasTilesets   = [...dbTilesets].filter(ts => ts.type === 'atlas' || ts.type === 'atlas2').sort((a, b) => (a.type === b.type ? byAlpha(a, b) : a.type === 'atlas' ? -1 : 1));
+                          const sortedTilesets = [...dbTilesets].sort(byAlpha);
                           const isAdmin = userProfile?.role === 'admin';
                           const renderItem = ts => {
                             const checked = ts.name === activeTileset;
@@ -6598,19 +6559,13 @@ function App() {
                                       {isAdmin && !ts.is_published && <span style={{ fontSize: 8, fontWeight: 700, color: "#f97316", background: "rgba(249,115,22,0.12)", border: "1px solid rgba(249,115,22,0.3)", borderRadius: 3, padding: "0 3px" }}>HIDDEN</span>}
                                     </div>
                                   )}
-                                  {ownerUsername && (ts.type === 'base' || ts.type === 'custom') && (
+                                  {ownerUsername && (
                                     <span style={{ fontSize: 9, color: C.muted }}>by {ownerUsername}</span>
-                                  )}
-                                  {ts.type === 'atlas2' && (
-                                    <span style={{ fontSize: 9, color: C.muted }}>Community Tileset</span>
                                   )}
                                 </div>
                               </label>
                             );
                           };
-                          const sectionLabel = txt => (
-                            <div key={txt} style={{ padding: "5px 10px 2px", fontSize: 9, color: C.muted, textTransform: "uppercase", letterSpacing: 1.2, fontWeight: 700, userSelect: "none" }}>{txt}</div>
-                          );
                           return (
                             <>
                               {currentUser && (userProfile?.role === 'admin' || userProfile?.role === 'creator') && (
@@ -6621,10 +6576,7 @@ function App() {
                                   <span style={{ fontSize: 11, color: C.muted, fontStyle: "italic" }}>Create Tileset</span>
                                 </div>
                               )}
-                              {opheliaTilesets.length > 0 && sectionLabel("Opheliapp")}
-                              {opheliaTilesets.map(renderItem)}
-                              {atlasTilesets.length > 0 && sectionLabel("Atlas")}
-                              {atlasTilesets.map(renderItem)}
+                              {sortedTilesets.map(renderItem)}
                             </>
                           );
                         })()}
@@ -7087,7 +7039,7 @@ function App() {
                       );
                       return (<>
                         {/* ── Per-tileset sections (one per shown Ophelia tileset) ── */}
-                        {tilesetEntriesPerTs.map(({ name, entries, count, tilesetId, tilesetOwnerId, tilesetType }) => {
+                        {tilesetEntriesPerTs.map(({ name, entries, count, tilesetId, tilesetOwnerId }) => {
                           const isAdmin = userProfile?.role === 'admin';
                           const isOwned = currentUser && tilesetOwnerId === currentUser.id;
                           const canManageSec = isAdmin || isOwned;
@@ -7123,7 +7075,7 @@ function App() {
                               {!panelCollapsed[sectionId] && (<>
                                 {entries.map(renderEntry)}
                                 {/* + Add Tile card — shown to owners/admins at end of section, hidden for atlas tilesets */}
-                                {canManageSec && tilesetType !== 'atlas' && tilesetType !== 'atlas2' && (
+                                {canManageSec && (
                                   <div
                                     onClick={() => { setAddTileTsId(tilesetId); setAddTileOpen(true); setAddTileFile(null); setAddTileCodename(''); setAddTileFolderKey(''); setAddTileSortIdx(''); setAddTileError(''); }}
                                     style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: "pointer", border: `2px dashed ${C.border}`, background: "rgba(255,255,255,0.03)", overflow: "hidden", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2 }}
@@ -8253,31 +8205,26 @@ function App() {
             <button style={btn(true, C.soft, C.softDim)} onClick={() => setDownloadConfirmOpen(true)}>Download</button>
           </div>
 
-          {/* Row 3: History | Import */}
+          {/* Row 3: History */}
           <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 8, padding: "3px 14px" }}>
             <button style={btn(true, C.accent, C.accentDim)}
               title={`History (${histIdx + 1}/${history.length})`}
               onClick={() => setHistoryModalOpen(true)}>🕘 Show History</button>
-            <button style={btn(true, uiTheme === 'cold' ? '#a78bfa' : '#84cc16', uiTheme === 'cold' ? 'rgba(167,139,250,0.18)' : 'rgba(132,204,22,0.18)')} onClick={() => window.MapImport?.open()}>Import Map From Image 🖼️</button>
           </div>
 
           {/* Row 3: Background colour selector */}
           {(() => {
             const byAlpha = (a, b) => a.name.localeCompare(b.name);
-            const opheliaTilesets = [...dbTilesets].filter(ts => ts.type === 'base' || ts.type === 'custom').sort((a, b) => { const si = (a.sort_index ?? 9999) - (b.sort_index ?? 9999); return si !== 0 ? si : byAlpha(a, b); });
-            const atlasTilesets   = [...dbTilesets].filter(ts => ts.type === 'atlas' || ts.type === 'atlas2').sort((a, b) => (a.type === b.type ? byAlpha(a, b) : a.type === 'atlas' ? -1 : 1));
+            const sortedTilesets = [...dbTilesets].sort(byAlpha);
             const getBgForTs = ts => {
               if (ts.bg_color_light && ts.bg_color_dark) return { bg1: ts.bg_color_light, bg2: ts.bg_color_dark };
               return OPHELIA_BG[ts.name] ?? { bg1: "#1a2332", bg2: "#1e2838" };
             };
             const isAdmin = userProfile?.role === 'admin';
             const activePresetLabel = selectedBgPreset === 'custom' ? '✏ Custom' : (selectedBgPreset ?? 'Custom');
-            const sectionLabel = txt => (
-              <div key={txt} style={{ padding: "4px 9px 2px", fontSize: 9, color: C.muted, textTransform: "uppercase", letterSpacing: 1.2, fontWeight: 700, userSelect: "none" }}>{txt}</div>
-            );
             const renderBgItem = ts => {
               const checked = selectedBgPreset === ts.name;
-              const nameColor = ts.type === 'atlas2' ? (checked ? '#fcd34d' : '#d4b896') : (checked ? C.accentBright : C.text);
+              const nameColor = checked ? C.accentBright : C.text;
               return (
                 <div key={ts.name}
                   style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 9px", cursor: "pointer", userSelect: "none", background: checked ? "rgba(255,255,255,0.05)" : "transparent" }}
@@ -8321,10 +8268,7 @@ function App() {
                         <div style={{ width: 10, height: 10, borderRadius: 2, background: customBg.bg2, border: `1px solid ${C.border}`, flexShrink: 0 }} />
                         <span style={{ fontSize: 11, color: selectedBgPreset === 'custom' ? C.accent : C.text, fontStyle: "italic" }}>✏ Custom…</span>
                       </div>
-                      {opheliaTilesets.length > 0 && sectionLabel("Opheliapp")}
-                      {opheliaTilesets.map(renderBgItem)}
-                      {atlasTilesets.length > 0 && sectionLabel("Atlas")}
-                      {atlasTilesets.map(renderBgItem)}
+                      {sortedTilesets.map(renderBgItem)}
                     </div>
                   )}
                 </div>
