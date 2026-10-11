@@ -127,7 +127,7 @@ const MIN_ZOOM = 0.25, MAX_ZOOM = 4;
 // Zoom buttons snap to nearest 5%
 const ZOOM_STEP = 0.05;
 const snapTo10 = z => Math.round(z * 20) / 20;
-const SK = { tiles: "oph_tiles", grid: "oph_grid", colors: "oph_colors", userTiles: "oph_user_tiles", multipliers: "oph_multipliers", priority: "oph_priority", offsets: "oph_offsets", rotatable: "oph_rotatable", tileRots: "oph_tile_rots", gridW: "oph_gridW", gridH: "oph_gridH", tileNames: "oph_tile_names", bottom: "oph_bottom", mirrorOffset: "oph_mirror_offset", gridOff: "oph_grid_off", activeTileset: "oph_active_ts" };
+const SK = { grid: "oph_grid", colors: "oph_colors", userTiles: "oph_user_tiles", multipliers: "oph_multipliers", priority: "oph_priority", offsets: "oph_offsets", rotatable: "oph_rotatable", tileRots: "oph_tile_rots", gridW: "oph_gridW", gridH: "oph_gridH", tileNames: "oph_tile_names", bottom: "oph_bottom", mirrorOffset: "oph_mirror_offset", gridOff: "oph_grid_off", activeTileset: "oph_active_ts" };
 const ACCEPTED = "image/png,image/jpeg,image/gif,image/webp,image/svg+xml,image/bmp";
 const MAX_HISTORY = 60;
 // Non-overlapping tile ID ranges — prevents collisions between sections regardless of reordering
@@ -135,14 +135,12 @@ const TILESET_ID_START = 1;   // 001–199: active tileset tiles (Mausoleum wall
 const USER_ID_START    = 500; // 500–699: user-uploaded tiles
 const USER_ID_MAX      = 699;
 const GLOBAL_ID_START  = 200; // 200–299: global tiles (water, spawns, objectives, etc.)
-const ATLAS_ID_START   = 300; // 300–499 (and 700–9999): atlas tiles (She-Fairy/atlas-horizon)
-const ATLAS_ID_MAX     = 9999; // upper bound for atlas tile IDs (skips user range 500-699)
+const GLOBAL_ID_MAX    = 299;
 const SPACE_TILE_ID    = 998; // special: makes a cell fully transparent
 const WARN_TILE_ID     = 997; // special: places a warning-marker ghost tile
 const REPLACE_ERASE_ID = -1;  // sentinel: replace-with-empty in the Replace modal
 
-// All Supabase requests go through the Worker (never directly to SUPABASE_URL with an anon key).
-const SUPABASE_URL = "https://eizcooctnlugsxcyrplh.supabase.co";
+// All Supabase requests go through the Worker.
 const WORKER_URL = "https://oph.opheliapp.workers.dev";
 const DISCORD_CLIENT_ID = "1503113409678410019";
 // Hardcoded BG colours for Ophelia tilesets (single source of truth)
@@ -155,7 +153,6 @@ const OPHELIA_BG = {
   Pharmacy:  { bg1: "#95a4ae", bg2: "#a2b0b8" },
 };
 // Tilesets that are still work-in-progress — shown with a WIP badge in the UI.
-const WIP_TILESETS = new Set([]);
 
 // Default per-tile settings: src pattern → property value.
 // Functions like isDefaultRotatable/isDefaultOTGWall read from here.
@@ -178,7 +175,7 @@ const TILE_SETTINGS = {
 // is rebuilt on every activeTileset change with the active tileset written last,
 // ensuring it always wins any cross-tileset numeric collision.
 // IDs stay strictly below GLOBAL_ID_START so they never collide with global
-// (200–299), atlas (300–499), or user (500+) tile ranges.
+// (200–299) or user (500+) tile ranges.
 const uuidToStableId = (() => {
   // tilesetId (string UUID) → { cache: Map<uuid, id>, occupied: Map<id, uuid> }
   const pools = new Map();
@@ -244,7 +241,6 @@ const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } cat
 // ── Palette-based grid serialization ───────────────────────────────────
 // Each tile is identified by a stable codename independent of runtime IDs:
 //   default tiles  → their src path  (e.g. "Resources/Mausoleum/MSLM-wall.png")
-//   atlas tiles    → "a:" + codename (e.g. "a:Arcade_Wall1_wall1")
 //   user tiles     → "u:" + stored id (id is persisted, so it is stable)
 //   space tile     → "space"
 const GRID_FORMAT_VERSION = 2;
@@ -253,7 +249,6 @@ const getTileCodename = tile => {
   if (tile.id === SPACE_TILE_ID) return "space";
   if (tile.id === WARN_TILE_ID) return "warn";
   if (tile.dbId) return "d:" + tile.dbId;
-  if (tile.isAtlas) return "a:" + tile.codename;
   if (!tile.isDefault) return "u:" + tile.id;
   return tile.src;
 };
@@ -263,7 +258,6 @@ const resolveCodename = (codename, tiles) => {
   if (codename === "warn") return { id: WARN_TILE_ID };
   if (codename.startsWith("u:")) { const uid = parseInt(codename.slice(2), 10); return tiles.find(t => t.id === uid) ?? null; }
   if (codename.startsWith("d:")) { const uuid = codename.slice(2); return tiles.find(t => t.dbId === uuid) ?? null; }
-  if (codename.startsWith("a:")) { const cn = codename.slice(2); return tiles.find(t => t.isAtlas && t.codename === cn) ?? null; }
   return tiles.find(t => t.src === codename) ?? null;
 };
 const encodeGridForStorage = (grid, tiles) => {
@@ -1243,7 +1237,7 @@ function App() {
   const [mirrorOffsetTiles, setMirrorOffsetTiles] = useState(() => load(SK.mirrorOffset, {}));
   const [showOffsetCenters, setShowOffsetCenters] = useState(false);
   // Collapsible tiles panel sections: true = collapsed
-  const [panelCollapsed, setPanelCollapsed] = useState(() => load("oph_panel_collapsed", { essentials: false, tileset: false, user: false, global: false, atlas: false }));
+  const [panelCollapsed, setPanelCollapsed] = useState(() => load("oph_panel_collapsed", { essentials: false, tileset: false, user: false, global: false }));
   // Failed tile tracking
   const [failedTiles,   setFailedTiles]   = useState(new Set());
   const [failedWarning, setFailedWarning] = useState(false);
@@ -1548,7 +1542,7 @@ function App() {
     if (s.includes("Gem_Grab") || s.includes("Heist")) return 2.0;
     // Bounty star → 1.2x
     if (s.includes("Bounty")) return 1.2;
-    // Atlas Post_R / Post_TR rope tiles → 1.5×
+    // Rope Post_R / Post_TR tiles → 1.5×
     if (s.includes("/Rope/Post_R") || s.includes("/Rope/Post_TR")) return 1.5;
     return 1.0;
   };
@@ -1577,7 +1571,7 @@ function App() {
     if (s.includes("Heist")) return { ox: 0, oy: -60 };
     if (s.includes("Brawl_Ball")) return { ox: 0, oy: -14 };
     if (s.includes("Bounty")) return { ox: 0, oy: 4 };
-    // Atlas Post_R / Post_TR rope tiles
+    // Rope Post_R / Post_TR tiles
     if (s.includes("/Rope/Post_R") || s.includes("/Rope/Post_TR")) return { ox: 25, oy: 0 };
     if (s.includes("SlowTile")) return { ox: 0, oy: 5 };
     if (s.includes("SpeedTile")) return { ox: 0, oy: 5 };
@@ -1801,8 +1795,6 @@ function App() {
   const [gridLoadWarning, setGridLoadWarning] = useState(null); // null or count of unresolved tiles
   const [customBgModalOpen, setCustomBgModalOpen] = useState(false);
   const [bgDropOpen, setBgDropOpen] = useState(false);
-  // Cached BG colours per tileset name (loaded from DB or sampled)
-  const [tilesetBgColors, setTilesetBgColors] = useState(() => load("oph_ts_bg", {}));
   // Parsed manifest data (globals only)
   const [manifest, setManifest] = useState(null);
   useEffect(() => { openFolderKeyRef.current = openFolderKey; }, [openFolderKey]);
@@ -1915,9 +1907,7 @@ function App() {
         if (!files || files.length === 0) continue;
         const folderPath = gDef.folderPaths?.[key] ?? `Global/${key}/`;
         const label = displayLabel(key, folderPath);
-        const EXCLUDED_GLOBAL_FILES = { jumppads: ["TL.png", "L.png", "BL.png"] };
         const folderTiles = files
-          .filter(fn => !(EXCLUDED_GLOBAL_FILES[key] ?? []).includes(fn))
           .map(fn => {
             const t = makeTile(`${folderPath}${fn}`);
             t.folderKey = `global_${key}`; t.folderLabel = label;
@@ -2029,7 +2019,7 @@ function App() {
         const dbBg_ = (newTsDef?.bg_color_light && newTsDef?.bg_color_dark)
           ? { bg1: newTsDef.bg_color_light, bg2: newTsDef.bg_color_dark } : null;
         const opheliaBg_ = OPHELIA_BG[newTilesetName] ?? null;
-        const tsBg_ = dbBg_ ?? opheliaBg_ ?? tilesetBgColors[newTilesetName] ?? { bg1: "#1a2332", bg2: "#1e2838" };
+        const tsBg_ = dbBg_ ?? opheliaBg_ ?? { bg1: "#1a2332", bg2: "#1e2838" };
         setTilesetSwitchPending(prev => prev ? { ...prev, tsBg: tsBg_ } : prev);
         return;
       }
@@ -2051,7 +2041,7 @@ function App() {
       ? { bg1: newTsDef.bg_color_light, bg2: newTsDef.bg_color_dark }
       : null;
     const opheliaBg = OPHELIA_BG[newTilesetName] ?? null;
-    const tsBg = dbBg ?? opheliaBg ?? tilesetBgColors[newTilesetName] ?? { bg1: "#1a2332", bg2: "#1e2838" };
+    const tsBg = dbBg ?? opheliaBg ?? { bg1: "#1a2332", bg2: "#1e2838" };
 
     // ── 5. Push history snap with converted grid, then apply state ───────
     const snap = { grid: newGrid, w: gridWRef.current, h: gridHRef.current, tileset: newTilesetName, bg1: tsBg.bg1, bg2: tsBg.bg2, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current, label: `Switch from ${activeTileset ?? '(none)'} to ${newTilesetName}` };
@@ -2374,7 +2364,7 @@ function App() {
   };
 
   // Resolve a v2 palette-format grid once all tiles (including default tiles from the manifest) are loaded.
-  // Guard on flatDefaultTiles.length rather than tiles.length: if the user has atlas tiles persisted in
+  // Guard on flatDefaultTiles.length rather than tiles.length: if the user has tiles persisted in
   // localStorage, tiles is non-empty from the very first render (before the setDefaultTiles useEffect
   // runs), so tiles.length === 0 is not a reliable signal that default tiles are available yet.
   //
@@ -2393,13 +2383,13 @@ function App() {
     }
     // If the palette contains plain src-path codenames (global tiles), wait until manifest is loaded
     // so that global tiles are present in flatDefaultTiles before resolution.
-    const hasSrcCodenames = palette.some(cn => typeof cn === 'string' && cn !== 'space' && cn !== 'warn' && !cn.startsWith('d:') && !cn.startsWith('u:') && !cn.startsWith('a:'));
+    const hasSrcCodenames = palette.some(cn => typeof cn === 'string' && cn !== 'space' && cn !== 'warn' && !cn.startsWith('d:') && !cn.startsWith('u:'));
     if (hasSrcCodenames && !manifest) return;
     const pending = pendingGridLoadRef.current;
     pendingGridLoadRef.current = null; // clear before setGridRaw so save effect runs correctly
     const { palette: resolvedPalette, grid: indexGrid } = pending;
     const unresolved = [];
-    // Resolve against flatDefaultTiles directly (always current) plus persisted user/atlas tiles.
+    // Resolve against flatDefaultTiles directly (always current) plus persisted user tiles.
     const allTiles = [...flatDefaultTiles, ...userTiles];
     const idFromPaletteIdx = [null, ...resolvedPalette.map(cn => {
       const tile = resolveCodename(cn, allTiles);
@@ -4392,7 +4382,7 @@ function App() {
     const currentMult = getTileMultiplier(t);
     const defaultOff  = getDefaultOffset(t);
     const currentOff  = getTileOffset(t);
-    const defaultCodename_ = t.isDefault ? (deriveCodename(t.src) ?? "") : t.isAtlas ? (t.baseCodename ?? t.codename ?? "") : "";
+    const defaultCodename_ = t.isDefault ? (deriveCodename(t.src) ?? "") : "";
     const canEditDb = !!(currentUser && t.isDb && t.dbId && (userProfile?.role === 'admin' || t.tilesetOwnerId === currentUser.id));
     const [multInput,         setMultInput]         = React.useState(String(currentMult));
     const [oxInput,           setOxInput]           = React.useState(String(currentOff.ox));
@@ -4880,7 +4870,7 @@ function App() {
             </button>
           )}
 
-          {/* Replace image (owned DB tiles, not atlas) */}
+          {/* Replace image (owned DB tiles) */}
           {t.isDb && currentUser && (userProfile?.role === 'admin' || t.tilesetOwnerId === currentUser.id) && (
             <>
               <input type="file" accept="image/*" id="replace-img-input" style={{ display: "none" }}
@@ -4943,7 +4933,7 @@ function App() {
             </>
           )}
 
-          {/* Delete — DB-owned tiles (admins and owners), hidden for atlas tilesets */}
+          {/* Delete — DB-owned tiles (admins and owners) */}
           {t.isDb && currentUser && (userProfile?.role === 'admin' || t.tilesetOwnerId === currentUser.id) ? (
             deleteConfirmId === t.id ? (
               <div style={{ display: "flex", flexDirection: "column", gap: 5, padding: "6px 0" }}>
@@ -5119,7 +5109,7 @@ function App() {
     // Step 2: full tile list — tileset tiles grouped with collapsible sections
     const tilesetTiles_  = tiles.filter(t => t.id >= TILESET_ID_START && t.id < GLOBAL_ID_START);
     const userTiles_     = tiles.filter(t => t.id >= USER_ID_START && t.id <= USER_ID_MAX);
-    const globalTiles_   = tiles.filter(t => t.id >= GLOBAL_ID_START && t.id < ATLAS_ID_START);
+    const globalTiles_   = tiles.filter(t => t.id >= GLOBAL_ID_START && t.id <= GLOBAL_ID_MAX);
 
     // Group tileset tiles by tileset name
     const tsByName = {};
@@ -5239,7 +5229,7 @@ function App() {
 
     const tilesetTiles_ = tiles.filter(t => t.id >= TILESET_ID_START && t.id < GLOBAL_ID_START);
     const userTiles_    = tiles.filter(t => t.id >= USER_ID_START && t.id <= USER_ID_MAX);
-    const globalTiles_  = tiles.filter(t => t.id >= GLOBAL_ID_START && t.id < ATLAS_ID_START);
+    const globalTiles_  = tiles.filter(t => t.id >= GLOBAL_ID_START && t.id <= GLOBAL_ID_MAX);
 
     return (
       <div className="modal-backdrop" onClick={close}>
@@ -5627,7 +5617,7 @@ function App() {
     }
 
     const newTilesForDropdown = flatDefaultTiles.filter(ft => ft.isDb && ft.dbTilesetId === newTsDef?.id);
-    const globalTilesForDropdown = flatDefaultTiles.filter(t => !t.isDb && !t.isAtlas);
+    const globalTilesForDropdown = flatDefaultTiles.filter(t => !t.isDb);
 
     const handleConfirm = () => {
       const pending = tilesetSwitchPending;
@@ -6386,7 +6376,7 @@ function App() {
         const entry = allEntries.find(e => e.type === 'folder' && e.key === openFolderKey);
         if (!entry) return null;
         const cardSz = isMobile ? 56 : 72;
-        const cols = entry.tiles.length > 16 ? 5 : 4; // wider panel for large Atlas folders
+        const cols = entry.tiles.length > 16 ? 5 : 4; // wider panel for large folders
         const panelW = cardSz * cols + 5 * (cols - 1) + 12;
         const maxH = Math.min(480, window.innerHeight - 32);
         const anchorX = Math.min(folderPanelAnchor.x, window.innerWidth - panelW - 8);
@@ -7081,7 +7071,7 @@ function App() {
                               </div>
                               {!panelCollapsed[sectionId] && (<>
                                 {entries.map(renderEntry)}
-                                {/* + Add Tile card — shown to owners/admins at end of section, hidden for atlas tilesets */}
+                                {/* + Add Tile card — shown to owners/admins at end of section */}
                                 {canManageSec && (
                                   <div
                                     onClick={() => { setAddTileTsId(tilesetId); setAddTileOpen(true); setAddTileFile(null); setAddTileCodename(''); setAddTileFolderKey(''); setAddTileSortIdx(''); setAddTileError(''); }}
