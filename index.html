@@ -1840,6 +1840,8 @@ function App() {
 
     for (const tsDef of dbTilesets) {
       const isActive = tsDef.name === activeTileset;
+      // Containment: only the active tileset's tiles may reach flatDefaultTiles (dbTilesByTsId stays a fetch cache).
+      if (!isActive) continue;
       const tilesForTs = (dbTilesByTsId[tsDef.id] ?? []).slice().sort((a, b) => a.sort_index - b.sort_index);
       const entries = [];
       const folderGroups = {};
@@ -2106,6 +2108,34 @@ function App() {
         t.dbAutoShadow != null ? !!t.dbAutoShadow : false));
     }
   }, [flatDefaultTiles]);
+
+  // Whenever the active tileset changes (switch, undo, map load), drop every numeric override keyed in the
+  // tileset range (1..199): those ids are only meaningful inside one tileset. Global (200+) and user (500+) keys stay.
+  const prevActiveTsForOverridesRef = useRef(null);
+  useEffect(() => {
+    const prev = prevActiveTsForOverridesRef.current;
+    prevActiveTsForOverridesRef.current = activeTileset ?? null;
+    if (prev === null || prev === (activeTileset ?? null)) return; // first assignment is not a change
+    const keepNonTileset = obj => {
+      const next = {};
+      Object.entries(obj).forEach(([k, v]) => { if (Number(k) >= GLOBAL_ID_START) next[k] = v; });
+      return next;
+    };
+    setTileMultipliers(keepNonTileset);
+    setTileOffsets(keepNonTileset);
+    setRotatableMap(keepNonTileset);
+    setAllowFlipMap(keepNonTileset);
+    setMirrorOffsetTiles(keepNonTileset);
+    setOtgWallOverrides(keepNonTileset);
+    setPriorityTiles(keepNonTileset);
+    setBottomTiles(keepNonTileset);
+    setAutoShadowTiles(keepNonTileset);
+    setTileNames(keepNonTileset);
+    setTileCountMap(keepNonTileset);
+    setCardRotations(keepNonTileset);
+    setCardFlipSteps(keepNonTileset);
+    setCardFlipModes(keepNonTileset);
+  }, [activeTileset]);
 
   // Load global manifest + tilesets list. Tiles are loaded on demand per tileset.
   useEffect(() => {
