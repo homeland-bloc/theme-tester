@@ -490,6 +490,239 @@ function TypeToConfirmModal({ title, message, expected, placeholder, confirmLabe
   );
 }
 
+// ── BulkRenameModal — rename every tile file in a tileset to its codename.
+//    Step 1 dry run -> step 2 copy to new names + repoint DB -> step 3 delete old files.
+//    Copy-first, so the live tileset never points at a missing file.
+function BulkRenameModal({ tsData, dbTilesByTsId, currentUser, getValidToken, workerFetch, onClose, onChanged }) {
+  const [rows, setRows] = React.useState(null);     // null until the dry run has been built
+  const [busy, setBusy] = React.useState(false);
+  const [progress, setProgress] = React.useState('');
+  const [message, setMessage] = React.useState(null); // { kind: 'ok'|'err', text }
+  const folder = tsData.folder_path;
+  const prefix = `Resources/${folder}/`;
+
+  const fetchRows = async token => {
+    const r = await workerFetch(`${WORKER_URL}/rest/v1/tiles?tileset_id=eq.${tsData.id}&select=*&order=sort_index`, {
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+    });
+    if (!r.ok) throw new Error((await workerErrorMessage(r, 'Could not load tiles')).message);
+    const data = await r.json();
+    return Array.isArray(data) ? data : [];
+  };
+
+  // Step 1 — pure planning, nothing is written.
+  const buildPlan = async () => {
+    setBusy(true); setMessage(null); setProgress('Loading tiles…');
+    try {
+      const token = await getValidToken();
+      const dbRows = await fetchRows(token);
+      const occupied = new Set();
+      for (const r of dbRows) { const pth = repoPathFromUrl(r.image_url); if (pth) occupied.add(pth.toLowerCase()); }
+      const claimed = new Set();
+      const plan = dbRows.map(r => {
+        const oldPath = repoPathFromUrl(r.image_url);
+        const row = { id: r.id, codename: r.codename, oldPath, newPath: null, status: 'rename', error: null,
+          oldName: oldPath ? fileNameOf(oldPath) : String(r.image_url).split('?')[0].split('/').pop(), newName: '' };
+        if (!oldPath) { row.status = 'external'; return row; }
+        if (!oldPath.startsWith(prefix)) { row.status = 'other-folder'; return row; }
+        const sensor = !!r.sensor_code;
+        const desired = defaultFileName({ codename: r.codename, folderKey: r.folder_key, sensorCode: r.sensor_code, ext: fileExtOf(row.oldName), sensor });
+        if (!desired) { row.status = 'invalid'; row.error = 'sensor tile needs a folder_key'; return row; }
+        const nameErr = checkFileName(desired);
+        if (nameErr) { row.status = 'invalid'; row.newName = desired; row.error = nameErr; return row; }
+        row.newName = desired;
+        row.newPath = `${dirOf(oldPath)}/${desired}`;
+        row.sensor = sensor;
+        if (row.newPath === oldPath) { row.status = 'ok'; claimed.add(oldPath.toLowerCase()); }
+        return row;
+      });
+      for (const row of plan) {
+        if (row.status !== 'rename') continue;
+        let target = row.newPath;
+        const taken = new Set([...occupied, ...claimed]);
+        if (taken.has(target.toLowerCase())) {
+          if (row.sensor) {
+            row.newName = uniqueFileName(dirOf(target), row.newName, taken);
+            target = `${dirOf(target)}/${row.newName}`;
+          } else {
+            row.status = 'collision';
+            row.error = 'another file in this tileset already uses that name';
+            continue;
+          }
+        }
+        row.newPath = target;
+        claimed.add(target.toLowerCase());
+      }
+      setRows(plan);
+      setProgress('');
+    } catch (err) {
+      setMessage({ kind: 'err', text: err.message });
+      setProgress('');
+    }
+    setBusy(false);
+  };
+
+  const patchRow = (id, patch) => setRows(prev => prev.map(r => r.id === id ? { ...r, ...patch } : r));
+
+  // Step 2 — one /github/move copy (deleteOld:false), then repoint each tile.
+  const doCopy = async () => {
+    setBusy(true); setMessage(null);
+    try {
+      const token = await getValidToken();
+      const pending = rows.filter(r => r.status === 'rename');
+      const copiedNow = [];
+      if (pending.length) {
+        setProgress(`Copying ${pending.length} file(s) to their new names…`);
+        for (let i = 0; i < pending.length; i += 500) {
+          const chunk = pending.slice(i, i + 500);
+          try {
+            await githubMove(workerFetch, token, {
+              moves: chunk.map(r => ({ from: r.oldPath, to: r.newPath })), deleteOld: false,
+              commitMessage: `[${currentUser.username}] Copy ${chunk.length} tile file(s) to codename names: ${folder}`,
+            });
+            chunk.forEach(r => { patchRow(r.id, { status: 'copied', error: null }); copiedNow.push(r); });
+          } catch (err) {
+            // The worker validates everything first, so a failed request changed nothing on GitHub.
+            const bad = new Map((err.data?.results || []).filter(x => x.ok === false).map(x => [x.from, x.error]));
+            chunk.forEach(r => patchRow(r.id, bad.has(r.oldPath) ? { status: 'failed', error: bad.get(r.oldPath) } : {}));
+            setMessage({ kind: 'err', text: `Copy failed, no file was changed on GitHub: ${err.message}. Fix the flagged rows and run the dry run again.` });
+            setProgress('');
+            setBusy(false);
+            return;
+          }
+        }
+      }
+      // DB repoint: everything that is copied but not yet pointing at its new file
+      const toPatch = [...rows.filter(r => r.status === 'copied'), ...copiedNow];
+      let done = 0, failed = 0;
+      const queue = toPatch.slice();
+      const worker = async () => {
+        while (queue.length) {
+          const r = queue.shift();
+          try {
+            const resp = await workerFetch(`${WORKER_URL}/rest/v1/tiles?id=eq.${r.id}`, {
+              method: 'PATCH',
+              headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+              body: JSON.stringify({ image_url: rawUrl(r.newPath), last_updated_at: new Date().toISOString(), last_updated_by: currentUser.id }),
+            });
+            if (resp.ok) { patchRow(r.id, { status: 'done', error: null }); done++; }
+            else { patchRow(r.id, { error: 'DB update failed: ' + (await workerErrorMessage(resp, 'PATCH failed')).message }); failed++; }
+          } catch (e) { patchRow(r.id, { error: 'DB update failed: ' + e.message }); failed++; }
+          setProgress(`Updating database… ${done + failed}/${toPatch.length}`);
+        }
+      };
+      await Promise.all([worker(), worker(), worker(), worker()]);
+      setProgress('');
+      setMessage(failed
+        ? { kind: 'err', text: `${done} tile(s) updated, ${failed} failed. The new files exist on GitHub; press the copy button again to retry the database updates.` }
+        : { kind: 'ok', text: `${done} tile(s) now point at their new file names. The old files are still on GitHub — delete them in step 3 once you are happy.` });
+      onChanged();
+    } catch (err) {
+      setMessage({ kind: 'err', text: err.message });
+      setProgress('');
+    }
+    setBusy(false);
+  };
+
+  // Step 3 — delete old files that no tile references any more (one commit per 500).
+  const doDeleteOld = async () => {
+    setBusy(true); setMessage(null); setProgress('Checking which old files are still referenced…');
+    try {
+      const token = await getValidToken();
+      const fresh = await fetchRows(token);
+      const refs = new Set();
+      for (const r of fresh) { const pth = repoPathFromUrl(r.image_url); if (pth) refs.add(pth.toLowerCase()); }
+      for (const [tsId, list] of Object.entries(dbTilesByTsId)) {
+        if (tsId === tsData.id) continue;
+        for (const r of list || []) { const pth = repoPathFromUrl(r.image_url); if (pth) refs.add(pth.toLowerCase()); }
+      }
+      const candidates = rows.filter(r => r.status === 'done' && r.oldPath && !r.deleted);
+      const deletable = [...new Set(candidates.filter(r => !refs.has(r.oldPath.toLowerCase())).map(r => r.oldPath))];
+      candidates.filter(r => refs.has(r.oldPath.toLowerCase())).forEach(r => patchRow(r.id, { error: 'old file kept: another tile still references it' }));
+      let removed = 0;
+      for (let i = 0; i < deletable.length; i += 500) {
+        const chunk = deletable.slice(i, i + 500);
+        setProgress(`Deleting old files… ${i}/${deletable.length}`);
+        try {
+          await githubDeleteMany(workerFetch, token, { paths: chunk, commitMessage: `[${currentUser.username}] Delete old tile files: ${folder}` });
+          rows.filter(r => chunk.includes(r.oldPath) && r.status === 'done').forEach(r => patchRow(r.id, { deleted: true, error: null }));
+          removed += chunk.length;
+        } catch (err) {
+          setMessage({ kind: 'err', text: `Deleting old files failed after ${removed}: ${err.message}` });
+          setProgress('');
+          setBusy(false);
+          return;
+        }
+      }
+      setProgress('');
+      setMessage({ kind: 'ok', text: `${removed} old file(s) deleted${candidates.length > deletable.length ? `; ${candidates.length - deletable.length} kept because they are still referenced` : ''}.` });
+    } catch (err) {
+      setMessage({ kind: 'err', text: err.message });
+      setProgress('');
+    }
+    setBusy(false);
+  };
+
+  const count = st => rows ? rows.filter(r => r.status === st).length : 0;
+  const nRename = count('rename');
+  const nCopied = count('copied');
+  const nDeletable = rows ? rows.filter(r => r.status === 'done' && !r.deleted).length : 0;
+  const badge = { rename: ['rename', '#fbbf24'], ok: ['already correct', '#4ade80'], external: ['external', C.muted], 'other-folder': ['other folder', C.muted],
+    invalid: ['invalid', C.danger], collision: ['collision', C.danger], copied: ['copied, DB pending', '#fbbf24'], done: ['done', '#4ade80'], failed: ['failed', C.danger] };
+  const bs = (on, color) => ({ padding: '5px 11px', borderRadius: 7, fontSize: 12, fontWeight: 600, cursor: on ? 'pointer' : 'not-allowed', opacity: on ? 1 : 0.4, background: 'rgba(255,255,255,0.04)', color, border: `1px solid ${color}` });
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 9000, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.65)' }}
+      onClick={e => { e.stopPropagation(); if (!busy) onClose(); }}>
+      <div style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 10, padding: '16px 18px', width: 'min(680px, 96vw)', maxHeight: '90vh', display: 'flex', flexDirection: 'column', gap: 10 }}
+        onClick={e => e.stopPropagation()}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <span style={{ fontSize: 14, fontWeight: 700, color: C.accentBright }}>Rename files to codenames — {tsData.name}</span>
+          <button disabled={busy} onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
+        </div>
+        <span style={{ fontSize: 10, color: C.muted, lineHeight: 1.5 }}>
+          1) Dry run shows every change. 2) Copy creates the new files in one commit and repoints the tiles; old files stay. 3) Delete old files removes only files no tile references. Sensor tiles use folder_key_sensorcode.png.
+        </span>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button disabled={busy} style={bs(!busy, C.accent)} onClick={buildPlan}>1. Dry run</button>
+          <button disabled={busy || (nRename + nCopied) === 0} style={bs(!busy && (nRename + nCopied) > 0, '#fbbf24')} onClick={doCopy}>
+            2. {nCopied && !nRename ? `Retry DB updates (${nCopied})` : `Copy to new names (${nRename})`}
+          </button>
+          <button disabled={busy || nDeletable === 0} style={bs(!busy && nDeletable > 0, C.danger)} onClick={doDeleteOld}>3. Delete old files ({nDeletable})</button>
+        </div>
+        {progress && <span style={{ fontSize: 11, color: C.accentBright }}>{progress}</span>}
+        {message && <span style={{ fontSize: 11, color: message.kind === 'ok' ? '#4ade80' : C.danger, wordBreak: 'break-word' }}>{message.text}</span>}
+        {rows && (
+          <>
+            <span style={{ fontSize: 10, color: C.muted }}>
+              {rows.length} tile(s): {nRename} to rename, {count('ok')} already correct, {count('collision')} collisions, {count('invalid')} invalid, {count('external') + count('other-folder')} skipped (external / other folder)
+            </span>
+            <div style={{ overflowY: 'auto', border: `1px solid ${C.border}`, borderRadius: 6 }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, fontFamily: 'monospace', color: C.text }}>
+                <thead><tr style={{ textAlign: 'left', color: C.muted, position: 'sticky', top: 0, background: C.panel }}>
+                  <th style={{ padding: '4px 6px' }}>Old name</th><th style={{ padding: '4px 6px' }}>New name</th><th style={{ padding: '4px 6px' }}>Status</th>
+                </tr></thead>
+                <tbody>
+                  {rows.map(r => {
+                    const [label, color] = badge[r.status] || [r.status, C.muted];
+                    return (
+                      <tr key={r.id} style={{ borderTop: `1px solid ${C.border}` }}>
+                        <td style={{ padding: '3px 6px', wordBreak: 'break-all' }}>{r.oldName}</td>
+                        <td style={{ padding: '3px 6px', wordBreak: 'break-all' }}>{r.status === 'ok' || r.status === 'external' || r.status === 'other-folder' ? '—' : r.newName}</td>
+                        <td style={{ padding: '3px 6px', color }}>{r.deleted ? 'done, old deleted' : label}{r.error ? <div style={{ color: C.danger, fontSize: 10 }}>{r.error}</div> : null}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── AddTileModal — defined OUTSIDE App so its component identity is stable.
 //    When defined inside App, React sees a new function type every render and
 //    unmounts+remounts the modal (losing input focus on every keystroke).
@@ -558,9 +791,10 @@ function AddTileModal({ open, onClose, tsId, dbTilesets, file, onFileChange,
 function TilesetGearModal({
   open, tsId, name, onNameChange,
   dbTilesets, onDbTilesetsChange,
-  currentUser, userProfile, getValidToken, workerFetch,
+  currentUser, userProfile, getValidToken, workerFetch, dbTilesByTsId,
   onClose, onTsFetchTrigger, onActiveTilesetChange,
 }) {
+  const [bulkOpen, setBulkOpen] = React.useState(false);
   const [saving,            setSaving]            = React.useState(false);
   const [saveNameStatus,    setSaveNameStatus]    = React.useState(null);
   const [deleteConfirm,     setDeleteConfirm]     = React.useState(false);
@@ -895,6 +1129,20 @@ function TilesetGearModal({
                 </div>
               )}
             </div>
+          )}
+          {/* Bulk rename tile files to codenames — owners/admins */}
+          {canManage && tsData.folder_path && (
+            <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 8 }}>
+              <button style={{ ...btn(true, '#fbbf24', 'rgba(251,191,36,0.15)'), justifyContent: "center", fontSize: 11, width: "100%" }}
+                onClick={() => setBulkOpen(true)}>
+                ✏️ Rename files to codenames
+              </button>
+            </div>
+          )}
+          {bulkOpen && canManage && (
+            <BulkRenameModal tsData={tsData} dbTilesByTsId={dbTilesByTsId || {}} currentUser={currentUser}
+              getValidToken={getValidToken} workerFetch={workerFetch}
+              onClose={() => setBulkOpen(false)} onChanged={onTsFetchTrigger} />
           )}
           {/* Delete tileset — owners/admins only; exact tileset name must be typed in a modal */}
           {canManage && (
@@ -6518,6 +6766,7 @@ function App() {
         userProfile={userProfile}
         getValidToken={getValidToken}
         workerFetch={workerFetch}
+        dbTilesByTsId={dbTilesByTsId}
         onClose={() => { setTsGearOpen(false); setTsGearTsId(null); }}
         onTsFetchTrigger={() => setTsFetchTrigger(n => n + 1)}
         onActiveTilesetChange={setActiveTileset}
