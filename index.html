@@ -940,10 +940,19 @@ function InfoModalBody(props) {
   const [codenameInput,     setCodenameInput]     = React.useState(t.isDb ? (t.codename ?? '') : (tileNames[t.id] || defaultCodename_));
   const [folderKeyInput,    setFolderKeyInput]    = React.useState(t.folderLabel ?? '');
   const [sortIndexInput,    setSortIndexInput]    = React.useState(t.sortIndex != null ? String(t.sortIndex) : '');
+    // Raw DB row for this tile (image_url, sensor_code ...). The file name is parsed from image_url before the '?'.
+    const dbRow = t.isDb ? (dbTilesByTsId[t.tilesetId] ?? []).find(r => r.id === t.dbId) : null;
+    const currentPath = dbRow ? repoPathFromUrl(dbRow.image_url) : null;
+    const currentFileName = currentPath ? fileNameOf(currentPath) : '';
+    const [fileNameInput, setFileNameInput] = React.useState(currentFileName);
+    const [renameError,   setRenameError]   = React.useState(null);
+    const [renameRecovery, setRenameRecovery] = React.useState(null); // { oldPath, newPath, body } when the move succeeded but the DB PATCH failed
+    const [recoveryBusy, setRecoveryBusy] = React.useState(false);
   React.useEffect(() => {
     setCodenameInput(t.isDb ? (t.codename ?? '') : (tileNames[t.id] || defaultCodename_));
     setFolderKeyInput(t.folderLabel ?? '');
     setSortIndexInput(t.sortIndex != null ? String(t.sortIndex) : '');
+    setFileNameInput(currentFileName);
   }, [t.dbId]);
   const [flagTooltip,       setFlagTooltip]       = React.useState(null);
   const [deleteConfirmId,   setDeleteConfirmId]   = React.useState(null);
@@ -1045,6 +1054,92 @@ function InfoModalBody(props) {
     }
   };
 
+    const patchTile = async (body) => {
+      const token = await getValidToken();
+      const resp = await workerFetch(`${WORKER_URL}/rest/v1/tiles?id=eq.${t.dbId}`, {
+        method: 'PATCH',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+        body: JSON.stringify(body),
+      });
+      if (resp.ok) {
+        setDbTilesByTsId(prev => {
+          const tsId = t.tilesetId;
+          if (!prev[tsId]) return prev;
+          return { ...prev, [tsId]: prev[tsId].map(row => row.id === t.dbId ? { ...row, ...body } : row) };
+        });
+      }
+      return resp.ok;
+    };
+
+    const doSave = async () => {
+      const savedScroll = modalScrollRef.current?.scrollTop ?? 0;
+      setSaveStatus('saving');
+      setRenameError(null);
+      setRenameRecovery(null);
+      let ok = false;
+      try {
+        const body = {
+          size_multiplier: getTileMultiplier(t),
+          offset_x: getTileOffset(t).ox,
+          offset_y: getTileOffset(t).oy,
+          rotatable: isTileRotatable(t),
+          flippable: isFlipAllowed(t),
+          mirror_offset: isMirrorOffset(t),
+          bottom_render: !!bottomTiles[t.id],
+          priority: !!priorityTiles[t.id],
+          auto_shadow: !!autoShadowTiles[t.id],
+          otg_passable: !isOTGWall(t),
+          show_tile_count: !!t.dbShowTileCount,
+          codename: codenameInput.trim() || t.codename,
+          folder_key: folderKeyInput.trim() || null,
+          sort_index: sortIndexInput !== '' ? parseInt(sortIndexInput, 10) : null,
+          last_updated_at: new Date().toISOString(),
+          last_updated_by: currentUser.id,
+        };
+        let moved = null;
+        if (currentPath && fileNameInput !== currentFileName) {
+          // Validate and refuse collisions before touching anything.
+          const nameErr = checkFileName(fileNameInput);
+          if (nameErr) throw Object.assign(new Error(`Image file name: ${nameErr}.`), { rename: true });
+          const newPath = `${dirOf(currentPath)}/${fileNameInput}`;
+          const others = takenRepoPaths(dbTilesByTsId[t.tilesetId], t.dbId);
+          if (others.has(newPath.toLowerCase())) {
+            throw Object.assign(new Error(`Another tile in this tileset already uses the file ${newPath}. Nothing was changed.`), { rename: true });
+          }
+          const token = await getValidToken();
+          try {
+            await githubMove(workerFetch, token, {
+              moves: [{ from: currentPath, to: newPath }], deleteOld: true,
+              commitMessage: `[${currentUser.username}] Rename tile file: ${currentPath.slice('Resources/'.length)} -> ${fileNameInput}`,
+            });
+          } catch (moveErr) {
+            throw Object.assign(new Error(`Rename failed, nothing was changed: ${moveErr.message}`), { rename: true });
+          }
+          moved = { oldPath: currentPath, newPath };
+          body.image_url = rawUrl(newPath);
+        }
+        try {
+          ok = await patchTile(body);
+        } catch { ok = false; }
+        if (!ok && moved) setRenameRecovery({ ...moved, body });
+      } catch (err) {
+        if (err.rename) setRenameError(err.message);
+        ok = false;
+      }
+      setSaveStatus(ok ? 'ok' : 'err');
+      requestAnimationFrame(() => { if (modalScrollRef.current) modalScrollRef.current.scrollTop = savedScroll; });
+      setTimeout(() => setSaveStatus(null), 3000);
+    };
+
+    const retryDbUpdate = async () => {
+      if (!renameRecovery) return;
+      setRecoveryBusy(true);
+      let ok = false;
+      try { ok = await patchTile(renameRecovery.body); } catch { ok = false; }
+      setRecoveryBusy(false);
+      if (ok) { setRenameRecovery(null); setSaveStatus('ok'); setTimeout(() => setSaveStatus(null), 3000); }
+    };
+
   const FLAG_TIPS = {
     rotatable: "Tile can be rotated in 90° steps on the map.",
     flippable: "Tile can be flipped horizontally on the map.",
@@ -1123,6 +1218,15 @@ function InfoModalBody(props) {
           </div>
         )}
 
+        {/* Starred shortcut */}
+        <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
+          <input type="checkbox" checked={starredTiles.includes(t.id)}
+            onChange={() => toggleStar(t.id)}
+            style={{ width: 14, height: 14, accentColor: C.accent, cursor: "pointer" }} />
+          <span style={{ fontSize: 11, color: C.text }}>Starred shortcut ⭐<FlagTip id="starred" /></span>
+        </label>
+        <FlagDesc id="starred" />
+
         {/* Codename — pre-filled from DB for DB tiles; editable for owners/admins */}
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>codename</span>
@@ -1144,6 +1248,43 @@ function InfoModalBody(props) {
             <button style={{ ...btn(false), fontSize: 10, padding: "3px 7px", ...stl }} disabled={isDefault} title={isDefault ? "Already at DB value" : "Reset to DB value"} onClick={() => setCodenameInput(dbVal)}>Reset</button>
           ); })()}
         </div>
+
+          {/* Image file name — DB tiles the user can edit; renamed on Save via /github/move */}
+          {t.isDb && canEditDb && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Image file name</span>
+                <input value={fileNameInput}
+                  disabled={!currentPath}
+                  onChange={e => { setFileNameInput(e.target.value); setRenameError(null); }}
+                  onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
+                  placeholder={currentPath ? "e.g. MyTile.png" : "external image"}
+                  spellCheck={false}
+                  style={{ flex: 1, background: "rgba(180,40,40,0.09)", border: `1px solid ${fileNameInput !== currentFileName ? "#f97316" : C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none" }} />
+                {currentPath && (() => { const isDefault = fileNameInput === currentFileName; const stl = isDefault ? { color: "#4ade80", borderColor: "#4ade80", background: "rgba(74,222,128,0.12)" } : { color: "#f97316", borderColor: "#f97316", background: "rgba(249,115,22,0.12)" }; return (
+                  <button style={{ ...btn(false), fontSize: 10, padding: "3px 7px", ...stl }} disabled={isDefault} title={isDefault ? "Already at DB value" : "Reset to DB value"} onClick={() => { setFileNameInput(currentFileName); setRenameError(null); }}>Reset</button>
+                ); })()}
+              </div>
+              {currentPath ? (
+                <div style={{ display: "flex", gap: 6, marginLeft: 108, flexWrap: "wrap" }}>
+                  <button style={{ ...btn(false), fontSize: 10, padding: "3px 7px" }}
+                    disabled={!codenameInput.trim()}
+                    onClick={() => { setFileNameInput(defaultFileName({ codename: codenameInput.trim(), ext: fileExtOf(currentFileName) })); setRenameError(null); }}>Use codename</button>
+                  {dbRow?.sensor_code && (
+                    <button style={{ ...btn(false), fontSize: 10, padding: "3px 7px" }}
+                      disabled={!folderKeyInput.trim()}
+                      onClick={() => { setFileNameInput(defaultFileName({ sensor: true, folderKey: folderKeyInput.trim(), sensorCode: dbRow.sensor_code })); setRenameError(null); }}>Use codename + sensor code</button>
+                  )}
+                </div>
+              ) : (
+                <span style={{ fontSize: 10, color: C.muted, marginLeft: 108 }}>This image is hosted outside the ophelia repo and cannot be renamed here.</span>
+              )}
+              {fileNameInput !== currentFileName && currentPath && (
+                <span style={{ fontSize: 10, color: C.muted, marginLeft: 108 }}>The file is renamed on GitHub when you press Save.</span>
+              )}
+              {renameError && <span style={{ fontSize: 11, color: C.danger, marginLeft: 108 }}>{renameError}</span>}
+            </div>
+          )}
 
         {/* folder_key — only shown for DB tiles */}
         {t.isDb && (
@@ -1348,70 +1489,26 @@ function InfoModalBody(props) {
             </div>
           );
         })()}
-        {/* Starred shortcut */}
-        <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
-          <input type="checkbox" checked={starredTiles.includes(t.id)}
-            onChange={() => toggleStar(t.id)}
-            style={{ width: 14, height: 14, accentColor: C.accent, cursor: "pointer" }} />
-          <span style={{ fontSize: 11, color: C.text }}>Starred shortcut ⭐<FlagTip id="starred" /></span>
-        </label>
-        <FlagDesc id="starred" />
 
         {/* Save to Database — visible to admins and the tileset owner */}
         {canEditDb && (
           <button
             disabled={saveStatus === 'saving'}
-            onClick={async () => {
-              const savedScroll = modalScrollRef.current?.scrollTop ?? 0;
-              setSaveStatus('saving');
-              try {
-                const body = {
-                  size_multiplier: getTileMultiplier(t),
-                  offset_x: getTileOffset(t).ox,
-                  offset_y: getTileOffset(t).oy,
-                  rotatable: isTileRotatable(t),
-                  flippable: isFlipAllowed(t),
-                  mirror_offset: isMirrorOffset(t),
-                  bottom_render: !!bottomTiles[t.id],
-                  priority: !!priorityTiles[t.id],
-                  auto_shadow: !!autoShadowTiles[t.id],
-                  otg_passable: !isOTGWall(t),
-                  show_tile_count: !!t.dbShowTileCount,
-                  codename: codenameInput.trim() || t.codename,
-                  folder_key: folderKeyInput.trim() || null,
-                  sort_index: sortIndexInput !== '' ? parseInt(sortIndexInput, 10) : null,
-                  last_updated_at: new Date().toISOString(),
-                  last_updated_by: currentUser.id,
-                };
-                const token = await getValidToken();
-                const resp = await workerFetch(`${WORKER_URL}/rest/v1/tiles?id=eq.${t.dbId}`, {
-                  method: 'PATCH',
-                  headers: {
-                    'Authorization': `Bearer ${token}`,
-                    'Content-Type': 'application/json',
-                    'Prefer': 'return=minimal',
-                  },
-                  body: JSON.stringify(body),
-                });
-                if (resp.ok) {
-                  setDbTilesByTsId(prev => {
-                    const tsId = t.tilesetId;
-                    if (!prev[tsId]) return prev;
-                    return { ...prev, [tsId]: prev[tsId].map(row => row.id === t.dbId ? { ...row, ...body } : row) };
-                  });
-
-                }
-                setSaveStatus(resp.ok ? 'ok' : 'err');
-              } catch {
-                setSaveStatus('err');
-              }
-              requestAnimationFrame(() => { if (modalScrollRef.current) modalScrollRef.current.scrollTop = savedScroll; });
-              setTimeout(() => setSaveStatus(null), 3000);
-            }}
+            onClick={doSave}
             style={{ ...btn(true, saveStatus === 'err' ? C.danger : '#4ade80', saveStatus === 'err' ? 'rgba(248,113,113,0.15)' : 'rgba(74,222,128,0.15)'), width: '100%', justifyContent: 'center', fontSize: 11 }}>
             {saveStatus === 'saving' ? 'Saving…' : saveStatus === 'ok' ? '✓ Saved to Database' : saveStatus === 'err' ? '✗ Save failed' : '💾 Save to Database'}
           </button>
         )}
+          {renameRecovery && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "8px 10px", border: `1px solid ${C.danger}`, borderRadius: 6, background: "rgba(248,113,113,0.08)" }}>
+              <span style={{ fontSize: 11, color: C.danger, fontWeight: 700 }}>The file was renamed on GitHub but the database update failed.</span>
+              <span style={{ fontSize: 10, color: C.text, wordBreak: "break-all" }}>Old path (no longer exists): <code>{renameRecovery.oldPath}</code></span>
+              <span style={{ fontSize: 10, color: C.text, wordBreak: "break-all" }}>New path (the file is here): <code>{renameRecovery.newPath}</code></span>
+              <span style={{ fontSize: 10, color: C.muted }}>This tile still points at the old path until the database is updated.</span>
+              <button disabled={recoveryBusy} onClick={retryDbUpdate}
+                style={{ ...btn(true, C.danger, "rgba(248,113,113,0.18)"), justifyContent: "center", fontSize: 11 }}>{recoveryBusy ? 'Retrying…' : 'Retry DB update'}</button>
+            </div>
+          )}
 
         {/* Replace image (owned DB tiles) */}
         {t.isDb && currentUser && (userProfile?.role === 'admin' || t.tilesetOwnerId === currentUser.id) && (
