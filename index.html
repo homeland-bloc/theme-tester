@@ -23,8 +23,8 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Lilita+One&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
 
-  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone@7.23.10/babel.min.js"></script>
   <script>
     Babel.registerPreset('oph', {
@@ -406,7 +406,7 @@ function AddTileModal({ open, onClose, tsId, dbTilesets, file, onFileChange,
 function TilesetGearModal({
   open, tsId, name, onNameChange,
   dbTilesets, onDbTilesetsChange,
-  currentUser, userProfile, getValidToken,
+  currentUser, userProfile, getValidToken, workerFetch,
   onClose, onTsFetchTrigger, onActiveTilesetChange,
 }) {
   const [saving,            setSaving]            = React.useState(false);
@@ -452,7 +452,7 @@ function TilesetGearModal({
     (async () => {
       try {
         const token = await getValidToken();
-        const r = await fetch(`${WORKER_URL}/rest/v1/profiles?select=id,username&order=username`, {
+        const r = await workerFetch(`${WORKER_URL}/rest/v1/profiles?select=id,username&order=username`, {
           headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
         });
         const rows = r.ok ? await r.json() : [];
@@ -492,7 +492,7 @@ function TilesetGearModal({
     setSaving(true);
     try {
       const token = await getValidToken();
-      const r = await fetch(`${WORKER_URL}/rest/v1/tilesets?id=eq.${tsId}`, {
+      const r = await workerFetch(`${WORKER_URL}/rest/v1/tilesets?id=eq.${tsId}`, {
         method: 'PATCH',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
         body: JSON.stringify({ name: trimmed }),
@@ -512,7 +512,7 @@ function TilesetGearModal({
     const newPub = !isPub;
     try {
       const token = await getValidToken();
-      const r = await fetch(`${WORKER_URL}/rest/v1/tilesets?id=eq.${tsId}`, {
+      const r = await workerFetch(`${WORKER_URL}/rest/v1/tilesets?id=eq.${tsId}`, {
         method: 'PATCH',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
         body: JSON.stringify({ is_published: newPub }),
@@ -527,7 +527,7 @@ function TilesetGearModal({
     const newWip = !isWip;
     try {
       const token = await getValidToken();
-      const r = await fetch(`${WORKER_URL}/rest/v1/tilesets?id=eq.${tsId}`, {
+      const r = await workerFetch(`${WORKER_URL}/rest/v1/tilesets?id=eq.${tsId}`, {
         method: 'PATCH',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
         body: JSON.stringify({ is_wip: newWip }),
@@ -545,7 +545,7 @@ function TilesetGearModal({
     setBgSaveStatus('saving');
     try {
       const token = await getValidToken();
-      const r = await fetch(`${WORKER_URL}/rest/v1/tilesets?id=eq.${tsId}`, {
+      const r = await workerFetch(`${WORKER_URL}/rest/v1/tilesets?id=eq.${tsId}`, {
         method: 'PATCH',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
         body: JSON.stringify({ bg_color_light: b1, bg_color_dark: b2 }),
@@ -564,7 +564,7 @@ function TilesetGearModal({
     if (!canManage) return;
     try {
       const token = await getValidToken();
-      const tilesCheck = await fetch(`${WORKER_URL}/rest/v1/tiles?tileset_id=eq.${tsId}&select=id`, {
+      const tilesCheck = await workerFetch(`${WORKER_URL}/rest/v1/tiles?tileset_id=eq.${tsId}&select=id`, {
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
       });
       const tiles_ = tilesCheck.ok ? await tilesCheck.json() : [];
@@ -573,7 +573,7 @@ function TilesetGearModal({
         setDeleteConfirm(false);
         return;
       }
-      const r = await fetch(`${WORKER_URL}/rest/v1/tilesets?id=eq.${tsId}`, {
+      const r = await workerFetch(`${WORKER_URL}/rest/v1/tilesets?id=eq.${tsId}`, {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
       });
@@ -693,7 +693,7 @@ function TilesetGearModal({
                         setTransferStatus('saving');
                         try {
                           const token = await getValidToken();
-                          const r = await fetch(`${WORKER_URL}/rest/v1/tilesets?id=eq.${tsId}`, {
+                          const r = await workerFetch(`${WORKER_URL}/rest/v1/tilesets?id=eq.${tsId}`, {
                             method: 'PATCH',
                             headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
                             body: JSON.stringify({ owner_id: transferTargetId }),
@@ -847,102 +847,225 @@ function App() {
   // Theme DB persistence debounce timer
   const themeDbTimerRef = useRef(null);
 
-  // Returns a valid Firebase ID token. Refreshes Discord and/or Firebase tokens
-  // when near expiry, accumulating updates into a single state/localStorage write.
-  const getValidToken = async () => {
-    if (!currentUser?.firebaseToken) return null;
-    const patch = {};
+  // ── Session ───────────────────────────────────────────────────────────────
+  // sessionState: 'restoring' (stored refresh token still usable, refresh in flight),
+  // 'signedIn' (valid Firebase + Discord tokens) or 'signedOut' (show the login card).
+  // tokenExpiry is the Discord access-token expiry; a stored refresh token with a
+  // tokenExpiry in the future is restorable even when the 1 h Firebase ID token has lapsed.
+  const computeSessionState = (u) => {
+    if (!u) return 'signedOut';
+    const now = Date.now();
+    if (u.firebaseToken && (u.firebaseTokenExpiry ?? 0) - 90000 > now && (u.tokenExpiry ?? 0) - 90000 > now) return 'signedIn';
+    if (u.refreshToken && (u.tokenExpiry ?? 0) > now) return 'restoring';
+    return 'signedOut';
+  };
+  const [sessionState, setSessionState] = useState(() => computeSessionState(currentUser));
+  const sessionStateRef = useRef(sessionState);
+  sessionStateRef.current = sessionState;
+  const currentUserRef = useRef(currentUser); // always the latest user (no stale closures)
+  const refreshPromiseRef = useRef(null);      // single-flight refresh
+  const [reconnecting, setReconnecting] = useState(false);
+  const reconnectingRef = useRef(false);
+  const dbTilesetsLenRef = useRef(0);
+  dbTilesetsLenRef.current = dbTilesets.length;
+  const validateSessionRef = useRef(null);
 
-    // 1. Refresh Discord access token when within 60 s of expiry.
-    if (currentUser.refreshToken && Date.now() >= (currentUser.tokenExpiry ?? 0) - 60000) {
+  const applyUser = (u) => {
+    currentUserRef.current = u;
+    setCurrentUser(u);
+    try { if (u) localStorage.setItem('oph_user', JSON.stringify(u)); else localStorage.removeItem('oph_user'); } catch {}
+  };
+  const markReconnecting = (on) => {
+    if (reconnectingRef.current === on) return;
+    reconnectingRef.current = on;
+    setReconnecting(on);
+  };
+
+  // One refresh attempt. Resolves { status: 'ok', token } | { status: 'rejected' } | { status: 'network' }.
+  // 'rejected' = the server refused the credentials (Discord 400/401, Firebase mint 401);
+  // 'network' = fetch failed, 429 or 5xx (credentials may still be good, so never log out for it).
+  // force = re-mint the Firebase ID token even if it is not near expiry (used after a 401).
+  const doRefresh = async (force) => {
+    const u = currentUserRef.current;
+    if (!u || (!u.firebaseToken && !u.refreshToken)) return { status: 'rejected' };
+    const patch = {};
+    const post = (path, body) => fetch(`${WORKER_URL}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const classify = (res) => (res.status === 400 || res.status === 401) ? 'rejected' : 'network';
+
+    const refreshDiscord = async () => {
+      let res;
+      try { res = await post('/discord-refresh', { refresh_token: u.refreshToken }); } catch { return 'network'; }
+      if (!res.ok) return classify(res);
       try {
-        const res = await fetch(`${WORKER_URL}/discord-refresh`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ refresh_token: currentUser.refreshToken }),
-        });
-        if (res.ok) {
-          const data = await res.json();
-          patch.accessToken = data.access_token;
-          patch.refreshToken = data.refresh_token;
-          patch.tokenExpiry = Date.now() + data.expires_in * 1000;
-        }
-      } catch {
-        // proceed with existing Discord token on network error
-      }
+        const data = await res.json();
+        patch.accessToken = data.access_token;
+        patch.refreshToken = data.refresh_token;
+        patch.tokenExpiry = Date.now() + data.expires_in * 1000;
+        return 'ok';
+      } catch { return 'network'; }
+    };
+
+    // 1. Discord access token (rotates the refresh token) when within 2 min of expiry.
+    let discordRefreshed = false;
+    if (u.refreshToken && Date.now() >= (u.tokenExpiry ?? 0) - 120000) {
+      const r = await refreshDiscord();
+      if (r === 'rejected') return { status: 'rejected' };
+      if (r === 'network') {
+        if (Date.now() >= (u.tokenExpiry ?? 0)) return { status: 'network' }; // access token unusable
+      } else discordRefreshed = true;
     }
 
-    // 2. Refresh Firebase ID token when within 5 min of expiry.
-    //    Uses the freshly-refreshed Discord access token when available.
-    if ((patch.accessToken ?? currentUser.accessToken) && Date.now() >= (currentUser.firebaseTokenExpiry ?? 0) - 300000) {
-      try {
-        const accessToken = patch.accessToken ?? currentUser.accessToken;
-        const fbRes = await fetch(`${WORKER_URL}/firebase-refresh`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ access_token: accessToken }),
-        });
-        if (fbRes.ok) {
+    // 2. Firebase ID token when forced, missing, or within 5 min of expiry.
+    if (force || !u.firebaseToken || Date.now() >= (u.firebaseTokenExpiry ?? 0) - 300000) {
+      const mint = async () => {
+        const accessToken = patch.accessToken ?? u.accessToken;
+        if (!accessToken) return 'rejected';
+        let fbRes;
+        try { fbRes = await post('/firebase-refresh', { access_token: accessToken }); } catch { return 'network'; }
+        if (!fbRes.ok) return classify(fbRes);
+        try {
           const { firebase_token: customToken } = await fbRes.json();
           await firebase.auth().signInWithCustomToken(customToken);
           patch.firebaseToken = await firebase.auth().currentUser.getIdToken();
           patch.firebaseTokenExpiry = Date.now() + 3600 * 1000;
-        }
-      } catch {
-        // proceed with existing Firebase token on error
+          return 'ok';
+        } catch { return 'network'; }
+      };
+      let r = await mint();
+      if (r === 'rejected' && !discordRefreshed && u.refreshToken) {
+        // Access token may simply be stale: rotate it once and retry.
+        const d = await refreshDiscord();
+        if (d === 'rejected') return { status: 'rejected' };
+        if (d === 'ok') r = await mint();
+        else r = 'network';
+      }
+      if (r !== 'ok') {
+        if (Object.keys(patch).length > 0) applyUser({ ...currentUserRef.current, ...patch }); // keep a rotated refresh token
+        return { status: r };
       }
     }
 
-    // Persist all updates in one write.
-    if (Object.keys(patch).length > 0) {
-      const updated = { ...currentUser, ...patch };
-      setCurrentUser(updated);
-      localStorage.setItem('oph_user', JSON.stringify(updated));
-    }
-
-    return patch.firebaseToken ?? currentUser.firebaseToken;
+    const updated = { ...currentUserRef.current, ...patch };
+    if (Object.keys(patch).length > 0) applyUser(updated);
+    return { status: 'ok', token: updated.firebaseToken };
   };
 
-  // Treat the user as logged out when either the Firebase ID token (1 h) or the
-  // Discord OAuth token (tokenExpiry, ~7 days) is missing or within 60 s of expiry.
-  // firebaseTokenExpiry is written by auth/callback.html; users who authenticated
-  // before this field was added are conservatively treated as expired.
-  const isAuthenticated = !!(
-    currentUser?.firebaseToken &&
-    (currentUser.firebaseTokenExpiry ?? 0) - 90000 > Date.now() &&
-    (currentUser.tokenExpiry ?? 0) - 90000 > Date.now()
-  );
-
-  // Keep a live ref so timer callbacks can re-check auth at fire time (avoids stale closure)
-  const isAuthenticatedRef = useRef(isAuthenticated);
-  isAuthenticatedRef.current = isAuthenticated;
-
-  // Track whether user was authenticated on previous render; debounce login screen to avoid tab-focus flash
-  const wasAuthenticatedRef = useRef(isAuthenticated);
-  const [showLogin, setShowLogin] = useState(!isAuthenticated);
-  const showLoginTimerRef = useRef(null);
-  useEffect(() => {
-    if (isAuthenticated) {
-      wasAuthenticatedRef.current = true;
-      if (showLoginTimerRef.current) { clearTimeout(showLoginTimerRef.current); showLoginTimerRef.current = null; }
-      setShowLogin(false);
-    } else {
-      if (wasAuthenticatedRef.current) {
-        // Was logged in — debounce 50 ms before showing login to swallow transient null on tab refocus
-        if (!showLoginTimerRef.current) {
-          showLoginTimerRef.current = setTimeout(() => {
-            showLoginTimerRef.current = null;
-            // Re-check auth at fire time: if the session is still valid, cancel the login transition
-            if (isAuthenticatedRef.current) return;
-            wasAuthenticatedRef.current = false;
-            setShowLogin(true);
-          }, 50);
-        }
+  // Single-flight: concurrent callers share one in-flight refresh promise.
+  const refreshSession = (force = false) => {
+    if (refreshPromiseRef.current) return refreshPromiseRef.current;
+    const p = doRefresh(force).then(r => {
+      if (r.status === 'ok') {
+        markReconnecting(false);
+        setSessionState('signedIn');
+      } else if (r.status === 'rejected') {
+        markReconnecting(false);
+        applyUser(null);
+        setSessionState('signedOut');
       } else {
-        setShowLogin(true);
+        markReconnecting(true);
+      }
+      return r;
+    }).finally(() => { refreshPromiseRef.current = null; });
+    refreshPromiseRef.current = p;
+    return p;
+  };
+
+  // Returns a valid Firebase ID token, refreshing when near expiry. Returns null when the
+  // session was rejected (login required); on a network failure returns the existing token.
+  const getValidToken = async () => {
+    const u = currentUserRef.current;
+    if (!u?.firebaseToken && !u?.refreshToken) return null;
+    const now = Date.now();
+    const due = !u.firebaseToken ||
+      now >= (u.firebaseTokenExpiry ?? 0) - 300000 ||
+      (u.refreshToken && now >= (u.tokenExpiry ?? 0) - 120000);
+    if (!due) return u.firebaseToken;
+    const r = await refreshSession();
+    if (r.status === 'ok') return r.token;
+    if (r.status === 'rejected') return null;
+    return currentUserRef.current?.firebaseToken ?? null;
+  };
+
+  // fetch wrapper for worker calls. Requests that carry an Authorization header get the
+  // latest valid token; on 401 the token is force-refreshed and the request retried once.
+  // A rejected refresh ends the session (signedOut); a network failure shows the
+  // "Reconnecting..." banner and the session is re-validated on focus / online.
+  const workerFetch = async (url, init = {}) => {
+    const authed = !!(init.headers && init.headers.Authorization);
+    const send = (token) => fetch(url, authed && token
+      ? { ...init, headers: { ...init.headers, Authorization: `Bearer ${token}` } }
+      : init);
+    let res;
+    try {
+      res = await send(authed ? await getValidToken() : null);
+    } catch (e) {
+      markReconnecting(true);
+      throw e;
+    }
+    if (authed && res.status === 401) {
+      const r = await refreshSession(true);
+      if (r.status === 'ok') {
+        try { res = await send(r.token); } catch (e) { markReconnecting(true); throw e; }
       }
     }
-  }, [isAuthenticated]);
+    if (reconnectingRef.current && res.status < 500) markReconnecting(false);
+    return res;
+  };
+
+  const isAuthenticated = sessionState === 'signedIn';
+  const showLogin = sessionState === 'signedOut';
+
+  // Re-validate on focus / visibility / online and on a timer, so expiry is evaluated while
+  // the tab is idle (not only at render time).
+  validateSessionRef.current = () => {
+    const u = currentUserRef.current;
+    if (!u || sessionStateRef.current === 'signedOut') return;
+    const now = Date.now();
+    const due = !u.firebaseToken ||
+      now >= (u.firebaseTokenExpiry ?? 0) - 300000 ||
+      (u.refreshToken && now >= (u.tokenExpiry ?? 0) - 120000);
+    if (!due && !reconnectingRef.current) return;
+    const wasReconnecting = reconnectingRef.current;
+    refreshSession().then(r => {
+      // A failed initial load (offline boot) is retried once the session is back.
+      if (r.status === 'ok' && wasReconnecting && dbTilesetsLenRef.current === 0) setTsFetchTrigger(t => t + 1);
+    });
+  };
+  useEffect(() => {
+    const run = () => validateSessionRef.current && validateSessionRef.current();
+    const onVisible = () => { if (document.visibilityState === 'visible') run(); };
+    window.addEventListener('focus', run);
+    window.addEventListener('online', run);
+    document.addEventListener('visibilitychange', onVisible);
+    const timer = setInterval(run, 60000);
+    return () => {
+      window.removeEventListener('focus', run);
+      window.removeEventListener('online', run);
+      document.removeEventListener('visibilitychange', onVisible);
+      clearInterval(timer);
+    };
+  }, []);
+
+  // Boot: a stored refresh token with an expired ID token starts in 'restoring'; refresh now.
+  useEffect(() => {
+    if (sessionStateRef.current === 'restoring') refreshSession(true);
+  }, []);
+
+  // Deep-link survival: restore the hash/search stashed before the Discord redirect.
+  useEffect(() => {
+    if (sessionState !== 'signedIn') return;
+    try {
+      const raw = sessionStorage.getItem('oph_return');
+      if (!raw) return;
+      sessionStorage.removeItem('oph_return');
+      const { hash = '', search = '' } = JSON.parse(raw);
+      if (hash || search) history.replaceState(null, '', window.location.pathname + search + hash);
+    } catch {}
+  }, [sessionState]);
 
   // Check Firebase auth state on mount; mark authChecked after minimum 1 s to prevent login flash
   useEffect(() => {
@@ -1275,7 +1398,7 @@ function App() {
         const hdrs = token
           ? { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
           : { 'Content-Type': 'application/json' };
-        const resp = await fetch(tilesUrl.toString(), { headers: hdrs });
+        const resp = await workerFetch(tilesUrl.toString(), { headers: hdrs });
         rows = resp.ok ? await resp.json() : [];
         if (!Array.isArray(rows)) rows = [];
         setDbTilesByTsId(prev => ({ ...prev, [tsId]: rows }));
@@ -1373,7 +1496,7 @@ function App() {
       themeDbTimerRef.current = setTimeout(async () => {
         try {
           const token = await getValidToken();
-          await fetch(`${WORKER_URL}/rest/v1/profiles?id=eq.${currentUser.id}`, {
+          await workerFetch(`${WORKER_URL}/rest/v1/profiles?id=eq.${currentUser.id}`, {
             method: 'PATCH',
             headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
             body: JSON.stringify({ theme: themeValue }),
@@ -1838,7 +1961,7 @@ function App() {
         const hdrs = token
           ? { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
           : { 'Content-Type': 'application/json' };
-        const resp = await fetch(tilesUrl.toString(), { headers: hdrs });
+        const resp = await workerFetch(tilesUrl.toString(), { headers: hdrs });
         const rows = resp.ok ? await resp.json() : [];
         newTilesCached = Array.isArray(rows) ? rows : [];
         setDbTilesByTsId(prev => ({ ...prev, [newTsDef.id]: newTilesCached }));
@@ -2034,7 +2157,7 @@ function App() {
         ? { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
         : { 'Content-Type': 'application/json' };
       try {
-        const tsResp = await fetch(tsBase.toString(), { headers: tsHeaders });
+        const tsResp = await workerFetch(tsBase.toString(), { headers: tsHeaders });
         if (!tsResp.ok) {
           console.error('[tilesets] fetch failed:', tsResp.status, tsResp.statusText, await tsResp.text());
         }
@@ -2070,7 +2193,7 @@ function App() {
             tilesUrl.searchParams.set('tileset_id', `eq.${tsDef.id}`);
             tilesUrl.searchParams.set('order', 'sort_index');
             try {
-              const tilesResp = await fetch(tilesUrl.toString(), { headers: tsHeaders });
+              const tilesResp = await workerFetch(tilesUrl.toString(), { headers: tsHeaders });
               const rows = tilesResp.ok ? await tilesResp.json() : [];
               const tilesData = Array.isArray(rows) ? rows : [];
               fetchedTilesMap[tsDef.id] = tilesData;
@@ -2093,7 +2216,7 @@ function App() {
             await Promise.all(uncoveredUuids.map(async uuid => {
               try {
                 const tileUrl = `${WORKER_URL}/rest/v1/tiles?id=eq.${uuid}&select=tileset_id`;
-                const resp = await fetch(tileUrl, { headers: tsHeaders });
+                const resp = await workerFetch(tileUrl, { headers: tsHeaders });
                 if (resp.ok) {
                   const rows = await resp.json();
                   if (Array.isArray(rows) && rows[0]?.tileset_id) extraTsIds.add(rows[0].tileset_id);
@@ -2106,7 +2229,7 @@ function App() {
                 const tilesUrl = new URL(`${WORKER_URL}/rest/v1/tiles`);
                 tilesUrl.searchParams.set('tileset_id', `eq.${tsId}`);
                 tilesUrl.searchParams.set('order', 'sort_index');
-                const resp = await fetch(tilesUrl.toString(), { headers: tsHeaders });
+                const resp = await workerFetch(tilesUrl.toString(), { headers: tsHeaders });
                 const rows = resp.ok ? await resp.json() : [];
                 fetchedTilesMap[tsId] = Array.isArray(rows) ? rows : [];
               } catch (err) {
@@ -2125,7 +2248,7 @@ function App() {
         setTilesLoading(false);
       }
     })();
-  }, [currentUser?.id, tsFetchTrigger, userProfile?.role]);
+  }, [currentUser?.id, tsFetchTrigger, userProfile?.role, isAuthenticated]);
 
   // On-demand tile loading: fetch tiles for the active tileset if not yet cached
   useEffect(() => {
@@ -2142,7 +2265,7 @@ function App() {
         ? { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
         : { 'Content-Type': 'application/json' };
       try {
-        const resp = await fetch(tilesUrl.toString(), { headers });
+        const resp = await workerFetch(tilesUrl.toString(), { headers });
         const rows = resp.ok ? await resp.json() : [];
         const tilesData = Array.isArray(rows) ? rows : [];
         setDbTilesByTsId(prev => ({ ...prev, [tsDef.id]: tilesData }));
@@ -2158,7 +2281,7 @@ function App() {
     if (!currentUser?.firebaseToken || !currentUser?.id) { setUserProfile(null); return; }
     (async () => {
       const token = await getValidToken();
-      fetch(`${WORKER_URL}/rest/v1/profiles?id=eq.${currentUser.id}&select=id,username,avatar_hash,role,theme`, {
+      workerFetch(`${WORKER_URL}/rest/v1/profiles?id=eq.${currentUser.id}&select=id,username,avatar_hash,role,theme`, {
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
       }).then(r => r.ok ? r.json() : []).then(rows => {
         const profile = rows[0] ?? null;
@@ -2180,7 +2303,7 @@ function App() {
     setAdminLoading(true);
     (async () => {
       const token = await getValidToken();
-      fetch(`${WORKER_URL}/rest/v1/profiles?select=id,username,avatar_hash,role&order=username`, {
+      workerFetch(`${WORKER_URL}/rest/v1/profiles?select=id,username,avatar_hash,role&order=username`, {
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
       }).then(r => r.ok ? r.json() : []).then(rows => { setAdminProfiles(rows); setAdminLoading(false); }).catch(() => setAdminLoading(false));
     })();
@@ -2192,7 +2315,7 @@ function App() {
     setAdminRoleChanging(prev => new Set([...prev, profileId]));
     try {
       const token = await getValidToken();
-      const resp = await fetch(`${WORKER_URL}/rest/v1/profiles?id=eq.${profileId}`, {
+      const resp = await workerFetch(`${WORKER_URL}/rest/v1/profiles?id=eq.${profileId}`, {
         method: 'PATCH',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -2227,6 +2350,12 @@ function App() {
   const loginWithDiscord = async () => {
     const verifier = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32)))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
     sessionStorage.setItem('pkce_verifier', verifier);
+    // Stash the deep link (hash/search) so it survives the Discord round trip; restored after sign-in.
+    try {
+      if (window.location.hash || window.location.search) {
+        sessionStorage.setItem('oph_return', JSON.stringify({ hash: window.location.hash, search: window.location.search }));
+      }
+    } catch {}
     const encoder = new TextEncoder();
     const digest = await crypto.subtle.digest('SHA-256', encoder.encode(verifier));
     const challenge = btoa(String.fromCharCode(...new Uint8Array(digest))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
@@ -2242,8 +2371,8 @@ function App() {
   };
 
   const logout = () => {
-    localStorage.removeItem('oph_user');
-    setCurrentUser(null);
+    applyUser(null);
+    setSessionState('signedOut');
     setUserProfile(null);
     setUserDropOpen(false);
     setDbTilesets([]);
@@ -4041,7 +4170,7 @@ function App() {
     // Re-run once the canvas mounts: on first render the app shows the auth splash /
     // login screen (early returns), so scrollRef.current is null and the listeners
     // would otherwise never attach on mobile.
-  }, [authChecked, showLogin]);
+  }, [authChecked, showLogin, sessionState]);
 
   // ── Keyboard shortcuts ────────────────────────────────────────────
   useEffect(() => {
@@ -4433,14 +4562,14 @@ function App() {
           reader.onerror = reject;
           reader.readAsDataURL(file);
         });
-        const upResp = await fetch(`${WORKER_URL}/github/upload`, {
+        const upResp = await workerFetch(`${WORKER_URL}/github/upload`, {
           method: 'POST',
           headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ filePath, contentBase64, commitMessage: `[${currentUser.username}] Replace tile: ${tilesetFolderPath}/${originalFilename}` }),
         });
         if (!upResp.ok) throw new Error('GitHub upload failed');
         const newUrl = `https://raw.githubusercontent.com/bicipikay/ophelia/main/${filePath}?v=${Date.now()}`;
-        const patchResp = await fetch(`${WORKER_URL}/rest/v1/tiles?id=eq.${tile.dbId}`, {
+        const patchResp = await workerFetch(`${WORKER_URL}/rest/v1/tiles?id=eq.${tile.dbId}`, {
           method: 'PATCH',
           headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
           body: JSON.stringify({ image_url: newUrl }),
@@ -4796,7 +4925,7 @@ function App() {
                     last_updated_by: currentUser.id,
                   };
                   const token = await getValidToken();
-                  const resp = await fetch(`${WORKER_URL}/rest/v1/tiles?id=eq.${t.dbId}`, {
+                  const resp = await workerFetch(`${WORKER_URL}/rest/v1/tiles?id=eq.${t.dbId}`, {
                     method: 'PATCH',
                     headers: {
                       'Authorization': `Bearer ${token}`,
@@ -4912,7 +5041,7 @@ function App() {
                       }
                       try {
                         const token = await getValidToken();
-                        const delResp = await fetch(`${WORKER_URL}/rest/v1/tiles?id=eq.${t.dbId}`, {
+                        const delResp = await workerFetch(`${WORKER_URL}/rest/v1/tiles?id=eq.${t.dbId}`, {
                           method: 'DELETE',
                           headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
                         });
@@ -4926,7 +5055,7 @@ function App() {
                             const srcNoQuery = t.src.split('?')[0];
                             const filename = srcNoQuery.split('/').pop();
                             const filePath = `Resources/${tilesetFolderPath}/${filename}`;
-                            await fetch(`${WORKER_URL}/github/delete`, {
+                            await workerFetch(`${WORKER_URL}/github/delete`, {
                               method: 'POST',
                               headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
                               body: JSON.stringify({ filePath, commitMessage: `[${currentUser.username}] Delete tile: ${tilesetFolderPath}/${filename}` }),
@@ -5552,7 +5681,7 @@ function App() {
           ? { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
           : { 'Content-Type': 'application/json' };
         try {
-          const resp = await fetch(tilesUrl.toString(), { headers: hdrs });
+          const resp = await workerFetch(tilesUrl.toString(), { headers: hdrs });
           const rows = resp.ok ? await resp.json() : [];
           const data = Array.isArray(rows) ? rows : [];
           if (!cancelled) {
@@ -5719,7 +5848,7 @@ function App() {
 
       // 2. Upload image to GitHub
       const filePath = `Resources/${folderPath}/${createTsFile.name}`;
-      const upResp = await fetch(`${WORKER_URL}/github/upload`, {
+      const upResp = await workerFetch(`${WORKER_URL}/github/upload`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ filePath, contentBase64, commitMessage: `[${currentUser.username}] New tileset: ${folderPath}` }),
@@ -5734,7 +5863,7 @@ function App() {
       const imageUrl = `https://raw.githubusercontent.com/bicipikay/ophelia/main/${filePath}?v=${Date.now()}`;
 
       // 3. Create tileset row
-      const tsResp = await fetch(`${WORKER_URL}/rest/v1/tilesets`, {
+      const tsResp = await workerFetch(`${WORKER_URL}/rest/v1/tilesets`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=representation' },
         body: JSON.stringify({ name, folder_path: folderPath, owner_id: currentUser.id, is_published: false }),
@@ -5750,7 +5879,7 @@ function App() {
       const newTsId = Array.isArray(tsRows) ? tsRows[0]?.id : tsRows?.id;
 
       // 4. Create tile row
-      await fetch(`${WORKER_URL}/rest/v1/tiles`, {
+      await workerFetch(`${WORKER_URL}/rest/v1/tiles`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
         body: JSON.stringify({
@@ -5879,7 +6008,7 @@ function App() {
         reader.readAsDataURL(addTileFile);
       });
 
-      const upResp = await fetch(`${WORKER_URL}/github/upload`, {
+      const upResp = await workerFetch(`${WORKER_URL}/github/upload`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ filePath, contentBase64, commitMessage: `[${currentUser.username}] Add tile: ${tilesetFolderPath}/${addTileFile.name}` }),
@@ -5891,7 +6020,7 @@ function App() {
       }
       const imageUrl = `https://raw.githubusercontent.com/bicipikay/ophelia/main/${filePath}?v=${Date.now()}`;
 
-      const insResp = await fetch(`${WORKER_URL}/rest/v1/tiles`, {
+      const insResp = await workerFetch(`${WORKER_URL}/rest/v1/tiles`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
         body: JSON.stringify({
@@ -5931,8 +6060,9 @@ function App() {
   // TilesetGearModal is defined outside App (above) — see the module-level definition.
 
   // ─────────────────────────────────────────────────────────────────
-  // Loading screen — show while Firebase auth state is being checked (prevents login flash)
-  if (!authChecked) {
+  // Loading screen — show while Firebase auth state is being checked or a stored session is being
+  // restored (prevents login flash)
+  if (!authChecked || sessionState === 'restoring') {
     return (
       <div style={{
         display: "flex", alignItems: "center", justifyContent: "center",
@@ -6006,6 +6136,14 @@ function App() {
       paddingLeft: "env(safe-area-inset-left)", paddingRight: "env(safe-area-inset-right)",
     }}>
 
+      {reconnecting && (
+        <div role="status" style={{
+          position: "fixed", top: 8, left: "50%", transform: "translateX(-50%)", zIndex: 5000,
+          background: C.panel, color: C.text, border: `1px solid ${C.border}`, borderRadius: 8,
+          padding: "6px 14px", fontSize: 12, fontWeight: 600, pointerEvents: "none",
+          boxShadow: "0 4px 16px rgba(0,0,0,0.4)",
+        }}>Reconnecting…</div>
+      )}
       <InfoModal />
       <ReplaceModal />
       <OTGSettingsModal />
@@ -6078,6 +6216,7 @@ function App() {
         currentUser={currentUser}
         userProfile={userProfile}
         getValidToken={getValidToken}
+        workerFetch={workerFetch}
         onClose={() => { setTsGearOpen(false); setTsGearTsId(null); }}
         onTsFetchTrigger={() => setTsFetchTrigger(n => n + 1)}
         onActiveTilesetChange={setActiveTileset}
