@@ -374,6 +374,94 @@ function SectionHeader({ label, open, onToggle, left, right }) {
   );
 }
 
+// ── GitHub file helpers ──────────────────────────────────────────────
+// Every raw URL for a tile image is built by rawUrl() (encodes each path segment).
+// Paths handed to the worker are plain, unencoded repo paths; the worker rejects
+// anything outside letters, digits . _ - + (it never alters a name).
+const RAW_BASE = 'https://raw.githubusercontent.com/bicipikay/ophelia/main/';
+const FILE_NAME_RE = /^[A-Za-z0-9._+-]{1,100}$/;
+const FILE_EXTS = ['.png', '.jpg', '.jpeg', '.gif', '.webp'];
+
+function rawUrl(filePath, bust = true) {
+  return RAW_BASE + filePath.split('/').map(encodeURIComponent).join('/') + (bust ? `?v=${Date.now()}` : '');
+}
+// Repo path (decoded, no query) for a raw URL in bicipikay/ophelia, else null (external).
+function repoPathFromUrl(url) {
+  if (typeof url !== 'string' || !url.startsWith(RAW_BASE)) return null;
+  const rest = url.slice(RAW_BASE.length).split('?')[0];
+  try { return rest.split('/').map(decodeURIComponent).join('/'); } catch { return rest; }
+}
+const fileNameOf = path => path.split('/').pop();
+const dirOf = path => path.slice(0, path.lastIndexOf('/'));
+const fileExtOf = name => { const i = name.lastIndexOf('.'); return i > 0 ? name.slice(i) : ''; };
+// Returns an error string, or null when the name is acceptable to the worker.
+function checkFileName(name) {
+  if (!FILE_NAME_RE.test(name)) return 'file names may only use letters, digits and . _ - + (1-100 characters)';
+  if (name.startsWith('.')) return 'file name must not start with a dot';
+  if (!FILE_EXTS.includes(fileExtOf(name).toLowerCase())) return 'file name needs a .png, .jpg, .jpeg, .gif or .webp extension';
+  return null;
+}
+// Default file name: <codename><ext>; sensor tiles <folder_key>_<sensor_code>.png. Null if not derivable.
+function defaultFileName({ codename, folderKey, sensorCode, ext, sensor }) {
+  if (sensor) return (folderKey && sensorCode) ? `${folderKey}_${sensorCode}.png` : null;
+  return codename ? `${codename}${ext || ''}` : null;
+}
+// Adds _2, _3 ... before the extension until dir/name is not in `takenLower` (lowercase full paths).
+function uniqueFileName(dir, name, takenLower) {
+  const ext = fileExtOf(name), stem = name.slice(0, name.length - ext.length);
+  let candidate = name, n = 2;
+  while (takenLower.has(`${dir}/${candidate}`.toLowerCase())) candidate = `${stem}_${n++}${ext}`;
+  return candidate;
+}
+// Lowercase repo paths referenced by DB rows ({image_url}) or tile objects ({src}).
+function takenRepoPaths(items, excludeDbId = null) {
+  const s = new Set();
+  for (const r of items || []) {
+    if (excludeDbId != null && (r.id ?? r.dbId) === excludeDbId) continue;
+    const p = repoPathFromUrl(r.image_url ?? r.src);
+    if (p) s.add(p.toLowerCase());
+  }
+  return s;
+}
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(',')[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+// Readable message from a worker/GitHub error response (includes per-move failures).
+async function workerErrorMessage(resp, fallback) {
+  let d = null;
+  try { d = await resp.json(); } catch {}
+  let msg = (d && (d.error || d.message)) || `${fallback} (HTTP ${resp.status})`;
+  if (d && d.github_message) msg += ` — GitHub ${d.github_status}: ${d.github_message}`;
+  if (d && Array.isArray(d.results)) {
+    const bad = d.results.filter(r => r.ok === false).slice(0, 3);
+    if (bad.length) msg += ' [' + bad.map(r => `${r.from ?? r.path ?? ''}${r.to ? ' → ' + r.to : ''}: ${r.error}`).join('; ') + ']';
+  }
+  return { message: msg, data: d, status: resp.status };
+}
+async function workerJson(workerFetch, token, route, body, fallback) {
+  const resp = await workerFetch(`${WORKER_URL}${route}`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) {
+    const e = await workerErrorMessage(resp, fallback);
+    throw Object.assign(new Error(e.message), { status: e.status, data: e.data });
+  }
+  return resp.json();
+}
+const githubUpload = (workerFetch, token, { filePath, contentBase64, commitMessage, overwrite = false }) =>
+  workerJson(workerFetch, token, '/github/upload', { filePath, contentBase64, commitMessage, overwrite }, 'GitHub upload failed');
+const githubMove = (workerFetch, token, { moves, deleteOld, commitMessage }) =>
+  workerJson(workerFetch, token, '/github/move', { moves, deleteOld, commitMessage }, 'GitHub move failed');
+const githubDeleteMany = (workerFetch, token, { paths, commitMessage }) =>
+  workerJson(workerFetch, token, '/github/delete-many', { paths, commitMessage }, 'GitHub delete failed');
+
 // ── AddTileModal — defined OUTSIDE App so its component identity is stable.
 //    When defined inside App, React sees a new function type every render and
 //    unmounts+remounts the modal (losing input focus on every keystroke).
@@ -931,22 +1019,15 @@ function InfoModalBody(props) {
     setReplaceImgUploading(true);
     try {
       const token = await getValidToken();
-      const srcNoQuery = tile.src.split('?')[0];
-      const originalFilename = srcNoQuery.split('/').pop();
-      const filePath = `Resources/${tilesetFolderPath}/${originalFilename}`;
-      const contentBase64 = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result.split(',')[1]);
-        reader.onerror = reject;
-        reader.readAsDataURL(file);
+      // Replace keeps the tile's existing path (including any sub-folder) and overwrites it.
+      const filePath = repoPathFromUrl(tile.src);
+      if (!filePath) throw new Error('This tile image is not hosted in the ophelia repo, so it cannot be replaced here.');
+      const contentBase64 = await fileToBase64(file);
+      await githubUpload(workerFetch, token, {
+        filePath, contentBase64, overwrite: true,
+        commitMessage: `[${currentUser.username}] Replace tile: ${filePath.slice('Resources/'.length)}`,
       });
-      const upResp = await workerFetch(`${WORKER_URL}/github/upload`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filePath, contentBase64, commitMessage: `[${currentUser.username}] Replace tile: ${tilesetFolderPath}/${originalFilename}` }),
-      });
-      if (!upResp.ok) throw new Error('GitHub upload failed');
-      const newUrl = `https://raw.githubusercontent.com/bicipikay/ophelia/main/${filePath}?v=${Date.now()}`;
+      const newUrl = rawUrl(filePath);
       const patchResp = await workerFetch(`${WORKER_URL}/rest/v1/tiles?id=eq.${tile.dbId}`, {
         method: 'PATCH',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
@@ -1375,7 +1456,7 @@ function InfoModalBody(props) {
                     ))}
                   </div>
                   <span style={{ fontSize: 10, color: C.muted }}>
-                    {`Uploading as: ${replaceImgPending.tile.src.split('?')[0].split('/').pop()}`}
+                    {`Replacing: ${repoPathFromUrl(replaceImgPending.tile.src) ?? replaceImgPending.tile.src.split('?')[0].split('/').pop()}`}
                   </span>
                   {replaceImgError && <span style={{ fontSize: 11, color: C.danger }}>{replaceImgError}</span>}
                   <div style={{ display: 'flex', gap: 8 }}>
@@ -5872,34 +5953,44 @@ function App() {
     if (!name || !folderPath || !createTsCodename.trim() || !createTsFile || !currentUser) return;
     setCreateTsLoading(true);
     setCreateTsError('');
+    let createdTsId = null;
+    let createdTileId = null;
+    // Delete whatever this attempt created so nothing is left orphaned.
+    const rollback = async token => {
+      const failed = [];
+      for (const [table, id] of [['tiles', createdTileId], ['tilesets', createdTsId]]) {
+        if (!id) continue;
+        try {
+          const r = await workerFetch(`${WORKER_URL}/rest/v1/${table}?id=eq.${id}`, {
+            method: 'DELETE', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+          });
+          if (!r.ok) failed.push(`${table} ${id}`);
+        } catch { failed.push(`${table} ${id}`); }
+      }
+      return failed;
+    };
+    let token = null;
     try {
-      const token = await getValidToken();
+      token = await getValidToken();
 
-      // 1. Convert file to base64
-      const contentBase64 = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result.split(',')[1]);
-        reader.onerror = reject;
-        reader.readAsDataURL(createTsFile);
-      });
-
-      // 2. Upload image to GitHub
-      const filePath = `Resources/${folderPath}/${createTsFile.name}`;
-      const upResp = await workerFetch(`${WORKER_URL}/github/upload`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filePath, contentBase64, commitMessage: `[${currentUser.username}] New tileset: ${folderPath}` }),
-      });
-      if (!upResp.ok) {
-        let msg = 'GitHub upload failed.';
-        try { const d = await upResp.json(); if (d.message) msg = d.message; } catch {}
-        setCreateTsError(msg);
+      // 1. Validate names (rejected, never altered)
+      if (!FILE_NAME_RE.test(folderPath) || folderPath.startsWith('.') || folderPath.toLowerCase() === 'global') {
+        setCreateTsError('GitHub folder path may only use letters, digits and . _ - + (and cannot be "Global").');
         setCreateTsLoading(false);
         return;
       }
-      const imageUrl = `https://raw.githubusercontent.com/bicipikay/ophelia/main/${filePath}?v=${Date.now()}`;
+      const ext = fileExtOf(createTsFile.name).toLowerCase();
+      const fileName = defaultFileName({ codename: createTsCodename.trim(), ext });
+      const nameErr = FILE_EXTS.includes(ext) ? checkFileName(fileName) : 'the image must be .png, .jpg, .jpeg, .gif or .webp';
+      if (nameErr) {
+        setCreateTsError(`Cannot use "${fileName}" as the image file name: ${nameErr}.`);
+        setCreateTsLoading(false);
+        return;
+      }
+      const filePath = `Resources/${folderPath}/${fileName}`;
+      const imageUrl = rawUrl(filePath);
 
-      // 3. Create tileset row
+      // 2. Tileset row first (the worker's ownership check looks it up)
       const tsResp = await workerFetch(`${WORKER_URL}/rest/v1/tilesets`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=representation' },
@@ -5913,14 +6004,14 @@ function App() {
         return;
       }
       const tsRows = await tsResp.json();
-      const newTsId = Array.isArray(tsRows) ? tsRows[0]?.id : tsRows?.id;
+      createdTsId = Array.isArray(tsRows) ? tsRows[0]?.id : tsRows?.id;
 
-      // 4. Create tile row
-      await workerFetch(`${WORKER_URL}/rest/v1/tiles`, {
+      // 3. Tile row
+      const tileResp = await workerFetch(`${WORKER_URL}/rest/v1/tiles`, {
         method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=representation' },
         body: JSON.stringify({
-          tileset_id: newTsId,
+          tileset_id: createdTsId,
           codename: createTsCodename.trim(),
           image_url: imageUrl,
           folder_key: createTsFolderKey.trim() || null,
@@ -5931,6 +6022,20 @@ function App() {
           size_multiplier: 1.0, offset_x: 0, offset_y: 0,
         }),
       });
+      if (!tileResp.ok) {
+        let msg = 'Failed to create the first tile.';
+        try { const d = await tileResp.json(); if (d.message) msg = d.message; } catch {}
+        throw new Error(msg);
+      }
+      const tileRows = await tileResp.json();
+      createdTileId = Array.isArray(tileRows) ? tileRows[0]?.id : tileRows?.id;
+
+      // 4. Upload last; a failure removes both rows again
+      const contentBase64 = await fileToBase64(createTsFile);
+      await githubUpload(workerFetch, token, {
+        filePath, contentBase64, overwrite: false,
+        commitMessage: `[${currentUser.username}] New tileset: ${folderPath}`,
+      });
 
       setTsFetchTrigger(n => n + 1);
       setCreateTsOpen(false);
@@ -5938,7 +6043,14 @@ function App() {
       setCreateTsCodename(''); setCreateTsFolderKey(''); setCreateTsSortIdx('');
       setCreateTsError('');
     } catch (err) {
-      setCreateTsError('Error: ' + err.message);
+      let msg = err.message || String(err);
+      if (token && (createdTsId || createdTileId)) {
+        const failed = await rollback(token);
+        msg += failed.length
+          ? ` — cleanup failed, remove manually: ${failed.join(', ')}`
+          : ' — nothing was created.';
+      }
+      setCreateTsError(msg);
     }
     setCreateTsLoading(false);
   };
@@ -6032,34 +6144,31 @@ function App() {
     const ts = dbTilesets.find(ts => ts.id === addTileTsId);
     setAddTileLoading(true);
     setAddTileError('');
+    let insertedId = null;
+    let token = null;
     try {
-      const token = await getValidToken();
+      token = await getValidToken();
       const tilesetFolderPath = ts?.folder_path;
       if (!tilesetFolderPath) throw new Error('This tileset has no GitHub folder path configured.');
 
-      const filePath = `Resources/${tilesetFolderPath}/${addTileFile.name}`;
-      const contentBase64 = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result.split(',')[1]);
-        reader.onerror = reject;
-        reader.readAsDataURL(addTileFile);
-      });
+      // File name = codename + original extension (never the local file name).
+      // Duplicates in this tileset get _2, _3, …; the worker's 409 is the backstop.
+      const ext = fileExtOf(addTileFile.name).toLowerCase();
+      if (!FILE_EXTS.includes(ext)) throw new Error('The image must be .png, .jpg, .jpeg, .gif or .webp.');
+      const baseName = defaultFileName({ codename: addTileCodename.trim(), ext });
+      const nameErr = checkFileName(baseName);
+      if (nameErr) throw new Error(`Cannot use "${baseName}" as the image file name: ${nameErr}.`);
+      const existing = await ensureTilesetLoaded(addTileTsId);
+      const dir = `Resources/${tilesetFolderPath}`;
+      const fileName = uniqueFileName(dir, baseName, takenRepoPaths(existing));
+      const filePath = `${dir}/${fileName}`;
+      const imageUrl = rawUrl(filePath);
+      const contentBase64 = await fileToBase64(addTileFile);
 
-      const upResp = await workerFetch(`${WORKER_URL}/github/upload`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filePath, contentBase64, commitMessage: `[${currentUser.username}] Add tile: ${tilesetFolderPath}/${addTileFile.name}` }),
-      });
-      if (!upResp.ok) {
-        let msg = 'GitHub upload failed';
-        try { const d = await upResp.json(); if (d.message) msg = d.message; } catch {}
-        throw new Error(msg);
-      }
-      const imageUrl = `https://raw.githubusercontent.com/bicipikay/ophelia/main/${filePath}?v=${Date.now()}`;
-
+      // DB row first; if the upload then fails the row is deleted again.
       const insResp = await workerFetch(`${WORKER_URL}/rest/v1/tiles`, {
         method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=representation' },
         body: JSON.stringify({
           tileset_id: addTileTsId,
           codename: addTileCodename.trim(),
@@ -6077,11 +6186,19 @@ function App() {
         try {
           const errData = await insResp.json();
           console.error('[doAddTile] insert error:', insResp.status, errData);
-          if (errData.message) msg = errData.message;
-          else if (errData.code === '23505') msg = 'A tile with this codename already exists in this tileset.';
+          if (errData.code === '23505') msg = 'A tile with this codename already exists in this tileset.';
+          else if (errData.message) msg = errData.message;
         } catch {}
         throw new Error(msg);
       }
+      const insRows = await insResp.json();
+      insertedId = Array.isArray(insRows) ? insRows[0]?.id : insRows?.id;
+
+      await githubUpload(workerFetch, token, {
+        filePath, contentBase64, overwrite: false,
+        commitMessage: `[${currentUser.username}] Add tile: ${tilesetFolderPath}/${fileName}`,
+      });
+
       setTsFetchTrigger(n => n + 1);
       setAddTileOpen(false);
       setAddTileFile(null);
@@ -6089,7 +6206,18 @@ function App() {
       setAddTileFolderKey('');
       setAddTileSortIdx('');
     } catch (err) {
-      setAddTileError(err.message);
+      let msg = err.message || String(err);
+      if (insertedId) {
+        let removed = false;
+        try {
+          const r = await workerFetch(`${WORKER_URL}/rest/v1/tiles?id=eq.${insertedId}`, {
+            method: 'DELETE', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+          });
+          removed = r.ok;
+        } catch {}
+        msg += removed ? ' — the tile was not created.' : ` — the upload failed and the tile row ${insertedId} could not be removed; delete it manually.`;
+      }
+      setAddTileError(msg);
     }
     setAddTileLoading(false);
   };
