@@ -462,6 +462,34 @@ const githubMove = (workerFetch, token, { moves, deleteOld, commitMessage }) =>
 const githubDeleteMany = (workerFetch, token, { paths, commitMessage }) =>
   workerJson(workerFetch, token, '/github/delete-many', { paths, commitMessage }, 'GitHub delete failed');
 
+// ── TypeToConfirmModal — destructive actions need the exact name typed before Delete enables.
+function TypeToConfirmModal({ title, message, expected, placeholder, confirmLabel = 'Delete', busy, error, onConfirm, onCancel }) {
+  const [typed, setTyped] = React.useState('');
+  const ok = typed === expected;
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 10000, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.65)' }}
+      onClick={e => { e.stopPropagation(); if (!busy) onCancel(); }}>
+      <div style={{ background: C.panel, border: `1px solid ${C.danger}`, borderRadius: 10, padding: '18px 22px', width: 'min(360px, 92vw)', display: 'flex', flexDirection: 'column', gap: 10 }}
+        onClick={e => e.stopPropagation()}>
+        <span style={{ fontWeight: 700, fontSize: 14, color: C.danger }}>{title}</span>
+        {message && <span style={{ fontSize: 11, color: C.text, lineHeight: 1.5 }}>{message}</span>}
+        <span style={{ fontSize: 11, color: C.muted }}>Type <code style={{ background: 'rgba(248,113,113,0.12)', padding: '1px 4px', borderRadius: 3, color: C.text }}>{expected}</code> to confirm:</span>
+        <input autoFocus value={typed} onChange={e => setTyped(e.target.value)} placeholder={placeholder || expected}
+          onKeyDown={e => { if (e.key === 'Enter' && ok && !busy) onConfirm(); if (e.key === 'Escape' && !busy) onCancel(); }}
+          spellCheck={false}
+          style={{ background: 'rgba(180,40,40,0.09)', border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: 'monospace', fontSize: 12, padding: '6px 8px', outline: 'none' }} />
+        {error && <span style={{ fontSize: 11, color: C.danger, wordBreak: 'break-word' }}>{error}</span>}
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button disabled={busy} onClick={onCancel}
+            style={{ flex: 1, padding: '6px 10px', borderRadius: 7, fontSize: 12, fontWeight: 600, cursor: 'pointer', background: 'rgba(255,255,255,0.04)', color: C.muted, border: '1px solid rgba(255,255,255,0.1)' }}>Cancel</button>
+          <button disabled={!ok || busy} onClick={onConfirm}
+            style={{ flex: 1, padding: '6px 10px', borderRadius: 7, fontSize: 12, fontWeight: 600, cursor: (ok && !busy) ? 'pointer' : 'not-allowed', opacity: (ok && !busy) ? 1 : 0.4, background: 'rgba(248,113,113,0.18)', color: C.danger, border: `1px solid ${C.danger}` }}>{busy ? 'Deleting…' : confirmLabel}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── AddTileModal — defined OUTSIDE App so its component identity is stable.
 //    When defined inside App, React sees a new function type every render and
 //    unmounts+remounts the modal (losing input focus on every keystroke).
@@ -541,7 +569,8 @@ function TilesetGearModal({
   const [gearHex1,          setGearHex1]          = React.useState('');
   const [gearHex2,          setGearHex2]          = React.useState('');
   const [bgSaveStatus,      setBgSaveStatus]      = React.useState(null);
-  const [deleteNameInput,   setDeleteNameInput]   = React.useState('');
+  const [deleteBusy,        setDeleteBusy]        = React.useState(false);
+  const [deleteError,       setDeleteError]       = React.useState(null);
   const [transferStatus,        setTransferStatus]        = React.useState(null); // null|'confirm'|'saving'|'ok'|'err'
   const [transferTargetId,      setTransferTargetId]      = React.useState(null);
   const [transferTargetName,    setTransferTargetName]    = React.useState('');
@@ -560,7 +589,8 @@ function TilesetGearModal({
       setGearHex1(light); setGearHex2(dark);
     }
     setDeleteConfirm(false);
-    setDeleteNameInput('');
+    setDeleteBusy(false);
+    setDeleteError(null);
     setBgSaveStatus(null);
     setTransferStatus(null);
     setTransferTargetId(null);
@@ -686,6 +716,8 @@ function TilesetGearModal({
 
   const doDeleteTileset = async () => {
     if (!canManage) return;
+    setDeleteBusy(true);
+    setDeleteError(null);
     try {
       const token = await getValidToken();
       const tilesCheck = await workerFetch(`${WORKER_URL}/rest/v1/tiles?tileset_id=eq.${tsId}&select=id`, {
@@ -693,8 +725,8 @@ function TilesetGearModal({
       });
       const tiles_ = tilesCheck.ok ? await tilesCheck.json() : [];
       if (Array.isArray(tiles_) && tiles_.length > 0) {
-        alert(`This tileset still has ${tiles_.length} tile(s). Delete all tiles first before deleting the tileset.`);
-        setDeleteConfirm(false);
+        setDeleteError(`This tileset still has ${tiles_.length} tile(s). Delete all tiles first before deleting the tileset.`);
+        setDeleteBusy(false);
         return;
       }
       const r = await workerFetch(`${WORKER_URL}/rest/v1/tilesets?id=eq.${tsId}`, {
@@ -706,10 +738,10 @@ function TilesetGearModal({
         onTsFetchTrigger();
         closGear();
       } else {
-        alert('Failed to delete tileset.');
-        setDeleteConfirm(false);
+        setDeleteError((await workerErrorMessage(r, 'Failed to delete tileset')).message);
+        setDeleteBusy(false);
       }
-    } catch (err) { alert('Error: ' + err.message); setDeleteConfirm(false); }
+    } catch (err) { setDeleteError('Error: ' + err.message); setDeleteBusy(false); }
   };
 
   return (
@@ -864,28 +896,25 @@ function TilesetGearModal({
               )}
             </div>
           )}
-          {/* Delete tileset — red button, requires typing tileset name to confirm */}
-          {deleteConfirm ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "6px 0", borderTop: `1px solid ${C.border}`, marginTop: 2 }}>
-              <span style={{ fontSize: 11, color: C.danger, textAlign: "center" }}>Type the tileset name to confirm deletion:</span>
-              <code style={{ fontSize: 10, color: C.muted, textAlign: "center", background: "rgba(255,255,255,0.06)", padding: "2px 6px", borderRadius: 4 }}>{tsData.name}</code>
-              <input value={deleteNameInput} onChange={e => setDeleteNameInput(e.target.value)}
-                placeholder="tileset name…"
-                style={{ background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 11, padding: "4px 7px", outline: "none" }} />
-              <div style={{ display: "flex", gap: 6 }}>
-                <button style={{ ...btn(false), flex: 1, fontSize: 11 }} onClick={() => { setDeleteConfirm(false); setDeleteNameInput(''); }}>Cancel</button>
-                <button style={{ ...btn(true, C.danger, "rgba(248,113,113,0.18)"), flex: 1, fontSize: 11 }}
-                  disabled={deleteNameInput !== tsData.name}
-                  onClick={doDeleteTileset}>Delete</button>
-              </div>
-            </div>
-          ) : (
+          {/* Delete tileset — owners/admins only; exact tileset name must be typed in a modal */}
+          {canManage && (
             <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 8 }}>
               <button style={{ ...btn(true, C.danger, "rgba(248,113,113,0.18)"), justifyContent: "center", fontSize: 11, width: "100%" }}
-                onClick={() => setDeleteConfirm(true)}>
+                onClick={() => { setDeleteError(null); setDeleteConfirm(true); }}>
                 🗑 Delete Tileset
               </button>
             </div>
+          )}
+          {deleteConfirm && canManage && (
+            <TypeToConfirmModal
+              title="Delete tileset"
+              message="The tileset must have no tiles left. This cannot be undone."
+              expected={tsData.name}
+              confirmLabel="Delete tileset"
+              busy={deleteBusy}
+              error={deleteError}
+              onCancel={() => setDeleteConfirm(false)}
+              onConfirm={doDeleteTileset} />
           )}
         </div>
       </div>
@@ -948,6 +977,9 @@ function InfoModalBody(props) {
     const [renameError,   setRenameError]   = React.useState(null);
     const [renameRecovery, setRenameRecovery] = React.useState(null); // { oldPath, newPath, body } when the move succeeded but the DB PATCH failed
     const [recoveryBusy, setRecoveryBusy] = React.useState(false);
+  const [deleteModalOpen, setDeleteModalOpen] = React.useState(false);
+  const [deleteBusy, setDeleteBusy] = React.useState(false);
+  const [deleteError, setDeleteError] = React.useState(null);
   React.useEffect(() => {
     setCodenameInput(t.isDb ? (t.codename ?? '') : (tileNames[t.id] || defaultCodename_));
     setFolderKeyInput(t.folderLabel ?? '');
@@ -1139,6 +1171,53 @@ function InfoModalBody(props) {
       setRecoveryBusy(false);
       if (ok) { setRenameRecovery(null); setSaveStatus('ok'); setTimeout(() => setSaveStatus(null), 3000); }
     };
+
+  const doDeleteDbTile = async () => {
+    setDeleteBusy(true);
+    setDeleteError(null);
+    try {
+      // Block deletion of the last tile in a tileset
+      if ((dbTilesByTsId[t.tilesetId] ?? []).length === 1) {
+        setDeleteError('This is the last tile in the tileset. To remove it, delete the entire tileset from Tileset Settings.');
+        setDeleteBusy(false);
+        return;
+      }
+      const path = currentPath;
+      // Never delete a file another loaded tile still points at.
+      let sharedWith = null;
+      if (path) {
+        for (const rows of Object.values(dbTilesByTsId)) {
+          for (const r of rows || []) {
+            if (r.id !== t.dbId && repoPathFromUrl(r.image_url)?.toLowerCase() === path.toLowerCase()) sharedWith = r.codename ?? r.id;
+          }
+        }
+      }
+      const token = await getValidToken();
+      const delResp = await workerFetch(`${WORKER_URL}/rest/v1/tiles?id=eq.${t.dbId}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      });
+      if (!delResp.ok) throw new Error((await workerErrorMessage(delResp, 'DB delete failed')).message);
+      let note = null;
+      if (path && sharedWith == null) {
+        try {
+          await workerJson(workerFetch, token, '/github/delete', { filePath: path, commitMessage: `[${currentUser.username}] Delete tile: ${path.slice('Resources/'.length)}` }, 'GitHub delete failed');
+        } catch (ghErr) {
+          note = `Tile deleted, but its file ${path} could not be removed from GitHub: ${ghErr.message}`;
+        }
+      } else if (path) {
+        note = `Tile deleted. The file ${path} was kept because the tile "${sharedWith}" still uses it.`;
+      } else {
+        note = 'Tile deleted. Its image is hosted outside the ophelia repo, so no file was removed.';
+      }
+      setTsFetchTrigger(n => n + 1);
+      setInfoTile(null);
+      if (note) alert(note);
+    } catch (err) {
+      setDeleteError('Failed to delete tile: ' + err.message);
+      setDeleteBusy(false);
+    }
+  };
 
   const FLAG_TIPS = {
     rotatable: "Tile can be rotated in 90° steps on the map.",
@@ -1573,63 +1652,23 @@ function InfoModalBody(props) {
           </>
         )}
 
-        {/* Delete — DB-owned tiles (admins and owners) */}
-        {t.isDb && currentUser && (userProfile?.role === 'admin' || t.tilesetOwnerId === currentUser.id) ? (
-          deleteConfirmId === t.id ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: 5, padding: "6px 0" }}>
-              <span style={{ fontSize: 11, color: C.danger, textAlign: "center" }}>Type the codename to confirm:</span>
-              <code style={{ fontSize: 10, color: C.muted, textAlign: "center", background: "rgba(255,255,255,0.06)", padding: "2px 6px", borderRadius: 4 }}>{t.codename}</code>
-              <input value={deleteConfirmInput} onChange={e => setDeleteConfirmInput(e.target.value)}
-                placeholder="codename…"
-                style={{ background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 11, padding: "4px 7px", outline: "none" }} />
-              <div style={{ display: "flex", gap: 6 }}>
-                <button style={{ ...btn(false), flex: 1, fontSize: 11 }} onClick={() => { setDeleteConfirmId(null); setDeleteConfirmInput(''); }}>Cancel</button>
-                <button style={{ ...btn(true, C.danger, "rgba(248,113,113,0.18)"), flex: 1, fontSize: 11 }}
-                  disabled={deleteConfirmInput !== t.codename}
-                  onClick={async () => {
-                    setDeleteConfirmId(null);
-                    setDeleteConfirmInput('');
-                    // Block deletion of the last tile in a tileset
-                    const tilesInTs = dbTilesByTsId[t.tilesetId] ?? [];
-                    if (tilesInTs.length === 1) {
-                      alert('This is the last tile in the tileset. To remove it, delete the entire tileset from Tileset Settings.');
-                      return;
-                    }
-                    try {
-                      const token = await getValidToken();
-                      const delResp = await workerFetch(`${WORKER_URL}/rest/v1/tiles?id=eq.${t.dbId}`, {
-                        method: 'DELETE',
-                        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-                      });
-                      if (!delResp.ok) throw new Error('DB delete failed');
-                      setTsFetchTrigger(n => n + 1);
-                      setInfoTile(null);
-                      // Silently delete file from GitHub
-                      try {
-                        const tilesetFolderPath = dbTilesets.find(ts => ts.id === t.tilesetId)?.folder_path;
-                        if (tilesetFolderPath && t.src) {
-                          const srcNoQuery = t.src.split('?')[0];
-                          const filename = srcNoQuery.split('/').pop();
-                          const filePath = `Resources/${tilesetFolderPath}/${filename}`;
-                          await workerFetch(`${WORKER_URL}/github/delete`, {
-                            method: 'POST',
-                            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ filePath, commitMessage: `[${currentUser.username}] Delete tile: ${tilesetFolderPath}/${filename}` }),
-                          });
-                        }
-                      } catch (ghErr) {
-                        console.error('[tile delete] GitHub delete failed:', ghErr);
-                      }
-                    } catch (err) {
-                      alert('Failed to delete tile: ' + err.message);
-                    }
-                  }}>Delete from DB</button>
-              </div>
-            </div>
-          ) : (
+        {/* Delete — DB tiles; owners and admins only (canEditDb is false for unowned tilesets unless admin) */}
+        {t.isDb && canEditDb ? (
+          <>
             <button style={{ ...btn(true, C.danger, "rgba(248,113,113,0.15)"), width: "100%", justifyContent: "center", fontSize: 11 }}
-              onClick={() => { const s = modalScrollRef.current?.scrollTop ?? 0; setDeleteConfirmId(t.id); setDeleteConfirmInput(''); requestAnimationFrame(() => { if (modalScrollRef.current) modalScrollRef.current.scrollTop = s; }); }}>🗑 Delete from Database</button>
-          )
+              onClick={() => { setDeleteError(null); setDeleteModalOpen(true); }}>🗑 Delete from Database</button>
+            {deleteModalOpen && (
+              <TypeToConfirmModal
+                title="Delete tile"
+                message="This removes the tile from the database and deletes its image file from GitHub unless another tile uses the same file."
+                expected={t.codename ?? ''}
+                confirmLabel="Delete tile"
+                busy={deleteBusy}
+                error={deleteError}
+                onCancel={() => setDeleteModalOpen(false)}
+                onConfirm={doDeleteDbTile} />
+            )}
+          </>
         ) : !t.isDefault && !t.isDb ? (
           deleteConfirmId === t.id ? (() => {
             const codenameToConfirm = tileNames[t.id] || defaultCodename_ || String(t.id);
