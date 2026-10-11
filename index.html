@@ -260,6 +260,29 @@ const resolveCodename = (codename, tiles) => {
   if (codename.startsWith("d:")) { const uuid = codename.slice(2); return tiles.find(t => t.dbId === uuid) ?? null; }
   return tiles.find(t => t.src === codename) ?? null;
 };
+// Tile objects for one tileset built from its cached DB rows (same ids as flatDefaultTiles assigns).
+// Used by modals that need a non-active tileset's tiles, which are no longer kept in flatDefaultTiles.
+const dbTileObjsFor = (tsDef, rows) => (rows ?? []).slice().sort((a, b) => a.sort_index - b.sort_index).map(row => ({
+  id: uuidToStableId(row.id, tsDef.id), dbId: row.id, dbTilesetId: row.tileset_id, src: row.image_url,
+  isDefault: true, isDb: true, codename: row.codename, tilesetName: tsDef.name, tilesetId: tsDef.id,
+}));
+// Remap a grid from the old tileset to a new one by codename. Cells that are not old-tileset, global,
+// local-upload or special ids do not belong to this map's tileset and are cleared (counted in `cleared`).
+// `lookup(codename)` returns the new id or undefined (-> warn tile).
+const remapGridForSwitch = (grid, oldIds, oldIdToCodename, lookup) => {
+  let cleared = 0;
+  const out = grid.map(row => row.map(id => {
+    if (id === null) return null;
+    if (id === SPACE_TILE_ID || id === WARN_TILE_ID) return id;
+    if (id >= GLOBAL_ID_START && id <= GLOBAL_ID_MAX) return id;
+    if (id >= USER_ID_START && id <= USER_ID_MAX) return id;
+    if (!oldIds.has(id)) { cleared++; return null; }
+    const cn = oldIdToCodename[id];
+    const nid = cn ? lookup(cn) : undefined;
+    return nid !== undefined ? nid : WARN_TILE_ID;
+  }));
+  return { grid: out, cleared };
+};
 const encodeGridForStorage = (grid, tiles) => {
   const tileById = new Map(tiles.map(t => [t.id, t]));
   const palette = [];
@@ -1967,13 +1990,17 @@ function App() {
     }
 
     // ── 3. Auto-convert board: remap old-tileset IDs → new-tileset IDs ──
+    // flatDefaultTiles holds only the active (= old) tileset here, and oldIdToCodename is built BEFORE
+    // setActiveTileset below changes it. Cells that do not belong to the old tileset / global / uploads are cleared.
     const oldIdToCodename = {};
+    const oldIds = new Set();
     if (oldTsDef) {
       flatDefaultTiles.forEach(t => {
-        if (t.isDb && t.dbTilesetId === oldTsDef.id && t.codename) oldIdToCodename[t.id] = t.codename;
+        if (!t.isDb || t.dbTilesetId !== oldTsDef.id) return;
+        oldIds.add(t.id);
+        if (t.codename) oldIdToCodename[t.id] = t.codename;
       });
     }
-    const oldIds = new Set(Object.keys(oldIdToCodename).map(Number));
     const currentGrid = gridRef.current;
     const hasOldTiles = oldIds.size > 0 &&
       currentGrid.some(row => row.some(id => id !== null && oldIds.has(id)));
@@ -2027,16 +2054,11 @@ function App() {
       }
     }
 
-    const newGrid = (hasOldTiles && newTsDef) ? currentGrid.map(row =>
-      row.map(id => {
-        if (id === null || !oldIds.has(id)) return id;
-        if (id >= GLOBAL_ID_START) return id;
-        const cn = oldIdToCodename[id];
-        if (!cn) return WARN_TILE_ID;
-        const newId = futureCodenameToId[cn];
-        return newId !== undefined ? newId : WARN_TILE_ID;
-      })
-    ) : currentGrid;
+    let newGrid = currentGrid, clearedCount = 0;
+    if (newTsDef) {
+      const r = remapGridForSwitch(currentGrid, oldIds, oldIdToCodename, cn => futureCodenameToId[cn]);
+      newGrid = r.grid; clearedCount = r.cleared;
+    }
 
     // ── 4. BG colours: DB record → OPHELIA_BG → cached → app default ───
     const dbBg = (newTsDef?.bg_color_light && newTsDef?.bg_color_dark)
@@ -2056,6 +2078,7 @@ function App() {
     if (newGrid !== currentGrid) setGridRaw(newGrid);
     setActiveTileset(newTilesetName);
     applyBgPreset(newTilesetName, tsBg.bg1, tsBg.bg2);
+    if (clearedCount > 0) setGridLoadWarning(clearedCount);
 
     // ── 6. Clear per-tile overrides for tileset-range IDs ────────────────
     const keepNonTileset = obj => {
@@ -2078,7 +2101,7 @@ function App() {
 
     // ── 7. Drop stale starred/recent tile IDs from the old tileset ───────
     if (oldTsDef) {
-      const oldTileIdSet = new Set(Object.keys(oldIdToCodename).map(Number));
+      const oldTileIdSet = oldIds;
       setStarredTiles(prev => prev.filter(s => typeof s !== "number" || !oldTileIdSet.has(s)));
       setRecentTileIds(prev => prev.filter(id => !oldTileIdSet.has(id)));
     }
@@ -5475,34 +5498,31 @@ function App() {
       if (toTsDef && toDbTiles === null) ensureTilesetLoaded(toTsDef.id);
     }, [toTs]); // eslint-disable-line react-hooks/exhaustive-deps
 
-    // Build codename→numeric-ID map for the "to" tileset from flatDefaultTiles
+    // flatDefaultTiles only holds the active tileset, so read both sides from the per-tileset fetch cache.
+    const fromObjs = fromTsDef ? dbTileObjsFor(fromTsDef, dbTilesByTsId[fromTsDef.id]) : [];
+    const toObjs   = toTsDef   ? dbTileObjsFor(toTsDef,   dbTilesByTsId[toTsDef.id])   : [];
     const toCodenameToId = {};
-    if (toTsDef) {
-      flatDefaultTiles.forEach(t => { if (t.isDb && t.dbTilesetId === toTsDef.id && t.codename) toCodenameToId[t.codename] = t.id; });
-    }
+    toObjs.forEach(t => { if (t.codename) toCodenameToId[t.codename] = t.id; });
 
     const idRemap = {};
     const fromAll = new Set();
-    if (fromTsDef) {
-      flatDefaultTiles.forEach(t => {
-        if (!t.isDb || t.dbTilesetId !== fromTsDef.id) return;
-        fromAll.add(t.id);
-        if (t.codename && toCodenameToId[t.codename] !== undefined) idRemap[t.id] = toCodenameToId[t.codename];
-      });
-    }
+    fromObjs.forEach(t => {
+      fromAll.add(t.id);
+      if (t.codename && toCodenameToId[t.codename] !== undefined) idRemap[t.id] = toCodenameToId[t.codename];
+    });
 
+    // Only the active tileset's tiles can be on the board; ids of any other tileset are ambiguous, so count nothing.
+    const fromIsActive = fromTs === activeTileset;
     const boardFromIds = new Set();
-    grid.forEach(row => row.forEach(id => { if (id != null && fromAll.has(id)) boardFromIds.add(id); }));
+    if (fromIsActive) grid.forEach(row => row.forEach(id => { if (id != null && fromAll.has(id)) boardFromIds.add(id); }));
     const unmapped = [...boardFromIds].filter(id => idRemap[id] === undefined);
     const mappable = [...boardFromIds].filter(id => idRemap[id] !== undefined);
     const toTilesNotLoaded = toTsDef && toDbTiles === null;
 
+    // Converting is a tileset switch (one tileset per map): delegate so remap, compat flow and clearing stay in one place.
     const doConvert = () => {
-      const newGrid = grid.map(row => row.map(id =>
-        (id != null && fromAll.has(id) && idRemap[id] !== undefined) ? idRemap[id] : id
-      ));
-      setGrid(newGrid);
       setConvertOpen(false);
+      switchTileset(toTs);
     };
 
     const TsSelect = ({ value, onChange }) => (
@@ -5519,7 +5539,7 @@ function App() {
             <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Convert Tileset Tiles</span>
             <button onClick={() => setConvertOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18 }}>×</button>
           </div>
-          <p style={{ fontSize: 11, color: C.muted, lineHeight: 1.6 }}>Remaps tiles on the board from one tileset to another by matching tile names. Tiles with no equivalent in the target tileset are left unchanged.</p>
+          <p style={{ fontSize: 11, color: C.muted, lineHeight: 1.6 }}>Switches the board to another tileset, matching tiles by name. A map holds one tileset at a time.</p>
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
             <div style={{ display: "flex", flexDirection: "column", gap: 3, flex: 1 }}>
               <span style={{ fontSize: 10, color: C.muted }}>From</span>
@@ -5549,14 +5569,15 @@ function App() {
                 ? <div style={{ color: "#fbbf24" }}>Loading target tileset tiles…</div>
                 : <>
                     <div>{mappable.length} tile type{mappable.length !== 1 ? "s" : ""} will be converted.</div>
-                    {unmapped.length > 0 && <div style={{ color: "#fbbf24" }}>{unmapped.length} type{unmapped.length !== 1 ? "s" : ""} have no codename match in {toTs} and will stay as-is.</div>}
+                    {unmapped.length > 0 && <div style={{ color: "#fbbf24" }}>{unmapped.length} type{unmapped.length !== 1 ? "s" : ""} have no codename match in {toTs}; you will be asked what to replace them with.</div>}
+                    {!fromIsActive && <div style={{ color: "#fbbf24" }}>The board only holds {activeTileset} tiles — pick it as "From".</div>}
                   </>
               }
             </div>
           )}
           <div style={{ display: "flex", gap: 8 }}>
             <button style={{ ...btn(true, C.accent, C.accentDim), flex: 1 }}
-              disabled={!fromTs || !toTs || fromTs === toTs || toTilesNotLoaded}
+              disabled={!fromTs || !toTs || fromTs === toTs || toTilesNotLoaded || !fromIsActive}
               onClick={doConvert}>
               Convert
             </button>
@@ -5646,28 +5667,21 @@ function App() {
       );
     }
 
-    const newTilesForDropdown = flatDefaultTiles.filter(ft => ft.isDb && ft.dbTilesetId === newTsDef?.id);
+    // flatDefaultTiles only holds the outgoing tileset + globals; the incoming tileset comes from the fetch cache.
+    const newTilesForDropdown = newTsDef ? dbTileObjsFor(newTsDef, dbTilesByTsId[newTsDef.id]) : [];
     const globalTilesForDropdown = flatDefaultTiles.filter(t => !t.isDb);
 
     const handleConfirm = () => {
       const pending = tilesetSwitchPending;
       if (!pending) return;
       const { newTilesetName: tsName, newTsDef: tsDef, oldIdToCodename: oldMap, futureCodenameToId: futureMap, newTilesCached: cached, tsBg: bg, remaps: finalRemaps } = pending;
-      const oldIds2 = new Set(Object.keys(oldMap).map(Number));
       const cGrid = gridRef.current;
-      const hasOld = oldIds2.size > 0 && cGrid.some(row => row.some(id => id !== null && oldIds2.has(id)));
       const resolvedBg = bg ?? { bg1: "#1a2332", bg2: "#1e2838" };
-      const nGrid = (hasOld && tsDef) ? cGrid.map(row =>
-        row.map(id => {
-          if (id === null || !oldIds2.has(id)) return id;
-          const cn = oldMap[id];
-          if (!cn) return WARN_TILE_ID;
-          // Check user remap first, then auto-map
-          if (finalRemaps[cn] !== undefined) return finalRemaps[cn];
-          const newId = futureMap[cn];
-          return newId !== undefined ? newId : WARN_TILE_ID;
-        })
-      ) : cGrid;
+      // Old-tileset ids come from flatDefaultTiles, which still holds the outgoing tileset until setActiveTileset below.
+      const oldIds2 = new Set(flatDefaultTiles.filter(t => t.isDb && t.dbTilesetId === pending.oldTsDef?.id).map(t => t.id));
+      const { grid: nGrid, cleared } = tsDef
+        ? remapGridForSwitch(cGrid, oldIds2, oldMap, cn => finalRemaps[cn] !== undefined ? finalRemaps[cn] : futureMap[cn])
+        : { grid: cGrid, cleared: 0 };
       const snap = { grid: nGrid, w: gridWRef.current, h: gridHRef.current, tileset: tsName, bg1: resolvedBg.bg1, bg2: resolvedBg.bg2, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current, label: `Switch from ${activeTileset ?? '(none)'} to ${tsName}` };
       setHistory(h => {
         const trimmed = h.slice(0, histIdxRef.current + 1);
@@ -5678,6 +5692,7 @@ function App() {
       if (nGrid !== cGrid) setGridRaw(nGrid);
       setActiveTileset(tsName);
       applyBgPreset(tsName, resolvedBg.bg1, resolvedBg.bg2);
+      if (cleared > 0) setGridLoadWarning(cleared);
       setTilesetSwitchPending(null);
     };
 
@@ -5694,7 +5709,7 @@ function App() {
           <div style={{ overflowY: 'auto', flex: 1, display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 10 }}>
             {mismatches.map(m => {
               const currentRemapId = remaps[m.codename] ?? WARN_TILE_ID;
-              const currentRemapTile = currentRemapId === WARN_TILE_ID ? null : flatDefaultTiles.find(t => t.id === currentRemapId);
+              const currentRemapTile = currentRemapId === WARN_TILE_ID ? null : (newTilesForDropdown.find(t => t.id === currentRemapId) ?? globalTilesForDropdown.find(t => t.id === currentRemapId));
               const isPickerOpen = openPickerFor === m.codename;
               const allPickerTiles = [
                 { group: 'Incoming Tileset', tiles: newTilesForDropdown },
