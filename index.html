@@ -2421,21 +2421,19 @@ function App() {
   // localStorage, tiles is non-empty from the very first render (before the setDefaultTiles useEffect
   // runs), so tiles.length === 0 is not a reliable signal that default tiles are available yet.
   //
-  // Race-condition fix: tilesLoading=false and setDbTilesByTsId are called in the same async block, but
-  // React may fire this effect before flatDefaultTiles recomputes from the new dbTilesByTsId. Instead of
-  // trusting tilesLoading, verify that flatDefaultTiles actually contains at least one d: tile for every
-  // tileset UUID referenced in the pending palette — only then is it safe to resolve.
+  // Race-condition fix: tilesLoading=false and setDbTilesByTsId are set in the same async block, so wait for both
+  // tilesLoading=false and the active tileset's rows in dbTilesByTsId (flatDefaultTiles recomputes from that same state).
   useEffect(() => {
     if (!pendingGridLoadRef.current || flatDefaultTiles.length === 0) return;
-    // If any d: UUID in the palette belongs to a tileset whose tiles are not yet in flatDefaultTiles, wait.
+    // flatDefaultTiles holds only the active tileset (+ globals). If the palette has d: tiles, wait until the
+    // initial fetch finished and the active tileset's rows are cached; tiles of other tilesets are matched by
+    // codename against the active tileset below (their rows were pre-fetched into dbTilesByTsId by the load effect).
     const palette = pendingGridLoadRef.current.palette;
     const dbUuids = palette.filter(cn => typeof cn === 'string' && cn.startsWith('d:')).map(cn => cn.slice(2));
+    const activeTsDefForLoad = dbTilesets.find(ts => ts.name === activeTileset);
     if (dbUuids.length > 0) {
-      const flatDbIds = new Set(flatDefaultTiles.filter(t => t.isDb).map(t => t.dbId));
-      if (!dbUuids.every(uuid => flatDbIds.has(uuid))) return; // tiles not yet in flatDefaultTiles
+      if (tilesLoading || !activeTsDefForLoad || dbTilesByTsId[activeTsDefForLoad.id] === undefined) return;
     }
-    // If the palette contains plain src-path codenames (global tiles), wait until manifest is loaded
-    // so that global tiles are present in flatDefaultTiles before resolution.
     const hasSrcCodenames = palette.some(cn => typeof cn === 'string' && cn !== 'space' && cn !== 'warn' && !cn.startsWith('d:') && !cn.startsWith('u:'));
     if (hasSrcCodenames && !manifest) return;
     const pending = pendingGridLoadRef.current;
@@ -2444,8 +2442,19 @@ function App() {
     const unresolved = [];
     // Resolve against flatDefaultTiles directly (always current) plus persisted user tiles.
     const allTiles = [...flatDefaultTiles, ...userTiles];
+    // d:<uuid> of a tile that is not in the active tileset: find its row in the cached tilesets and match by codename.
+    const activeByCodename = new Map(flatDefaultTiles.filter(t => t.isDb && t.codename).map(t => [t.codename, t]));
+    const foreignRowByUuid = new Map();
+    Object.entries(dbTilesByTsId).forEach(([tsId, rows]) => {
+      if (tsId === activeTsDefForLoad?.id) return;
+      (rows ?? []).forEach(r => foreignRowByUuid.set(r.id, r));
+    });
     const idFromPaletteIdx = [null, ...resolvedPalette.map(cn => {
-      const tile = resolveCodename(cn, allTiles);
+      let tile = resolveCodename(cn, allTiles);
+      if (!tile && typeof cn === 'string' && cn.startsWith('d:')) {
+        const row = foreignRowByUuid.get(cn.slice(2));
+        tile = (row?.codename && activeByCodename.get(row.codename)) || null;
+      }
       if (!tile) unresolved.push(cn);
       return tile?.id ?? null;
     })];
@@ -2460,7 +2469,7 @@ function App() {
       console.warn(`[map load] ${unresolved.length} tile(s) could not be resolved:`, unresolved);
       setGridLoadWarning(unresolved.length);
     }
-  }, [tiles, flatDefaultTiles, manifest]); // eslint-disable-line
+  }, [tiles, flatDefaultTiles, manifest, dbTilesByTsId, dbTilesets, tilesLoading, activeTileset]); // eslint-disable-line
   useEffect(() => { if (activeTileset) save(SK.activeTileset, activeTileset); }, [activeTileset]);
 
   // Close tileset dropdown on outside click (bubble phase so stopPropagation inside the dropdown works)
