@@ -1816,6 +1816,7 @@ function App() {
   // Tileset dropdown open state
   const [tilesetDropOpen, setTilesetDropOpen] = useState(false);
   const [gridLoadWarning, setGridLoadWarning] = useState(null); // null or count of unresolved tiles
+  const [infoNotice, setInfoNotice] = useState(null); // null or a short dismissible message
   const [customBgModalOpen, setCustomBgModalOpen] = useState(false);
   const [bgDropOpen, setBgDropOpen] = useState(false);
   // Parsed manifest data (globals only)
@@ -2560,7 +2561,7 @@ function App() {
     });
   }, [histIdx]);
 
-  const restoreSnap = snap => {
+  const applySnap = snap => {
     setGridRaw(snap.grid ?? snap);
     if (snap.w !== undefined) { setGridW(snap.w); setGridH(snap.h); }
     if (snap.tileset != null) setActiveTileset(snap.tileset);
@@ -2609,6 +2610,24 @@ function App() {
       setCustomCenter(snap.customCenter);
       customCenterRef.current = snap.customCenter;
     }
+  };
+
+  // Restore a history snapshot. Its grid holds ids of snap.tileset, so that tileset must be known and its tiles
+  // cached before the ids are interpreted; otherwise abort with a notice (onAbort lets callers undo their bookkeeping).
+  const restoreSnap = (snap, onAbort) => {
+    const target = snap.tileset;
+    const abort = () => { setInfoNotice(`Couldn't restore that step: tileset "${target}" isn't available.`); if (onAbort) onAbort(); };
+    if (target != null && target !== activeTilesetRef.current) {
+      const tsDef = dbTilesets.find(ts => ts.name === target);
+      if (!tsDef) { abort(); return; }
+      if (dbTilesByTsIdRef.current[tsDef.id] === undefined) {
+        ensureTilesetLoaded(tsDef.id).then(() => {
+          if (dbTilesByTsIdRef.current[tsDef.id] === undefined) abort(); else applySnap(snap);
+        });
+        return;
+      }
+    }
+    applySnap(snap);
   };
 
   // Apply a duplicate: place copy of primary highlighted cells at current drag-offset position, with mirroring
@@ -2671,15 +2690,15 @@ function App() {
     if (histIdx <= 0) return;
     const newIdx = histIdx - 1;
     setHistIdx(newIdx);
-    restoreSnap(history[newIdx]);
-  }, [history, histIdx]);
+    restoreSnap(history[newIdx], () => setHistIdx(histIdx));
+  }, [history, histIdx, dbTilesets, ensureTilesetLoaded]);
 
   const redo = useCallback(() => {
     if (histIdx >= history.length - 1) return;
     const newIdx = histIdx + 1;
     setHistIdx(newIdx);
-    restoreSnap(history[newIdx]);
-  }, [history, histIdx]);
+    restoreSnap(history[newIdx], () => setHistIdx(histIdx));
+  }, [history, histIdx, dbTilesets, ensureTilesetLoaded]);
 
   // Push the current grid as a history snapshot (called once on mousedown, before any paint).
   // All cell writes during a drag use skipHistory=true, so the whole drag is one undo step.
@@ -5336,7 +5355,7 @@ function App() {
               const label = isInitial ? "Initial state" : (snap.label || "Draw");
               return (
                 <div key={i}
-                  onClick={isInitial ? undefined : () => { restoreSnap(snap); setHistIdx(i); close(); }}
+                  onClick={isInitial ? undefined : () => { const prevIdx = histIdxRef.current; restoreSnap(snap, () => setHistIdx(prevIdx)); setHistIdx(i); close(); }}
                   style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 8px", borderRadius: 6,
                     cursor: isInitial ? "default" : "pointer",
                     background: isCurrent ? "rgba(37,99,235,0.18)" : "transparent",
@@ -6276,6 +6295,13 @@ function App() {
         </div>
       )}
 
+      {/* Short dismissible notice (aborted restore, one-time reset) */}
+      {infoNotice && (
+        <div style={{ position: "fixed", bottom: gridLoadWarning ? 76 : 16, left: "50%", transform: "translateX(-50%)", zIndex: 3000, background: "rgba(30,20,5,0.97)", border: "1px solid rgba(251,191,36,0.5)", borderRadius: 8, padding: "8px 14px", display: "flex", alignItems: "center", gap: 10, boxShadow: "0 4px 20px rgba(0,0,0,0.6)", maxWidth: 420 }}>
+          <span style={{ fontSize: 11, color: "#fef3c7", lineHeight: 1.5, flex: 1 }}>{infoNotice}</span>
+          <button onClick={() => setInfoNotice(null)} style={{ background: "none", border: "none", cursor: "pointer", color: "#fbbf24", fontSize: 16, lineHeight: 1, padding: "0 2px", flexShrink: 0 }}>×</button>
+        </div>
+      )}
       {/* Grid load warning banner */}
       {gridLoadWarning && (
         <div style={{ position: "fixed", bottom: 16, left: "50%", transform: "translateX(-50%)", zIndex: 3000, background: "rgba(30,20,5,0.97)", border: "1px solid rgba(251,191,36,0.5)", borderRadius: 8, padding: "8px 14px", display: "flex", alignItems: "center", gap: 10, boxShadow: "0 4px 20px rgba(0,0,0,0.6)", maxWidth: 420 }}>
