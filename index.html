@@ -238,6 +238,25 @@ const deriveCodename = src => {
 };
 const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
 
+// ── One-time reset (oph_idv = 2) ───────────────────────────────────────
+// Per-tile overrides, starred and recent lists were keyed by non-unique numeric tile ids that could point at a
+// different tile after the identity fixes. Clear them once; the saved map (oph_grid), uploads and everything else stay.
+const OPH_ID_VERSION = "2";
+let OPH_RESET_NOTICE = null;
+(() => {
+  try {
+    if (localStorage.getItem("oph_idv") === OPH_ID_VERSION) return;
+    const keys = ["oph_multipliers", "oph_priority", "oph_offsets", "oph_bottom", "oph_auto_shadow", "oph_rotatable", "oph_allow_flip", "oph_mirror_offset", "oph_otg_walls", "oph_tile_names", "oph_tile_count_map", "oph_starred", "oph_recent"];
+    const hadAny = keys.some(k => localStorage.getItem(k) !== null);
+    keys.forEach(k => localStorage.removeItem(k));
+    localStorage.setItem("oph_idv", OPH_ID_VERSION);
+    if (hadAny) OPH_RESET_NOTICE = "Tile identity was fixed in this update, so your per-tile settings, starred tiles and recent tiles were reset once. Your map and uploads were kept.";
+  } catch {}
+})();
+// Dev-only diagnostics: localhost / file:// or localStorage oph_dev=1
+const IS_DEV = (() => { try { return ["localhost", "127.0.0.1", "[::1]", ""].includes(location.hostname) || localStorage.getItem("oph_dev") === "1"; } catch { return false; } })();
+const WARNED_DUP_TILE_IDS = new Set();
+
 // ── Palette-based grid serialization ───────────────────────────────────
 // Each tile is identified by a stable codename independent of runtime IDs:
 //   default tiles  → their src path  (e.g. "Resources/Mausoleum/MSLM-wall.png")
@@ -1094,6 +1113,18 @@ function App() {
   }, []);
 
   const tiles = useMemo(() => [...defaultTiles, ...userTiles], [defaultTiles, userTiles]);
+  // Safety net (dev only): two tile objects sharing one id would re-introduce multi-select / stray flags.
+  useEffect(() => {
+    if (!IS_DEV) return;
+    const seen = new Set();
+    tiles.forEach(t => {
+      if (seen.has(t.id) && !WARNED_DUP_TILE_IDS.has(t.id)) {
+        WARNED_DUP_TILE_IDS.add(t.id);
+        console.warn(`[tiles] duplicate tile id ${t.id} in tiles:`, tiles.filter(x => x.id === t.id).map(x => x.dbId ?? x.src));
+      }
+      seen.add(t.id);
+    });
+  }, [tiles]);
 
   const [gridW, setGridW] = useState(() => load(SK.gridW, GRID_W));
   const [gridH, setGridH] = useState(() => load(SK.gridH, GRID_H));
@@ -1822,7 +1853,7 @@ function App() {
   // Tileset dropdown open state
   const [tilesetDropOpen, setTilesetDropOpen] = useState(false);
   const [gridLoadWarning, setGridLoadWarning] = useState(null); // null or count of unresolved tiles
-  const [infoNotice, setInfoNotice] = useState(null); // null or a short dismissible message
+  const [infoNotice, setInfoNotice] = useState(OPH_RESET_NOTICE); // null or a short dismissible message
   const [customBgModalOpen, setCustomBgModalOpen] = useState(false);
   const [bgDropOpen, setBgDropOpen] = useState(false);
   // Parsed manifest data (globals only)
