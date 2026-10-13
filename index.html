@@ -3307,13 +3307,14 @@ function App() {
     im.onerror = () => reject(new Error(`image failed to load: ${src}`));
     im.src = src;
   });
-  const tileImageUrl = ref => { const t = tilesByRefRef.current.get(ref); return t ? (t.blobSrc ?? t.src) : null; };
-  const composedKeyFor = (folderRef, code, recipe) => `${SensorUI.composeKey(folderRef, code)}|${recipe.map(e => tileImageUrl(e.sourceTileRef)).join(",")}`;
-  const composeVariant = async recipe => {
+  // Base tiles are looked up in the folder itself (not tilesByRef, which trails the folder list by a render after a tileset switch).
+  const tileImageUrl = (folderRef, ref) => { const t = sensorFolders.get(folderRef)?.ui.tiles.find(x => x.ref === ref); return t ? (t.blobSrc ?? t.src) : null; };
+  const composedKeyFor = (folderRef, code, recipe) => `${SensorUI.composeKey(folderRef, code)}|${recipe.map(e => tileImageUrl(folderRef, e.sourceTileRef)).join(",")}`;
+  const composeVariant = async (folderRef, recipe) => {
     const imgs = new Map();
     for (const e of recipe) {
       if (imgs.has(e.sourceTileRef)) continue;
-      const url = tileImageUrl(e.sourceTileRef);
+      const url = tileImageUrl(folderRef, e.sourceTileRef);
       if (!url) throw new Error(`missing base tile ${e.sourceTileRef}`);
       imgs.set(e.sourceTileRef, await loadTileImage(url));
     }
@@ -3340,7 +3341,7 @@ function App() {
     const hit = cache.get(key);
     if (hit === undefined) {
       cache.set(key, "pending");
-      composeVariant(recipe)
+      composeVariant(folderRef, recipe)
         .then(url => cache.set(key, url))
         .catch(err => { console.warn(`[sensor] compose failed for ${folderRef} ${code}:`, err); cache.set(key, "fail"); })
         .finally(() => setComposedTick(n => n + 1));
@@ -3365,6 +3366,15 @@ function App() {
       return fbTile ? { src: fbTile.blobSrc ?? fbTile.src, css: "" } : { warn: true };
     }
     return { src: d.tile.blobSrc ?? d.tile.src, css: SensorUI.opsToCss(d.ops) };
+  };
+
+  // Switch plan over the palette: d: entries by codename (planSwitch), s: entries by folder key (planSensorSwitch).
+  // Global s: entries stay. A sensor folder with no namesake in the new tileset goes through the compat flow like any unmatched tile.
+  const planSwitchAll = (oldTsDef, newTsDef, oldRows, newRows) => {
+    const base = planSwitch(paletteRef.current, oldRows, newRows);
+    const keys = new Set((newRows ?? []).filter(r => r.folder_key && r.sensor_code != null).map(r => r.folder_key));
+    const sp = SensorUI.planSensorSwitch(paletteRef.current.refs, oldTsDef?.id ?? null, newTsDef?.id ?? null, keys);
+    return { matched: [...base.matched, ...sp.matched], mismatches: [...base.mismatches, ...sp.mismatches], foreign: [...base.foreign, ...sp.foreign] };
   };
 
   // Switch tileset — updates the tile panel and BG colours, and converts board tiles by codename.
@@ -3401,7 +3411,7 @@ function App() {
     // ── 2. Plan: which palette entries convert, which need a replacement, which are foreign ──
     const oldRows = oldTsDef ? (dbTilesByTsIdRef.current[oldTsDef.id] ?? []) : [];
     const newRows = newTsDef ? (dbTilesByTsIdRef.current[newTsDef.id] ?? []) : [];
-    const plan = planSwitch(paletteRef.current, oldRows, newRows);
+    const plan = planSwitchAll(oldTsDef, newTsDef, oldRows, newRows);
 
     // For Objectives tiles with no codename match in the new tileset, suggest an
     // equivalent global tile (Brawl Ball / Gem Grab / Heist) as the default remap.
@@ -3448,7 +3458,7 @@ function App() {
     const oldRows = oldTsDef ? (dbTilesByTsIdRef.current[oldTsDef.id] ?? []) : [];
     const newRows = newTsDef ? (dbTilesByTsIdRef.current[newTsDef.id] ?? []) : [];
     const currentGrid = gridRef.current;
-    const plan = planSwitch(paletteRef.current, oldRows, newRows);
+    const plan = planSwitchAll(oldTsDef, newTsDef, oldRows, newRows);
     let newGrid = currentGrid, newPal = paletteRef.current, clearedCount = 0;
     if (newTsDef) {
       const r = applySwitchPlan(paletteRef.current, currentGrid, plan, remaps);
@@ -3472,7 +3482,7 @@ function App() {
     // Overrides of the outgoing tileset's tiles are dropped by the "ref no longer exists" guard once the new tileset is the
     // contained one. Starred / recent / current selection that point at the outgoing tileset go now.
     if (oldTsDef) {
-      const oldRefs = new Set(oldRows.map(r => makeRef("d", r.id)));
+      const oldRefs = new Set([...oldRows.map(r => makeRef("d", r.id)), ...paletteRef.current.refs.filter(r => r && SensorUI.parseSensorRef(r)?.scope === oldTsDef.id), ...[...new Set(oldRows.filter(r => r.folder_key).map(r => SensorUI.sensorRef(oldTsDef.id, r.folder_key)))]]);
       const toNew = new Map(plan.matched.map(m => [m.from, m.to]));
       setStarredTiles(prev => prev.filter(s => !oldRefs.has(s)));
       setRecentTileIds(prev => prev.filter(id => !oldRefs.has(id)));
@@ -3784,7 +3794,7 @@ function App() {
     const pending = pendingGridLoadRef.current;
     const savedRefs = pending.palette.refs;
     const activeTsDefForLoad = dbTilesets.find(ts => ts.name === activeTileset);
-    if (savedRefs.some(r => r && r.startsWith('d:'))) {
+    if (savedRefs.some(r => r && (r.startsWith('d:') || (r.startsWith('s:') && !r.startsWith('s:global|'))))) {
       if (tilesLoading || !activeTsDefForLoad || dbTilesByTsId[activeTsDefForLoad.id] === undefined) return;
     }
     if (savedRefs.some(r => r && r.startsWith('g:')) && !manifest) return;
@@ -3792,6 +3802,7 @@ function App() {
     const contained = new Map(flatDefaultTiles.map(t => [t.ref, t]));
     userTiles.forEach(t => contained.set(t.ref, t));
     const activeByCodename = new Map(flatDefaultTiles.filter(t => t.isDb && t.codename).map(t => [t.codename, t]));
+    const activeSensorKeys = new Set(flatDefaultTiles.filter(t => t.isSensor && t.sensorFolder.scope !== SensorUI.SCOPE_GLOBAL).map(t => t.sensorFolder.folderKey));
     const foreignRowByUuid = new Map();
     Object.entries(dbTilesByTsId).forEach(([tsId, rows]) => {
       if (tsId === activeTsDefForLoad?.id) return;
@@ -3807,6 +3818,10 @@ function App() {
         const row = foreignRowByUuid.get(p.key);
         const target = row?.codename && activeByCodename.get(row.codename);
         if (target) { const r = remapEntry(pal, ref, target.ref, g); pal = r.palette; g = r.grid; return; }
+      }
+      if (p?.kind === 's') { // a sensor folder of another tileset: matched by folder key into the active tileset
+        const to = SensorUI.resolveLoadedSensorRef(ref, activeTsDefForLoad?.id ?? null, activeSensorKeys);
+        if (to && contained.has(to)) { const r = remapEntry(pal, ref, to, g); pal = r.palette; g = r.grid; return; }
       }
       // unresolved: free the entry and empty its cells
       console.warn('[map load] tile could not be resolved:', ref);
@@ -6414,6 +6429,11 @@ function App() {
 
     // flatDefaultTiles only holds the outgoing tileset + globals; the incoming tileset comes from the fetch cache.
     const newTilesForDropdown = newTsDef ? sortedRows(dbTilesByTsId[newTsDef.id]).map(r => buildDbTile(r, newTsDef)) : [];
+    if (newTsDef) { // sensor folders of the incoming tileset are offered as one tile each
+      const groups = {};
+      newTilesForDropdown.forEach(t => { if (t.folderLabel) (groups[t.folderLabel] = groups[t.folderLabel] || []).push(t); });
+      Object.entries(groups).forEach(([k, ts]) => { const f = SensorUI.makeFolder({ scope: newTsDef.id, folderKey: k, label: k, tiles: ts }); if (f) newTilesForDropdown.push(buildSensorTile(f)); });
+    }
     const globalTilesForDropdown = flatDefaultTiles.filter(t => !t.isDb);
 
     const handleConfirm = () => {
