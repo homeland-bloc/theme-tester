@@ -103,6 +103,22 @@
     return { palette: { refs }, grid: newGrid, merged: true };
   };
 
+  // ── Counting ──────────────────────────────────────────────────────────
+  // -> [{ ref, count }] for every entry used on the map, highest count first (ties keep palette order). Empty cells and free
+  // slots are not counted; special tiles (space / warn) are entries like any other. A sensor folder is one entry (cells hold its s: ref).
+  const countRefs = (palette, grid) => {
+    const counts = new Map();
+    for (const row of grid) for (const c of row) {
+      if (c == null) continue;
+      const ref = palette.refs[c];
+      if (ref == null) continue;
+      counts.set(ref, (counts.get(ref) || 0) + 1);
+    }
+    return Array.from(counts, ([ref, count]) => ({ ref, count, order: palette.refs.indexOf(ref) }))
+      .sort((a, b) => (b.count - a.count) || (a.order - b.order))
+      .map(({ ref, count }) => ({ ref, count }));
+  };
+
   // ── Storage: {v:2, palette:[ref strings], grid:[[1-based index | null]]} ──────────────────────────────────
   // Global refs are written as the bare Resources path, exactly like the format before refs existed, so older
   // saves and newer saves are interchangeable. d:/u:/space/warn are written as they are.
@@ -174,7 +190,7 @@
     KINDS, SPACE_REF, WARN_REF, STORAGE_VERSION,
     makeRef, parseRef, isRef, refKind,
     createPalette, clonePalette, indexOfRef, paletteIndexFor, refAt,
-    usedIndexes, removeUnused, compactForExport, remapEntry,
+    usedIndexes, removeUnused, compactForExport, remapEntry, countRefs,
     encodeForStorage, decodeFromStorage,
     planSwitch, applySwitchPlan,
   };

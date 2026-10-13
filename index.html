@@ -136,8 +136,19 @@ const ACCEPTED = "image/png,image/jpeg,image/gif,image/webp,image/svg+xml,image/
 const MAX_HISTORY = 60;
 // Tiles are identified by refs (tile_palette.js): d:<uuid> DB tile, g:<Resources path> global tile, u:<n> local upload,
 // s:<tilesetId>|<folderKey> sensor folder (reserved). "space" / "warn" are the two special tiles.
-const { makeRef, parseRef, createPalette, clonePalette, paletteIndexFor, refAt, removeUnused, remapEntry, encodeForStorage, decodeFromStorage, planSwitch, applySwitchPlan, SPACE_REF, WARN_REF } = window.TilePalette;
+const { makeRef, parseRef, countRefs, createPalette, clonePalette, paletteIndexFor, refAt, removeUnused, remapEntry, encodeForStorage, decodeFromStorage, planSwitch, applySwitchPlan, SPACE_REF, WARN_REF } = window.TilePalette;
 const SensorEngine = window.Sensor, SensorUI = window.SensorUI;
+// Starred list from storage: drop removed tools; the individual selection / mirroring modes fold into their group shortcut; no duplicates.
+const migrateStarred = list => {
+  const SEL = ["single", "line", "rect", "fill"], MIR = ["mirrorV", "mirrorH", "mirrorD"], seen = new Set(), out = [];
+  for (const k of Array.isArray(list) ? list : []) {
+    if (k === "explore" || k === "rotate") continue;
+    const m = SEL.includes(k) ? "selectionGroup" : MIR.includes(k) ? "mirrorGroup" : k;
+    if (seen.has(m)) continue;
+    seen.add(m); out.push(m);
+  }
+  return out;
+};
 const REPLACE_ERASE_REF = "__erase__"; // sentinel: replace-with-empty in the Replace modal
 
 // All Supabase requests go through the Worker.
@@ -2544,6 +2555,7 @@ function App() {
   const [mirrorSettings, setMirrorSettings] = useState({ mirrorSpawns: true, allowSwap: false });
   const [mirrorSettingsOpen, setMirrorSettingsOpen] = useState(false);
   const [tilesSettingsOpen,  setTilesSettingsOpen]  = useState(false);
+  const [tileCounterOpen, setTileCounterOpen] = useState(false);
   const [tileCardLightBg,    setTileCardLightBg]    = useState(() => load("oph_tile_card_light_bg", true));
   const [hideDefaultLabels,  setHideDefaultLabels]  = useState(() => load("oph_hide_default_labels", true));
   const [shortcutPopover,   setShortcutPopover]   = useState(null); // "selectionGroup" | "mirrorGroup" | null
@@ -2603,7 +2615,7 @@ function App() {
   const [infoTool,    setInfoTool]  = useState(null); // "erase" | "hand" | "space"
   // Starred tiles: up to 5, shown when tiles panel is collapsed
   // Tool keys ("erase", "hand", ...) are plain strings; tiles are stored as refs ("d:<uuid>", "g:<path>", "u:<n>", "space", "warn")
-  const [starredTiles, setStarredTiles] = useState(() => load("oph_starred", ["selectionGroup", "mirrorGroup", "guides", "overwrite"]).filter(k => k !== "explore" && k !== "rotate")); // removed tools
+  const [starredTiles, setStarredTiles] = useState(() => migrateStarred(load("oph_starred", ["selectionGroup", "mirrorGroup", "guides", "overwrite"])));
   // A tile that belongs to a sensor folder stars the folder (the folder is the one logical entry).
   const toggleStar = rawId => setStarredTiles(prev => {
     const id = SensorUI.canonicalRef(rawId, sensorOwners);
@@ -5655,6 +5667,44 @@ function App() {
 
   // ── Tile info modal ───────────────────────────────────────────────
 
+  // ── Tile Counter modal ─────────────────────────────────────────────
+  // Every entry used on the map, highest count first. Reads grid / palette on each render, so it updates live while open.
+  // A sensor folder is ONE entry (its four-image preview) with all its variants counted together (cells hold the s: ref).
+  const TileCounterModal = () => {
+    if (!tileCounterOpen) return null;
+    const entries = countRefs(palette, grid);
+    const total = entries.reduce((a, e) => a + e.count, 0);
+    return (
+      <div className="modal-backdrop" onClick={() => setTileCounterOpen(false)} style={{ background: "rgba(0,0,0,0.45)" }}>
+        <div className="modal-box" data-tile-counter style={{ maxWidth: 560, maxHeight: "80vh" }} onClick={e => e.stopPropagation()}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>🧮 Tile Counter <span style={{ fontWeight: 400, color: C.muted, fontSize: 11 }}>({entries.length} tiles, {total} cells)</span></span>
+            <button onClick={() => setTileCounterOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18 }}>×</button>
+          </div>
+          {entries.length === 0 ? (
+            <p style={{ fontSize: 12, color: C.muted, textAlign: "center", padding: "12px 0" }}>No tiles on the map</p>
+          ) : (
+            <div style={{ overflowY: "auto", display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(86px, 1fr))", gap: 6 }}>
+              {entries.map(({ ref, count }) => {
+                const t = getTile(ref);
+                return (
+                  <div key={ref} data-count-entry={ref} style={{ display: "flex", alignItems: "center", gap: 6, padding: 4, borderRadius: 6, background: "rgba(255,255,255,0.04)", border: `1px solid ${C.border}` }}>
+                    <div style={{ width: 36, height: 36, flexShrink: 0, borderRadius: 4, overflow: "hidden", background: C.panelDeep, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      {ref === SPACE_REF ? <span style={{ fontSize: 18 }}>🛸</span>
+                        : (!t || ref === WARN_REF) ? <span style={{ fontSize: 18 }}>⚠️</span>
+                        : <TileThumb tile={t} light={tileCardLightBg} />}
+                    </div>
+                    <span data-count style={{ fontSize: 14, fontWeight: 800, color: C.text, fontFamily: "monospace" }}>{count}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
   // ── Replace modal ─────────────────────────────────────────────────
   const [replaceMsg, setReplaceMsg] = useState("");
   const replaceMsgTimerRef = useRef(null);
@@ -5975,6 +6025,7 @@ function App() {
       mirroring: { label: "Mirroring", icon: "🪞", color: C.pale, desc: "Mirrors every paint action across one or more axes. Horizontal mirrors left↔right. Vertical mirrors top↔bottom. Diagonal applies a 180° point reflection. All three can be combined.", iconColor: null },
       convert: { label: "Convert", icon: "🔄", color: C.soft, desc: "Remaps tiles on the board from one tileset to another by matching tile names. Tiles with no equivalent in the target tileset are left as-is.", iconColor: null },
       magnet: { label: "Magnet", icon: "🧲", color: "#2563eb", desc: "Sets a custom mirror origin for the map. All mirroring axes (H, V, D) pivot around this point instead of the true map centre. Click any cell on the canvas to place the origin. Use the size dropdown on the card to choose a 1×1 or 2×2 centre zone. Useful for asymmetric or experimental Showdown layouts.", iconColor: null },
+      tileCounter: { label: "Tile Counter", icon: "🧮", color: C.soft, desc: "Lists every tile used on the map with how many times it appears, highest first. A sensor folder counts as one tile (all its variants together). Empty cells are not counted; warn and space tiles are. Updates live while open.", iconColor: null },
       hotkeys: { label: "Hotkeys", icon: "⌨️", color: C.text, desc: "Keyboard shortcuts: E = Erase, W = Eyedropper, Z = Undo, X = Redo, Ctrl+Z = Undo, Ctrl+Y = Redo, Escape = Clear highlight.", iconColor: null },
       warn: { label: "Warn", icon: "⚠️", color: "#f97316", desc: "Places an invisible warning marker tile. Warning markers appear as semi-transparent ⚠️ overlays on the canvas but are not exported as tiles — useful for marking hazardous or incomplete areas.", iconColor: null },
       duplicate: { label: "Duplicate", icon: "💞", color: "#e879a0", desc: "Copies the highlighted region to a new position without moving the originals. Drag the highlighted area to preview the copy placement, then press Apply. Mirror-aware: if any mirror axis is active, the copy is extended to also cover mirror positions.", iconColor: "#e879a0" },
@@ -5982,10 +6033,11 @@ function App() {
     const def = toolDefs[infoTool];
     if (!def) return null;
     // Space / Warn are starred by their tile ref ("space" / "warn"); other tools by their tool key
-    const toolId = infoTool === "space" ? SPACE_REF : infoTool === "warn" ? WARN_REF : infoTool;
+    // The selection-mode and mirroring info modals star the group shortcut (selectionGroup / mirrorGroup)
+    const toolId = infoTool === "space" ? SPACE_REF : infoTool === "warn" ? WARN_REF : infoTool === "selectionMode" ? "selectionGroup" : infoTool === "mirroring" ? "mirrorGroup" : infoTool;
     const isStarredTool = starredTiles.includes(toolId);
     // These tools have no functional starred shortcut; hide the star checkbox
-    const NON_STARREABLE = new Set(["hotkeys", "selectionMode", "mirroring"]);
+    const NON_STARREABLE = new Set(["hotkeys"]);
     return (
       <div className="modal-backdrop" onClick={() => setInfoTool(null)}>
         <div className="modal-box" onClick={e => e.stopPropagation()}>
@@ -6756,6 +6808,7 @@ function App() {
       )}
       <InfoModal infoTile={infoTile} getTile={getTile} getDefaultMultiplier={getDefaultMultiplier} getTileMultiplier={getTileMultiplier} getDefaultOffset={getDefaultOffset} getTileOffset={getTileOffset} currentUser={currentUser} userProfile={userProfile} tileNames={tileNames} isPriorityTile={isPriorityTile} isBottomTile={isBottomTile} isAutoShadowTile={isAutoShadowTile} defaultPriorityTile={defaultPriorityTile} defaultBottomTile={defaultBottomTile} defaultAutoShadowTile={defaultAutoShadowTile} setTileMultipliers={setTileMultipliers} setTileOffsets={setTileOffsets} getValidToken={getValidToken} workerFetch={workerFetch} setTsFetchTrigger={setTsFetchTrigger} setInfoTile={setInfoTile} userTiles={userTiles} tiles={tiles} setTileNames={setTileNames} btn={btn} isTileRotatable={isTileRotatable} isDefaultRotatable={isDefaultRotatable} isFlipAllowed={isFlipAllowed} isDefaultFlippable={isDefaultFlippable} isOTGWall={isOTGWall} isDefaultOTGWall={isDefaultOTGWall} otgWallOverrides={otgWallOverrides} isMirrorOffset={isMirrorOffset} isDefaultMirrorOffset={isDefaultMirrorOffset} setRotatableMap={setRotatableMap} setAllowFlipMap={setAllowFlipMap} setOtgWallOverrides={setOtgWallOverrides} setMirrorOffsetTiles={setMirrorOffsetTiles} setBottomTiles={setBottomTiles} setPriorityTiles={setPriorityTiles} setAutoShadowTiles={setAutoShadowTiles} setDbTilesByTsId={setDbTilesByTsId} starredTiles={starredTiles} toggleStar={toggleStar} dbTilesets={dbTilesets} dbTilesByTsId={dbTilesByTsId} deleteTile={deleteTile} />
       <ReplaceModal />
+      <TileCounterModal />
       <OTGSettingsModal />
       <HistoryModal />
       <FailedTileModal />
@@ -8337,7 +8390,8 @@ function App() {
             {/* Starred tool mini-cards when collapsed */}
             {!toolsOpen && (() => {
               const toolIconMap = {
-                space: "🛸",
+                space: "🛸", erase: "🧼", hand: "👋", duplicate: "💞", tileCounter: "🧮",
+                selectionGroup: "🖌️", mirrorGroup: "🪞",
                 single: "S", line: "L", rect: "R", fill: "F",
                 mirrorV: "H", mirrorH: "V", mirrorD: "D",
                 guides: "🧭", offsetCenters: "🎯", replace: "♻️", overwrite: "🧱",
@@ -8346,6 +8400,16 @@ function App() {
                 convert: "🔄",
               };
               const toolActionMap = {
+                erase: () => { if (highlightedCells.size > 0) { setEraser(e => !e); return; } setEraser(true); setSel(null); setHandMode(false); setEyedropperMode(false); setDuplicateMode(false); setMagnetMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); },
+                hand: () => { if (handMode) return; setHandMode(true); setEraser(false); setSel(null); setEyedropperMode(false); setDuplicateMode(false); setMagnetMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); },
+                duplicate: () => {
+                  if (highlightedCells.size === 0 && !duplicateMode) return;
+                  const turningOn = !duplicateMode;
+                  setDuplicateMode(d => !d);
+                  if (turningOn) { setEraser(false); setHandMode(false); setEyedropperMode(false); setMagnetMode(false); setSel(null); if (!highlightMode) setHighlightMode(true); }
+                  else { setHighlightDragOffset(null); highlightDragOffsetRef.current = null; highlightDragAnchorCell.current = null; }
+                },
+                tileCounter: () => setTileCounterOpen(o => !o),
                 space: () => { setSel(SPACE_REF); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); },
                 single: () => setSelectionMode('single'),
                 line:   () => setSelectionMode('line'),
@@ -8366,6 +8430,7 @@ function App() {
               };
               const toolActiveMap = {
                 space: sel === SPACE_REF && !eraser,
+                erase: eraser, hand: handMode, duplicate: duplicateMode, tileCounter: tileCounterOpen,
                 single: selectionMode === 'single',
                 line: selectionMode === 'line',
                 rect: selectionMode === 'rect',
@@ -8382,7 +8447,7 @@ function App() {
                 convert: false,
               };
               const toolColorMap = {
-                space: C.accentBright,
+                space: C.accentBright, erase: C.danger, hand: "#fbbf24", duplicate: "#e879a0", tileCounter: C.soft,
                 single: C.accent, line: C.accent, rect: C.accent, fill: C.accent,
                 mirrorV: C.pale, mirrorH: C.soft, mirrorD: C.accentBright,
                 guides: gColor, offsetCenters: ocColor, replace: C.soft, overwrite: owColor,
@@ -8403,29 +8468,36 @@ function App() {
               if (!starredTools.length) return null;
               return (
                 <div style={{ display: "flex", flexDirection: "column", gap: 3, padding: "4px 2px", overflowY: "auto", scrollbarWidth: "none", msOverflowStyle: "none", width: "100%", position: "relative" }}>
-                  {/* Inline popover for selection/mirror group cards */}
+                  {/* Mini panel for the selection-mode / mirroring group shortcuts: same options and layout as the Tools section */}
                   {shortcutPopover && (
-                    <div style={{ position: "fixed", zIndex: 300, background: C.panelDeep, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 10px", boxShadow: "0 4px 18px rgba(0,0,0,0.5)", display: "flex", flexDirection: "column", gap: 5, minWidth: 120, right: 44, top: 60 }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 2 }}>
-                        <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 0.8 }}>{shortcutPopover === "selectionGroup" ? "Selection" : "Mirroring"}</span>
+                    <div data-shortcut-panel={shortcutPopover} style={{ position: "fixed", zIndex: 300, background: C.panelDeep, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 12px 10px", boxShadow: "0 4px 18px rgba(0,0,0,0.5)", display: "flex", flexDirection: "column", gap: 7, width: isMobile ? 160 : 260, right: 44, top: 60 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1 }}>{shortcutPopover === "selectionGroup" ? "Selection Mode" : "Mirroring"}</span>
                         <span onClick={() => setShortcutPopover(null)} style={{ cursor: "pointer", color: C.muted, fontSize: 14, lineHeight: 1, padding: "0 2px" }}>×</span>
                       </div>
                       {shortcutPopover === "selectionGroup" && (() => {
                         const SC = uiTheme === 'warm'
-                          ? [["single","Single","#f472b6","rgba(244,114,182,0.18)"],["line","Line","#fb7185","rgba(251,113,133,0.16)"],["rect","Rectangle",C.accent,C.accentDim],["fill","Fill","#f59e0b","rgba(245,158,11,0.18)"]]
-                          : [["single","Single","#c084fc","rgba(192,132,252,0.18)"],["line","Line","#818cf8","rgba(129,140,248,0.18)"],["rect","Rectangle","#60a5fa","rgba(96,165,250,0.18)"],["fill","Fill",C.accent,C.accentDim]];
-                        return (<>{SC.map(([m,label,col,dim]) => (
-                          <button key={m} style={{ ...btn(selectionMode===m, col, dim), fontSize: 10, padding: "3px 8px", textAlign: "left" }}
-                            onClick={() => setSelectionMode(m)}>{label}</button>
-                        ))}</>);
+                          ? { single: ['#f472b6','rgba(244,114,182,0.18)'], line: ['#fb7185','rgba(251,113,133,0.16)'], rect: [C.accent,C.accentDim], fill: ['#f59e0b','rgba(245,158,11,0.18)'] }
+                          : { single: ['#c084fc','rgba(192,132,252,0.18)'], line: ['#818cf8','rgba(129,140,248,0.18)'], rect: ['#60a5fa','rgba(96,165,250,0.18)'], fill: [C.accent,C.accentDim] };
+                        return (
+                          <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}>
+                            <button style={btn(selectionMode === 'single', SC.single[0], SC.single[1])} onClick={() => setSelectionMode('single')} title="Freehand">Single</button>
+                            <button style={btn(selectionMode === 'line', SC.line[0], SC.line[1])} onClick={() => setSelectionMode('line')} title="Line draw">Line</button>
+                            <button style={btn(selectionMode === 'rect', SC.rect[0], SC.rect[1])} onClick={() => setSelectionMode('rect')} title="Rectangle fill">Rectangle</button>
+                            <button style={btn(selectionMode === 'fill', SC.fill[0], SC.fill[1])} onClick={() => setSelectionMode('fill')} title="Flood fill selection">Fill</button>
+                          </div>
+                        );
                       })()}
-                      {shortcutPopover === "mirrorGroup" && (
-                        <>
-                          <button style={{ ...btn(mirrorV, C.pale, C.paleDim), fontSize: 10, padding: "3px 8px", textAlign: "left" }} onClick={() => setMirrorV(v => !v)}>Horizontal</button>
-                          <button style={{ ...btn(mirrorH, C.soft, C.softDim), fontSize: 10, padding: "3px 8px", textAlign: "left" }} onClick={() => setMirrorH(v => !v)}>Vertical</button>
-                          <button style={{ ...btn(mirrorD, C.accentBright, C.accentDim), fontSize: 10, padding: "3px 8px", textAlign: "left" }} onClick={() => setMirrorD(v => !v)}>Diagonal</button>
-                        </>
-                      )}
+                      {shortcutPopover === "mirrorGroup" && (() => { const mirrorLocked = highlightedCells.size > 0; return (
+                        <div style={{ position: "relative" }}>
+                          <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center", opacity: mirrorLocked ? 0.55 : 1, pointerEvents: mirrorLocked ? "none" : "auto" }}>
+                            <button style={btn(mirrorV, C.pale, C.paleDim)} onClick={() => setMirrorV(v => !v)} title="Horizontal mirror (left ↔ right)">Horizontal</button>
+                            <button style={btn(mirrorH, C.soft, C.softDim)} onClick={() => setMirrorH(v => !v)} title="Vertical mirror (top ↔ bottom)">Vertical</button>
+                            <button style={btn(mirrorD, C.accentBright, C.accentDim)} onClick={() => setMirrorD(v => !v)} title="Diagonal mirror (180° rotation)">Diagonal</button>
+                          </div>
+                          {mirrorLocked && <div style={{ fontSize: 9, color: C.muted, marginTop: 3, lineHeight: 1.4 }}>Locked while cells are highlighted — prevents inconsistencies with Highlight/Duplicate tools.</div>}
+                        </div>
+                      ); })()}
                     </div>
                   )}
                   {starredTools.map(tid => {
@@ -8605,6 +8677,10 @@ function App() {
                   <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
                     <button style={btn(false, C.soft, C.softDim)} onClick={() => setConvertOpen(true)} title="Remap tileset tiles on the board">Convert</button>
                     <span onClick={() => setInfoTool("convert")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>{starredTiles.includes("convert") ? "★" : "ⓘ"}</span>
+                  </div>
+                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
+                    <button data-tile-counter-open style={btn(tileCounterOpen, C.soft, C.softDim)} onClick={() => setTileCounterOpen(o => !o)} title="Count the tiles used on the map">🧮 Tile Counter</button>
+                    <span onClick={() => setInfoTool("tileCounter")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%" }} title="Info">ⓘ</span>
                   </div>
                   <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
                     <button style={btn(false)} onClick={() => setHotkeysOpen(true)}>Hotkeys</button>

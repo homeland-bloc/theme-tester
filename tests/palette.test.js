@@ -176,4 +176,14 @@ test("applySwitchPlan: a d: entry from a third tileset is cleared and counted, n
   assert.strictEqual(r.cleared, 4);
 });
 
+test("countRefs: highest first, empty cells excluded, specials and sensor folders are single entries", () => {
+  const pal = { refs: ["d:a", "s:ts|F", "warn", "space", null, "g:x"] };
+  const grid = [[0, 1, 1, 2, null], [1, 5, 5, 5, 3], [1, 1, 0, null, null]];
+  assert.deepStrictEqual(P.countRefs(pal, grid), [
+    { ref: "s:ts|F", count: 5 }, { ref: "g:x", count: 3 }, { ref: "d:a", count: 2 }, { ref: "warn", count: 1 }, { ref: "space", count: 1 },
+  ]);
+  assert.deepStrictEqual(P.countRefs(pal, [[null, null]]), []);
+  assert.deepStrictEqual(P.countRefs(pal, [[4]]), []); // a cell pointing at a free slot counts nothing
+});
+
 console.log(`\n${passed} passed${process.exitCode ? ", FAILURES above" : ""}`);
