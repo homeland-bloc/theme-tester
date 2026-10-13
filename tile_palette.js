@@ -136,11 +136,46 @@
     return { palette: { refs }, grid };
   };
 
+  // ── Tileset switch over the palette ────────────────────────────────────
+  // One tileset per map. d: entries of the outgoing tileset are matched by codename into the incoming one; a d: entry that
+  // belongs to any other tileset is foreign (cleared). g:/u:/space/warn entries are untouched. Cells are never rewritten
+  // for a matched entry: only its palette entry changes (remapEntry).
+  const planSwitch = (palette, oldRows, newRows) => {
+    const oldByUuid = new Map((oldRows ?? []).map(r => [r.id, r]));
+    const newByCodename = new Map((newRows ?? []).filter(r => r.codename).map(r => [r.codename, r]));
+    const matched = [], mismatches = [], foreign = [];
+    palette.refs.forEach(ref => {
+      const p = ref ? parseRef(ref) : null;
+      if (!p || p.kind !== "d") return;
+      const row = oldByUuid.get(p.key);
+      if (!row) { foreign.push(ref); return; }
+      const target = row.codename ? newByCodename.get(row.codename) : undefined;
+      if (target) matched.push({ from: ref, to: makeRef("d", target.id) });
+      else mismatches.push({ ref, codename: row.codename ?? null });
+    });
+    return { matched, mismatches, foreign };
+  };
+  // remaps: { [oldRef]: replacementRef } for the plan's mismatches (default: the warn tile).
+  // Returns { palette, grid, cleared } where cleared counts the cells emptied because their tile belonged to a third tileset.
+  const applySwitchPlan = (palette, grid, plan, remaps = {}) => {
+    let pal = palette, g = grid, cleared = 0;
+    plan.foreign.forEach(ref => {
+      const idx = pal.refs.indexOf(ref);
+      if (idx === -1) return;
+      g = g.map(row => row.map(c => { if (c === idx) { cleared++; return null; } return c; }));
+      pal = { refs: pal.refs.map((r, i) => (i === idx ? null : r)) };
+    });
+    plan.matched.forEach(({ from, to }) => { const r = remapEntry(pal, from, to, g); pal = r.palette; g = r.grid; });
+    plan.mismatches.forEach(({ ref }) => { const r = remapEntry(pal, ref, remaps[ref] ?? WARN_REF, g); pal = r.palette; g = r.grid; });
+    return { palette: pal, grid: g, cleared };
+  };
+
   return {
     KINDS, SPACE_REF, WARN_REF, STORAGE_VERSION,
     makeRef, parseRef, isRef, refKind,
     createPalette, clonePalette, indexOfRef, paletteIndexFor, refAt,
     usedIndexes, removeUnused, compactForExport, remapEntry,
     encodeForStorage, decodeFromStorage,
+    planSwitch, applySwitchPlan,
   };
 });

@@ -144,4 +144,36 @@ test("decode is defensive about bad data", () => {
   assert.deepStrictEqual(d.grid, [[0, null, null, null, null, null, null, null]]);
 });
 
+test("planSwitch / applySwitchPlan: codename match rewrites entries only, cells stay put", () => {
+  const oldRows = [{ id: "a1", codename: "Wall" }, { id: "a2", codename: "Crate" }, { id: "a3", codename: "OnlyOld" }];
+  const newRows = [{ id: "b1", codename: "Wall" }, { id: "b2", codename: "Crate" }];
+  const pal = { refs: ["d:a1", "g:Resources/x.png", "d:a2", "d:a3", "u:4", "warn"] };
+  const grid = [[0, 1, 2], [3, 4, 5]];
+  const plan = P.planSwitch(pal, oldRows, newRows);
+  assert.deepStrictEqual(plan.matched, [{ from: "d:a1", to: "d:b1" }, { from: "d:a2", to: "d:b2" }]);
+  assert.deepStrictEqual(plan.mismatches, [{ ref: "d:a3", codename: "OnlyOld" }]);
+  assert.deepStrictEqual(plan.foreign, []);
+  const r = P.applySwitchPlan(pal, grid, plan, { "d:a3": "g:Resources/y.png" });
+  assert.deepStrictEqual(r.palette.refs, ["d:b1", "g:Resources/x.png", "d:b2", "g:Resources/y.png", "u:4", "warn"]);
+  assert.strictEqual(r.grid, grid, "cells untouched");
+  assert.strictEqual(r.cleared, 0);
+  // unmatched with no choice -> warn; merges into the existing warn entry
+  const r2 = P.applySwitchPlan(pal, grid, plan, {});
+  assert.deepStrictEqual(r2.palette.refs, ["d:b1", "g:Resources/x.png", "d:b2", null, "u:4", "warn"]);
+  assert.deepStrictEqual(r2.grid, [[0, 1, 2], [5, 4, 5]]);
+});
+
+test("applySwitchPlan: a d: entry from a third tileset is cleared and counted, nothing from it survives", () => {
+  const oldRows = [{ id: "a1", codename: "Wall" }];
+  const newRows = [{ id: "b1", codename: "Wall" }, { id: "c1", codename: "Wall3" }];
+  const pal = { refs: ["d:a1", "d:c1", "d:zzz"] }; // c1 is in the NEW tileset, zzz is unknown: both foreign to the old one
+  const grid = [[0, 1, 2], [1, 1, null]];
+  const plan = P.planSwitch(pal, oldRows, newRows);
+  assert.deepStrictEqual(plan.foreign, ["d:c1", "d:zzz"]);
+  const r = P.applySwitchPlan(pal, grid, plan);
+  assert.deepStrictEqual(r.palette.refs, ["d:b1", null, null]);
+  assert.deepStrictEqual(r.grid, [[0, null, null], [null, null, null]]);
+  assert.strictEqual(r.cleared, 4);
+});
+
 console.log(`\n${passed} passed${process.exitCode ? ", FAILURES above" : ""}`);
