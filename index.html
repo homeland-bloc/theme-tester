@@ -128,18 +128,14 @@ const MIN_ZOOM = 0.25, MAX_ZOOM = 4;
 // Zoom buttons snap to nearest 5%
 const ZOOM_STEP = 0.05;
 const snapTo10 = z => Math.round(z * 20) / 20;
-const SK = { grid: "oph_grid", colors: "oph_colors", userTiles: "oph_user_tiles", multipliers: "oph_multipliers", priority: "oph_priority", offsets: "oph_offsets", rotatable: "oph_rotatable", tileRots: "oph_tile_rots", gridW: "oph_gridW", gridH: "oph_gridH", tileNames: "oph_tile_names", bottom: "oph_bottom", mirrorOffset: "oph_mirror_offset", gridOff: "oph_grid_off", activeTileset: "oph_active_ts" };
+// oph_ov_* are SPARSE per-ref override maps: { [tileRef]: value }. Only user edits are stored; the default comes from the tile.
+const SK = { grid: "oph_grid", colors: "oph_colors", userTiles: "oph_user_tiles", multipliers: "oph_ov_multipliers", priority: "oph_ov_priority", offsets: "oph_ov_offsets", rotatable: "oph_ov_rotatable", tileRots: "oph_tile_rots", gridW: "oph_gridW", gridH: "oph_gridH", tileNames: "oph_ov_tile_names", bottom: "oph_ov_bottom", mirrorOffset: "oph_ov_mirror_offset", gridOff: "oph_grid_off", activeTileset: "oph_active_ts", autoShadow: "oph_ov_auto_shadow", allowFlip: "oph_ov_allow_flip", otgWalls: "oph_ov_otg_walls", tileCount: "oph_ov_tile_count_map" };
 const ACCEPTED = "image/png,image/jpeg,image/gif,image/webp,image/svg+xml,image/bmp";
 const MAX_HISTORY = 60;
-// Non-overlapping tile ID ranges — prevents collisions between sections regardless of reordering
-const TILESET_ID_START = 1;   // 001–199: active tileset tiles (Mausoleum wall1=1, etc.)
-const USER_ID_START    = 500; // 500–699: user-uploaded tiles
-const USER_ID_MAX      = 699;
-const GLOBAL_ID_START  = 200; // 200–299: global tiles (water, spawns, objectives, etc.)
-const GLOBAL_ID_MAX    = 299;
-const SPACE_TILE_ID    = 998; // special: makes a cell fully transparent
-const WARN_TILE_ID     = 997; // special: places a warning-marker ghost tile
-const REPLACE_ERASE_ID = -1;  // sentinel: replace-with-empty in the Replace modal
+// Tiles are identified by refs (tile_palette.js): d:<uuid> DB tile, g:<Resources path> global tile, u:<n> local upload,
+// s:<tilesetId>|<folderKey> sensor folder (reserved). "space" / "warn" are the two special tiles.
+const { makeRef, parseRef, createPalette, clonePalette, paletteIndexFor, refAt, removeUnused, remapEntry, encodeForStorage, decodeFromStorage, planSwitch, applySwitchPlan, SPACE_REF, WARN_REF } = window.TilePalette;
+const REPLACE_ERASE_REF = "__erase__"; // sentinel: replace-with-empty in the Replace modal
 
 // All Supabase requests go through the Worker.
 const WORKER_URL = "https://oph.opheliapp.workers.dev";
@@ -169,47 +165,9 @@ const TILE_SETTINGS = {
 // Default tiles are loaded dynamically from Resources/manifest.json.
 // To add/remove tiles, update that JSON file (or run generate-manifest.sh).
 
-// Derives a stable numeric ID for a DB tile from its UUID, scoped per tileset.
-// Each tileset gets its own independent 199-slot pool [1, 199] so tiles from
-// different tilesets never compete for the same slots. Two tilesets can produce
-// the same numeric ID by coincidence, which is harmless because allTilesByIdRef
-// is rebuilt on every activeTileset change with the active tileset written last,
-// ensuring it always wins any cross-tileset numeric collision.
-// IDs stay strictly below GLOBAL_ID_START so they never collide with global
-// (200–299) or user (500+) tile ranges.
-const uuidToStableId = (() => {
-  // tilesetId (string UUID) → { cache: Map<uuid, id>, occupied: Map<id, uuid> }
-  const pools = new Map();
-  const getPool = tsId => {
-    if (!pools.has(tsId)) pools.set(tsId, { cache: new Map(), occupied: new Map() });
-    return pools.get(tsId);
-  };
-  return (uuid, tilesetId) => {
-    const { cache, occupied } = getPool(tilesetId ?? '__unknown__');
-    if (cache.has(uuid)) return cache.get(uuid);
-    // FNV-1a-inspired mix for good avalanche across the slot range
-    let h = 2166136261 | 0;
-    for (let i = 0; i < uuid.length; i++) {
-      h ^= uuid.charCodeAt(i);
-      h = Math.imul(h, 16777619) | 0;
-    }
-    const range = GLOBAL_ID_START - TILESET_ID_START; // 199 slots: [1, 199]
-    let id = TILESET_ID_START + (Math.abs(h) % range);
-    let attempts = 0;
-    while (occupied.has(id) && occupied.get(id) !== uuid) {
-      id = TILESET_ID_START + ((id - TILESET_ID_START + 1) % range);
-      if (++attempts > range) { console.error('[tiles] ID range exhausted for UUID', uuid, 'in tileset', tilesetId); break; }
-    }
-    if (occupied.has(id) && occupied.get(id) !== uuid) console.warn('[tiles] ID collision unresolved for UUID', uuid);
-    occupied.set(id, uuid);
-    cache.set(uuid, id);
-    return id;
-  };
-})();
-
 const load = (k, d) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } };
 
-// Derive a human-readable codename from a tile's src path (display only, IDs unchanged)
+// Derive a human-readable codename from a tile's src path (display only)
 const deriveCodename = src => {
   if (!src) return null;
   const file = src.split("/").pop().replace(/\.[^.]+$/, "");
@@ -239,10 +197,11 @@ const deriveCodename = src => {
 };
 const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
 
-// ── One-time reset (oph_idv = 2) ───────────────────────────────────────
-// Per-tile overrides, starred and recent lists were keyed by non-unique numeric tile ids that could point at a
-// different tile after the identity fixes. Clear them once; the saved map (oph_grid), uploads and everything else stay.
-const OPH_ID_VERSION = "2";
+// ── One-time reset (oph_idv = 3) ───────────────────────────────────────
+// Per-tile overrides, starred and recent lists were keyed by numeric tile ids. They are now keyed by tile refs
+// (oph_ov_* sparse maps, refs in starred/recent). Old values are not migrated: clear them once; the saved map
+// (oph_grid), uploads and everything else stay.
+const OPH_ID_VERSION = "3";
 let OPH_RESET_NOTICE = null;
 (() => {
   try {
@@ -251,70 +210,51 @@ let OPH_RESET_NOTICE = null;
     const hadAny = keys.some(k => localStorage.getItem(k) !== null);
     keys.forEach(k => localStorage.removeItem(k));
     localStorage.setItem("oph_idv", OPH_ID_VERSION);
-    if (hadAny) OPH_RESET_NOTICE = "Tile identity was fixed in this update, so your per-tile settings, starred tiles and recent tiles were reset once. Your map and uploads were kept.";
+    if (hadAny) OPH_RESET_NOTICE = "Tile identity was reworked in this update, so your per-tile settings, starred tiles and recent tiles were reset once. Your map and uploads were kept.";
   } catch {}
 })();
 // Dev-only diagnostics: localhost / file:// or localStorage oph_dev=1
 const IS_DEV = (() => { try { return ["localhost", "127.0.0.1", "[::1]", ""].includes(location.hostname) || localStorage.getItem("oph_dev") === "1"; } catch { return false; } })();
-const WARNED_DUP_TILE_IDS = new Set();
+const WARNED_DUP_TILE_REFS = new Set();
 
-// ── Palette-based grid serialization ───────────────────────────────────
-// Each tile is identified by a stable codename independent of runtime IDs:
-//   default tiles  → their src path  (e.g. "Resources/Mausoleum/MSLM-wall.png")
-//   user tiles     → "u:" + stored id (id is persisted, so it is stable)
-//   space tile     → "space"
-const GRID_FORMAT_VERSION = 2;
-const getTileCodename = tile => {
-  if (!tile) return null;
-  if (tile.id === SPACE_TILE_ID) return "space";
-  if (tile.id === WARN_TILE_ID) return "warn";
-  if (tile.dbId) return "d:" + tile.dbId;
-  if (!tile.isDefault) return "u:" + tile.id;
-  return tile.src;
-};
-const resolveCodename = (codename, tiles) => {
-  if (!codename) return null;
-  if (codename === "space") return { id: SPACE_TILE_ID };
-  if (codename === "warn") return { id: WARN_TILE_ID };
-  if (codename.startsWith("u:")) { const uid = parseInt(codename.slice(2), 10); return tiles.find(t => t.id === uid) ?? null; }
-  if (codename.startsWith("d:")) { const uuid = codename.slice(2); return tiles.find(t => t.dbId === uuid) ?? null; }
-  return tiles.find(t => t.src === codename) ?? null;
-};
-// Tile objects for one tileset built from its cached DB rows (same ids as flatDefaultTiles assigns).
-// Used by modals that need a non-active tileset's tiles, which are no longer kept in flatDefaultTiles.
-const dbTileObjsFor = (tsDef, rows) => (rows ?? []).slice().sort((a, b) => a.sort_index - b.sort_index).map(row => ({
-  id: uuidToStableId(row.id, tsDef.id), dbId: row.id, dbTilesetId: row.tileset_id, src: row.image_url,
-  isDefault: true, isDb: true, codename: row.codename, tilesetName: tsDef.name, tilesetId: tsDef.id,
-}));
-// Remap a grid from the old tileset to a new one by codename. Cells that are not old-tileset, global,
-// local-upload or special ids do not belong to this map's tileset and are cleared (counted in `cleared`).
-// `lookup(codename)` returns the new id or undefined (-> warn tile).
-const remapGridForSwitch = (grid, oldIds, oldIdToCodename, lookup) => {
-  let cleared = 0;
-  const out = grid.map(row => row.map(id => {
-    if (id === null) return null;
-    if (id === SPACE_TILE_ID || id === WARN_TILE_ID) return id;
-    if (id >= GLOBAL_ID_START && id <= GLOBAL_ID_MAX) return id;
-    if (id >= USER_ID_START && id <= USER_ID_MAX) return id;
-    if (!oldIds.has(id)) { cleared++; return null; }
-    const cn = oldIdToCodename[id];
-    const nid = cn ? lookup(cn) : undefined;
-    return nid !== undefined ? nid : WARN_TILE_ID;
-  }));
-  return { grid: out, cleared };
-};
-const encodeGridForStorage = (grid, tiles) => {
-  const tileById = new Map(tiles.map(t => [t.id, t]));
-  const palette = [];
-  const idToIdx = new Map();
-  const getIdx = (id, cn) => { if (!idToIdx.has(id)) { idToIdx.set(id, palette.length + 1); palette.push(cn); } return idToIdx.get(id); };
-  for (const row of grid) for (const id of row) {
-    if (id === null) continue;
-    if (id === SPACE_TILE_ID) { getIdx(id, "space"); continue; }
-    if (id === WARN_TILE_ID) { getIdx(id, "warn"); continue; }
-    if (!idToIdx.has(id)) { const cn = getTileCodename(tileById.get(id)); if (cn) getIdx(id, cn); }
+// ── Tile objects ───────────────────────────────────────────────────────
+// The ONE place a DB row becomes a tile object. Tiles have no numeric id: they are addressed by `ref`.
+// (The runtime id of a tile on the map is its palette index, see tile_palette.js.)
+const sortedRows = rows => (rows ?? []).slice().sort((a, b) => a.sort_index - b.sort_index);
+const buildDbTile = (row, tsRow) => {
+  const tile = {
+    ref: makeRef("d", row.id),
+    dbId: row.id,
+    dbTilesetId: row.tileset_id,
+    codename: row.codename,
+    src: row.image_url,
+    isDefault: true,
+    isDb: true,
+    tilesetName: tsRow.name,
+    tilesetId: tsRow.id,
+    tilesetOwnerId: tsRow.owner_id,
+    sortIndex: row.sort_index,
+    dbSizeMultiplier: row.size_multiplier,
+    dbOffsetX: row.offset_x,
+    dbOffsetY: row.offset_y,
+    dbRotatable: row.rotatable,
+    dbFlippable: row.flippable,
+    dbOtgPassable: row.otg_passable,
+    dbMirrorOffset: row.mirror_offset,
+    dbBottomRender: row.bottom_render,
+    dbPriority: row.priority,
+    dbAutoShadow: row.auto_shadow,
+    dbShowTileCount: row.show_tile_count,
+    // New columns: read from the row, not used by any logic yet.
+    sensorCode: row.sensor_code ?? null,
+    sensorRoll: row.sensor_roll ?? null,
+    symbol: row.symbol ?? null,
+  };
+  if (row.folder_key) {
+    tile.folderKey = `${tsRow.name}/${row.folder_key}`;
+    tile.folderLabel = row.folder_key;
   }
-  return { v: GRID_FORMAT_VERSION, palette, grid: grid.map(row => row.map(id => id === null ? null : (idToIdx.get(id) ?? null))) };
+  return tile;
 };
 
 // Convert a data URL to a blob URL for faster browser rendering (blob URLs bypass data URI parsing overhead)
@@ -1221,11 +1161,11 @@ function InfoModal(props) {
   if (!infoTile) return null;
   const t = getTile(infoTile);
   if (!t) return null;
-  return <InfoModalBody key={`${t.id}:${t.dbId ?? ''}`} {...props} t={t} />;
+  return <InfoModalBody key={t.ref} {...props} t={t} />;
 }
 function InfoModalBody(props) {
   const {
-    t, getDefaultMultiplier, getTileMultiplier, getDefaultOffset, getTileOffset, currentUser, userProfile, tileNames, priorityTiles, setTileMultipliers, setTileOffsets, getValidToken, workerFetch, setTsFetchTrigger, setInfoTile, userTiles, tiles, setTileNames, btn, isTileRotatable, isDefaultRotatable, isFlipAllowed, isDefaultFlippable, isOTGWall, isDefaultOTGWall, otgWallOverrides, isMirrorOffset, isDefaultMirrorOffset, bottomTiles, autoShadowTiles, setRotatableMap, setCardRotations, setCardFlipSteps, setCardFlipModes, setAllowFlipMap, cardFlipModes, setOtgWallOverrides, setMirrorOffsetTiles, setBottomTiles, setPriorityTiles, setAutoShadowTiles, setDbTilesByTsId, starredTiles, toggleStar, dbTilesets, dbTilesByTsId, deleteTile,
+    t, getDefaultMultiplier, getTileMultiplier, getDefaultOffset, getTileOffset, currentUser, userProfile, tileNames, isPriorityTile, isBottomTile, isAutoShadowTile, defaultPriorityTile, defaultBottomTile, defaultAutoShadowTile, setTileMultipliers, setTileOffsets, getValidToken, workerFetch, setTsFetchTrigger, setInfoTile, userTiles, tiles, setTileNames, btn, isTileRotatable, isDefaultRotatable, isFlipAllowed, isDefaultFlippable, isOTGWall, isDefaultOTGWall, otgWallOverrides, isMirrorOffset, isDefaultMirrorOffset, setRotatableMap, setCardRotations, setCardFlipSteps, setCardFlipModes, setAllowFlipMap, cardFlipModes, setOtgWallOverrides, setMirrorOffsetTiles, setBottomTiles, setPriorityTiles, setAutoShadowTiles, setDbTilesByTsId, starredTiles, toggleStar, dbTilesets, dbTilesByTsId, deleteTile,
     infoTile, getTile,
   } = props;
   const defaultMult = getDefaultMultiplier(t);
@@ -1237,7 +1177,7 @@ function InfoModalBody(props) {
   const [multInput,         setMultInput]         = React.useState(String(currentMult));
   const [oxInput,           setOxInput]           = React.useState(String(currentOff.ox));
   const [oyInput,           setOyInput]           = React.useState(String(currentOff.oy));
-  const [codenameInput,     setCodenameInput]     = React.useState(t.isDb ? (t.codename ?? '') : (tileNames[t.id] || defaultCodename_));
+  const [codenameInput,     setCodenameInput]     = React.useState(t.isDb ? (t.codename ?? '') : (tileNames[t.ref] || defaultCodename_));
   const [folderKeyInput,    setFolderKeyInput]    = React.useState(t.folderLabel ?? '');
   const [sortIndexInput,    setSortIndexInput]    = React.useState(t.sortIndex != null ? String(t.sortIndex) : '');
     // Raw DB row for this tile (image_url, sensor_code ...). The file name is parsed from image_url before the '?'.
@@ -1252,7 +1192,7 @@ function InfoModalBody(props) {
   const [deleteBusy, setDeleteBusy] = React.useState(false);
   const [deleteError, setDeleteError] = React.useState(null);
   React.useEffect(() => {
-    setCodenameInput(t.isDb ? (t.codename ?? '') : (tileNames[t.id] || defaultCodename_));
+    setCodenameInput(t.isDb ? (t.codename ?? '') : (tileNames[t.ref] || defaultCodename_));
     setFolderKeyInput(t.folderLabel ?? '');
     setSortIndexInput(t.sortIndex != null ? String(t.sortIndex) : '');
     setFileNameInput(currentFileName);
@@ -1260,7 +1200,7 @@ function InfoModalBody(props) {
   const [flagTooltip,       setFlagTooltip]       = React.useState(null);
   const [deleteConfirmId,   setDeleteConfirmId]   = React.useState(null);
   const [deleteConfirmInput, setDeleteConfirmInput] = React.useState('');
-  const isPriority = !!priorityTiles[t.id];
+  const isPriority = isPriorityTile(t);
   const modalScrollRef = React.useRef(null);
   const pendingScrollRef = React.useRef(null);
   // Restore scroll position after flagTooltip-triggered layout shifts
@@ -1275,7 +1215,7 @@ function InfoModalBody(props) {
     const v = parseFloat(val ?? multInput);
     if (!isNaN(v) && v > 0) {
       const rounded = Math.round(v * 100) / 100;
-      setTileMultipliers(prev => ({ ...prev, [t.id]: rounded }));
+      setTileMultipliers(prev => ({ ...prev, [t.ref]: rounded }));
       setMultInput(String(rounded));
     } else setMultInput(String(currentMult));
   };
@@ -1288,7 +1228,7 @@ function InfoModalBody(props) {
     const ox = ox2 !== undefined ? ox2 : parseFloat(oxInput);
     const oy = oy2 !== undefined ? oy2 : parseFloat(oyInput);
     const newOff = { ox: isNaN(ox) ? 0 : ox, oy: isNaN(oy) ? 0 : oy };
-    setTileOffsets(prev => ({ ...prev, [t.id]: newOff }));
+    setTileOffsets(prev => ({ ...prev, [t.ref]: newOff }));
   };
   const stepOx = delta => {
     const cur = parseFloat(oxInput) || 0;
@@ -1388,9 +1328,9 @@ function InfoModalBody(props) {
           rotatable: isTileRotatable(t),
           flippable: isFlipAllowed(t),
           mirror_offset: isMirrorOffset(t),
-          bottom_render: !!bottomTiles[t.id],
-          priority: !!priorityTiles[t.id],
-          auto_shadow: !!autoShadowTiles[t.id],
+          bottom_render: isBottomTile(t),
+          priority: isPriorityTile(t),
+          auto_shadow: isAutoShadowTile(t),
           otg_passable: !isOTGWall(t),
           show_tile_count: !!t.dbShowTileCount,
           codename: codenameInput.trim() || t.codename,
@@ -1519,8 +1459,8 @@ function InfoModalBody(props) {
   const navTiles = (() => {
     if (!t.tilesetName) {
       // User-uploaded tiles have no tilesetName — navigate across the uploaded section instead
-      if (userTiles.some(u => u.id === t.id)) {
-        return userTiles.slice().sort((a, b) => (a.id ?? 0) - (b.id ?? 0));
+      if (userTiles.some(u => u.ref === t.ref)) {
+        return userTiles.slice().sort((a, b) => (a.uploadId ?? 0) - (b.uploadId ?? 0));
       }
       return [];
     }
@@ -1533,7 +1473,7 @@ function InfoModalBody(props) {
       return sortBySortIndex(tsFlatTiles);
     }
   })();
-  const navIdx = navTiles.findIndex(tile => tile.id === t.id);
+  const navIdx = navTiles.findIndex(tile => tile.ref === t.ref);
   const hasPrev = navIdx > 0;
   const hasNext = navIdx < navTiles.length - 1;
 
@@ -1546,12 +1486,12 @@ function InfoModalBody(props) {
         </div>
         {navTiles.length > 1 ? (
           <div style={{ background: C.panelDeep, borderRadius: 8, padding: "12px 8px", display: "flex", alignItems: "center", justifyContent: "center", height: 160, gap: 8, flexShrink: 0 }}>
-            <button disabled={!hasPrev} onClick={() => hasPrev && setInfoTile(navTiles[navIdx - 1].id)}
+            <button disabled={!hasPrev} onClick={() => hasPrev && setInfoTile(navTiles[navIdx - 1].ref)}
               style={{ background: "none", border: `1px solid ${hasPrev ? C.border : "transparent"}`, borderRadius: 4, color: hasPrev ? C.text : C.muted, fontSize: 18, cursor: hasPrev ? "pointer" : "default", padding: "4px 8px", opacity: hasPrev ? 1 : 0.25, flexShrink: 0, lineHeight: 1 }}>‹</button>
             <div className="tile-img-checker" style={{ width: 120, height: 120, borderRadius: 4, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
               <img src={t.blobSrc ?? t.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated" }} />
             </div>
-            <button disabled={!hasNext} onClick={() => hasNext && setInfoTile(navTiles[navIdx + 1].id)}
+            <button disabled={!hasNext} onClick={() => hasNext && setInfoTile(navTiles[navIdx + 1].ref)}
               style={{ background: "none", border: `1px solid ${hasNext ? C.border : "transparent"}`, borderRadius: 4, color: hasNext ? C.text : C.muted, fontSize: 18, cursor: hasNext ? "pointer" : "default", padding: "4px 8px", opacity: hasNext ? 1 : 0.25, flexShrink: 0, lineHeight: 1 }}>›</button>
           </div>
         ) : (
@@ -1564,8 +1504,8 @@ function InfoModalBody(props) {
 
         {/* Starred shortcut */}
         <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
-          <input type="checkbox" checked={starredTiles.includes(t.id)}
-            onChange={() => toggleStar(t.id)}
+          <input type="checkbox" checked={starredTiles.includes(t.ref)}
+            onChange={() => toggleStar(t.ref)}
             style={{ width: 14, height: 14, accentColor: C.accent, cursor: "pointer" }} />
           <span style={{ fontSize: 11, color: C.text }}>Starred shortcut ⭐<FlagTip id="starred" /></span>
         </label>
@@ -1580,9 +1520,9 @@ function InfoModalBody(props) {
             onBlur={() => {
               if (t.isDb) return;
               if (codenameInput === '') {
-                setTileNames(prev => { const n = { ...prev }; delete n[t.id]; return n; });
+                setTileNames(prev => { const n = { ...prev }; delete n[t.ref]; return n; });
               } else {
-                setTileNames(prev => ({ ...prev, [t.id]: codenameInput }));
+                setTileNames(prev => ({ ...prev, [t.ref]: codenameInput }));
               }
             }}
             onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
@@ -1674,7 +1614,7 @@ function InfoModalBody(props) {
           {(() => { const isDefault = currentMult === defaultMult; const stl = isDefault ? { color: "#4ade80", borderColor: "#4ade80", background: "rgba(74,222,128,0.12)" } : { color: "#f97316", borderColor: "#f97316", background: "rgba(249,115,22,0.12)" }; return (
             <button style={{ ...btn(false), fontSize: 10, padding: "3px 7px", marginLeft: "auto", ...stl }}
               disabled={isDefault} title={isDefault ? "Already at default" : "Reset to default"}
-              onClick={() => { setTileMultipliers(prev => { const n = {...prev}; delete n[t.id]; return n; }); setMultInput(String(defaultMult)); }}>Reset</button>
+              onClick={() => { setTileMultipliers(prev => { const n = {...prev}; delete n[t.ref]; return n; }); setMultInput(String(defaultMult)); }}>Reset</button>
           ); })()}
         </div>
 
@@ -1692,7 +1632,7 @@ function InfoModalBody(props) {
           {(() => { const isDefault = currentOff.ox === defaultOff.ox; const stl = isDefault ? { color: "#4ade80", borderColor: "#4ade80", background: "rgba(74,222,128,0.12)" } : { color: "#f97316", borderColor: "#f97316", background: "rgba(249,115,22,0.12)" }; return (
             <button style={{ ...btn(false), fontSize: 10, padding: "3px 7px", marginLeft: "auto", ...stl }}
               disabled={isDefault} title={isDefault ? "Already at default" : "Reset to default"}
-              onClick={() => { setOxInput(String(defaultOff.ox)); setTileOffsets(prev => { const n = {...prev}; const o = {...(prev[t.id] ?? {}), ox: defaultOff.ox}; n[t.id] = o; return n; }); }}>Reset</button>
+              onClick={() => { setOxInput(String(defaultOff.ox)); setTileOffsets(prev => { const n = {...prev}; const o = {...(prev[t.ref] ?? {}), ox: defaultOff.ox}; n[t.ref] = o; return n; }); }}>Reset</button>
           ); })()}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -1705,7 +1645,7 @@ function InfoModalBody(props) {
           {(() => { const isDefault = currentOff.oy === defaultOff.oy; const stl = isDefault ? { color: "#4ade80", borderColor: "#4ade80", background: "rgba(74,222,128,0.12)" } : { color: "#f97316", borderColor: "#f97316", background: "rgba(249,115,22,0.12)" }; return (
             <button style={{ ...btn(false), fontSize: 10, padding: "3px 7px", marginLeft: "auto", ...stl }}
               disabled={isDefault} title={isDefault ? "Already at default" : "Reset to default"}
-              onClick={() => { setOyInput(String(defaultOff.oy)); setTileOffsets(prev => { const n = {...prev}; const o = {...(prev[t.id] ?? {}), oy: defaultOff.oy}; n[t.id] = o; return n; }); }}>Reset</button>
+              onClick={() => { setOyInput(String(defaultOff.oy)); setTileOffsets(prev => { const n = {...prev}; const o = {...(prev[t.ref] ?? {}), oy: defaultOff.oy}; n[t.ref] = o; return n; }); }}>Reset</button>
           ); })()}
         </div>
         {(flagTooltip === 'offset_h' || flagTooltip === 'offset_v') && (
@@ -1724,18 +1664,19 @@ function InfoModalBody(props) {
           const flipColor = (curFlip === isDefaultFlippable(t)) ? "#4ade80" : "#f97316";
           const curPassable = !isOTGWall(t);
           const defaultPassable = !isDefaultOTGWall(t);
-          const otgColor = (otgWallOverrides[t.id] === undefined) ? "#4ade80" : "#f97316";
+          const otgColor = (otgWallOverrides[t.ref] === undefined) ? "#4ade80" : "#f97316";
           const mirrorOn = isMirrorOffset(t);
           const moColor = (mirrorOn === isDefaultMirrorOffset(t)) ? "#4ade80" : "#f97316";
-          const botOn = !!bottomTiles[t.id];
-          const bottomDef = t.isDb ? !!t.dbBottomRender : !!(t.src && TILE_SETTINGS.bottomRender.some(p => t.src.includes(p)));
+          const botOn = isBottomTile(t);
+          const bottomDef = defaultBottomTile(t);
           const botColor = (botOn === bottomDef) ? "#4ade80" : "#f97316";
-          const topDef = t.isDb ? !!t.dbPriority : !!(t.src && TILE_SETTINGS.priority.some(p => t.src.includes(p)));
+          const topDef = defaultPriorityTile(t);
           const topColor = (isPriority === topDef) ? "#4ade80" : "#f97316";
-          const shadowOn = !!autoShadowTiles[t.id];
-          const shadowDef = t.isDb ? !!t.dbAutoShadow : false;
+          const shadowOn = isAutoShadowTile(t);
+          const shadowDef = defaultAutoShadowTile(t);
           const shadowColor = (shadowOn === shadowDef) ? "#4ade80" : "#f97316";
           const countOn = !!t.dbShowTileCount;
+          const putBool = (setter, val, def) => setter(prev => { const n = { ...prev }; if (val === def) delete n[t.ref]; else n[t.ref] = val; return n; });
           const ft = flagTooltip;
           const ls = { display: "flex", alignItems: "center", gap: 5, cursor: "pointer", userSelect: "none" };
           const cs = col => ({ width: 13, height: 13, flexShrink: 0, accentColor: col, cursor: "pointer" });
@@ -1746,12 +1687,12 @@ function InfoModalBody(props) {
               <label style={ls}>
                 <input type="checkbox" checked={curSpin} style={cs(spinColor)}
                   onChange={ev => {
-                    setRotatableMap(prev => ({ ...prev, [t.id]: ev.target.checked }));
+                    putBool(setRotatableMap, ev.target.checked, isDefaultRotatable(t));
                     if (!ev.target.checked) {
-                      setCardRotations(prev => { const n = {...prev}; delete n[t.id]; return n; });
+                      setCardRotations(prev => { const n = {...prev}; delete n[t.ref]; return n; });
                       if (!isFlipAllowed(t)) {
-                        setCardFlipSteps(prev => { const n = {...prev}; delete n[t.id]; return n; });
-                        setCardFlipModes(prev => { const n = {...prev}; delete n[t.id]; return n; });
+                        setCardFlipSteps(prev => { const n = {...prev}; delete n[t.ref]; return n; });
+                        setCardFlipModes(prev => { const n = {...prev}; delete n[t.ref]; return n; });
                       }
                     }
                   }} />
@@ -1760,10 +1701,10 @@ function InfoModalBody(props) {
               <label style={ls}>
                 <input type="checkbox" checked={curFlip} style={cs(flipColor)}
                   onChange={ev => {
-                    setAllowFlipMap(prev => ({ ...prev, [t.id]: ev.target.checked }));
+                    putBool(setAllowFlipMap, ev.target.checked, isDefaultFlippable(t));
                     if (!ev.target.checked) {
-                      setCardFlipSteps(prev => { const n = {...prev}; delete n[t.id]; return n; });
-                      if ((cardFlipModes[t.id] ?? 'flip') === 'flip') { setCardFlipModes(prev => { const n = {...prev}; delete n[t.id]; return n; }); }
+                      setCardFlipSteps(prev => { const n = {...prev}; delete n[t.ref]; return n; });
+                      if ((cardFlipModes[t.ref] ?? 'flip') === 'flip') { setCardFlipModes(prev => { const n = {...prev}; delete n[t.ref]; return n; }); }
                     }
                   }} />
                 <span style={{ fontSize: 10, color: flipColor, fontFamily: "monospace" }}>flippable 🦭</span><FlagTip id="flippable" />
@@ -1775,14 +1716,14 @@ function InfoModalBody(props) {
                 <input type="checkbox" checked={curPassable} style={cs(otgColor)}
                   onChange={ev => setOtgWallOverrides(prev => {
                     const n = { ...prev };
-                    if (ev.target.checked === defaultPassable) delete n[t.id]; else n[t.id] = !ev.target.checked;
+                    if (ev.target.checked === defaultPassable) delete n[t.ref]; else n[t.ref] = !ev.target.checked;
                     return n;
                   })} />
                 <span style={{ fontSize: 10, color: otgColor, fontFamily: "monospace" }}>otg_passable 👟</span><FlagTip id="otg_passable" />
               </label>
               <label style={ls}>
                 <input type="checkbox" checked={mirrorOn} style={cs(moColor)}
-                  onChange={ev => setMirrorOffsetTiles(prev => ({ ...prev, [t.id]: ev.target.checked }))} />
+                  onChange={ev => putBool(setMirrorOffsetTiles, ev.target.checked, isDefaultMirrorOffset(t))} />
                 <span style={{ fontSize: 10, color: moColor, fontFamily: "monospace" }}>mirror_offset 🌪️</span><FlagTip id="mirror_offset" />
               </label>
               {(ft === 'otg_passable' || ft === 'mirror_offset') && <div style={ds}>{FLAG_TIPS[ft]}</div>}
@@ -1791,16 +1732,16 @@ function InfoModalBody(props) {
               <label style={ls}>
                 <input type="checkbox" checked={botOn} style={cs(botColor)}
                   onChange={ev => {
-                    setBottomTiles(prev => { const n = { ...prev }; if (ev.target.checked) n[t.id] = true; else delete n[t.id]; return n; });
-                    if (ev.target.checked) setPriorityTiles(prev => { const n = { ...prev }; delete n[t.id]; return n; });
+                    putBool(setBottomTiles, ev.target.checked, bottomDef);
+                    if (ev.target.checked && isPriority) putBool(setPriorityTiles, false, topDef);
                   }} />
                 <span style={{ fontSize: 10, color: botColor, fontFamily: "monospace" }}>bottom_render ⚓</span><FlagTip id="bottom_render" />
               </label>
               <label style={ls}>
                 <input type="checkbox" checked={isPriority} style={cs(topColor)}
                   onChange={ev => {
-                    setPriorityTiles(prev => { const n = { ...prev }; if (ev.target.checked) n[t.id] = true; else delete n[t.id]; return n; });
-                    if (ev.target.checked) setBottomTiles(prev => { const n = { ...prev }; delete n[t.id]; return n; });
+                    putBool(setPriorityTiles, ev.target.checked, topDef);
+                    if (ev.target.checked && botOn) putBool(setBottomTiles, false, bottomDef);
                   }} />
                 <span style={{ fontSize: 10, color: topColor, fontFamily: "monospace" }}>priority 🚨</span><FlagTip id="priority" />
               </label>
@@ -1809,7 +1750,7 @@ function InfoModalBody(props) {
               {/* Row 4 — auto_shadow | show_tile_count (DB tiles only) */}
               <label style={ls}>
                 <input type="checkbox" checked={shadowOn} style={cs(shadowColor)}
-                  onChange={ev => setAutoShadowTiles(prev => { const n = { ...prev }; if (ev.target.checked) n[t.id] = true; else delete n[t.id]; return n; })} />
+                  onChange={ev => putBool(setAutoShadowTiles, ev.target.checked, shadowDef)} />
                 <span style={{ fontSize: 10, color: shadowColor, fontFamily: "monospace" }}>auto_shadow 👻</span><FlagTip id="auto_shadow" />
               </label>
               {t.isDb ? (
@@ -1935,8 +1876,8 @@ function InfoModalBody(props) {
             )}
           </>
         ) : !t.isDefault && !t.isDb ? (
-          deleteConfirmId === t.id ? (() => {
-            const codenameToConfirm = tileNames[t.id] || defaultCodename_ || String(t.id);
+          deleteConfirmId === t.ref ? (() => {
+            const codenameToConfirm = tileNames[t.ref] || defaultCodename_ || String(t.uploadId ?? t.codename ?? '');
             return (
               <div style={{ display: "flex", flexDirection: "column", gap: 5, padding: "6px 0" }}>
                 <span style={{ fontSize: 11, color: C.danger, textAlign: "center" }}>Type <code style={{ background: "rgba(248,113,113,0.12)", padding: "1px 4px", borderRadius: 3 }}>{codenameToConfirm}</code> to confirm deletion</span>
@@ -1951,13 +1892,13 @@ function InfoModalBody(props) {
                   <button style={{ ...btn(false), flex: 1, fontSize: 11 }} onClick={() => { setDeleteConfirmId(null); setDeleteConfirmInput(''); }}>Cancel</button>
                   <button style={{ ...btn(true, C.danger, "rgba(248,113,113,0.18)"), flex: 1, fontSize: 11 }}
                     disabled={deleteConfirmInput !== codenameToConfirm}
-                    onClick={() => { setDeleteConfirmId(null); setDeleteConfirmInput(''); deleteTile(t.id); }}>Delete</button>
+                    onClick={() => { setDeleteConfirmId(null); setDeleteConfirmInput(''); deleteTile(t.ref); }}>Delete</button>
                 </div>
               </div>
             );
           })() : (
             <button style={{ ...btn(false, C.danger, "rgba(248,113,113,0.14)"), width: "100%", justifyContent: "center" }}
-              onClick={() => { const s = modalScrollRef.current?.scrollTop ?? 0; setDeleteConfirmId(t.id); setDeleteConfirmInput(''); requestAnimationFrame(() => { if (modalScrollRef.current) modalScrollRef.current.scrollTop = s; }); }}>Delete tile</button>
+              onClick={() => { const s = modalScrollRef.current?.scrollTop ?? 0; setDeleteConfirmId(t.ref); setDeleteConfirmInput(''); requestAnimationFrame(() => { if (modalScrollRef.current) modalScrollRef.current.scrollTop = s; }); }}>Delete tile</button>
           )
         ) : t.isDefault ? (
           <p style={{ fontSize: 11, color: C.muted, textAlign: "center" }}>Default tile — cannot be deleted.</p>
@@ -1975,11 +1916,11 @@ function App() {
   const [defaultTiles, setDefaultTiles]   = useState([]);
   const [tilesLoading, setTilesLoading]   = useState(true);
 
-  // User-uploaded tiles persisted in localStorage; IDs start after defaults
+  // User-uploaded tiles persisted in localStorage as { id: n, src }; at runtime each is { ref: "u:<n>", uploadId: n, src }.
   // blobSrc is generated at load time for faster rendering (blob URLs skip data URI parsing)
   const [userTiles, setUserTiles] = useState(() => {
     const saved = load(SK.userTiles, []);
-    return saved.map(t => ({ ...t, blobSrc: t.src ? dataURLtoBlobURL(t.src) : undefined }));
+    return saved.filter(t => t && t.id != null).map(({ id, ...t }) => ({ ...t, uploadId: id, ref: makeRef("u", id), blobSrc: t.src ? dataURLtoBlobURL(t.src) : undefined }));
   });
   // DB tilesets and tiles (fetched from Supabase on mount)
   const [dbTilesets, setDbTilesets] = useState([]);
@@ -2257,39 +2198,41 @@ function App() {
   }, []);
 
   const tiles = useMemo(() => [...defaultTiles, ...userTiles], [defaultTiles, userTiles]);
-  // Safety net (dev only): two tile objects sharing one id would re-introduce multi-select / stray flags.
+  // ref -> tile over the contained list (active tileset + globals + uploads). Kept in refs for the stable-closure handlers.
+  const tilesByRef = useMemo(() => new Map(tiles.map(t => [t.ref, t])), [tiles]);
+  const tilesByRefRef = useRef(tilesByRef);
+  tilesByRefRef.current = tilesByRef;
+  const tilesListRef = useRef(tiles);
+  tilesListRef.current = tiles;
+  // Safety net (dev only): two tile objects sharing one ref would re-introduce multi-select / stray flags.
   useEffect(() => {
     if (!IS_DEV) return;
     const seen = new Set();
     tiles.forEach(t => {
-      if (seen.has(t.id) && !WARNED_DUP_TILE_IDS.has(t.id)) {
-        WARNED_DUP_TILE_IDS.add(t.id);
-        console.warn(`[tiles] duplicate tile id ${t.id} in tiles:`, tiles.filter(x => x.id === t.id).map(x => x.dbId ?? x.src));
+      if (seen.has(t.ref) && !WARNED_DUP_TILE_REFS.has(t.ref)) {
+        WARNED_DUP_TILE_REFS.add(t.ref);
+        console.warn(`[tiles] two tiles share ref ${t.ref}:`, tiles.filter(x => x.ref === t.ref).map(x => x.dbId ?? x.src));
       }
-      seen.add(t.id);
+      seen.add(t.ref);
     });
   }, [tiles]);
 
   const [gridW, setGridW] = useState(() => load(SK.gridW, GRID_W));
   const [gridH, setGridH] = useState(() => load(SK.gridH, GRID_H));
-  // Holds v2 palette data between component init and tile-load resolution.
+  // Per-map palette: grid cells hold indexes into it (null = empty). paletteRef.current is the live object (appended to in
+  // place by paletteIndexFor, replaced wholesale by removeUnused / remapEntry / undo); `palette` is the same object in state.
+  const paletteRef = useRef(null);
+  if (paletteRef.current === null) paletteRef.current = createPalette();
+  const [palette, setPaletteState] = useState(paletteRef.current);
+  const replacePalette = p => { paletteRef.current = p; setPaletteState(p); };
+  // Holds the decoded {palette, grid} between component init and tile-load resolution.
   // Must be declared before the grid useState so the init function can write to it.
   const pendingGridLoadRef = useRef(null);
   const [grid,        setGridRaw]   = useState(() => {
     const gW = load(SK.gridW, GRID_W), gH = load(SK.gridH, GRID_H);
     const empty = Array.from({ length: gH }, () => Array(gW).fill(null));
-    const saved = load(SK.grid, null);
-    if (!saved) return empty;
-    if (Array.isArray(saved)) {
-      // v1 format: raw 2D array of tile IDs — use directly, will be re-saved as v2
-      if (saved.length === gH && saved[0]?.length === gW) return saved;
-      return empty;
-    }
-    if (saved.v === GRID_FORMAT_VERSION && Array.isArray(saved.grid)) {
-      // v2 palette format: defer resolution until tiles are loaded
-      pendingGridLoadRef.current = saved;
-      return empty;
-    }
+    const dec = decodeFromStorage(load(SK.grid, null));
+    if (dec) pendingGridLoadRef.current = dec; // refs are resolved against the loaded tiles later
     return empty;
   });
   const [bg1,         setBg1]       = useState(savedColors.bg1);
@@ -2348,7 +2291,7 @@ function App() {
   const [rectPreview,   setRectPreview]   = useState(null);     // {r1,c1,r2,c2} during rect drag
   const [previewCells,  setPreviewCells]  = useState(null);     // [[r,c],...] during single/line drag
   // Drag-to-move
-  const [dragTile,       setDragTile]       = useState(null);   // tile id being dragged, null when idle
+  const [dragTile,       setDragTile]       = useState(null);   // ref of the tile being dragged, null when idle
   const [dragPos,        setDragPos]        = useState({ x: 0, y: 0 }); // screen coords for ghost image
   const [dragTargetCell, setDragTargetCell] = useState(null);   // [r,c] cell under cursor while dragging
   // Folder panel (floating modal)
@@ -2366,13 +2309,13 @@ function App() {
   const [infoTile,    setInfoTile]  = useState(null);
   const [infoTool,    setInfoTool]  = useState(null); // "erase" | "hand" | "space"
   // Starred tiles: up to 5, shown when tiles panel is collapsed
-  // Special IDs: "erase" and "hand"; regular tiles use numeric ID
-  const [starredTiles, setStarredTiles] = useState(() => load("oph_starred", [1, 6, "selectionGroup", "mirrorGroup", "guides", "overwrite"]).filter(k => k !== "explore" && k !== "rotate")); // removed tools
+  // Tool keys ("erase", "hand", ...) are plain strings; tiles are stored as refs ("d:<uuid>", "g:<path>", "u:<n>", "space", "warn")
+  const [starredTiles, setStarredTiles] = useState(() => load("oph_starred", ["selectionGroup", "mirrorGroup", "guides", "overwrite"]).filter(k => k !== "explore" && k !== "rotate")); // removed tools
   const toggleStar = id => setStarredTiles(prev => {
     if (prev.includes(id)) return prev.filter(s => s !== id);
     return [...prev, id];
   });
-  // Last N selected tile IDs (numeric only, most-recent first); accumulates up to 10
+  // Last N selected tile refs (most-recent first); accumulates up to 10
   const [recentTileIds, setRecentTileIds] = useState(() => load("oph_recent", []));
   const [recentTilesLimit, setRecentTilesLimit] = useState(() => { const v = load("oph_recent_limit", 5); return Math.max(1, Math.min(10, v)); });
 
@@ -2382,7 +2325,7 @@ function App() {
   const [customSizeOpen, setCustomSizeOpen] = useState(false);
   // Delete Custom Tiles modal
   const [deleteCustomOpen, setDeleteCustomOpen] = useState(false);
-  const [deleteCustomSel,  setDeleteCustomSel]  = useState(new Set()); // selected IDs to delete
+  const [deleteCustomSel,  setDeleteCustomSel]  = useState(new Set()); // selected upload refs to delete
 
   // Replace A→B
   const [replaceOpen, setReplaceOpen] = useState(false);
@@ -2397,37 +2340,38 @@ function App() {
   // OTG (One Tile Gap) detection
   const [showOTG,          setShowOTG]          = useState(false);
   const [otgOpen,          setOtgOpen]          = useState(false);
-  const [otgWallOverrides, setOtgWallOverrides] = useState(() => load("oph_otg_walls", {}));
+  const [otgWallOverrides, setOtgWallOverrides] = useState(() => load(SK.otgWalls, {}));
   // Map name for export filename
   const [mapName, setMapName] = useState(() => load("oph_map_name", ""));
   // Pending map size change awaiting confirmation
   const [pendingSize, setPendingSize] = useState(null); // { w, h }
-  const [tilesetSwitchPending, setTilesetSwitchPending] = useState(null); // { newTilesetName, newTsDef, oldTsDef, oldIdToCodename, futureCodenameToId, newTilesCached, tsBg, mismatches, remaps }
+  const [tilesetSwitchPending, setTilesetSwitchPending] = useState(null); // { newTilesetName, newTsDef, oldTsDef, futureCodenameToRef, newTilesCached, tsBg, mismatches, remaps }
+  // User overrides below are SPARSE maps keyed by tile ref ({ [ref]: value }); the default always comes from the tile.
   // Tile size multipliers
   const [tileMultipliers, setTileMultipliers] = useState(() => load(SK.multipliers, {}));
-  // Priority tiles: rendered in a second DOM pass at z-index 9999 (always on top)
+  // Priority override { [ref]: bool }: priority tiles render in a second DOM pass at z-index 9999 (always on top)
   const [priorityTiles, setPriorityTiles] = useState(() => load(SK.priority, {}));
-  // Bottom tiles: rendered in Pass 0 at low z-index (always below normal tiles)
+  // Bottom override { [ref]: bool }: bottom tiles render in Pass 0 at low z-index (always below normal tiles)
   const [bottomTiles, setBottomTiles] = useState(() => load(SK.bottom, {}));
-  // Per-tile auto shadow: { [id]: bool } — renders a brightness(0) opacity-0.2 copy shifted down 30%
-  const [autoShadowTiles, setAutoShadowTiles] = useState(() => load("oph_auto_shadow", {}));
-  // Per-tile offsets: { [id]: { ox: %, oy: % } }  (positive oy = down, positive ox = right)
+  // Auto shadow override { [ref]: bool } — renders a brightness(0) opacity-0.2 copy shifted down 30%
+  const [autoShadowTiles, setAutoShadowTiles] = useState(() => load(SK.autoShadow, {}));
+  // Per-tile offsets: { [ref]: { ox: %, oy: % } }  (positive oy = down, positive ox = right)
   const [tileOffsets, setTileOffsets] = useState(() => load(SK.offsets, {}));
-  // Per-tile "Allow spinning" toggle: { [id]: bool } — undefined = use default
+  // Per-tile "Allow spinning" toggle: { [ref]: bool } — undefined = use default
   const [rotatableMap, setRotatableMap] = useState(() => load(SK.rotatable, {}));
-  // Per-tile "Allow flipping" toggle: { [id]: bool } — undefined = use same default as spinning
-  const [allowFlipMap, setAllowFlipMap] = useState(() => load("oph_allow_flip", {}));
-  // Per-tile custom names (user-uploaded tiles): { [id]: string }
+  // Per-tile "Allow flipping" toggle: { [ref]: bool } — undefined = use same default as spinning
+  const [allowFlipMap, setAllowFlipMap] = useState(() => load(SK.allowFlip, {}));
+  // Per-tile custom names (user-uploaded tiles): { [ref]: string }
   const [tileNames, setTileNames] = useState(() => load(SK.tileNames, {}));
-  // Tile count badge: master toggle and per-tile opt-in map { [id]: bool }
+  // Tile count badge: master toggle and per-tile opt-in map { [ref]: bool }
   const [showTileCount, setShowTileCount] = useState(() => load("oph_show_tile_count", false));
-  const [tileCountMap, setTileCountMap] = useState(() => load("oph_tile_count_map", {}));
+  const [tileCountMap, setTileCountMap] = useState(() => load(SK.tileCount, {}));
   // Per-tile card rotation step 0-3 (0=up,1=right,2=down,3=left) — used for next placement
-  const [cardRotations, setCardRotations] = useState({});
+  const [cardRotations, setCardRotations] = useState({}); // { [ref]: degrees }
   // Per-tile flip mode: 'spin' (default) or 'flip'
-  const [cardFlipModes, setCardFlipModes] = useState({}); // { [tileId]: 'spin' | 'flip' }
+  const [cardFlipModes, setCardFlipModes] = useState({}); // { [ref]: 'spin' | 'flip' }
   // Per-tile flip cycle step 0-3 (0=none,1=flipX,2=flipX+Y,3=flipY)
-  const [cardFlipSteps, setCardFlipSteps] = useState({}); // { [tileId]: 0|1|2|3 }
+  const [cardFlipSteps, setCardFlipSteps] = useState({}); // { [ref]: 0|1|2|3 }
   // Per-cell grid rotation: { "r,c": 0|1|2|3 }
   const [gridRotations, setGridRotations] = useState(() => load(SK.tileRots, {}));
   const [gridFlips,     setGridFlips]     = useState(() => load("oph_grid_flips", {})); // { "r,c": 0|1|2|3 }
@@ -2451,20 +2395,20 @@ function App() {
   const [isMobile,    setIsMobile]  = useState(mobile);
 
   // History
-  const [history,  setHistory]  = useState([{ grid, w: load(SK.gridW, GRID_W), h: load(SK.gridH, GRID_H), tileset: null }]);
+  const [history,  setHistory]  = useState([{ grid, palette: createPalette(), w: load(SK.gridW, GRID_W), h: load(SK.gridH, GRID_H), tileset: null }]);
   const [histIdx,  setHistIdx]  = useState(0);
 
   const fileRef   = useRef();
   const scrollRef = useRef();
-  // nextId is for user-uploaded tiles only (range 100–199)
-  // Monotonic counter persisted in localStorage so a deleted upload's id is never handed out again (saved maps
-  // reference uploads as "u:<id>"). Never lower than the highest id still in use.
+  // nextId is for user-uploaded tiles only (ref u:<n>).
+  // Monotonic counter persisted in localStorage so a deleted upload's number is never handed out again (saved maps
+  // reference uploads as "u:<n>"). Never lower than the highest number still in use. No upper limit.
   const nextId    = useRef(Math.max(
-    USER_ID_START,
+    1,
     Number(load("oph_user_next_id", 0)) || 0,
-    userTiles.length ? Math.max(...userTiles.map(t => t.id)) + 1 : 0,
+    userTiles.length ? Math.max(...userTiles.map(t => t.uploadId)) + 1 : 0,
   ));
-  // Pre-decoded ImageBitmap cache for user-uploaded tiles (keyed by tile id)
+  // Pre-decoded ImageBitmap cache for user-uploaded tiles (keyed by tile ref)
   const userBitmapCacheRef = useRef(new Map());
 
   const dragRotationRef    = useRef(0); // rotation of tile currently being dragged
@@ -2477,8 +2421,6 @@ function App() {
   const tileOffsetsRef       = useRef({});
   const rotatableMapRef      = useRef({}); // always-current rotatableMap for keyboard handler
   const allowFlipMapRef      = useRef({}); // always-current allowFlipMap for keyboard handler
-  const allTilesByIdRef      = useRef({}); // always-current id→tile lookup for keyboard handler
-  const flatDefaultTilesRef  = useRef([]); // always-current flatDefaultTiles
   const cardRotationsRef   = useRef({});
   const mirrorSettingsRef  = useRef({ mirrorSpawns: true, mirrorRotation: true, allowSwap: false });
   const canvasContainerRef = useRef(null); // ref to the relative canvas container for accurate coordinate calc
@@ -2561,16 +2503,6 @@ function App() {
   useEffect(() => { rotatableMapRef.current      = rotatableMap;      }, [rotatableMap]);
   useEffect(() => { allowFlipMapRef.current      = allowFlipMap;      }, [allowFlipMap]);
 
-  useEffect(() => {
-    const map = {};
-    // Non-active-tileset tiles first so active tileset wins any cross-tileset numeric ID collision
-    flatDefaultTiles.forEach(t => { if (!t.isDb || t.tilesetName !== activeTileset) map[t.id] = t; });
-    flatDefaultTiles.forEach(t => { if (t.isDb && t.tilesetName === activeTileset) map[t.id] = t; });
-    userTiles.forEach(t => { map[t.id] = t; });
-    allTilesByIdRef.current = map;
-  }, [flatDefaultTiles, userTiles, activeTileset]);
-  useEffect(() => { flatDefaultTilesRef.current = flatDefaultTiles; }, [flatDefaultTiles]);
-
   // Fetches and caches tiles for a DB tileset by ID if not already loaded.
   // Returns the tile-object array (same shape as flatDefaultTiles entries) immediately,
   // without waiting for a React re-render, so callers can use the tiles right away.
@@ -2598,68 +2530,51 @@ function App() {
         rows = [];
       }
     }
-    // Build tile objects from raw DB rows (same logic as flatDefaultTiles useMemo)
-    // so callers get usable objects without waiting for React to re-render.
-    return rows.map(row => ({
-      id: uuidToStableId(row.id, tsDef.id),
-      dbId: row.id,
-      dbTilesetId: row.tileset_id,
-      src: row.image_url,
-      isDefault: true,
-      isDb: true,
-      codename: row.codename,
-      tilesetName: tsDef.name,
-      tilesetId: tsDef.id,
-      tilesetOwnerId: tsDef.owner_id,
-      sortIndex: row.sort_index,
-      dbSizeMultiplier: row.size_multiplier,
-      dbOffsetX: row.offset_x,
-      dbOffsetY: row.offset_y,
-      dbRotatable: row.rotatable,
-      dbFlippable: row.flippable,
-      dbOtgPassable: row.otg_passable,
-      dbMirrorOffset: row.mirror_offset,
-      dbBottomRender: row.bottom_render,
-      dbPriority: row.priority,
-      dbAutoShadow: row.auto_shadow,
-      dbShowTileCount: row.show_tile_count,
-    }));
+    // Build tile objects from raw DB rows so callers get usable objects without waiting for React to re-render.
+    return sortedRows(rows).map(row => buildDbTile(row, tsDef));
   }, [dbTilesets, currentUser]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Persist
-  useEffect(() => { save(SK.userTiles, userTiles.map(({ blobSrc: _b, ...t }) => t)); }, [userTiles]);
+  useEffect(() => { save(SK.userTiles, userTiles.map(({ blobSrc: _b, ref: _r, uploadId, ...t }) => ({ id: uploadId, ...t }))); }, [userTiles]);
   // Pre-decode user tiles into ImageBitmap on mount so canvas drawImage doesn't re-decode each frame
   useEffect(() => {
     userTiles.forEach(t => {
-      if (userBitmapCacheRef.current.has(t.id) || !t.blobSrc) return;
+      if (userBitmapCacheRef.current.has(t.ref) || !t.blobSrc) return;
       fetch(t.blobSrc).then(r => r.blob()).then(blob => createImageBitmap(blob)).then(bm => {
-        userBitmapCacheRef.current.set(t.id, bm);
+        userBitmapCacheRef.current.set(t.ref, bm);
       }).catch(() => {});
     });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { save("oph_panel_collapsed", panelCollapsed); }, [panelCollapsed]);
+  // Free palette entries no cell uses any more (indexes of the others never change).
   useEffect(() => {
-    if (pendingGridLoadRef.current) return; // v2 load in progress — don't overwrite palette data
-    if (flatDefaultTiles.length === 0) return; // default tiles not yet loaded — avoid encoding with empty tile list
-    save(SK.grid, encodeGridForStorage(grid, [...flatDefaultTiles, ...userTiles]));
-  }, [grid, flatDefaultTiles, userTiles]);
+    if (pendingGridLoadRef.current) return;
+    const cur = paletteRef.current;
+    const pruned = removeUnused(cur, grid);
+    if (pruned.refs.some((r, i) => r !== cur.refs[i])) replacePalette(pruned);
+  }, [grid]);
+  // Save: v2 format, palette compacted for export only.
+  useEffect(() => {
+    if (pendingGridLoadRef.current) return; // load in progress — don't overwrite the saved palette
+    save(SK.grid, encodeForStorage(paletteRef.current, grid));
+  }, [grid, palette]);
   useEffect(() => { save(SK.multipliers,  tileMultipliers); }, [tileMultipliers]);
   useEffect(() => { save(SK.priority,     priorityTiles);   }, [priorityTiles]);
   useEffect(() => { save(SK.offsets,      tileOffsets);     }, [tileOffsets]);
   useEffect(() => { save(SK.bottom,      bottomTiles);     }, [bottomTiles]);
-  useEffect(() => { save("oph_auto_shadow", autoShadowTiles); }, [autoShadowTiles]);
+  useEffect(() => { save(SK.autoShadow, autoShadowTiles); }, [autoShadowTiles]);
   useEffect(() => { save(SK.rotatable,    rotatableMap);    }, [rotatableMap]);
-  useEffect(() => { save("oph_allow_flip", allowFlipMap);   }, [allowFlipMap]);
+  useEffect(() => { save(SK.allowFlip, allowFlipMap);       }, [allowFlipMap]);
   useEffect(() => { save(SK.tileRots,     gridRotations);   }, [gridRotations]);
   useEffect(() => { save(SK.gridOff,      gridOffsets);       }, [gridOffsets]);
   useEffect(() => { save("oph_grid_flips", gridFlips);        }, [gridFlips]);
   useEffect(() => { save(SK.mirrorOffset, mirrorOffsetTiles); }, [mirrorOffsetTiles]);
-  useEffect(() => { save("oph_otg_walls", otgWallOverrides); }, [otgWallOverrides]);
+  useEffect(() => { save(SK.otgWalls, otgWallOverrides); }, [otgWallOverrides]);
   useEffect(() => { save(SK.tileNames,    tileNames);       }, [tileNames]);
   useEffect(() => { save("oph_tile_card_light_bg", tileCardLightBg); }, [tileCardLightBg]);
   useEffect(() => { save("oph_hide_default_labels", hideDefaultLabels); }, [hideDefaultLabels]);
   useEffect(() => { save("oph_show_tile_count", showTileCount); }, [showTileCount]);
-  useEffect(() => { save("oph_tile_count_map", tileCountMap); }, [tileCountMap]);
+  useEffect(() => { save(SK.tileCount, tileCountMap); }, [tileCountMap]);
   useEffect(() => {
     save("oph_theme", uiTheme);
     document.body.style.background = C.bg;
@@ -2714,9 +2629,9 @@ function App() {
   useEffect(() => { save("oph_starred", starredTiles); }, [starredTiles]);
   useEffect(() => { save("oph_recent", recentTileIds); }, [recentTileIds]);
   useEffect(() => { save("oph_recent_limit", recentTilesLimit); }, [recentTilesLimit]);
-  // Track last 3 selected numeric tile IDs
+  // Track the last selected tile refs (specials excluded, tools are not tiles)
   useEffect(() => {
-    if (sel === null || typeof sel !== "number") return;
+    if (sel === null || sel === SPACE_REF || sel === WARN_REF || !parseRef(sel)) return;
     setRecentTileIds(prev => {
       const next = [sel, ...prev.filter(id => id !== sel)].slice(0, 10);
       return next;
@@ -2752,7 +2667,7 @@ function App() {
   };
 
   const getTileMultiplier = t => {
-    if (tileMultipliers[t.id] !== undefined) return tileMultipliers[t.id];
+    if (tileMultipliers[t.ref] !== undefined) return tileMultipliers[t.ref];
     return getDefaultMultiplier(t);
   };
 
@@ -2785,7 +2700,7 @@ function App() {
   };
 
   const getTileOffset = t => {
-    if (tileOffsets[t.id] !== undefined) return tileOffsets[t.id];
+    if (tileOffsets[t.ref] !== undefined) return tileOffsets[t.ref];
     return getDefaultOffset(t);
   };
 
@@ -2803,16 +2718,19 @@ function App() {
   const isRespawn2 = t => !!(t?.src && t.src.includes("Spawns/6.png")); // blue respawn
   const isGoalRed  = t => !!(t?.src && t.src.includes("goalRed.png"));
   const isGoalBlue = t => !!(t?.src && t.src.includes("goalBlue.png"));
-  const swapSpawnId = (id) => {
-    const t = tiles.find(x => x.id === id);
-    if (!t) return id;
-    if (isSpawn1(t)) { const b = tiles.find(x => isSpawn2(x)); return b ? b.id : id; }
-    if (isSpawn2(t)) { const r = tiles.find(x => isSpawn1(x)); return r ? r.id : id; }
-    if (isRespawn1(t)) { const b = tiles.find(x => isRespawn2(x)); return b ? b.id : id; }
-    if (isRespawn2(t)) { const r = tiles.find(x => isRespawn1(x)); return r ? r.id : id; }
-    if (isGoalRed(t))  { const b = tiles.find(x => isGoalBlue(x)); return b ? b.id : id; }
-    if (isGoalBlue(t)) { const r = tiles.find(x => isGoalRed(x)); return r ? r.id : id; }
-    return id;
+  // Counterpart of a spawn / respawn / goal tile (team swap on mirror), found by src. Takes and returns a tile ref.
+  const swapSpawnRef = (ref) => {
+    const list = tilesListRef.current;
+    const t = tilesByRefRef.current.get(ref);
+    if (!t) return ref;
+    const other = pred => list.find(pred)?.ref ?? ref;
+    if (isSpawn1(t)) return other(isSpawn2);
+    if (isSpawn2(t)) return other(isSpawn1);
+    if (isRespawn1(t)) return other(isRespawn2);
+    if (isRespawn2(t)) return other(isRespawn1);
+    if (isGoalRed(t))  return other(isGoalBlue);
+    if (isGoalBlue(t)) return other(isGoalRed);
+    return ref;
   };
 
   // Water tiles have rotation on by default
@@ -2823,7 +2741,7 @@ function App() {
   };
 
   const isTileRotatable = t => {
-    if (rotatableMap[t.id] !== undefined) return rotatableMap[t.id];
+    if (rotatableMap[t.ref] !== undefined) return rotatableMap[t.ref];
     return isDefaultRotatable(t);
   };
 
@@ -2833,7 +2751,7 @@ function App() {
     return TILE_SETTINGS.flippable.some(p => t.src.includes(p));
   };
   const isFlipAllowed = t => {
-    if (allowFlipMap[t.id] !== undefined) return allowFlipMap[t.id];
+    if (allowFlipMap[t.ref] !== undefined) return allowFlipMap[t.ref];
     return isDefaultFlippable(t); // fence/rope flippable by default; water is spin-only
   };
 
@@ -2843,7 +2761,7 @@ function App() {
     return TILE_SETTINGS.mirrorOffset.some(p => t.src.includes(p));
   };
   const isMirrorOffset = t => {
-    if (mirrorOffsetTiles[t.id] !== undefined) return mirrorOffsetTiles[t.id];
+    if (mirrorOffsetTiles[t.ref] !== undefined) return mirrorOffsetTiles[t.ref];
     return isDefaultMirrorOffset(t);
   };
 
@@ -2854,9 +2772,20 @@ function App() {
     return !TILE_SETTINGS.otgPassable.some(p => t.src.includes(p));
   };
   const isOTGWall = t => {
-    if (otgWallOverrides[t.id] !== undefined) return otgWallOverrides[t.id];
+    if (otgWallOverrides[t.ref] !== undefined) return otgWallOverrides[t.ref];
     return isDefaultOTGWall(t);
   };
+
+  // Tile defaults come straight off the tile (DB column, else the src-pattern fallback for global tiles).
+  // The user override (sparse map keyed by ref) wins when present.
+  const defaultPriorityTile   = t => t.dbPriority != null ? !!t.dbPriority : !!(t.src && TILE_SETTINGS.priority.some(p => t.src.includes(p)));
+  const defaultBottomTile     = t => t.dbBottomRender != null ? !!t.dbBottomRender : !!(t.src && TILE_SETTINGS.bottomRender.some(p => t.src.includes(p)));
+  const defaultAutoShadowTile = t => t.dbAutoShadow != null ? !!t.dbAutoShadow : false;
+  const isPriorityTile   = t => priorityTiles[t.ref]   !== undefined ? !!priorityTiles[t.ref]   : defaultPriorityTile(t);
+  const isBottomTile     = t => bottomTiles[t.ref]     !== undefined ? !!bottomTiles[t.ref]     : defaultBottomTile(t);
+  const isAutoShadowTile = t => autoShadowTiles[t.ref] !== undefined ? !!autoShadowTiles[t.ref] : defaultAutoShadowTile(t);
+
+  // Cells hold palette indexes; refAt(palette, index) gives the tile ref, getCellTile(index) the tile object.
 
   // Compute the set of OTG cells ("r,c" strings) — memoised so it only runs when the map/settings change
   const otgCells = useMemo(() => {
@@ -2866,9 +2795,9 @@ function App() {
       if (r < 0 || r >= gridH || c < 0 || c >= gridW) return true; // edge = wall
       const id = grid[r]?.[c];
       if (id == null) return false;
-      const t = id === SPACE_TILE_ID ? null : tiles.find(x => x.id === id);
+      const t = tilesByRef.get(refAt(palette, id));
       if (!t || t.isSpace) return false;
-      if (otgWallOverrides[t.id] !== undefined) return otgWallOverrides[t.id];
+      if (otgWallOverrides[t.ref] !== undefined) return otgWallOverrides[t.ref];
       return isDefaultOTGWall(t);
     };
     const isEmpty = (r, c) => r >= 0 && r < gridH && c >= 0 && c < gridW && !isWall(r, c);
@@ -2927,7 +2856,7 @@ function App() {
       }
     }
     return result;
-  }, [showOTG, grid, gridW, gridH, otgWallOverrides, tiles]);
+  }, [showOTG, grid, palette, gridW, gridH, otgWallOverrides, tilesByRef]);
 
   // MultLabel: shows size multiplier at top-left when != 1.0
   const MultLabel = ({ t }) => {
@@ -2941,17 +2870,17 @@ function App() {
     );
   };
 
-  // Pre-computed tile → count in grid (for CountBadge).
+  // Pre-computed tile ref → count in grid (for CountBadge).
   const tileCounts = (() => {
     const counts = {};
-    grid.forEach(row => row.forEach(id => { if (id != null) counts[id] = (counts[id] ?? 0) + 1; }));
+    grid.forEach(row => row.forEach(id => { if (id != null) { const ref = refAt(palette, id); if (ref) counts[ref] = (counts[ref] ?? 0) + 1; } }));
     return counts;
   })();
 
   // Count badge shown at bottom-right of tile cards — driven by the per-tile DB field show_tile_count.
   const CountBadge = ({ t }) => {
     if (!t.dbShowTileCount) return null;
-    const count = tileCounts[t.id] ?? 0;
+    const count = tileCounts[t.ref] ?? 0;
     if (count === 0) return null;
     return (
       <span style={{ position: "absolute", bottom: -7, right: -7, fontSize: 10, fontWeight: 800, color: "#ffffff", background: "#059669", borderRadius: 4, padding: "1px 4px", lineHeight: 1.4, pointerEvents: "none", zIndex: 8, boxShadow: "0 1px 4px rgba(0,0,0,0.7)" }}>
@@ -2967,13 +2896,13 @@ function App() {
     const hasOff = off.ox !== 0 || off.oy !== 0;
     const offIsDefault = off.ox === defOff.ox && off.oy === defOff.oy;
     const showOff       = hasOff && (!hideDefaultLabels || !offIsDefault);
-    const isPrio        = !!priorityTiles[t.id];
-    const isBottom      = !!bottomTiles[t.id];
+    const isPrio        = isPriorityTile(t);
+    const isBottom      = isBottomTile(t);
     const hasMirrorOff  = isMirrorOffset(t);
-    const hasShadow     = !!autoShadowTiles[t.id];
-    // Use DB value as default for DB tiles; fall back to src-pattern check for non-DB tiles
-    const prioDefault   = t.isDb ? !!t.dbPriority    : !!(t.src && TILE_SETTINGS.priority.some(p => t.src.includes(p)));
-    const bottomDefault = t.isDb ? !!t.dbBottomRender : !!(t.src && TILE_SETTINGS.bottomRender.some(p => t.src.includes(p)));
+    const hasShadow     = isAutoShadowTile(t);
+    // Default comes off the tile (DB column, else src-pattern check for global tiles)
+    const prioDefault   = defaultPriorityTile(t);
+    const bottomDefault = defaultBottomTile(t);
     const mirrorOffDefault = t.isDb ? !!t.dbMirrorOffset : !!(t.src && TILE_SETTINGS.mirrorOffset.some(p => t.src.includes(p)));
     const showPrio      = isPrio && (!hideDefaultLabels || !prioDefault);
     const showBottom    = isBottom && (!hideDefaultLabels || !bottomDefault);
@@ -2994,9 +2923,14 @@ function App() {
 
   // Active tileset name (drives BG colour on switch, history tileset field)
   const [activeTileset, setActiveTileset] = useState(null);
+  // Kept in sync during render: the earlier effect that syncs this ref lists activeTileset in its deps before the
+  // variable exists (Babel's var hoisting makes that `undefined`), so it never re-ran and history snapshots recorded no tileset.
+  activeTilesetRef.current = activeTileset ?? null;
   // Tileset dropdown open state
   const [tilesetDropOpen, setTilesetDropOpen] = useState(false);
   const [gridLoadWarning, setGridLoadWarning] = useState(null); // null or count of unresolved tiles
+  const [gridWarnWhere, setGridWarnWhere] = useState("load"); // "load" (saved map) | "switch" (current map)
+  const warnCleared = (count, where) => { setGridWarnWhere(where); setGridLoadWarning(count); };
   const [infoNotice, setInfoNotice] = useState(OPH_RESET_NOTICE); // null or a short dismissible message
   const [customBgModalOpen, setCustomBgModalOpen] = useState(false);
   const [bgDropOpen, setBgDropOpen] = useState(false);
@@ -3033,13 +2967,12 @@ function App() {
   }, [openFolderKey]);
 
   // Build the flat defaultTiles list and the ordered panel entries from DB tilesets + global manifest.
-  // DB tileset tiles use hash-stable IDs via uuidToStableId; global tiles use sequential IDs
-  // starting at GLOBAL_ID_START so they never collide with tileset or user ranges.
+  // DB tiles come from buildDbTile (ref d:<uuid>); global tiles get ref g:<Resources path>.
   // Returns: tilesetEntriesPerTs, tilesetEntries, globalEntries, flatDefaultTiles, tilesetTileCount
   const { tilesetEntriesPerTs, tilesetEntries, globalEntries, flatDefaultTiles, tilesetTileCount } = useMemo(() => {
     const flatTiles = [];
 
-    // ── DB tilesets — IDs assigned via uuidToStableId (hash-stable) ──
+    // ── DB tilesets (active one only) ──
     const entriesPerTs = [];
     let tsCount = 0;
 
@@ -3053,33 +2986,8 @@ function App() {
       const flatItems = [];
 
       for (const row of tilesForTs) {
-        const tileObj = {
-          id: uuidToStableId(row.id, tsDef.id),
-          dbId: row.id,
-          dbTilesetId: row.tileset_id,
-          src: row.image_url,
-          isDefault: true,
-          isDb: true,
-          codename: row.codename,
-          tilesetName: tsDef.name,
-          tilesetId: tsDef.id,
-          tilesetOwnerId: tsDef.owner_id,
-          sortIndex: row.sort_index,
-          dbSizeMultiplier: row.size_multiplier,
-          dbOffsetX: row.offset_x,
-          dbOffsetY: row.offset_y,
-          dbRotatable: row.rotatable,
-          dbFlippable: row.flippable,
-          dbOtgPassable: row.otg_passable,
-          dbMirrorOffset: row.mirror_offset,
-          dbBottomRender: row.bottom_render,
-          dbPriority: row.priority,
-          dbAutoShadow: row.auto_shadow,
-          dbShowTileCount: row.show_tile_count,
-        };
+        const tileObj = buildDbTile(row, tsDef);
         if (row.folder_key) {
-          tileObj.folderKey = `${tsDef.name}/${row.folder_key}`;
-          tileObj.folderLabel = row.folder_key;
           if (!folderGroups[row.folder_key]) folderGroups[row.folder_key] = [];
           folderGroups[row.folder_key].push(tileObj);
         } else {
@@ -3099,9 +3007,9 @@ function App() {
       }
     }
 
-    // ── Global tiles from manifest — IDs start at GLOBAL_ID_START (200) ──
-    let gIdCounter = GLOBAL_ID_START;
-    const makeTile = src => ({ id: gIdCounter++, src: `Resources/${src}`, isDefault: true });
+    // ── Global tiles from manifest — ref g:<Resources path>; displayKey is manifest order, display only (never persisted) ──
+    let gKeyCounter = 1;
+    const makeTile = src => ({ ref: makeRef("g", `Resources/${src}`), displayKey: gKeyCounter++, src: `Resources/${src}`, isDefault: true });
     const displayLabel = (key, folderPath) => {
       if (folderPath) { const s = folderPath.replace(/\/$/, '').split('/').pop(); if (s) return s; }
       return key;
@@ -3130,9 +3038,9 @@ function App() {
     return { tilesetEntriesPerTs: entriesPerTs, tilesetEntries: tsEntries, globalEntries: glbEntries, flatDefaultTiles: flatTiles, tilesetTileCount: tsCount };
   }, [manifest, activeTileset, dbTilesets, dbTilesByTsId]);
 
-  // Switch tileset — updates the tile panel and BG colours, and auto-converts board tiles by codename.
-  // Fetches the new tileset's tiles if not yet cached, then remaps the grid (old → new by codename;
-  // tiles with no codename match are replaced with WARN_TILE_ID).
+  // Switch tileset — updates the tile panel and BG colours, and converts board tiles by codename.
+  // Fetches the new tileset's tiles if not yet cached, then rewrites the matching PALETTE ENTRIES (cells stay untouched).
+  // Entries with no codename match go through the compat flow (replacement picked per entry, default: the warn tile).
   const switchTileset = async (newTilesetName) => {
     if (newTilesetName === activeTileset) return;
 
@@ -3161,31 +3069,10 @@ function App() {
       }
     }
 
-    // ── 2. Build codename → future numeric ID map for the new tileset ───
-    // Uses uuidToStableId to mirror the exact IDs flatDefaultTiles will assign.
-    const futureCodenameToId = {};
-    if (newTsDef) {
-      const tilesForTs = (dbTilesByTsIdRef.current[newTsDef.id] ?? []).slice().sort((a, b) => a.sort_index - b.sort_index);
-      for (const row of tilesForTs) {
-        if (row.codename) futureCodenameToId[row.codename] = uuidToStableId(row.id, newTsDef.id);
-      }
-    }
-
-    // ── 3. Auto-convert board: remap old-tileset IDs → new-tileset IDs ──
-    // flatDefaultTiles holds only the active (= old) tileset here, and oldIdToCodename is built BEFORE
-    // setActiveTileset below changes it. Cells that do not belong to the old tileset / global / uploads are cleared.
-    const oldIdToCodename = {};
-    const oldIds = new Set();
-    if (oldTsDef) {
-      flatDefaultTiles.forEach(t => {
-        if (!t.isDb || t.dbTilesetId !== oldTsDef.id) return;
-        oldIds.add(t.id);
-        if (t.codename) oldIdToCodename[t.id] = t.codename;
-      });
-    }
-    const currentGrid = gridRef.current;
-    const hasOldTiles = oldIds.size > 0 &&
-      currentGrid.some(row => row.some(id => id !== null && oldIds.has(id)));
+    // ── 2. Plan: which palette entries convert, which need a replacement, which are foreign ──
+    const oldRows = oldTsDef ? (dbTilesByTsIdRef.current[oldTsDef.id] ?? []) : [];
+    const newRows = newTsDef ? (dbTilesByTsIdRef.current[newTsDef.id] ?? []) : [];
+    const plan = planSwitch(paletteRef.current, oldRows, newRows);
 
     // For Objectives tiles with no codename match in the new tileset, suggest an
     // equivalent global tile (Brawl Ball / Gem Grab / Heist) as the default remap.
@@ -3201,146 +3088,107 @@ function App() {
       else if (cn.includes('HeistSafe') || cn.includes('Safe')) needle = 'Heist';
       if (!needle) return null;
       const g = flatDefaultTiles.find(t => !t.isDb && t.src && t.src.includes(needle));
-      return g ? g.id : null;
+      return g ? g.ref : null;
     };
 
-    // Check for codename mismatches before applying switch
-    if (hasOldTiles && newTsDef) {
-      const mismatches = [];
-      const seenCodenames = new Set();
-      currentGrid.forEach(row => row.forEach(id => {
-        if (id === null || !oldIds.has(id)) return;
-        const cn = oldIdToCodename[id];
-        if (!cn || seenCodenames.has(cn)) return;
-        if (futureCodenameToId[cn] === undefined) {
-          seenCodenames.add(cn);
-          const tile = flatDefaultTiles.find(t => t.id === id);
-          const fallbackId = findObjectiveFallback(tile);
-          mismatches.push({ id, codename: cn, src: tile?.src, fallbackId: fallbackId ?? null });
-        }
-      }));
-      if (mismatches.length > 0) {
-        setTilesetSwitchPending({
-          newTilesetName, newTsDef, oldTsDef,
-          oldIdToCodename, futureCodenameToId,
-          newTilesCached, tsBg: null, mismatches,
-          remaps: Object.fromEntries(mismatches.map(m => [m.codename, m.fallbackId ?? WARN_TILE_ID])),
-        });
-        // Compute tsBg now and update the pending state
-        const dbBg_ = (newTsDef?.bg_color_light && newTsDef?.bg_color_dark)
-          ? { bg1: newTsDef.bg_color_light, bg2: newTsDef.bg_color_dark } : null;
-        const opheliaBg_ = OPHELIA_BG[newTilesetName] ?? null;
-        const tsBg_ = dbBg_ ?? opheliaBg_ ?? { bg1: "#1a2332", bg2: "#1e2838" };
-        setTilesetSwitchPending(prev => prev ? { ...prev, tsBg: tsBg_ } : prev);
-        return;
-      }
-    }
-
-    let newGrid = currentGrid, clearedCount = 0;
-    if (newTsDef) {
-      const r = remapGridForSwitch(currentGrid, oldIds, oldIdToCodename, cn => futureCodenameToId[cn]);
-      newGrid = r.grid; clearedCount = r.cleared;
-    }
-
-    // ── 4. BG colours: DB record → OPHELIA_BG → cached → app default ───
+    // ── 3. BG colours: DB record → OPHELIA_BG → cached → app default ───
     const dbBg = (newTsDef?.bg_color_light && newTsDef?.bg_color_dark)
       ? { bg1: newTsDef.bg_color_light, bg2: newTsDef.bg_color_dark }
       : null;
     const opheliaBg = OPHELIA_BG[newTilesetName] ?? null;
     const tsBg = dbBg ?? opheliaBg ?? { bg1: "#1a2332", bg2: "#1e2838" };
 
-    // ── 5. Push history snap with converted grid, then apply state ───────
-    const snap = { grid: newGrid, w: gridWRef.current, h: gridHRef.current, tileset: newTilesetName, bg1: tsBg.bg1, bg2: tsBg.bg2, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current, label: `Switch from ${activeTileset ?? '(none)'} to ${newTilesetName}` };
+    // Entries with no codename match: ask what to replace them with
+    if (plan.mismatches.length > 0 && newTsDef) {
+      const mismatches = plan.mismatches.map(m => {
+        const tile = tilesByRefRef.current.get(m.ref);
+        return { ref: m.ref, codename: m.codename ?? m.ref, src: tile?.src, fallbackRef: findObjectiveFallback(tile) };
+      });
+      setTilesetSwitchPending({
+        newTilesetName, newTsDef, oldTsDef,
+        newTilesCached, tsBg, mismatches,
+        remaps: Object.fromEntries(mismatches.map(m => [m.ref, m.fallbackRef ?? WARN_REF])),
+      });
+      return;
+    }
+    finishSwitch(newTilesetName, newTsDef, oldTsDef, {}, tsBg);
+  };
+
+  // Applies a switch: palette entries rewritten (remapEntry), history snapshot, tileset + BG, per-tile cleanup.
+  const finishSwitch = (newTilesetName, newTsDef, oldTsDef, remaps, tsBg) => {
+    const oldRows = oldTsDef ? (dbTilesByTsIdRef.current[oldTsDef.id] ?? []) : [];
+    const newRows = newTsDef ? (dbTilesByTsIdRef.current[newTsDef.id] ?? []) : [];
+    const currentGrid = gridRef.current;
+    const plan = planSwitch(paletteRef.current, oldRows, newRows);
+    let newGrid = currentGrid, newPal = paletteRef.current, clearedCount = 0;
+    if (newTsDef) {
+      const r = applySwitchPlan(paletteRef.current, currentGrid, plan, remaps);
+      newGrid = r.grid; newPal = r.palette; clearedCount = r.cleared;
+    }
+
+    // ── History snap with the converted grid + palette, then apply state ──
+    const snap = { grid: newGrid, palette: clonePalette(newPal), w: gridWRef.current, h: gridHRef.current, tileset: newTilesetName, bg1: tsBg.bg1, bg2: tsBg.bg2, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current, label: `Switch from ${activeTileset ?? '(none)'} to ${newTilesetName}` };
     setHistory(h => {
       const trimmed = h.slice(0, histIdxRef.current + 1);
       const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
       return [...capped, snap];
     });
     setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
+    if (newPal !== paletteRef.current) replacePalette(newPal);
     if (newGrid !== currentGrid) setGridRaw(newGrid);
     setActiveTileset(newTilesetName);
     applyBgPreset(newTilesetName, tsBg.bg1, tsBg.bg2);
-    if (clearedCount > 0) setGridLoadWarning(clearedCount);
+    if (clearedCount > 0) warnCleared(clearedCount, "switch");
 
-    // ── 6. Clear per-tile overrides for tileset-range IDs ────────────────
-    const keepNonTileset = obj => {
-      const next = {};
-      Object.entries(obj).forEach(([k, v]) => { if (Number(k) >= GLOBAL_ID_START) next[Number(k)] = v; });
-      return next;
-    };
-    setCardRotations(prev => keepNonTileset(prev));
-    setCardFlipSteps(prev => keepNonTileset(prev));
-    setCardFlipModes(prev => keepNonTileset(prev));
-    setTileMultipliers(prev => keepNonTileset(prev));
-    setTileOffsets(prev => keepNonTileset(prev));
-    setRotatableMap(prev => keepNonTileset(prev));
-    setAllowFlipMap(prev => keepNonTileset(prev));
-    setMirrorOffsetTiles(prev => keepNonTileset(prev));
-    setOtgWallOverrides(prev => keepNonTileset(prev));
-    setPriorityTiles(prev => keepNonTileset(prev));
-    setBottomTiles(prev => keepNonTileset(prev));
-    setAutoShadowTiles(prev => keepNonTileset(prev));
-
-    // ── 7. Drop stale starred/recent tile IDs from the old tileset ───────
+    // Overrides of the outgoing tileset's tiles are dropped by the "ref no longer exists" guard once the new tileset is the
+    // contained one. Starred / recent / current selection that point at the outgoing tileset go now.
     if (oldTsDef) {
-      const oldTileIdSet = oldIds;
-      setStarredTiles(prev => prev.filter(s => typeof s !== "number" || !oldTileIdSet.has(s)));
-      setRecentTileIds(prev => prev.filter(id => !oldTileIdSet.has(id)));
+      const oldRefs = new Set(oldRows.map(r => makeRef("d", r.id)));
+      const toNew = new Map(plan.matched.map(m => [m.from, m.to]));
+      setStarredTiles(prev => prev.filter(s => !oldRefs.has(s)));
+      setRecentTileIds(prev => prev.filter(id => !oldRefs.has(id)));
+      setSel(prev => (prev && oldRefs.has(prev)) ? (toNew.get(prev) ?? null) : prev);
     }
   };
 
-  // Sync defaultTiles and nextId whenever flatDefaultTiles changes.
-  // Rebuild priority/bottomRender/autoShadow from DB flags + src-pattern fallbacks.
+  // Sync defaultTiles whenever flatDefaultTiles changes. Flags are read off the tile objects now (no rebuilt flag maps).
   useEffect(() => {
     setDefaultTiles(flatDefaultTiles);
     if (flatDefaultTiles.length > 0) {
-      setSel(prev => prev ?? flatDefaultTiles[0].id);
-      const rebuildDefaultFlags = (prev, matchFn) => {
-        const next = {};
-        // Keep user tile overrides (IDs >= USER_ID_START)
-        Object.entries(prev).forEach(([id, val]) => {
-          const n = Number(id);
-          if (n >= USER_ID_START) next[n] = val;
-        });
-        flatDefaultTiles.forEach(t => { if (matchFn(t)) next[t.id] = true; });
-        return next;
-      };
-      setPriorityTiles(prev => rebuildDefaultFlags(prev, t =>
-        t.dbPriority != null ? !!t.dbPriority : !!(t.src && TILE_SETTINGS.priority.some(p => t.src.includes(p)))));
-      setBottomTiles(prev => rebuildDefaultFlags(prev, t =>
-        t.dbBottomRender != null ? !!t.dbBottomRender : !!(t.src && TILE_SETTINGS.bottomRender.some(p => t.src.includes(p)))));
-      setAutoShadowTiles(prev => rebuildDefaultFlags(prev, t =>
-        t.dbAutoShadow != null ? !!t.dbAutoShadow : false));
+      setSel(prev => prev ?? flatDefaultTiles[0].ref);
     }
   }, [flatDefaultTiles]);
 
-  // Whenever the active tileset changes (switch, undo, map load), drop every numeric override keyed in the
-  // tileset range (1..199): those ids are only meaningful inside one tileset. Global (200+) and user (500+) keys stay.
-  const prevActiveTsForOverridesRef = useRef(null);
+  // Guard: drop every per-ref override (and per-ref card state) whose ref is no longer among the loaded tiles
+  // (a tileset switch, a deleted tile or upload). Waits until the contained list is complete so a half-loaded app
+  // cannot wipe overrides: manifest loaded, tile fetch done, active tileset's rows cached.
   useEffect(() => {
-    const prev = prevActiveTsForOverridesRef.current;
-    prevActiveTsForOverridesRef.current = activeTileset ?? null;
-    if (prev === null || prev === (activeTileset ?? null)) return; // first assignment is not a change
-    const keepNonTileset = obj => {
+    if (!manifest || tilesLoading || !dbTilesets.length) return;
+    const tsDefG = dbTilesets.find(ts => ts.name === activeTileset);
+    if (tsDefG && dbTilesByTsId[tsDefG.id] === undefined) return;
+    const known = new Set(flatDefaultTiles.map(t => t.ref));
+    userTiles.forEach(t => known.add(t.ref));
+    const prune = obj => {
+      let changed = false;
       const next = {};
-      Object.entries(obj).forEach(([k, v]) => { if (Number(k) >= GLOBAL_ID_START) next[k] = v; });
-      return next;
+      Object.keys(obj).forEach(k => { if (known.has(k)) next[k] = obj[k]; else changed = true; });
+      return changed ? next : obj;
     };
-    setTileMultipliers(keepNonTileset);
-    setTileOffsets(keepNonTileset);
-    setRotatableMap(keepNonTileset);
-    setAllowFlipMap(keepNonTileset);
-    setMirrorOffsetTiles(keepNonTileset);
-    setOtgWallOverrides(keepNonTileset);
-    setPriorityTiles(keepNonTileset);
-    setBottomTiles(keepNonTileset);
-    setAutoShadowTiles(keepNonTileset);
-    setTileNames(keepNonTileset);
-    setTileCountMap(keepNonTileset);
-    setCardRotations(keepNonTileset);
-    setCardFlipSteps(keepNonTileset);
-    setCardFlipModes(keepNonTileset);
-  }, [activeTileset]);
+    setTileMultipliers(prune);
+    setTileOffsets(prune);
+    setRotatableMap(prune);
+    setAllowFlipMap(prune);
+    setMirrorOffsetTiles(prune);
+    setOtgWallOverrides(prune);
+    setPriorityTiles(prune);
+    setBottomTiles(prune);
+    setAutoShadowTiles(prune);
+    setTileNames(prune);
+    setTileCountMap(prune);
+    setCardRotations(prune);
+    setCardFlipSteps(prune);
+    setCardFlipModes(prune);
+  }, [flatDefaultTiles, userTiles, manifest, tilesLoading, dbTilesByTsId, dbTilesets, activeTileset]);
 
   // Load global manifest + tilesets list. Tiles are loaded on demand per tileset.
   useEffect(() => {
@@ -3421,8 +3269,8 @@ function App() {
         }
         // Scan pendingGridLoadRef palette for d: UUIDs not covered by the active tileset
         try {
-          const palette = pendingGridLoadRef.current?.palette ?? [];
-          const dUuids = (Array.isArray(palette) ? palette : []).filter(k => typeof k === 'string' && k.startsWith('d:')).map(k => k.slice(2));
+          const savedRefs = pendingGridLoadRef.current?.palette?.refs ?? [];
+          const dUuids = savedRefs.filter(k => typeof k === 'string' && k.startsWith('d:')).map(k => k.slice(2));
           const activeTsDef = name ? tilesets.find(ts => ts.name === name) : null;
           const activeTiles = activeTsDef ? (fetchedTilesMap[activeTsDef.id] ?? []) : [];
           const coveredTileIds = new Set(activeTiles.map(t => t.id));
@@ -3598,59 +3446,51 @@ function App() {
     setGridRaw(Array.from({ length: gridH }, () => Array(gridW).fill(null)));
   };
 
-  // Resolve a v2 palette-format grid once all tiles (including default tiles from the manifest) are loaded.
-  // Guard on flatDefaultTiles.length rather than tiles.length: if the user has tiles persisted in
-  // localStorage, tiles is non-empty from the very first render (before the setDefaultTiles useEffect
-  // runs), so tiles.length === 0 is not a reliable signal that default tiles are available yet.
-  //
-  // Race-condition fix: tilesLoading=false and setDbTilesByTsId are set in the same async block, so wait for both
-  // tilesLoading=false and the active tileset's rows in dbTilesByTsId (flatDefaultTiles recomputes from that same state).
+  // Resolve the saved map's palette once the tiles it can refer to are loaded. The decoded {palette, grid} sits in
+  // pendingGridLoadRef (the visible grid stays empty until now). Each entry is resolved against the contained list
+  // (active tileset + globals + uploads): a d: ref from another tileset is matched by codename into the active tileset
+  // (remapEntry, merging when that tile is already on the map), anything else that cannot be resolved is cleared and counted.
   useEffect(() => {
     if (!pendingGridLoadRef.current || (flatDefaultTiles.length === 0 && !manifest)) return;
-    // flatDefaultTiles holds only the active tileset (+ globals). If the palette has d: tiles, wait until the
-    // initial fetch finished and the active tileset's rows are cached; tiles of other tilesets are matched by
-    // codename against the active tileset below (their rows were pre-fetched into dbTilesByTsId by the load effect).
-    const palette = pendingGridLoadRef.current.palette;
-    const dbUuids = palette.filter(cn => typeof cn === 'string' && cn.startsWith('d:')).map(cn => cn.slice(2));
+    const pending = pendingGridLoadRef.current;
+    const savedRefs = pending.palette.refs;
     const activeTsDefForLoad = dbTilesets.find(ts => ts.name === activeTileset);
-    if (dbUuids.length > 0) {
+    if (savedRefs.some(r => r && r.startsWith('d:'))) {
       if (tilesLoading || !activeTsDefForLoad || dbTilesByTsId[activeTsDefForLoad.id] === undefined) return;
     }
-    const hasSrcCodenames = palette.some(cn => typeof cn === 'string' && cn !== 'space' && cn !== 'warn' && !cn.startsWith('d:') && !cn.startsWith('u:'));
-    if (hasSrcCodenames && !manifest) return;
-    const pending = pendingGridLoadRef.current;
-    pendingGridLoadRef.current = null; // clear before setGridRaw so save effect runs correctly
-    const { palette: resolvedPalette, grid: indexGrid } = pending;
-    const unresolved = [];
-    // Resolve against flatDefaultTiles directly (always current) plus persisted user tiles.
-    const allTiles = [...flatDefaultTiles, ...userTiles];
-    // d:<uuid> of a tile that is not in the active tileset: find its row in the cached tilesets and match by codename.
+    if (savedRefs.some(r => r && r.startsWith('g:')) && !manifest) return;
+    pendingGridLoadRef.current = null; // clear before the state writes so the save effect runs correctly
+    const contained = new Map(flatDefaultTiles.map(t => [t.ref, t]));
+    userTiles.forEach(t => contained.set(t.ref, t));
     const activeByCodename = new Map(flatDefaultTiles.filter(t => t.isDb && t.codename).map(t => [t.codename, t]));
     const foreignRowByUuid = new Map();
     Object.entries(dbTilesByTsId).forEach(([tsId, rows]) => {
       if (tsId === activeTsDefForLoad?.id) return;
       (rows ?? []).forEach(r => foreignRowByUuid.set(r.id, r));
     });
-    const idFromPaletteIdx = [null, ...resolvedPalette.map(cn => {
-      let tile = resolveCodename(cn, allTiles);
-      if (!tile && typeof cn === 'string' && cn.startsWith('d:')) {
-        const row = foreignRowByUuid.get(cn.slice(2));
-        tile = (row?.codename && activeByCodename.get(row.codename)) || null;
+    let pal = { refs: savedRefs.slice() }, g = pending.grid;
+    let unresolved = 0;
+    savedRefs.forEach((ref, idx) => {
+      if (!ref || ref === SPACE_REF || ref === WARN_REF) return;
+      if (contained.has(ref)) return;
+      const p = parseRef(ref);
+      if (p?.kind === 'd') {
+        const row = foreignRowByUuid.get(p.key);
+        const target = row?.codename && activeByCodename.get(row.codename);
+        if (target) { const r = remapEntry(pal, ref, target.ref, g); pal = r.palette; g = r.grid; return; }
       }
-      if (!tile) unresolved.push(cn);
-      return tile?.id ?? null;
-    })];
-    const resolvedGrid = indexGrid.map(row =>
-      row.map(idx => idx == null ? null : (idFromPaletteIdx[idx] ?? null))
-    );
-    setGridRaw(resolvedGrid);
-    setHistory([{ grid: resolvedGrid, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [], rots: gridRotationsRef.current ?? {}, flips: gridFlipsRef.current ?? {}, label: "Load" }]);
+      // unresolved: free the entry and empty its cells
+      console.warn('[map load] tile could not be resolved:', ref);
+      unresolved++;
+      g = g.map(row => row.map(c => (c === idx ? null : c)));
+      pal = { refs: pal.refs.map((r, i) => (i === idx ? null : r)) };
+    });
+    replacePalette(pal);
+    setGridRaw(g);
+    setHistory([{ grid: g, palette: clonePalette(pal), w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [], rots: gridRotationsRef.current ?? {}, flips: gridFlipsRef.current ?? {}, label: "Load" }]);
     setHistIdx(0);
     histIdxRef.current = 0;
-    if (unresolved.length > 0) {
-      console.warn(`[map load] ${unresolved.length} tile(s) could not be resolved:`, unresolved);
-      setGridLoadWarning(unresolved.length);
-    }
+    if (unresolved > 0) warnCleared(unresolved, "load");
   }, [tiles, flatDefaultTiles, manifest, dbTilesByTsId, dbTilesets, tilesLoading, activeTileset]); // eslint-disable-line
   useEffect(() => { if (activeTileset) save(SK.activeTileset, activeTileset); }, [activeTileset]);
 
@@ -3693,7 +3533,7 @@ function App() {
   const pushBgHistory = useCallback(() => {
     if (bgHistTimerRef.current) clearTimeout(bgHistTimerRef.current);
     bgHistTimerRef.current = setTimeout(() => {
-      const snap = { grid: gridRef.current, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current };
+      const snap = { grid: gridRef.current, palette: clonePalette(paletteRef.current), w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current };
       setHistory(h => {
         const trimmed = h.slice(0, histIdxRef.current + 1);
         const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
@@ -3731,10 +3571,11 @@ function App() {
     setGridRaw(prev => {
       const next = typeof updater === "function" ? updater(prev) : updater;
       if (!skipHistory) {
+        const palSnap = clonePalette(paletteRef.current); // taken together with `next`, so undo restores entries removed later
         setHistory(h => {
           const trimmed = h.slice(0, histIdx + 1);
           const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-          return [...capped, { grid: next, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current, label: snapLabel }];
+          return [...capped, { grid: next, palette: palSnap, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current, label: snapLabel }];
         });
         setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
       }
@@ -3743,6 +3584,7 @@ function App() {
   }, [histIdx]);
 
   const applySnap = snap => {
+    if (snap.palette) replacePalette(clonePalette(snap.palette)); // the snapshot's own palette: its indexes belong to it
     setGridRaw(snap.grid ?? snap);
     if (snap.w !== undefined) { setGridW(snap.w); setGridH(snap.h); }
     if (snap.tileset != null) setActiveTileset(snap.tileset);
@@ -3793,8 +3635,8 @@ function App() {
     }
   };
 
-  // Restore a history snapshot. Its grid holds ids of snap.tileset, so that tileset must be known and its tiles
-  // cached before the ids are interpreted; otherwise abort with a notice (onAbort lets callers undo their bookkeeping).
+  // Restore a history snapshot. Its palette holds refs into snap.tileset, so that tileset must be known and its tiles
+  // cached before they are interpreted; otherwise abort with a notice (onAbort lets callers undo their bookkeeping).
   const restoreSnap = (snap, onAbort) => {
     const target = snap.tileset;
     const abort = () => { setInfoNotice(`Couldn't restore that step: tileset "${target}" isn't available.`); if (onAbort) onAbort(); };
@@ -3827,11 +3669,12 @@ function App() {
     const seenNew = new Set();
     oldCells.forEach(key => {
       const [r, c] = key.split(',').map(Number);
-      const id = currentGrid[r]?.[c] ?? null;
+      const id = currentGrid[r]?.[c] ?? null; // palette index (same palette for the copies)
       if (id === null) return;
       const srcRot = gridRotationsRef.current[key] ?? 0;
       const srcFlip = gridFlipsRef.current[key] ?? 0;
-      const tile = tiles.find(t => t.id === id);
+      const srcRef = refAt(paletteRef.current, id);
+      const tile = tilesByRefRef.current.get(srcRef);
       const isRotatable = tile ? isTileRotatable(tile) : false;
       const newR = r + dr, newC = c + dc;
       if (newR < 0 || newR >= gridHRef.current || newC < 0 || newC >= gridWRef.current) return;
@@ -3846,7 +3689,7 @@ function App() {
           const mKey = `${mr},${mc}`;
           if (!seenNew.has(mKey)) {
             seenNew.add(mKey);
-            const mirrorId = (id && ms.mirrorSpawns && (fH || fD)) ? swapSpawnId(id) : id;
+            const mirrorId = (srcRef && ms.mirrorSpawns && (fH || fD)) ? paletteIndexFor(paletteRef.current, swapSpawnRef(srcRef)) : id;
             const mirrorRot = (ms.mirrorRotation && isRotatable) ? applyRotMirror(srcRot, fV, fH, fD) : srcRot;
             placements.push({ newR: mr, newC: mc, id: mirrorId, rot: mirrorRot, flip: srcFlip });
           }
@@ -3886,7 +3729,7 @@ function App() {
   const pushHistorySnapshot = useCallback(() => {
     const label = histLabelRef.current || "Draw";
     histLabelRef.current = "Draw";
-    const snap = { grid, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1, bg2, highlight: [...highlightedCellsRef.current], rots: { ...gridRotationsRef.current }, flips: { ...gridFlipsRef.current }, customCenter: customCenterRef.current, label };
+    const snap = { grid, palette: clonePalette(paletteRef.current), w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1, bg2, highlight: [...highlightedCellsRef.current], rots: { ...gridRotationsRef.current }, flips: { ...gridFlipsRef.current }, customCenter: customCenterRef.current, label };
     setHistory(h => {
       const trimmed = h.slice(0, histIdx + 1);
       const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
@@ -3903,7 +3746,6 @@ function App() {
     imageFiles.forEach(f => {
       const r = new FileReader();
       r.onload = e => {
-        if (nextId.current > USER_ID_MAX) { console.warn("User tile limit reached (IDs 500–699)"); return; }
         const id = nextId.current++;
         save("oph_user_next_id", nextId.current);
         const img = new Image();
@@ -3917,8 +3759,8 @@ function App() {
           const scaledDataUrl = canvas.toDataURL('image/png');
           canvas.toBlob(blob => {
             const blobSrc = URL.createObjectURL(blob);
-            createImageBitmap(blob).then(bm => { userBitmapCacheRef.current.set(id, bm); }).catch(() => {});
-            setUserTiles(prev => [...prev, { id, src: scaledDataUrl, blobSrc }]);
+            createImageBitmap(blob).then(bm => { userBitmapCacheRef.current.set(makeRef("u", id), bm); }).catch(() => {});
+            setUserTiles(prev => [...prev, { uploadId: id, ref: makeRef("u", id), src: scaledDataUrl, blobSrc }]);
             loaded++;
             if (loaded === imageFiles.length) {
               setUploadFlash(imageFiles.length);
@@ -3933,9 +3775,9 @@ function App() {
     });
   };
 
-  const deleteTile = id => {
-    setUserTiles(p => p.filter(t => t.id !== id));
-    if (sel === id) setSel(null);
+  const deleteTile = ref => {
+    setUserTiles(p => p.filter(t => t.ref !== ref));
+    if (sel === ref) setSel(null);
     setInfoTile(null);
   };
 
@@ -4013,16 +3855,16 @@ function App() {
 
   const paintCells = useCallback((r, c) => {
     const meta   = (getMirrorMetaRef.current ?? getMirrorMeta)(r, c);
-    const tileId = eraser ? null : (sel ?? null);
+    const tileId = eraser ? null : (sel ?? null); // tile ref
     const rot    = tileId ? ((cardRotationsRef.current[tileId] ?? 0) / 90 % 4) : 0;
     const ms     = mirrorSettingsRef.current;
     setGrid(prev => {
       const g = prev.map(row => [...row]);
       meta.forEach(({ pos: [pr, pc], fV, fH, fD }) => {
         // Spawn swapping: applies when fH (top-bottom) or fD (diagonal) flips teams
-        let id = tileId;
-        if (id && ms.mirrorSpawns && (fH || fD)) id = swapSpawnId(id);
-        g[pr][pc] = eraser ? null : id;
+        let ref = tileId;
+        if (ref && ms.mirrorSpawns && (fH || fD)) ref = swapSpawnRef(ref);
+        g[pr][pc] = (eraser || !ref) ? null : paletteIndexFor(paletteRef.current, ref);
       });
       return g;
     }, true);
@@ -4094,12 +3936,12 @@ function App() {
     // Set descriptive history label
     if (isEraser) {
       histLabelRef.current = "Erase";
-    } else if (tileId === SPACE_TILE_ID) {
+    } else if (tileId === SPACE_REF) {
       histLabelRef.current = "Draw Space";
-    } else if (tileId === WARN_TILE_ID) {
+    } else if (tileId === WARN_REF) {
       histLabelRef.current = "Draw Warn";
     } else if (tileId !== null) {
-      const paintTile = tiles.find(t => t.id === tileId);
+      const paintTile = tilesByRefRef.current.get(tileId);
       if (paintTile) {
         const name = paintTile.folderLabel
           ?? deriveCodename(paintTile.src)
@@ -4118,9 +3960,9 @@ function App() {
       cells.forEach(([r, c]) => {
         metaFnC(r, c).forEach(({ pos: [pr, pc], fV, fH, fD }) => {
           if (!isEraser && g[pr][pc] !== null && !ms.allowSwap) return;
-          let id = isEraser ? null : (tileId ?? null);
-          if (id && ms.mirrorSpawns && (fH || fD)) id = swapSpawnId(id);
-          g[pr][pc] = id;
+          let ref = isEraser ? null : (tileId ?? null);
+          if (ref && ms.mirrorSpawns && (fH || fD)) ref = swapSpawnRef(ref);
+          g[pr][pc] = ref ? paletteIndexFor(paletteRef.current, ref) : null;
           if (!isEraser && tileId) placedMeta.push({ pos: [pr, pc], fV, fH, fD });
         });
       });
@@ -4234,7 +4076,7 @@ function App() {
         setHistory(h => {
           const trimmed = h.slice(0, selNextIdx);
           const capped = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-          return [...capped, { grid: gridRef.current, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...finalHighlight], primaryHighlight: [...primaryFinal], rots: gridRotationsRef.current, flips: gridFlipsRef.current, label: "Highlight" }];
+          return [...capped, { grid: gridRef.current, palette: clonePalette(paletteRef.current), w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...finalHighlight], primaryHighlight: [...primaryFinal], rots: gridRotationsRef.current, flips: gridFlipsRef.current, label: "Highlight" }];
         });
         setHistIdx(selNextIdx);
       }
@@ -4292,11 +4134,11 @@ function App() {
 
   // BFS flood fill — returns Set of "r,c" strings
   // matchById=false: match all connected filled/empty cells (default behaviour)
-  // matchById=true:  match only cells with the same tile ID as the origin (for highlight+fill and block-overwrite+fill)
+  // matchById=true:  match only cells with the same palette entry (= same tile) as the origin (for highlight+fill and block-overwrite+fill)
   const bfsFill = useCallback((startR, startC, currentGrid, gW, gH, matchById = false, matchByFolder = false) => {
     const originId = currentGrid[startR]?.[startC] ?? null;
     const originFilled = originId !== null;
-    const originTile = (matchByFolder && originId !== null) ? tiles.find(t => t.id === originId) : null;
+    const originTile = (matchByFolder && originId !== null) ? tilesByRefRef.current.get(refAt(paletteRef.current, originId)) : null;
     const originFolderKey = originTile
       ? (originTile.folderKey ?? null)
       : null;
@@ -4315,7 +4157,7 @@ function App() {
         if (matchByFolder && originFolderKey !== null) {
           if (cellId === null) { matches = false; }
           else {
-            const cellTile = tiles.find(t => t.id === cellId);
+            const cellTile = tilesByRefRef.current.get(refAt(paletteRef.current, cellId));
             const cellFolderKey = cellTile
               ? (cellTile.folderKey ?? null)
               : null;
@@ -4355,9 +4197,10 @@ function App() {
 
       // ── EYEDROPPER: pick tile and return to paint mode ──────────────────────
       if (eyedropperModeRef.current) {
-        const pickedId = gridRef.current?.[r]?.[c];
-        if (pickedId != null) {
-          setSel(pickedId);
+        const pickedIdx = gridRef.current?.[r]?.[c];
+        const pickedRef = pickedIdx != null ? refAt(paletteRef.current, pickedIdx) : null;
+        if (pickedRef) {
+          setSel(pickedRef);
           setEraser(false);
           setEyedropperMode(false);
           setMagnetMode(false);
@@ -4432,7 +4275,7 @@ function App() {
       // Use gridRef for freshest value (avoids stale closure on rapid clicks)
       const existingId = gridRef.current?.[r]?.[c];
 
-      if (existingId && !eraserRef.current && mirrorSettingsRef.current.allowSwap) {
+      if (existingId != null && !eraserRef.current && mirrorSettingsRef.current.allowSwap) {
         if (selectionModeRef.current === 'fill') {
           // ── BLOCK OVERWRITE + FILL: select entire connected same-tile region ──
           if (pushHistRef.current) pushHistRef.current();
@@ -4454,11 +4297,12 @@ function App() {
         return;
       }
 
-      if (existingId && !eraserRef.current && !mirrorSettingsRef.current.allowSwap) {
+      if (existingId != null && !eraserRef.current && !mirrorSettingsRef.current.allowSwap) {
         // ── OCCUPIED CELL (non-eraser, block overwrite off): pick up for drag
         const mirrorPositions = getMirrorRef.current ? getMirrorRef.current(r, c) : getMirrorPositions(r, c);
+        // The dragged tile is carried as a ref: its palette entry may be freed while the cell is empty.
+        const pickupRef = refAt(paletteRef.current, existingId);
         // Always preserve the rotation and flip of the picked-up tile (use refs for fresh values in stale closure)
-        const pickupTile = getTile(existingId);
         dragRotationRef.current = gridRotationsRef.current[`${r},${c}`] ?? 0;
         dragFlipRef.current = gridFlipsRef.current[`${r},${c}`] ?? 0;
         setGridRaw(prevGrid => {
@@ -4481,8 +4325,8 @@ function App() {
           mirrorPositions.forEach(([pr, pc]) => { delete n[`${pr},${pc}`]; });
           return n;
         });
-        setDragTile(existingId);
-        dragTileRef.current = existingId;
+        setDragTile(pickupRef);
+        dragTileRef.current = pickupRef;
         isDraggingRef.current = true;
         setDragPos({ x: e.clientX, y: e.clientY });
         setDragTargetCell(null);
@@ -4568,19 +4412,22 @@ function App() {
     }
   };
 
-  const SPACE_TILE = { id: SPACE_TILE_ID, src: null, label: "Space", isSpace: true };
-  const getTile = id => id === SPACE_TILE_ID ? SPACE_TILE : tiles.find(t => t.id === id);
+  const SPACE_TILE = { ref: SPACE_REF, src: null, label: "Space", isSpace: true };
+  // Takes a tile REF (not a palette index): the contained tile object, the space tile, or undefined (warn tile / not loaded).
+  const getTile = ref => ref === SPACE_REF ? SPACE_TILE : (ref ? tilesByRefRef.current.get(ref) : undefined);
+  // Tile object for a grid cell value (palette index).
+  const getCellTile = idx => (idx == null ? undefined : getTile(refAt(paletteRef.current, idx)));
 
   // Returns { ox, oy } override if the tile has mirror offset enabled and flags indicate a flip, else undefined.
-  const computeMirrorOffsetOverride = (tileId, fV, fH, fD) => {
-    const tile = getTile(tileId);
+  const computeMirrorOffsetOverride = (tileRef, fV, fH, fD) => {
+    const tile = getTile(tileRef);
     if (!tile) return undefined;
-    const mo = mirrorOffsetTilesRef.current[tile.id] !== undefined
-      ? mirrorOffsetTilesRef.current[tile.id]
+    const mo = mirrorOffsetTilesRef.current[tile.ref] !== undefined
+      ? mirrorOffsetTilesRef.current[tile.ref]
       : isDefaultMirrorOffset(tile);
     if (!mo) return undefined;
-    const base = tileOffsetsRef.current[tile.id] !== undefined
-      ? tileOffsetsRef.current[tile.id]
+    const base = tileOffsetsRef.current[tile.ref] !== undefined
+      ? tileOffsetsRef.current[tile.ref]
       : getDefaultOffset(tile);
     const flipX = fV || fD;
     const flipY = fH || fD;
@@ -4641,7 +4488,8 @@ function App() {
         const dx = e.clientX - sx, dy = e.clientY - sy;
         if (Math.sqrt(dx*dx + dy*dy) > DRAG_THRESHOLD) {
           pendingSwapRef.current = null;
-          // Commit to drag: pick up the tile
+          // Commit to drag: pick up the tile (carried as a ref, see the mouse pickup)
+          const pickupRef2 = refAt(paletteRef.current, existingId);
           const mirrorPositions = getMirrorRef.current ? getMirrorRef.current(r, c) : [];
           const allPos = [[r, c], ...mirrorPositions.filter(([pr, pc]) => pr !== r || pc !== c)];
           dragRotationRef.current = rot;
@@ -4654,8 +4502,8 @@ function App() {
           setGridRotations(prev => { const n = { ...prev }; allPos.forEach(([pr, pc]) => { delete n[`${pr},${pc}`]; }); return n; });
           setGridFlips(prev => { const n = { ...prev }; allPos.forEach(([pr, pc]) => { delete n[`${pr},${pc}`]; }); return n; });
           setGridOffsets(prev => { const n = { ...prev }; allPos.forEach(([pr, pc]) => { delete n[`${pr},${pc}`]; }); return n; });
-          setDragTile(existingId);
-          dragTileRef.current = existingId;
+          setDragTile(pickupRef2);
+          dragTileRef.current = pickupRef2;
           isDraggingRef.current = true;
           setDragPos({ x: e.clientX, y: e.clientY });
           setDragTargetCell(null);
@@ -4763,8 +4611,8 @@ function App() {
           oldCells.forEach(key => { rot_data[key] = postDragRots[key]; delete postDragRots[key]; });
           newCells.forEach(({ oldKey, newR, newC, fV, fH, fD }) => {
             const [or, oc] = oldKey.split(',').map(Number);
-            const tileId_d = tileData.find(d => d.r === or && d.c === oc)?.id ?? null;
-            const tileObj_d = tileId_d ? allTilesByIdRef.current[tileId_d] : null;
+            const tileId_d = tileData.find(d => d.r === or && d.c === oc)?.id ?? null; // palette index
+            const tileObj_d = tileId_d != null ? tilesByRefRef.current.get(refAt(paletteRef.current, tileId_d)) : null;
             if (tileObj_d && !isTileRotatable(tileObj_d)) { delete postDragRots[`${newR},${newC}`]; return; }
             const rawRot = rot_data[oldKey] !== undefined ? rot_data[oldKey] : dragRotationRef.current;
             const needsMirror = ms.mirrorRotation && (fV || fH || fD);
@@ -4815,7 +4663,7 @@ function App() {
           setHistory(h => {
             const trimmed = h.slice(0, dragNextIdx);
             const capped = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-            return [...capped, { grid: newG, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...newHighlight], primaryHighlight: [...newPrimaryHighlight], rots: postDragRots, flips: postDragFlips, label: "Move" }];
+            return [...capped, { grid: newG, palette: clonePalette(paletteRef.current), w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...newHighlight], primaryHighlight: [...newPrimaryHighlight], rots: postDragRots, flips: postDragFlips, label: "Move" }];
           });
           setHistIdx(dragNextIdx);
         }
@@ -4839,14 +4687,14 @@ function App() {
       if (!isDraggingRef.current) return;
       setDragTargetCell(null);
       const cell = cellFromEvent(e.clientX, e.clientY);
-      const id  = dragTileRef.current;
+      const id  = dragTileRef.current; // tile ref
       const rot = dragRotationRef.current;
       if (cell) {
         const [r, c] = cell;
         const metaFn = getMirrorMetaRef.current;
         const meta = metaFn ? metaFn(r, c) : [{ pos: [r, c], fV: false, fH: false, fD: false }];
         const ms = mirrorSettingsRef.current;
-        const tile = tiles.find(x => x.id === id);
+        const tile = tilesByRefRef.current.get(id);
         const tileRot = tile ? isTileRotatable(tile) : false;
         const placedMeta = [];
         setGridStableRef.current(prev => {
@@ -4855,9 +4703,9 @@ function App() {
           const g = prev.map(row => [...row]);
           meta.forEach(({ pos: [pr, pc], fV, fH, fD }) => {
             if (g[pr]?.[pc] === null) {
-              let placeId = id;
-              if (placeId && ms.mirrorSpawns && (fH || fD)) placeId = swapSpawnId(placeId);
-              g[pr][pc] = placeId;
+              let placeRef = id;
+              if (placeRef && ms.mirrorSpawns && (fH || fD)) placeRef = swapSpawnRef(placeRef);
+              g[pr][pc] = placeRef ? paletteIndexFor(paletteRef.current, placeRef) : null;
               placedMeta.push({ pos: [pr, pc], fV, fH, fD });
             }
           });
@@ -4968,9 +4816,10 @@ function App() {
 
       // ── EYEDROPPER: pick tile on tap ───────────────────────────────
       if (eyedropperModeRef.current) {
-        const pickedId = gridRef.current?.[r]?.[c];
-        if (pickedId != null) {
-          setSel(pickedId);
+        const pickedIdx = gridRef.current?.[r]?.[c];
+        const pickedRef = pickedIdx != null ? refAt(paletteRef.current, pickedIdx) : null;
+        if (pickedRef) {
+          setSel(pickedRef);
           setEraser(false);
           setEyedropperMode(false);
           setMagnetMode(false);
@@ -5024,8 +4873,9 @@ function App() {
         return;
       }
       const existingId = gridRef.current?.[r]?.[c];
-      if (existingId && !eraserRef.current && !mirrorSettingsRef.current.allowSwap) {
+      if (existingId != null && !eraserRef.current && !mirrorSettingsRef.current.allowSwap) {
         // Pick up for drag (block overwrite off); remove tile and mirror counterparts
+        const touchPickupRef = refAt(paletteRef.current, existingId);
         const pickupPositions = getMirrorRef.current ? getMirrorRef.current(r, c) : [[r, c]];
         // Always preserve the rotation and flip of the picked-up tile (use refs for fresh values in stale closure)
         dragRotationRef.current = gridRotationsRef.current[`${r},${c}`] ?? 0;
@@ -5050,8 +4900,8 @@ function App() {
           pickupPositions.forEach(([pr, pc]) => { delete n[`${pr},${pc}`]; });
           return n;
         });
-        setDragTile(existingId);
-        dragTileRef.current = existingId;
+        setDragTile(touchPickupRef);
+        dragTileRef.current = touchPickupRef;
         isDraggingRef.current = true;
         setDragPos({ x: e.touches[0].clientX, y: e.touches[0].clientY });
         setDragTargetCell(null);
@@ -5260,7 +5110,7 @@ function App() {
             setHistory(h => {
               const trimmed = h.slice(0, tDragNextIdx);
               const capped = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-              return [...capped, { grid: tNewG, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...newHighlight], rots: tPostRots, flips: tPostFlips }];
+              return [...capped, { grid: tNewG, palette: clonePalette(paletteRef.current), w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...newHighlight], rots: tPostRots, flips: tPostFlips }];
             });
             setHistIdx(tDragNextIdx);
           }
@@ -5283,7 +5133,7 @@ function App() {
             const [r, c] = cell;
             const metaFn = getMirrorMetaRef.current;
             const meta = metaFn ? metaFn(r, c) : [{ pos: [r, c], fV: false, fH: false, fD: false }];
-            const tile = tiles.find(x => x.id === id);
+            const tile = tilesByRefRef.current.get(id);
             const tileRot = tile ? isTileRotatable(tile) : false;
             const anyEmpty = meta.some(({ pos: [pr, pc] }) => gridRef.current?.[pr]?.[pc] === null);
             if (anyEmpty) {
@@ -5292,9 +5142,9 @@ function App() {
                 const g = prev.map(row => [...row]);
                 meta.forEach(({ pos: [pr, pc], fV, fH, fD }) => {
                   if (g[pr][pc] === null) {
-                    let placeId = id;
-                    if (placeId && ms.mirrorSpawns && (fH || fD)) placeId = swapSpawnId(placeId);
-                    g[pr][pc] = placeId;
+                    let placeRef = id;
+                    if (placeRef && ms.mirrorSpawns && (fH || fD)) placeRef = swapSpawnRef(placeRef);
+                    g[pr][pc] = placeRef ? paletteIndexFor(paletteRef.current, placeRef) : null;
                     placedMeta.push({ pos: [pr, pc], fV, fH, fD });
                   }
                 });
@@ -5373,7 +5223,7 @@ function App() {
         if (e.key === "r" || e.key === "R") {
           const id = selRef.current;
           if (id != null) {
-            const tile = flatDefaultTilesRef.current.find(t => t.id === id) ?? allTilesByIdRef.current[id];
+            const tile = tilesByRefRef.current.get(id);
             const rMap = rotatableMapRef.current;
             const fMap = allowFlipMapRef.current;
             const canSpin = tile ? (rMap[id] !== undefined ? rMap[id] : isDefaultRotatable(tile)) : true;
@@ -5406,7 +5256,7 @@ function App() {
         if (e.key === "[" || e.key === "]") {
           const id = selRef.current;
           if (id != null) {
-            const tile = flatDefaultTilesRef.current.find(t => t.id === id) ?? allTilesByIdRef.current[id];
+            const tile = tilesByRefRef.current.get(id);
             const rMap = rotatableMapRef.current;
             const fMap = allowFlipMapRef.current;
             const canSpin = tile ? (rMap[id] !== undefined ? rMap[id] : isDefaultRotatable(tile)) : true;
@@ -5468,60 +5318,65 @@ function App() {
   };
 
   // ── Replace A → B ─────────────────────────────────────────────────
-  const tileDisplayName = id => {
-    if (id == null) return "?";
-    if (id === SPACE_TILE_ID) return "Space";
-    if (id === REPLACE_ERASE_ID) return "Empty";
-    const t = getTile(id);
-    return (t ? (t.isSpace ? "Space" : deriveCodename(t.src)) : null) || `#${id}`;
+  const tileDisplayName = ref => {
+    if (ref == null) return "?";
+    if (ref === SPACE_REF) return "Space";
+    if (ref === REPLACE_ERASE_REF) return "Empty";
+    const t = getTile(ref);
+    return (t ? (t.isSpace ? "Space" : (deriveCodename(t.src) || t.codename)) : null) || ref;
   };
 
+  const flashReplaceMsg = (msg, closeAfter) => {
+    setReplaceMsg(msg);
+    if (replaceMsgTimerRef.current) clearTimeout(replaceMsgTimerRef.current);
+    replaceMsgTimerRef.current = setTimeout(() => {
+      setReplaceMsg("");
+      if (closeAfter) { setReplaceOpen(false); setReplaceStep(1); setReplaceA(null); setReplaceB(null); }
+    }, closeAfter ? 2000 : 2500);
+  };
+
+  // Replace / Swap work on PALETTE ENTRIES: replaceA / replaceB are tile refs; the cells keep their indexes.
   const doReplace = () => {
     if (replaceA == null || replaceB == null) return;
+    const cur = paletteRef.current;
+    const idxA = cur.refs.indexOf(replaceA);
     // Count synchronously before setGrid (updater is async in React 18)
-    const count = grid.reduce((s, row) => s + row.filter(id => id === replaceA).length, 0);
-    if (count === 0) {
-      setReplaceMsg("⚠ No cells with that tile found on the map.");
-      if (replaceMsgTimerRef.current) clearTimeout(replaceMsgTimerRef.current);
-      replaceMsgTimerRef.current = setTimeout(() => setReplaceMsg(""), 2500);
-      return;
-    }
-    const dest = replaceB === REPLACE_ERASE_ID ? null : replaceB;
+    const count = idxA === -1 ? 0 : grid.reduce((s, row) => s + row.filter(id => id === idxA).length, 0);
+    if (count === 0) { flashReplaceMsg("⚠ No cells with that tile found on the map.", false); return; }
     const nameA = tileDisplayName(replaceA);
     const nameB = tileDisplayName(replaceB);
     histLabelRef.current = `Replace ${nameA} → ${nameB}`;
     pushHistRef.current?.();
-    setGrid(prev => prev.map(row => row.map(id => id === replaceA ? dest : id)));
-    setReplaceMsg(`✓ Replaced ${count} × ${nameA} → ${nameB}`);
-    if (replaceMsgTimerRef.current) clearTimeout(replaceMsgTimerRef.current);
-    replaceMsgTimerRef.current = setTimeout(() => {
-      setReplaceMsg("");
-      setReplaceOpen(false); setReplaceStep(1); setReplaceA(null); setReplaceB(null);
-    }, 2000);
+    let newPal = cur, newGrid;
+    if (replaceB === REPLACE_ERASE_REF) {
+      newGrid = grid.map(row => row.map(id => id === idxA ? null : id)); // the freed entry is pruned after the commit
+    } else {
+      // A -> B: B's entry is added when missing (A's entry is rewritten in place), or the two entries merge
+      const r = remapEntry(cur, replaceA, replaceB, grid);
+      newPal = r.palette; newGrid = r.grid;
+    }
+    if (newPal !== cur) replacePalette(newPal);
+    setGrid(newGrid);
+    flashReplaceMsg(`✓ Replaced ${count} × ${nameA} → ${nameB}`, true);
   };
 
   const doSwap = () => {
     if (replaceA == null || replaceB == null) return;
-    if (replaceB === REPLACE_ERASE_ID) return;
-    const countA = grid.reduce((s, row) => s + row.filter(id => id === replaceA).length, 0);
-    const countB = grid.reduce((s, row) => s + row.filter(id => id === replaceB).length, 0);
-    if (countA === 0 && countB === 0) {
-      setReplaceMsg("⚠ Neither tile found on the map.");
-      if (replaceMsgTimerRef.current) clearTimeout(replaceMsgTimerRef.current);
-      replaceMsgTimerRef.current = setTimeout(() => setReplaceMsg(""), 2500);
-      return;
-    }
+    if (replaceB === REPLACE_ERASE_REF) return;
+    const cur = paletteRef.current;
+    const iA = cur.refs.indexOf(replaceA), iB = cur.refs.indexOf(replaceB);
+    if (iA === -1 && iB === -1) { flashReplaceMsg("⚠ Neither tile found on the map.", false); return; }
     const nameA = tileDisplayName(replaceA);
     const nameB = tileDisplayName(replaceB);
     histLabelRef.current = `Swap ${nameA} ↔ ${nameB}`;
     pushHistRef.current?.();
-    setGrid(prev => prev.map(row => row.map(id => id === replaceA ? replaceB : id === replaceB ? replaceA : id)));
-    setReplaceMsg(`✓ Swapped ${nameA} ↔ ${nameB}`);
-    if (replaceMsgTimerRef.current) clearTimeout(replaceMsgTimerRef.current);
-    replaceMsgTimerRef.current = setTimeout(() => {
-      setReplaceMsg("");
-      setReplaceOpen(false); setReplaceStep(1); setReplaceA(null); setReplaceB(null);
-    }, 2000);
+    // Swapping two tiles = exchanging the refs of their two entries; the cells are not touched
+    const refs = cur.refs.slice();
+    if (iA !== -1) refs[iA] = replaceB;
+    if (iB !== -1) refs[iB] = replaceA;
+    replacePalette({ refs });
+    setGrid(grid);
+    flashReplaceMsg(`✓ Swapped ${nameA} ↔ ${nameB}`, true);
   };
 
   // ── Export ────────────────────────────────────────────────────────
@@ -5538,10 +5393,10 @@ function App() {
     const draws = [];
     const spaceCells = []; // cells that should be cleared to transparent
     grid.forEach((row, r) => row.forEach((id, c) => {
-      const t = id && getTile(id);
+      const t = getCellTile(id);
       if (!t) return;
       if (t.isSpace) { spaceCells.push({ r, c }); return; }
-      draws.push({ id: t.id, src: t.blobSrc ?? t.src, r, c, mult: getTileMultiplier(t), off: getEffectiveOffset(t, r, c), rotDeg: (gridRotations[`${r},${c}`] ?? 0) * 90, flipStep: gridFlips[`${r},${c}`] ?? 0 });
+      draws.push({ ref: t.ref, z: isPriorityTile(t) ? 2 : (isBottomTile(t) ? 0 : 1), src: t.blobSrc ?? t.src, r, c, mult: getTileMultiplier(t), off: getEffectiveOffset(t, r, c), rotDeg: (gridRotations[`${r},${c}`] ?? 0) * 90, flipStep: gridFlips[`${r},${c}`] ?? 0 });
     }));
     const filename = (mapName.trim() || "ophelia-map") + ".png";
     const finish = () => {
@@ -5554,12 +5409,11 @@ function App() {
     };
     if (!draws.length) { finish(); return; }
     // Sort: bottom tiles first, then normal, then priority tiles last → correct z-order in export
-    const zOrder = id => priorityTiles[id] ? 2 : (bottomTiles[id] && !priorityTiles[id]) ? 0 : 1;
-    draws.sort((a, b) => zOrder(a.id) - zOrder(b.id));
+    draws.sort((a, b) => a.z - b.z);
     // Load all images then draw in sorted order (guarantees z-order)
     // Use cached ImageBitmap for user-uploaded tiles to avoid re-decoding
     Promise.all(draws.map(d => new Promise(resolve => {
-      const bm = userBitmapCacheRef.current.get(d.id);
+      const bm = userBitmapCacheRef.current.get(d.ref);
       if (bm) { resolve({ ...d, img: bm }); return; }
       const img = new Image();
       img.crossOrigin = "anonymous";
@@ -5648,10 +5502,10 @@ function App() {
 
     // Tile card used in both steps
     const RCard = ({ t, selected, onSelect, isSpace }) => (
-      <div onClick={() => onSelect(isSpace ? SPACE_TILE_ID : t.id)}
+      <div onClick={() => onSelect(isSpace ? SPACE_REF : t.ref)}
         style={{ cursor: "pointer", borderRadius: 6, overflow: "hidden", aspectRatio: "1",
-          border: `2px solid ${selected === (isSpace ? SPACE_TILE_ID : t.id) ? C.accentBright : C.border}`,
-          background: selected === (isSpace ? SPACE_TILE_ID : t.id) ? C.accentDim : "transparent",
+          border: `2px solid ${selected === (isSpace ? SPACE_REF : t.ref) ? C.accentBright : C.border}`,
+          background: selected === (isSpace ? SPACE_REF : t.ref) ? C.accentDim : "transparent",
           display: "flex", alignItems: "center", justifyContent: "center" }}>
         {isSpace
           ? <span style={{ fontSize: 20 }}>🛸</span>
@@ -5661,7 +5515,7 @@ function App() {
 
     const TileGridBox = ({ tileList, selected, onSelect, includeSpace }) => (
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(52px, 1fr))", gap: 5 }}>
-        {tileList.map(t => <RCard key={t.dbId ?? t.id} t={t} selected={selected} onSelect={onSelect} />)}
+        {tileList.map(t => <RCard key={t.ref} t={t} selected={selected} onSelect={onSelect} />)}
         {includeSpace && <RCard key="space" t={null} selected={selected} onSelect={onSelect} isSpace />}
       </div>
     );
@@ -5675,13 +5529,14 @@ function App() {
     );
 
     if (replaceStep === 1) {
-      // Step 1: only tiles actually on the map
-      const idsOnMap = new Set();
-      grid.forEach(row => row.forEach(id => { if (id != null) idsOnMap.add(id); }));
-      const tilesOnMap = tiles.filter(t => idsOnMap.has(t.id));
-      const spaceOnMap = idsOnMap.has(SPACE_TILE_ID);
-      // Ghost tile IDs: on the map but no tile object (deleted)
-      const ghostIds = [...idsOnMap].filter(id => id !== SPACE_TILE_ID && !getTile(id));
+      // Step 1: the palette entries actually used on the map, one card per entry (one click selects exactly one)
+      const idxOnMap = new Set();
+      grid.forEach(row => row.forEach(id => { if (id != null) idxOnMap.add(id); }));
+      const refsOnMap = [...idxOnMap].sort((a, b) => a - b).map(idx => refAt(palette, idx)).filter(Boolean);
+      const tilesOnMap = refsOnMap.filter(ref => ref !== SPACE_REF).map(ref => tilesByRef.get(ref)).filter(Boolean);
+      const spaceOnMap = refsOnMap.includes(SPACE_REF);
+      // Ghost entries: on the map but no tile object (deleted, not loaded, or the warn tile)
+      const ghostIds = refsOnMap.filter(ref => ref !== SPACE_REF && !tilesByRef.get(ref));
       const isEmpty = tilesOnMap.length === 0 && !spaceOnMap && ghostIds.length === 0;
       return (
         <div className="modal-backdrop" onClick={close}>
@@ -5695,10 +5550,10 @@ function App() {
             ) : (
               <div style={{ overflowY: "auto", maxHeight: 300 }}>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(52px, 1fr))", gap: 5 }}>
-                  {tilesOnMap.map(t => <RCard key={t.dbId ?? t.id} t={t} selected={replaceA} onSelect={setReplaceA} />)}
+                  {tilesOnMap.map(t => <RCard key={t.ref} t={t} selected={replaceA} onSelect={setReplaceA} />)}
                   {spaceOnMap && <RCard key="space" t={null} selected={replaceA} onSelect={setReplaceA} isSpace />}
                   {ghostIds.map(id => (
-                    <div key={`ghost${id}`} onClick={() => setReplaceA(id)}
+                    <div key={`ghost${id}`} title={id} onClick={() => setReplaceA(id)}
                       style={{ cursor: "pointer", borderRadius: 6, overflow: "hidden", aspectRatio: "1",
                         border: `2px solid ${replaceA === id ? "#f97316" : C.border}`,
                         background: replaceA === id ? "rgba(249,115,22,0.15)" : "rgba(249,115,22,0.05)",
@@ -5721,9 +5576,9 @@ function App() {
     }
 
     // Step 2: full tile list — tileset tiles grouped with collapsible sections
-    const tilesetTiles_  = tiles.filter(t => t.id >= TILESET_ID_START && t.id < GLOBAL_ID_START);
-    const userTiles_     = tiles.filter(t => t.id >= USER_ID_START && t.id <= USER_ID_MAX);
-    const globalTiles_   = tiles.filter(t => t.id >= GLOBAL_ID_START && t.id <= GLOBAL_ID_MAX);
+    const tilesetTiles_  = tiles.filter(t => parseRef(t.ref)?.kind === "d");
+    const userTiles_     = tiles.filter(t => parseRef(t.ref)?.kind === "u");
+    const globalTiles_   = tiles.filter(t => parseRef(t.ref)?.kind === "g");
 
     // Group tileset tiles by tileset name
     const tsByName = {};
@@ -5738,9 +5593,9 @@ function App() {
     Object.keys(tsByName).forEach(name => { initCollapsed[name] = name !== activeTileset; });
     const [tsCollapsed, setTsCollapsed] = React.useState(() => initCollapsed);
 
-    const onSelect = id => {
+    const onSelect = ref => {
       const s = replaceScrollRef.current?.scrollTop;
-      setReplaceB(id);
+      setReplaceB(ref);
       requestAnimationFrame(() => { if (replaceScrollRef.current) replaceScrollRef.current.scrollTop = s; });
     };
 
@@ -5764,17 +5619,17 @@ function App() {
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(52px, 1fr))", gap: 5 }}>
               {/* Empty (erase) card at the top — styled like the Erase essentials tool */}
               <SepLine label="Special" />
-              <div onClick={() => onSelect(REPLACE_ERASE_ID)}
+              <div onClick={() => onSelect(REPLACE_ERASE_REF)}
                 style={{ cursor: "pointer", borderRadius: 6, overflow: "hidden", aspectRatio: "1",
-                  border: `2px solid ${replaceB === REPLACE_ERASE_ID ? "#f87171" : C.border}`,
+                  border: `2px solid ${replaceB === REPLACE_ERASE_REF ? "#f87171" : C.border}`,
                   background: "rgba(255,255,255,0.03)",
                   display: "flex", flexDirection: "column" }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "center",
-                  background: replaceB === REPLACE_ERASE_ID ? "rgba(248,113,113,0.38)" : "rgba(248,113,113,0.18)", padding: "2px 4px" }}>
-                  <span style={{ fontSize: 9, fontWeight: 700, color: replaceB === REPLACE_ERASE_ID ? "#f87171" : "rgba(248,113,113,0.8)" }}>Erase</span>
+                  background: replaceB === REPLACE_ERASE_REF ? "rgba(248,113,113,0.38)" : "rgba(248,113,113,0.18)", padding: "2px 4px" }}>
+                  <span style={{ fontSize: 9, fontWeight: 700, color: replaceB === REPLACE_ERASE_REF ? "#f87171" : "rgba(248,113,113,0.8)" }}>Erase</span>
                 </div>
                 <div style={{ flex: 1, background: C.panelDeep, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                  <span style={{ fontSize: 18, lineHeight: 1, opacity: replaceB === REPLACE_ERASE_ID ? 1 : 0.55 }}>🧼</span>
+                  <span style={{ fontSize: 18, lineHeight: 1, opacity: replaceB === REPLACE_ERASE_REF ? 1 : 0.55 }}>🧼</span>
                 </div>
               </div>
               <RCard key="space" t={null} selected={replaceB} onSelect={onSelect} isSpace />
@@ -5785,14 +5640,14 @@ function App() {
                   <React.Fragment key={name}>
                     <CollapsibleSepLine label={name} isCollapsed={isCollapsed}
                       onToggle={() => setTsCollapsed(p => ({ ...p, [name]: !p[name] }))} />
-                    {!isCollapsed && tsTs.map(t => <RCard key={t.dbId ?? t.id} t={t} selected={replaceB} onSelect={onSelect} />)}
+                    {!isCollapsed && tsTs.map(t => <RCard key={t.ref} t={t} selected={replaceB} onSelect={onSelect} />)}
                   </React.Fragment>
                 );
               })}
               {userTiles_.length > 0 && <SepLine label="Uploaded" />}
-              {userTiles_.map(t => <RCard key={t.dbId ?? t.id} t={t} selected={replaceB} onSelect={onSelect} />)}
+              {userTiles_.map(t => <RCard key={t.ref} t={t} selected={replaceB} onSelect={onSelect} />)}
               {globalTiles_.length > 0 && <SepLine label="Global" />}
-              {globalTiles_.map(t => <RCard key={t.dbId ?? t.id} t={t} selected={replaceB} onSelect={onSelect} />)}
+              {globalTiles_.map(t => <RCard key={t.ref} t={t} selected={replaceB} onSelect={onSelect} />)}
             </div>
           </div>
           {replaceMsg ? (
@@ -5802,8 +5657,8 @@ function App() {
           ) : (
             <div style={{ display: "flex", gap: 8 }}>
               <button style={{ ...btn(false), flex: 1 }} onClick={() => { setReplaceStep(1); setReplaceB(null); }}>← Back</button>
-              <button style={{ ...btn(replaceB != null && replaceB !== REPLACE_ERASE_ID, C.accent, C.accentDim) }}
-                disabled={replaceB == null || replaceB === REPLACE_ERASE_ID} onClick={doSwap}>Swap all</button>
+              <button style={{ ...btn(replaceB != null && replaceB !== REPLACE_ERASE_REF, C.accent, C.accentDim) }}
+                disabled={replaceB == null || replaceB === REPLACE_ERASE_REF} onClick={doSwap}>Swap all</button>
               <button style={{ ...btn(replaceB != null, C.accent, C.accentDim), flex: 1 }}
                 disabled={replaceB == null} onClick={doReplace}>Replace all</button>
             </div>
@@ -5827,23 +5682,23 @@ function App() {
     );
 
     const TileRow = ({ t }) => {
-      const effective = otgWallOverrides[t.id] !== undefined ? otgWallOverrides[t.id] : isDefaultOTGWall(t);
+      const effective = otgWallOverrides[t.ref] !== undefined ? otgWallOverrides[t.ref] : isDefaultOTGWall(t);
       return (
         <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", padding: "2px 0", userSelect: "none" }}>
           <input type="checkbox" checked={effective}
-            onChange={ev => setOtgWallOverrides(p => ({ ...p, [t.id]: ev.target.checked }))}
+            onChange={ev => setOtgWallOverrides(p => ({ ...p, [t.ref]: ev.target.checked }))}
             style={{ width: 14, height: 14, accentColor: C.accent, cursor: "pointer", flexShrink: 0 }} />
           <div style={{ width: 24, height: 24, flexShrink: 0 }}>
             <img src={t.blobSrc ?? t.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated" }} />
           </div>
-          <span style={{ fontSize: 11, color: C.text }}>{deriveCodename(t.src) || `#${t.id}`}</span>
+          <span style={{ fontSize: 11, color: C.text }}>{deriveCodename(t.src) || t.codename || t.ref}</span>
         </label>
       );
     };
 
-    const tilesetTiles_ = tiles.filter(t => t.id >= TILESET_ID_START && t.id < GLOBAL_ID_START);
-    const userTiles_    = tiles.filter(t => t.id >= USER_ID_START && t.id <= USER_ID_MAX);
-    const globalTiles_  = tiles.filter(t => t.id >= GLOBAL_ID_START && t.id <= GLOBAL_ID_MAX);
+    const tilesetTiles_ = tiles.filter(t => parseRef(t.ref)?.kind === "d");
+    const userTiles_    = tiles.filter(t => parseRef(t.ref)?.kind === "u");
+    const globalTiles_  = tiles.filter(t => parseRef(t.ref)?.kind === "g");
 
     return (
       <div className="modal-backdrop" onClick={close}>
@@ -5855,11 +5710,11 @@ function App() {
           <p style={{ fontSize: 11, color: C.muted, lineHeight: 1.5 }}>Checked tiles count as walls for OTG detection. Unchecked tiles are treated as passable.</p>
           <div style={{ overflowY: "auto", maxHeight: 360, display: "flex", flexDirection: "column", gap: 1 }}>
             {tilesetTiles_.length > 0 && <SepLine label="Tileset" />}
-            {tilesetTiles_.map(t => <TileRow key={t.id} t={t} />)}
+            {tilesetTiles_.map(t => <TileRow key={t.ref} t={t} />)}
             {userTiles_.length > 0 && <SepLine label="Uploaded" />}
-            {userTiles_.map(t => <TileRow key={t.id} t={t} />)}
+            {userTiles_.map(t => <TileRow key={t.ref} t={t} />)}
             {globalTiles_.length > 0 && <SepLine label="Global" />}
-            {globalTiles_.map(t => <TileRow key={t.id} t={t} />)}
+            {globalTiles_.map(t => <TileRow key={t.ref} t={t} />)}
           </div>
           <div style={{ display: "flex", gap: 8 }}>
             <button style={{ ...btn(false), flex: 1 }} onClick={() => setOtgWallOverrides({})}>Reset defaults</button>
@@ -5959,8 +5814,8 @@ function App() {
     };
     const def = toolDefs[infoTool];
     if (!def) return null;
-    // Space uses numeric SPACE_TILE_ID for starring; erase/hand use string keys
-    const toolId = infoTool === "space" ? SPACE_TILE_ID : infoTool === "warn" ? WARN_TILE_ID : infoTool;
+    // Space / Warn are starred by their tile ref ("space" / "warn"); other tools by their tool key
+    const toolId = infoTool === "space" ? SPACE_REF : infoTool === "warn" ? WARN_REF : infoTool;
     const isStarredTool = starredTiles.includes(toolId);
     // These tools have no functional starred shortcut; hide the star checkbox
     const NON_STARREABLE = new Set(["hotkeys", "selectionMode", "mirroring"]);
@@ -6060,24 +5915,24 @@ function App() {
     }, [toTs]); // eslint-disable-line react-hooks/exhaustive-deps
 
     // flatDefaultTiles only holds the active tileset, so read both sides from the per-tileset fetch cache.
-    const fromObjs = fromTsDef ? dbTileObjsFor(fromTsDef, dbTilesByTsId[fromTsDef.id]) : [];
-    const toObjs   = toTsDef   ? dbTileObjsFor(toTsDef,   dbTilesByTsId[toTsDef.id])   : [];
-    const toCodenameToId = {};
-    toObjs.forEach(t => { if (t.codename) toCodenameToId[t.codename] = t.id; });
+    const fromObjs = fromTsDef ? sortedRows(dbTilesByTsId[fromTsDef.id]).map(r => buildDbTile(r, fromTsDef)) : [];
+    const toObjs   = toTsDef   ? sortedRows(dbTilesByTsId[toTsDef.id]).map(r => buildDbTile(r, toTsDef))   : [];
+    const toCodenameToRef = {};
+    toObjs.forEach(t => { if (t.codename) toCodenameToRef[t.codename] = t.ref; });
 
-    const idRemap = {};
+    const refRemap = {};
     const fromAll = new Set();
     fromObjs.forEach(t => {
-      fromAll.add(t.id);
-      if (t.codename && toCodenameToId[t.codename] !== undefined) idRemap[t.id] = toCodenameToId[t.codename];
+      fromAll.add(t.ref);
+      if (t.codename && toCodenameToRef[t.codename] !== undefined) refRemap[t.ref] = toCodenameToRef[t.codename];
     });
 
-    // Only the active tileset's tiles can be on the board; ids of any other tileset are ambiguous, so count nothing.
+    // Only the active tileset's tiles can be on the board, so count nothing for any other "From".
     const fromIsActive = fromTs === activeTileset;
-    const boardFromIds = new Set();
-    if (fromIsActive) grid.forEach(row => row.forEach(id => { if (id != null && fromAll.has(id)) boardFromIds.add(id); }));
-    const unmapped = [...boardFromIds].filter(id => idRemap[id] === undefined);
-    const mappable = [...boardFromIds].filter(id => idRemap[id] !== undefined);
+    const boardFromRefs = new Set();
+    if (fromIsActive) grid.forEach(row => row.forEach(idx => { const ref = idx == null ? null : refAt(palette, idx); if (ref && fromAll.has(ref)) boardFromRefs.add(ref); }));
+    const unmapped = [...boardFromRefs].filter(ref => refRemap[ref] === undefined);
+    const mappable = [...boardFromRefs].filter(ref => refRemap[ref] !== undefined);
     const toTilesNotLoaded = toTsDef && toDbTiles === null;
 
     // Converting is a tileset switch (one tileset per map): delegate so remap, compat flow and clearing stay in one place.
@@ -6187,7 +6042,7 @@ function App() {
   const TilesetCompatModal = () => {
     const [openPickerFor, setOpenPickerFor] = React.useState(null);
     if (!tilesetSwitchPending) return null;
-    const { newTilesetName, newTsDef, oldIdToCodename, futureCodenameToId, newTilesCached, tsBg, mismatches, remaps } = tilesetSwitchPending;
+    const { newTilesetName, newTsDef, newTilesCached, tsBg, mismatches, remaps } = tilesetSwitchPending;
 
     // If the incoming tileset's tiles haven't landed in React state yet, show a loading
     // indicator. switchTileset already called setDbTilesByTsId, so they will arrive on
@@ -6229,31 +6084,14 @@ function App() {
     }
 
     // flatDefaultTiles only holds the outgoing tileset + globals; the incoming tileset comes from the fetch cache.
-    const newTilesForDropdown = newTsDef ? dbTileObjsFor(newTsDef, dbTilesByTsId[newTsDef.id]) : [];
+    const newTilesForDropdown = newTsDef ? sortedRows(dbTilesByTsId[newTsDef.id]).map(r => buildDbTile(r, newTsDef)) : [];
     const globalTilesForDropdown = flatDefaultTiles.filter(t => !t.isDb);
 
     const handleConfirm = () => {
       const pending = tilesetSwitchPending;
       if (!pending) return;
-      const { newTilesetName: tsName, newTsDef: tsDef, oldIdToCodename: oldMap, futureCodenameToId: futureMap, newTilesCached: cached, tsBg: bg, remaps: finalRemaps } = pending;
-      const cGrid = gridRef.current;
-      const resolvedBg = bg ?? { bg1: "#1a2332", bg2: "#1e2838" };
-      // Old-tileset ids come from flatDefaultTiles, which still holds the outgoing tileset until setActiveTileset below.
-      const oldIds2 = new Set(flatDefaultTiles.filter(t => t.isDb && t.dbTilesetId === pending.oldTsDef?.id).map(t => t.id));
-      const { grid: nGrid, cleared } = tsDef
-        ? remapGridForSwitch(cGrid, oldIds2, oldMap, cn => finalRemaps[cn] !== undefined ? finalRemaps[cn] : futureMap[cn])
-        : { grid: cGrid, cleared: 0 };
-      const snap = { grid: nGrid, w: gridWRef.current, h: gridHRef.current, tileset: tsName, bg1: resolvedBg.bg1, bg2: resolvedBg.bg2, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current, label: `Switch from ${activeTileset ?? '(none)'} to ${tsName}` };
-      setHistory(h => {
-        const trimmed = h.slice(0, histIdxRef.current + 1);
-        const capped = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-        return [...capped, snap];
-      });
-      setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
-      if (nGrid !== cGrid) setGridRaw(nGrid);
-      setActiveTileset(tsName);
-      applyBgPreset(tsName, resolvedBg.bg1, resolvedBg.bg2);
-      if (cleared > 0) setGridLoadWarning(cleared);
+      const resolvedBg = pending.tsBg ?? { bg1: "#1a2332", bg2: "#1e2838" };
+      finishSwitch(pending.newTilesetName, pending.newTsDef, pending.oldTsDef, pending.remaps, resolvedBg);
       setTilesetSwitchPending(null);
     };
 
@@ -6269,15 +6107,15 @@ function App() {
           </p>
           <div style={{ overflowY: 'auto', flex: 1, display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 10 }}>
             {mismatches.map(m => {
-              const currentRemapId = remaps[m.codename] ?? WARN_TILE_ID;
-              const currentRemapTile = currentRemapId === WARN_TILE_ID ? null : (newTilesForDropdown.find(t => t.id === currentRemapId) ?? globalTilesForDropdown.find(t => t.id === currentRemapId));
-              const isPickerOpen = openPickerFor === m.codename;
+              const currentRemapId = remaps[m.ref] ?? WARN_REF;
+              const currentRemapTile = currentRemapId === WARN_REF ? null : (newTilesForDropdown.find(t => t.ref === currentRemapId) ?? globalTilesForDropdown.find(t => t.ref === currentRemapId));
+              const isPickerOpen = openPickerFor === m.ref;
               const allPickerTiles = [
                 { group: 'Incoming Tileset', tiles: newTilesForDropdown },
                 { group: 'Global Tiles', tiles: globalTilesForDropdown },
               ];
               return (
-                <div key={m.codename} style={{ display: 'flex', flexDirection: 'column', gap: 4, background: 'rgba(255,255,255,0.04)', borderRadius: 6, padding: '6px 8px' }}>
+                <div key={m.ref} style={{ display: 'flex', flexDirection: 'column', gap: 4, background: 'rgba(255,255,255,0.04)', borderRadius: 6, padding: '6px 8px' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     {/* Source tile */}
                     <div className="tile-img-checker" style={{ width: 28, height: 28, borderRadius: 3, flexShrink: 0, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -6285,14 +6123,14 @@ function App() {
                     </div>
                     <code style={{ fontSize: 11, color: C.text, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {m.codename}
-                      {m.fallbackId != null && currentRemapId === m.fallbackId && (
+                      {m.fallbackRef != null && currentRemapId === m.fallbackRef && (
                         <span style={{ marginLeft: 5, fontSize: 9, fontWeight: 700, color: '#4ade80', background: 'rgba(74,222,128,0.14)', border: '1px solid rgba(74,222,128,0.4)', borderRadius: 3, padding: '0 3px' }}>(Global fallback)</span>
                       )}
                     </code>
                     <span style={{ fontSize: 11, color: C.muted, flexShrink: 0 }}>→</span>
                     {/* Replacement tile picker button */}
                     <button
-                      onClick={() => setOpenPickerFor(p => p === m.codename ? null : m.codename)}
+                      onClick={() => setOpenPickerFor(p => p === m.ref ? null : m.ref)}
                       style={{ display: 'flex', alignItems: 'center', gap: 5, background: C.panel, border: `1px solid ${isPickerOpen ? C.accentBright : C.border}`, borderRadius: 5, padding: '3px 6px', cursor: 'pointer', color: C.text, fontSize: 11, flexShrink: 0 }}>
                       <div className="tile-img-checker" style={{ width: 24, height: 24, borderRadius: 2, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
                         {currentRemapTile?.src
@@ -6300,7 +6138,7 @@ function App() {
                           : <span style={{ fontSize: 9 }}>⚠️</span>}
                       </div>
                       <span style={{ maxWidth: 80, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {currentRemapTile ? (currentRemapTile.codename ?? String(currentRemapId)) : '— warn —'}
+                        {currentRemapTile ? (currentRemapTile.codename ?? currentRemapId) : '— warn —'}
                       </span>
                       <span style={{ fontSize: 9, color: C.muted }}>▾</span>
                     </button>
@@ -6309,8 +6147,8 @@ function App() {
                     <div style={{ border: `1px solid ${C.border}`, borderRadius: 6, padding: 8, background: C.panelDeep, display: 'flex', flexDirection: 'column', gap: 8 }}>
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
                         <div
-                          onClick={() => { setTilesetSwitchPending(prev => prev ? { ...prev, remaps: { ...prev.remaps, [m.codename]: WARN_TILE_ID } } : prev); setOpenPickerFor(null); }}
-                          style={{ width: 32, height: 32, borderRadius: 4, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, border: `1px solid ${currentRemapId === WARN_TILE_ID ? C.accentBright : C.border}`, background: currentRemapId === WARN_TILE_ID ? C.accentDim : 'transparent' }}
+                          onClick={() => { setTilesetSwitchPending(prev => prev ? { ...prev, remaps: { ...prev.remaps, [m.ref]: WARN_REF } } : prev); setOpenPickerFor(null); }}
+                          style={{ width: 32, height: 32, borderRadius: 4, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, border: `1px solid ${currentRemapId === WARN_REF ? C.accentBright : C.border}`, background: currentRemapId === WARN_REF ? C.accentDim : 'transparent' }}
                           title="warn tile">⚠️</div>
                       </div>
                       {allPickerTiles.map(({ group, tiles }) => tiles.length === 0 ? null : (
@@ -6318,10 +6156,10 @@ function App() {
                           <div style={{ fontSize: 9, color: C.muted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 }}>{group}</div>
                           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3 }}>
                             {tiles.map(ft => (
-                              <div key={ft.id}
-                                onClick={() => { setTilesetSwitchPending(prev => prev ? { ...prev, remaps: { ...prev.remaps, [m.codename]: ft.id } } : prev); setOpenPickerFor(null); }}
-                                title={ft.codename ?? String(ft.id)}
-                                style={{ width: 32, height: 32, borderRadius: 4, cursor: 'pointer', border: `1px solid ${currentRemapId === ft.id ? C.accentBright : C.border}`, background: currentRemapId === ft.id ? C.accentDim : 'transparent', overflow: 'hidden' }}>
+                              <div key={ft.ref}
+                                onClick={() => { setTilesetSwitchPending(prev => prev ? { ...prev, remaps: { ...prev.remaps, [m.ref]: ft.ref } } : prev); setOpenPickerFor(null); }}
+                                title={ft.codename ?? ft.ref}
+                                style={{ width: 32, height: 32, borderRadius: 4, cursor: 'pointer', border: `1px solid ${currentRemapId === ft.ref ? C.accentBright : C.border}`, background: currentRemapId === ft.ref ? C.accentDim : 'transparent', overflow: 'hidden' }}>
                                 <div className="tile-img-checker" style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                                   {ft.src ? <img src={ft.blobSrc ?? ft.src} style={{ width: 28, height: 28, objectFit: 'contain', imageRendering: 'pixelated' }} /> : null}
                                 </div>
@@ -6710,7 +6548,7 @@ function App() {
           boxShadow: "0 4px 16px rgba(0,0,0,0.4)",
         }}>Reconnecting…</div>
       )}
-      <InfoModal infoTile={infoTile} getTile={getTile} getDefaultMultiplier={getDefaultMultiplier} getTileMultiplier={getTileMultiplier} getDefaultOffset={getDefaultOffset} getTileOffset={getTileOffset} currentUser={currentUser} userProfile={userProfile} tileNames={tileNames} priorityTiles={priorityTiles} setTileMultipliers={setTileMultipliers} setTileOffsets={setTileOffsets} getValidToken={getValidToken} workerFetch={workerFetch} setTsFetchTrigger={setTsFetchTrigger} setInfoTile={setInfoTile} userTiles={userTiles} tiles={tiles} setTileNames={setTileNames} btn={btn} isTileRotatable={isTileRotatable} isDefaultRotatable={isDefaultRotatable} isFlipAllowed={isFlipAllowed} isDefaultFlippable={isDefaultFlippable} isOTGWall={isOTGWall} isDefaultOTGWall={isDefaultOTGWall} otgWallOverrides={otgWallOverrides} isMirrorOffset={isMirrorOffset} isDefaultMirrorOffset={isDefaultMirrorOffset} bottomTiles={bottomTiles} autoShadowTiles={autoShadowTiles} setRotatableMap={setRotatableMap} setCardRotations={setCardRotations} setCardFlipSteps={setCardFlipSteps} setCardFlipModes={setCardFlipModes} setAllowFlipMap={setAllowFlipMap} cardFlipModes={cardFlipModes} setOtgWallOverrides={setOtgWallOverrides} setMirrorOffsetTiles={setMirrorOffsetTiles} setBottomTiles={setBottomTiles} setPriorityTiles={setPriorityTiles} setAutoShadowTiles={setAutoShadowTiles} setDbTilesByTsId={setDbTilesByTsId} starredTiles={starredTiles} toggleStar={toggleStar} dbTilesets={dbTilesets} dbTilesByTsId={dbTilesByTsId} deleteTile={deleteTile} />
+      <InfoModal infoTile={infoTile} getTile={getTile} getDefaultMultiplier={getDefaultMultiplier} getTileMultiplier={getTileMultiplier} getDefaultOffset={getDefaultOffset} getTileOffset={getTileOffset} currentUser={currentUser} userProfile={userProfile} tileNames={tileNames} isPriorityTile={isPriorityTile} isBottomTile={isBottomTile} isAutoShadowTile={isAutoShadowTile} defaultPriorityTile={defaultPriorityTile} defaultBottomTile={defaultBottomTile} defaultAutoShadowTile={defaultAutoShadowTile} setTileMultipliers={setTileMultipliers} setTileOffsets={setTileOffsets} getValidToken={getValidToken} workerFetch={workerFetch} setTsFetchTrigger={setTsFetchTrigger} setInfoTile={setInfoTile} userTiles={userTiles} tiles={tiles} setTileNames={setTileNames} btn={btn} isTileRotatable={isTileRotatable} isDefaultRotatable={isDefaultRotatable} isFlipAllowed={isFlipAllowed} isDefaultFlippable={isDefaultFlippable} isOTGWall={isOTGWall} isDefaultOTGWall={isDefaultOTGWall} otgWallOverrides={otgWallOverrides} isMirrorOffset={isMirrorOffset} isDefaultMirrorOffset={isDefaultMirrorOffset} setRotatableMap={setRotatableMap} setCardRotations={setCardRotations} setCardFlipSteps={setCardFlipSteps} setCardFlipModes={setCardFlipModes} setAllowFlipMap={setAllowFlipMap} cardFlipModes={cardFlipModes} setOtgWallOverrides={setOtgWallOverrides} setMirrorOffsetTiles={setMirrorOffsetTiles} setBottomTiles={setBottomTiles} setPriorityTiles={setPriorityTiles} setAutoShadowTiles={setAutoShadowTiles} setDbTilesByTsId={setDbTilesByTsId} starredTiles={starredTiles} toggleStar={toggleStar} dbTilesets={dbTilesets} dbTilesByTsId={dbTilesByTsId} deleteTile={deleteTile} />
       <ReplaceModal />
       <OTGSettingsModal />
       <HistoryModal />
@@ -6888,7 +6726,7 @@ function App() {
         <div style={{ position: "fixed", bottom: 16, left: "50%", transform: "translateX(-50%)", zIndex: 3000, background: "rgba(30,20,5,0.97)", border: "1px solid rgba(251,191,36,0.5)", borderRadius: 8, padding: "8px 14px", display: "flex", alignItems: "center", gap: 10, boxShadow: "0 4px 20px rgba(0,0,0,0.6)", maxWidth: 420 }}>
           <span style={{ fontSize: 16 }}>⚠️</span>
           <span style={{ fontSize: 11, color: "#fef3c7", lineHeight: 1.5, flex: 1 }}>
-            {gridLoadWarning} tile{gridLoadWarning > 1 ? "s" : ""} from your saved map could not be matched to any loaded tile and were cleared. This can happen after a tileset update.
+            {gridLoadWarning} tile{gridLoadWarning > 1 ? "s" : ""} from your {gridWarnWhere === "switch" ? "map" : "saved map"} could not be matched to any loaded tile and were cleared. This can happen after a tileset update.
           </span>
           <button onClick={() => setGridLoadWarning(null)} style={{ background: "none", border: "none", cursor: "pointer", color: "#fbbf24", fontSize: 16, lineHeight: 1, padding: "0 2px", flexShrink: 0 }}>×</button>
         </div>
@@ -6900,7 +6738,7 @@ function App() {
         const customTiles = [
           ...userTiles.map(t => ({ ...t, _group: "Uploaded" })),
         ];
-        const allIds = new Set(customTiles.map(t => t.id));
+        const allIds = new Set(customTiles.map(t => t.ref));
         const allSelected = allIds.size > 0 && [...allIds].every(id => deleteCustomSel.has(id));
         return (
           <div className="modal-backdrop" onClick={() => setDeleteCustomOpen(false)}>
@@ -6921,16 +6759,16 @@ function App() {
                 {customTiles.length === 0 ? (
                   <span style={{ fontSize: 11, color: C.muted }}>No custom tiles found.</span>
                 ) : customTiles.map(t => (
-                  <label key={t.id} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
-                    <input type="checkbox" checked={deleteCustomSel.has(t.id)} onChange={() => {
+                  <label key={t.ref} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
+                    <input type="checkbox" checked={deleteCustomSel.has(t.ref)} onChange={() => {
                       setDeleteCustomSel(prev => {
                         const n = new Set(prev);
-                        n.has(t.id) ? n.delete(t.id) : n.add(t.id);
+                        n.has(t.ref) ? n.delete(t.ref) : n.add(t.ref);
                         return n;
                       });
                     }} style={{ accentColor: C.danger, cursor: "pointer" }} />
                     {(t.blobSrc || t.src) && <img src={t.blobSrc ?? t.src} alt="" style={{ width: 20, height: 20, objectFit: "contain", imageRendering: "pixelated", background: C.panelDeep, borderRadius: 3 }} />}
-                    <span style={{ fontSize: 11, color: C.text, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.label || t.codename || `Tile ${t.id}`}</span>
+                    <span style={{ fontSize: 11, color: C.text, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.label || t.codename || `Upload ${t.uploadId}`}</span>
                   </label>
                 ))}
               </div>
@@ -6940,11 +6778,12 @@ function App() {
                 onClick={() => {
                   if (!confirm(`Delete ${deleteCustomSel.size} uploaded tile(s)? This cannot be undone.`)) return;
                   const toDelete = new Set(deleteCustomSel);
-                  setUserTiles(prev => prev.filter(t => !toDelete.has(t.id)));
-                  // Remove deleted tiles from the grid
-                  setGrid(prev => prev.map(row => row.map(cell => toDelete.has(cell) ? null : cell)));
+                  setUserTiles(prev => prev.filter(t => !toDelete.has(t.ref)));
+                  // Remove deleted tiles from the grid (cells whose palette entry is one of the deleted refs)
+                  const delIdx = new Set([...toDelete].map(ref => paletteRef.current.refs.indexOf(ref)).filter(i => i !== -1));
+                  setGrid(prev => prev.map(row => row.map(cell => delIdx.has(cell) ? null : cell)));
                   // Clean up per-tile settings for deleted tiles
-                  const cleanObj = obj => { const n = { ...obj }; toDelete.forEach(id => delete n[id]); return n; };
+                  const cleanObj = obj => { const n = { ...obj }; toDelete.forEach(ref => delete n[ref]); return n; };
                   setTileMultipliers(cleanObj);
                   setTileOffsets(cleanObj);
                   setRotatableMap(cleanObj);
@@ -6954,6 +6793,7 @@ function App() {
                   setTileNames(cleanObj);
                   setMirrorOffsetTiles(cleanObj);
                   setStarredTiles(prev => prev.filter(id => !toDelete.has(id)));
+                  setRecentTileIds(prev => prev.filter(id => !toDelete.has(id)));
                   if (toDelete.has(sel)) { setSel(null); }
                   setDeleteCustomOpen(false);
                 }}>
@@ -7055,28 +6895,28 @@ function App() {
             <div style={{ overflowY: "auto", padding: 6 }}>
               <div style={{ display: "grid", gridTemplateColumns: `repeat(${cols}, ${cardSz}px)`, gap: 5 }}>
                 {entry.tiles.map(t => {
-                  const active = sel === t.id && !eraser;
-                  const failed = failedTiles.has(t.id);
-                  const isStarredF = starredTiles.includes(t.id);
+                  const active = sel === t.ref && !eraser;
+                  const failed = failedTiles.has(t.ref);
+                  const isStarredF = starredTiles.includes(t.ref);
                   const canSpinF  = isTileRotatable(t);
                   const canFlipF  = isFlipAllowed(t);
                   const rotatable = canSpinF || canFlipF;
-                  const rotDeg = cardRotations[t.id] ?? 0;
-                  const rawFMode  = cardFlipModes[t.id] ?? 'spin';
+                  const rotDeg = cardRotations[t.ref] ?? 0;
+                  const rawFMode  = cardFlipModes[t.ref] ?? 'spin';
                   const fMode = !rotatable ? 'spin' : (!canFlipF ? 'spin' : (!canSpinF ? 'flip' : rawFMode));
-                  const fStep = (fMode === 'flip') ? (cardFlipSteps[t.id] ?? 0) : 0;
+                  const fStep = (fMode === 'flip') ? (cardFlipSteps[t.ref] ?? 0) : 0;
                   const fxF = (fStep === 1 || fStep === 2) ? -1 : 1; const fyF = (fStep === 2 || fStep === 3) ? -1 : 1;
                   const imgTf = (fMode === 'flip') ? `scale(${fxF}, ${fyF})` : `rotate(${rotDeg}deg)`;
                   const eFx = (fStep === 1 || fStep === 2) ? -1 : 1; const eFy = (fStep === 2 || fStep === 3) ? -1 : 1;
                   return (
-                    <div key={t.id}
+                    <div key={t.ref}
                       onClick={() => {
                         if (failed) { setFailedWarning(true); return; }
-                        if (rotatable && sel === t.id && !eraser) {
-                          if (fMode === 'flip' && canFlipF) { setCardFlipSteps(prev => ({ ...prev, [t.id]: ((prev[t.id] ?? 0) + 1) % 4 })); }
-                          else if (fMode !== 'flip' && canSpinF) { setCardRotations(prev => ({ ...prev, [t.id]: (prev[t.id] ?? 0) + 90 })); }
+                        if (rotatable && sel === t.ref && !eraser) {
+                          if (fMode === 'flip' && canFlipF) { setCardFlipSteps(prev => ({ ...prev, [t.ref]: ((prev[t.ref] ?? 0) + 1) % 4 })); }
+                          else if (fMode !== 'flip' && canSpinF) { setCardRotations(prev => ({ ...prev, [t.ref]: (prev[t.ref] ?? 0) + 90 })); }
                         }
-                        setSel(t.id); setEraser(false);
+                        setSel(t.ref); setEraser(false);
                         setHandMode(false); setMagnetMode(false); setEyedropperMode(false);
                         if (highlightMode) { setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }
                       }}
@@ -7086,14 +6926,14 @@ function App() {
                         position: "relative", opacity: failed ? 0.55 : 1, overflow: "visible" }}>
                       <div style={{ position: "absolute", inset: 0, borderRadius: 6, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", background: C.panelDeep }}>
                         {failed ? <span style={{ fontSize: 18 }}>⚠️</span>
-                          : <img src={t.blobSrc ?? t.src} alt="" onError={() => markFailed(t.id)} className={tileCardLightBg ? "tile-img-checker" : undefined} style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", transform: imgTf, transition: "transform 0.15s" }} />}
+                          : <img src={t.blobSrc ?? t.src} alt="" onError={() => markFailed(t.ref)} className={tileCardLightBg ? "tile-img-checker" : undefined} style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", transform: imgTf, transition: "transform 0.15s" }} />}
                       </div>
                       {rotatable && (
                         <div style={{ position: "absolute", inset: 0, zIndex: 4, display: "flex", alignItems: "flex-end", justifyContent: "center", paddingBottom: 3, pointerEvents: "none" }}>
                           <span style={{ fontSize: 20, lineHeight: 1, display: "inline-block", transform: (fMode === 'flip') ? `scale(${eFx}, ${eFy})` : `rotate(${rotDeg}deg)`, transition: "transform 0.15s", filter: "drop-shadow(0 1px 3px rgba(0,0,0,0.9))" }}>{(fMode === 'flip') ? "🦭" : "🐬"}</span>
                         </div>
                       )}
-                      <span onClick={ev => { ev.stopPropagation(); setInfoTile(t.id); }}
+                      <span onClick={ev => { ev.stopPropagation(); setInfoTile(t.ref); }}
                         style={{ position: "absolute", top: -7, right: -7, width: 18, height: 18, fontSize: 15, cursor: "pointer", color: isStarredF ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "18px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
                         title={isStarredF ? "Starred tile — click for info" : "Tile info"}>ⓘ</span>
                       <MultLabel t={t} />
@@ -7320,32 +7160,32 @@ function App() {
                   };
                   const renderFlatCard = (t, opts = {}) => {
                     const { onDelete } = opts;
-                    const active    = sel === t.id && !eraser;
-                    const failed    = failedTiles.has(t.id);
+                    const active    = sel === t.ref && !eraser;
+                    const failed    = failedTiles.has(t.ref);
                     const canSpin   = isTileRotatable(t);
                     const canFlip   = isFlipAllowed(t);
                     const rotatable = canSpin || canFlip; // any rotation capability
-                    const rotDeg    = cardRotations[t.id] ?? 0;
-                    const isStarred = starredTiles.includes(t.id);
+                    const rotDeg    = cardRotations[t.ref] ?? 0;
+                    const isStarred = starredTiles.includes(t.ref);
                     // Constrain flip mode to what's actually allowed
-                    const rawFMode  = cardFlipModes[t.id] ?? 'spin';
+                    const rawFMode  = cardFlipModes[t.ref] ?? 'spin';
                     const flipMode  = !rotatable ? 'spin' : (!canFlip ? 'spin' : (!canSpin ? 'flip' : rawFMode));
-                    const flipStep  = (flipMode === 'flip') ? (cardFlipSteps[t.id] ?? 0) : 0;
+                    const flipStep  = (flipMode === 'flip') ? (cardFlipSteps[t.ref] ?? 0) : 0;
                     const fx = (flipStep === 1 || flipStep === 2) ? -1 : 1;
                     const fy = (flipStep === 2 || flipStep === 3) ? -1 : 1;
                     const imgTransform = (flipMode === 'flip') ? `scale(${fx}, ${fy})` : `rotate(${rotDeg}deg)`;
                     return (
-                      <div key={t.id}
+                      <div key={t.ref}
                         onClick={() => {
                           if (failed) { setFailedWarning(true); return; }
-                          if (rotatable && sel === t.id && !eraser) {
+                          if (rotatable && sel === t.ref && !eraser) {
                             if (flipMode === 'flip' && canFlip) {
-                              setCardFlipSteps(prev => ({ ...prev, [t.id]: ((prev[t.id] ?? 0) + 1) % 4 }));
+                              setCardFlipSteps(prev => ({ ...prev, [t.ref]: ((prev[t.ref] ?? 0) + 1) % 4 }));
                             } else if (flipMode !== 'flip' && canSpin) {
-                              setCardRotations(prev => ({ ...prev, [t.id]: (prev[t.id] ?? 0) + 90 }));
+                              setCardRotations(prev => ({ ...prev, [t.ref]: (prev[t.ref] ?? 0) + 90 }));
                             }
                           }
-                          setSel(t.id); setEraser(false);
+                          setSel(t.ref); setEraser(false);
                           setHandMode(false); setMagnetMode(false); setEyedropperMode(false);
                           if (highlightMode) { setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }
                         }}
@@ -7353,11 +7193,11 @@ function App() {
                         {/* Inner clipped area for image */}
                         <div style={{ position: "absolute", inset: 0, borderRadius: 6, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", background: C.panelDeep }}>
                           {failed ? <span style={{ fontSize: 20 }}>⚠️</span>
-                            : <img src={t.blobSrc ?? t.src} alt="" onError={() => markFailed(t.id)} className={tileCardLightBg ? "tile-img-checker" : undefined} style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", transform: imgTransform, transition: "transform 0.15s" }} />}
+                            : <img src={t.blobSrc ?? t.src} alt="" onError={() => markFailed(t.ref)} className={tileCardLightBg ? "tile-img-checker" : undefined} style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", transform: imgTransform, transition: "transform 0.15s" }} />}
                         </div>
                         {rotatable && <RotChevron rotDeg={rotDeg} flipStep={flipStep} mode={flipMode} />}
                         {/* Info button: yellow if starred, white otherwise — top-right corner */}
-                        <span onClick={e => { e.stopPropagation(); setInfoTile(t.id); }}
+                        <span onClick={e => { e.stopPropagation(); setInfoTile(t.ref); }}
                           style={{ position: "absolute", top: -7, right: -7, width: 18, height: 18, fontSize: 15, cursor: "pointer", color: "rgba(255,255,255,0.85)", lineHeight: "18px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
                           title={t.codename ?? (isStarred ? "Starred tile — click for info" : "Tile info")}>{isStarred ? "★" : "ⓘ"}</span>
                         <MultLabel t={t} />
@@ -7370,7 +7210,7 @@ function App() {
                   const renderFolderCard = entry => {
                     const { key, label, tiles: fTiles } = entry;
                     const isThisOpen = openFolderKey === key;
-                    const folderActive = !eraser && fTiles.some(t => t.id === sel);
+                    const folderActive = !eraser && fTiles.some(t => t.ref === sel);
                     const previewTiles = fTiles.slice(0, 4);
                     return (
                       <div key={key}
@@ -7385,7 +7225,7 @@ function App() {
                         {/* 2×2 preview grid — fills full card, no label strip */}
                         <div style={{ position: "absolute", inset: 0, display: "grid", gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr", gap: 1 }}>
                           {previewTiles.map(t => (
-                            <div key={t.id} style={{ display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", background: C.panelDeep }}>
+                            <div key={t.ref} style={{ display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", background: C.panelDeep }}>
                               <img src={t.blobSrc ?? t.src} alt="" className={tileCardLightBg ? "tile-img-checker" : undefined} style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated" }} />
                             </div>
                           ))}
@@ -7450,10 +7290,10 @@ function App() {
                   })()}
                   {/* 1a-w. Warning marker tile */}
                   {(() => {
-                    const warnActive = sel === WARN_TILE_ID && !eraser;
-                    const isStarredWarn = starredTiles.includes(WARN_TILE_ID);
+                    const warnActive = sel === WARN_REF && !eraser;
+                    const isStarredWarn = starredTiles.includes(WARN_REF);
                     return (
-                      <div onClick={() => { setSel(WARN_TILE_ID); setEraser(false); setHandMode(false); setEyedropperMode(false); setDuplicateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
+                      <div onClick={() => { setSel(WARN_REF); setEraser(false); setHandMode(false); setEyedropperMode(false); setDuplicateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${warnActive ? "#f97316" : C.border}`, background: warnActive ? "rgba(249,115,22,0.18)" : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
                         <div style={{ borderRadius: 6, overflow: "hidden" }}>
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: warnActive ? "rgba(249,115,22,0.38)" : "rgba(249,115,22,0.12)", padding: "2px 4px" }}>
@@ -7511,10 +7351,10 @@ function App() {
                   })()}
                   {/* 1d. Space tile — in Essentials */}
                   {(() => {
-                    const isStarredSpace = starredTiles.includes(SPACE_TILE_ID);
-                    const spaceActive = sel === SPACE_TILE_ID && !eraser;
+                    const isStarredSpace = starredTiles.includes(SPACE_REF);
+                    const spaceActive = sel === SPACE_REF && !eraser;
                     return (
-                      <div onClick={() => { setSel(SPACE_TILE_ID); setEraser(false); setHandMode(false); setEyedropperMode(false); setDuplicateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
+                      <div onClick={() => { setSel(SPACE_REF); setEraser(false); setHandMode(false); setEyedropperMode(false); setDuplicateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer",
                           border: `2px solid ${spaceActive ? "#60a5fa" : C.border}`,
                           background: spaceActive ? "rgba(96,165,250,0.15)" : "rgba(255,255,255,0.03)",
@@ -7770,29 +7610,15 @@ function App() {
                     <div style={{ width: "100%", flexBasis: "100%", flexShrink: 0 }}>
                       <button style={{ ...btn(false, C.danger, "rgba(248,113,113,0.14)"), fontSize: 9, padding: "3px 8px", width: "100%" }}
                         onClick={() => {
-                          if (!confirm("Reset all custom tile settings?\n\nThis will clear all custom multipliers, offsets, rotation flags, priority flags, and render-on-bottom flags, then reapply computed defaults.\n\nThis cannot be undone.")) return;
+                          if (!confirm("Reset all custom tile settings?\n\nThis will clear all custom multipliers, offsets, rotation flags, priority flags, and render-on-bottom flags, so every tile uses its own defaults again.\n\nThis cannot be undone.")) return;
                           setTileMultipliers({});
                           setTileOffsets({});
                           setRotatableMap({});
                           setAllowFlipMap({});
                           setMirrorOffsetTiles({});
                           setGridOffsets({});
-                          setPriorityTiles(() => {
-                            const n = {};
-                            flatDefaultTiles.forEach(t => {
-                              const val = t.dbPriority != null ? !!t.dbPriority : !!(t.src && TILE_SETTINGS.priority.some(p => t.src.includes(p)));
-                              if (val) n[t.id] = true;
-                            });
-                            return n;
-                          });
-                          setBottomTiles(() => {
-                            const n = {};
-                            flatDefaultTiles.forEach(t => {
-                              const val = t.dbBottomRender != null ? !!t.dbBottomRender : !!(t.src && TILE_SETTINGS.bottomRender.some(p => t.src.includes(p)));
-                              if (val) n[t.id] = true;
-                            });
-                            return n;
-                          });
+                          setPriorityTiles({});
+                          setBottomTiles({});
                         }}>
                         ↺ Reset All Tile Settings
                       </button>
@@ -7847,12 +7673,12 @@ function App() {
                     <span style={{ fontSize: 14 }}>💞</span>
                   </div>
                 );
-                if (selKey === SPACE_TILE_ID) return (
+                if (selKey === SPACE_REF) return (
                   <div style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", border: `1px solid ${C.accentBright}`, background: C.accentDim }} title="Space (selected)">
                     <span style={{ fontSize: 13 }}>🛸</span>
                   </div>
                 );
-                if (selKey === WARN_TILE_ID) return (
+                if (selKey === WARN_REF) return (
                   <div style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", border: `1px solid #f97316`, background: "rgba(249,115,22,0.18)" }} title="Warning marker (selected)">
                     <span style={{ fontSize: 14 }}>⚠️</span>
                   </div>
@@ -7886,15 +7712,12 @@ function App() {
                 );
               };
               const hasSelected = selKey !== null && !selAlreadyStarred;
-              // Only numeric tile IDs are shown in the left strip
-              const starredTileIds = starredTiles.filter(s => typeof s === "number");
-              // Recent tiles: exclude current selection, starred tiles, and tiles from unshown tilesets
-              const shownTileIdSet = new Set(flatDefaultTiles.map(t => t.id));
+              // Only tile refs (tiles, space, warn) are shown in the left strip; tool keys are not refs
+              const starredTileIds = starredTiles.filter(s => typeof s === "string" && parseRef(s));
+              // Recent tiles: exclude current selection, starred tiles, and tiles that are not in the loaded (contained) list
               const visibleRecent = recentTileIds.filter(id => {
                 if (id === selKey || starredTiles.includes(id)) return false;
-                // Exclude tileset tiles (below GLOBAL_ID_START) that aren't in currently shown tilesets
-                if (typeof id === "number" && id < GLOBAL_ID_START && !shownTileIdSet.has(id)) return false;
-                return true;
+                return tilesByRef.has(id);
               }).slice(0, recentTilesLimit);
               const hasRecent = visibleRecent.length > 0;
               const hasStarredTiles = starredTileIds.length > 0;
@@ -7904,20 +7727,20 @@ function App() {
                 <div style={{ display: "flex", flexDirection: "column", gap: 3, padding: "4px 2px", overflowY: "auto", scrollbarWidth: "none", msOverflowStyle: "none" }}>
                   {hasSelected && <SelectedCard />}
                   {hasSelected && (hasStarred || hasRecent) && <div style={{ height: 1, background: C.border, margin: "1px 0" }} />}
-                  {/* Tile shortcuts (starred numeric IDs: space tile, folders, regular tiles) */}
+                  {/* Tile shortcuts (starred refs: space tile, folders, regular tiles) */}
                   {starredTileIds.map(sid => {
-                  if (sid === SPACE_TILE_ID) return (
-                    <div key="space" onClick={() => { setSel(SPACE_TILE_ID); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
+                  if (sid === SPACE_REF) return (
+                    <div key="space" onClick={() => { setSel(SPACE_REF); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
                       style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
-                        border: `1px solid ${sel === SPACE_TILE_ID && !eraser ? C.accentBright : C.border}`, background: sel === SPACE_TILE_ID && !eraser ? C.accentDim : "rgba(255,255,255,0.04)" }}
+                        border: `1px solid ${sel === SPACE_REF && !eraser ? C.accentBright : C.border}`, background: sel === SPACE_REF && !eraser ? C.accentDim : "rgba(255,255,255,0.04)" }}
                       title="Space">
                       <span style={{ fontSize: 13 }}>🛸</span>
                     </div>
                   );
-                  if (sid === WARN_TILE_ID) return (
-                    <div key="warn" onClick={() => { setSel(WARN_TILE_ID); setEraser(false); setHandMode(false); setEyedropperMode(false); setDuplicateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
+                  if (sid === WARN_REF) return (
+                    <div key="warn" onClick={() => { setSel(WARN_REF); setEraser(false); setHandMode(false); setEyedropperMode(false); setDuplicateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
                       style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
-                        border: `1px solid ${sel === WARN_TILE_ID && !eraser ? "#f97316" : C.border}`, background: sel === WARN_TILE_ID && !eraser ? "rgba(249,115,22,0.22)" : "rgba(255,255,255,0.04)" }}
+                        border: `1px solid ${sel === WARN_REF && !eraser ? "#f97316" : C.border}`, background: sel === WARN_REF && !eraser ? "rgba(249,115,22,0.22)" : "rgba(255,255,255,0.04)" }}
                       title="Warn">
                       <span style={{ fontSize: 13 }}>⚠️</span>
                     </div>
@@ -7929,7 +7752,7 @@ function App() {
                     const fTiles = tiles.filter(t => t.folderKey === fKey);
                     const previewTile = fTiles[0];
                     const folderLabel = st.folderLabel || fKey;
-                    const folderIsActive = !eraser && fTiles.some(t => t.id === sel);
+                    const folderIsActive = !eraser && fTiles.some(t => t.ref === sel);
                     const folderIsOpen = openFolderKey === fKey;
                     return (
                       <div key={`folder-${fKey}`}
@@ -7967,7 +7790,7 @@ function App() {
                       }}
                       style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", overflow: "hidden", position: "relative",
                         border: `1px solid ${active ? C.accentBright : C.border}`, background: active ? C.accentDim : C.panelDeep }}
-                      title={stAnyRot ? `${st.label || `Tile ${sid}`} — click to ${stMode === 'flip' ? 'flip' : 'rotate'}` : (st.label || `Tile ${sid}`)}>
+                      title={stAnyRot ? `${st.label || st.codename || "Tile"} — click to ${stMode === 'flip' ? 'flip' : 'rotate'}` : (st.label || st.codename || "Tile")}>
                       <img src={st.blobSrc ?? st.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", transform: stImgTf, transition: "transform 0.15s" }} />
                       {stAnyRot && (
                         <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
@@ -8005,7 +7828,7 @@ function App() {
                         }}
                         style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", overflow: "hidden", position: "relative",
                           border: `1px solid ${active ? C.accentBright : "rgba(255,255,255,0.25)"}`, background: active ? C.accentDim : C.panelDeep, opacity: 0.75 }}
-                        title={`Recent: ${rt.label || `Tile ${rid}`}`}>
+                        title={`Recent: ${rt.label || rt.codename || "Tile"}`}>
                         <img src={rt.blobSrc ?? rt.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", transform: rcImgTf, transition: "transform 0.15s" }} />
                         {rcAnyRot && (
                           <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
@@ -8082,7 +7905,7 @@ function App() {
                 {/* Space-tile masks — solid C.bg squares rendered below tile passes so overflowing tiles from neighbouring rows paint on top */}
                 {Array.from({ length: gridH }).map((_, r) =>
                   Array.from({ length: gridW }).map((__, c) =>
-                    grid[r]?.[c] === SPACE_TILE_ID ? (
+                    refAt(palette, grid[r]?.[c]) === SPACE_REF ? (
                       <div key={`sp${r}-${c}`}
                         style={{ position: "absolute", left: c * CELL * zoom, top: (r + 1) * CELL * zoom, width: CELL * zoom, height: CELL * zoom, background: C.bg, pointerEvents: "none" }}
                       />
@@ -8103,9 +7926,9 @@ function App() {
                 {/* Pass 0: bottom tiles — rendered first at low z-index (always below normal tiles) */}
                 {grid.map((row, r) =>
                   row.map((id, c) => {
-                    const t = id && getTile(id); if (!t) return null;
+                    const t = getCellTile(id); if (!t) return null;
                     if (t.isSpace) return null;
-                    if (!bottomTiles[t.id] || priorityTiles[t.id]) return null;
+                    if (!isBottomTile(t) || isPriorityTile(t)) return null;
                     const mult   = getTileMultiplier(t);
                     const off    = getEffectiveOffset(t, r, c);
                     const rotDeg = (gridRotations[`${r},${c}`] ?? 0) * 90;
@@ -8117,7 +7940,7 @@ function App() {
                     const tileImg = <img key={`bot${r}-${c}`} src={t.blobSrc ?? t.src} alt="" draggable={false} decoding="async"
                       style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%) rotate(${rotDeg}deg) scale(${fxB}, ${fyB})`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 1 }}
                     />;
-                    if (!autoShadowTiles[t.id]) return tileImg;
+                    if (!isAutoShadowTile(t)) return tileImg;
                     return [
                       <img key={`sbot${r}-${c}`} src={t.blobSrc ?? t.src} alt="" draggable={false}
                         style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy + 0.3 * cellPx, width: cellPx * mult, height: "auto", transform: `translateY(-50%) scale(${fxB}, ${fyB})`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 0, filter: "brightness(0)", opacity: 0.2 }}
@@ -8129,10 +7952,10 @@ function App() {
                 {/* Pass 1: normal tiles (z-index = r + 1 for natural depth), skipping priority and bottom tiles */}
                 {grid.map((row, r) =>
                   row.map((id, c) => {
-                    const t = id && getTile(id); if (!t) return null;
+                    const t = getCellTile(id); if (!t) return null;
                     if (t.isSpace) return null;
-                    if (priorityTiles[t.id]) return null;
-                    if (bottomTiles[t.id]) return null;
+                    if (isPriorityTile(t)) return null;
+                    if (isBottomTile(t)) return null;
                     const mult   = getTileMultiplier(t);
                     const off    = getEffectiveOffset(t, r, c);
                     const rotDeg = (gridRotations[`${r},${c}`] ?? 0) * 90;
@@ -8144,7 +7967,7 @@ function App() {
                     const tileImg = <img key={`t${r}-${c}`} src={t.blobSrc ?? t.src} alt="" draggable={false} decoding="async"
                       style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%) rotate(${rotDeg}deg) scale(${fxN}, ${fyN})`, pointerEvents: "none", imageRendering: "pixelated", zIndex: r + 2 }}
                     />;
-                    if (!autoShadowTiles[t.id]) return tileImg;
+                    if (!isAutoShadowTile(t)) return tileImg;
                     return [
                       <img key={`s${r}-${c}`} src={t.blobSrc ?? t.src} alt="" draggable={false}
                         style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy + 0.3 * cellPx, width: cellPx * mult, height: "auto", transform: `translateY(-50%) scale(${fxN}, ${fyN})`, pointerEvents: "none", imageRendering: "pixelated", zIndex: r + 1, filter: "brightness(0)", opacity: 0.2 }}
@@ -8156,9 +7979,9 @@ function App() {
                 {/* Pass 2: priority tiles — rendered last in DOM, always above every other tile */}
                 {grid.map((row, r) =>
                   row.map((id, c) => {
-                    const t = id && getTile(id); if (!t) return null;
+                    const t = getCellTile(id); if (!t) return null;
                     if (t.isSpace) return null;
-                    if (!priorityTiles[t.id]) return null;
+                    if (!isPriorityTile(t)) return null;
                     const mult   = getTileMultiplier(t);
                     const off    = getEffectiveOffset(t, r, c);
                     const rotDeg = (gridRotations[`${r},${c}`] ?? 0) * 90;
@@ -8170,7 +7993,7 @@ function App() {
                     const tileImg = <img key={`prio${r}-${c}`} src={t.blobSrc ?? t.src} alt="" draggable={false} decoding="async"
                       style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%) rotate(${rotDeg}deg) scale(${fxP}, ${fyP})`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 9999 }}
                     />;
-                    if (!autoShadowTiles[t.id]) return tileImg;
+                    if (!isAutoShadowTile(t)) return tileImg;
                     return [
                       <img key={`sprio${r}-${c}`} src={t.blobSrc ?? t.src} alt="" draggable={false}
                         style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy + 0.3 * cellPx, width: cellPx * mult, height: "auto", transform: `translateY(-50%) scale(${fxP}, ${fyP})`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 9998, filter: "brightness(0)", opacity: 0.2 }}
@@ -8180,14 +8003,14 @@ function App() {
                   })
                 )}
 
-                {/* Ghost tile warning overlay — ⚠️ on cells with deleted tile IDs */}
+                {/* Ghost tile warning overlay — ⚠️ on cells whose tile is missing (deleted, not loaded, or the warn tile) */}
                 {(() => {
                   const cellPx = CELL * zoom;
                   const fontSize = Math.max(12, Math.min(cellPx * 0.55, cellPx - 2));
                   const warnings = [];
                   grid.forEach((row, r) => row.forEach((id, c) => {
-                    if (id == null || id === SPACE_TILE_ID) return;
-                    if (getTile(id)) return;
+                    if (id == null || refAt(palette, id) === SPACE_REF) return;
+                    if (getCellTile(id)) return;
                     warnings.push(
                       <div key={`ghost${r}-${c}`} style={{ position: "absolute", left: c * cellPx, top: (r + 1) * cellPx, width: cellPx, height: cellPx, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none", zIndex: 10003 }}>
                         <span style={{ fontSize, lineHeight: 1 }}>⚠️</span>
@@ -8263,7 +8086,7 @@ function App() {
                   const cellPx = CELL * zoom;
                   const markers = [];
                   grid.forEach((row, r) => row.forEach((id, c) => {
-                    const t = id && getTile(id);
+                    const t = getCellTile(id);
                     if (!t || t.isSpace) return;
                     const off = getEffectiveOffset(t, r, c);
                     const mult = getTileMultiplier(t);
@@ -8371,7 +8194,7 @@ function App() {
                 convert: "🔄",
               };
               const toolActionMap = {
-                space: () => { setSel(SPACE_TILE_ID); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); },
+                space: () => { setSel(SPACE_REF); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); },
                 single: () => setSelectionMode('single'),
                 line:   () => setSelectionMode('line'),
                 rect:   () => setSelectionMode('rect'),
@@ -8390,7 +8213,7 @@ function App() {
                 convert: () => setConvertOpen(true),
               };
               const toolActiveMap = {
-                space: sel === SPACE_TILE_ID && !eraser,
+                space: sel === SPACE_REF && !eraser,
                 single: selectionMode === 'single',
                 line: selectionMode === 'line',
                 rect: selectionMode === 'rect',
@@ -8415,12 +8238,13 @@ function App() {
                 eyedropper: "#39ff14", highlight: "#a78bfa", magnet: "#2563eb",
                 convert: C.soft,
               };
-              // Only show tool-key starred items (not numeric tile IDs)
+              // Only show tool-key starred items (not tile refs)
               // Individual selection/mirror tools collapse into their group cards
               const _selTools = new Set(['single', 'line', 'rect', 'fill']);
               const _mirTools = new Set(['mirrorV', 'mirrorH', 'mirrorD']);
               const _seen = new Set();
-              const _barExclude = new Set(['single', 'line', 'rect', 'fill', 'mirrorV', 'mirrorH', 'mirrorD']);
+              // "space" / "warn" are tile refs (shown in the left strip), not tool shortcuts
+              const _barExclude = new Set(['single', 'line', 'rect', 'fill', 'mirrorV', 'mirrorH', 'mirrorD', 'space', 'warn']);
               const starredTools = starredTiles
                 .filter(s => typeof s === "string" && !_barExclude.has(s) && toolIconMap[s])
                 .filter(s => { if (_seen.has(s)) return false; _seen.add(s); return true; });
