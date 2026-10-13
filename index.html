@@ -1594,7 +1594,7 @@ function InfoModalBody(props) {
 
         {/* Starred shortcut */}
         <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
-          <input type="checkbox" checked={starredTiles.includes(t.ref)}
+          <input type="checkbox" checked={starredTiles.includes(SensorUI.canonicalRef(t.ref, SensorUI.variantOwners(tiles)))}
             onChange={() => toggleStar(t.ref)}
             style={{ width: 14, height: 14, accentColor: C.accent, cursor: "pointer" }} />
           <span style={{ fontSize: 11, color: C.text }}>Starred shortcut ⭐<FlagTip id="starred" /></span>
@@ -2624,7 +2624,9 @@ function App() {
   // Starred tiles: up to 5, shown when tiles panel is collapsed
   // Tool keys ("erase", "hand", ...) are plain strings; tiles are stored as refs ("d:<uuid>", "g:<path>", "u:<n>", "space", "warn")
   const [starredTiles, setStarredTiles] = useState(() => load("oph_starred", ["selectionGroup", "mirrorGroup", "guides", "overwrite"]).filter(k => k !== "explore" && k !== "rotate")); // removed tools
-  const toggleStar = id => setStarredTiles(prev => {
+  // A tile that belongs to a sensor folder stars the folder (the folder is the one logical entry).
+  const toggleStar = rawId => setStarredTiles(prev => {
+    const id = SensorUI.canonicalRef(rawId, sensorOwners);
     if (prev.includes(id)) return prev.filter(s => s !== id);
     return [...prev, id];
   });
@@ -5716,7 +5718,7 @@ function App() {
           display: "flex", alignItems: "center", justifyContent: "center" }}>
         {isSpace
           ? <span style={{ fontSize: 20 }}>🛸</span>
-          : <img src={t.blobSrc ?? t.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated" }} />}
+          : <TileThumb tile={t} />}
       </div>
     );
 
@@ -5785,9 +5787,10 @@ function App() {
     // Step 2: full tile list — tileset tiles grouped with collapsible sections
     // A sensor folder (kind "s") is one tile here, listed with its tileset or with the globals.
     const isGlobalSensor = t => SensorUI.parseSensorRef(t.ref)?.scope === SensorUI.SCOPE_GLOBAL;
-    const tilesetTiles_  = tiles.filter(t => parseRef(t.ref)?.kind === "d" || (parseRef(t.ref)?.kind === "s" && !isGlobalSensor(t)));
-    const userTiles_     = tiles.filter(t => parseRef(t.ref)?.kind === "u");
-    const globalTiles_   = tiles.filter(t => parseRef(t.ref)?.kind === "g" || (parseRef(t.ref)?.kind === "s" && isGlobalSensor(t)));
+    const pickable       = SensorUI.hideSensorVariants(tiles); // folders are one entry, never their variants
+    const tilesetTiles_  = pickable.filter(t => parseRef(t.ref)?.kind === "d" || (parseRef(t.ref)?.kind === "s" && !isGlobalSensor(t)));
+    const userTiles_     = pickable.filter(t => parseRef(t.ref)?.kind === "u");
+    const globalTiles_   = pickable.filter(t => parseRef(t.ref)?.kind === "g" || (parseRef(t.ref)?.kind === "s" && isGlobalSensor(t)));
 
     // Group tileset tiles by tileset name
     const tsByName = {};
@@ -6302,13 +6305,14 @@ function App() {
     }
 
     // flatDefaultTiles only holds the outgoing tileset + globals; the incoming tileset comes from the fetch cache.
-    const newTilesForDropdown = newTsDef ? sortedRows(dbTilesByTsId[newTsDef.id]).map(r => buildDbTile(r, newTsDef)) : [];
+    const newTilesRaw = newTsDef ? sortedRows(dbTilesByTsId[newTsDef.id]).map(r => buildDbTile(r, newTsDef)) : [];
     if (newTsDef) { // sensor folders of the incoming tileset are offered as one tile each
       const groups = {};
-      newTilesForDropdown.forEach(t => { if (t.folderLabel) (groups[t.folderLabel] = groups[t.folderLabel] || []).push(t); });
-      Object.entries(groups).forEach(([k, ts]) => { const f = SensorUI.makeFolder({ scope: newTsDef.id, folderKey: k, label: k, tiles: ts }); if (f) newTilesForDropdown.push(buildSensorTile(f)); });
+      newTilesRaw.forEach(t => { if (t.folderLabel) (groups[t.folderLabel] = groups[t.folderLabel] || []).push(t); });
+      Object.entries(groups).forEach(([k, ts]) => { const f = SensorUI.makeFolder({ scope: newTsDef.id, folderKey: k, label: k, tiles: ts }); if (f) newTilesRaw.push(buildSensorTile(f)); });
     }
-    const globalTilesForDropdown = flatDefaultTiles.filter(t => !t.isDb);
+    const newTilesForDropdown = SensorUI.hideSensorVariants(newTilesRaw); // a sensor folder is one entry, never its variants
+    const globalTilesForDropdown = SensorUI.hideSensorVariants(flatDefaultTiles.filter(t => !t.isDb));
 
     const handleConfirm = () => {
       const pending = tilesetSwitchPending;
@@ -6342,7 +6346,8 @@ function App() {
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     {/* Source tile */}
                     <div className="tile-img-checker" style={{ width: 28, height: 28, borderRadius: 3, flexShrink: 0, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                      {m.src ? <img src={m.src} style={{ width: 28, height: 28, objectFit: 'contain', imageRendering: 'pixelated' }} /> : <span style={{ fontSize: 10, color: C.muted }}>?</span>}
+                      {tilesByRef.get(m.ref)?.isSensor ? <div style={{ width: 28, height: 28 }}><TileThumb tile={tilesByRef.get(m.ref)} /></div>
+                        : m.src ? <img src={m.src} style={{ width: 28, height: 28, objectFit: 'contain', imageRendering: 'pixelated' }} /> : <span style={{ fontSize: 10, color: C.muted }}>?</span>}
                     </div>
                     <code style={{ fontSize: 11, color: C.text, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {m.codename}
@@ -6357,7 +6362,7 @@ function App() {
                       style={{ display: 'flex', alignItems: 'center', gap: 5, background: C.panel, border: `1px solid ${isPickerOpen ? C.accentBright : C.border}`, borderRadius: 5, padding: '3px 6px', cursor: 'pointer', color: C.text, fontSize: 11, flexShrink: 0 }}>
                       <div className="tile-img-checker" style={{ width: 24, height: 24, borderRadius: 2, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
                         {currentRemapTile?.src
-                          ? <img src={currentRemapTile.blobSrc ?? currentRemapTile.src} style={{ width: 24, height: 24, objectFit: 'contain', imageRendering: 'pixelated' }} />
+                          ? <div style={{ width: 24, height: 24 }}><TileThumb tile={currentRemapTile} /></div>
                           : <span style={{ fontSize: 9 }}>⚠️</span>}
                       </div>
                       <span style={{ maxWidth: 80, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -6384,7 +6389,7 @@ function App() {
                                 title={ft.codename ?? ft.ref}
                                 style={{ width: 32, height: 32, borderRadius: 4, cursor: 'pointer', border: `1px solid ${currentRemapId === ft.ref ? C.accentBright : C.border}`, background: currentRemapId === ft.ref ? C.accentDim : 'transparent', overflow: 'hidden' }}>
                                 <div className="tile-img-checker" style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                                  {ft.src ? <img src={ft.blobSrc ?? ft.src} style={{ width: 28, height: 28, objectFit: 'contain', imageRendering: 'pixelated' }} /> : null}
+                                  {ft.src ? <div style={{ width: 28, height: 28 }}><TileThumb tile={ft} /></div> : null}
                                 </div>
                               </div>
                             ))}
