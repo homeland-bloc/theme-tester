@@ -814,6 +814,27 @@ function TilesetGearModal({
 
   const tsData = (open && tsId) ? dbTilesets.find(ts => ts.id === tsId) : null;
 
+  // Tile count for the delete button: from the loaded cache, else one id-only read (no cascade delete exists).
+  const [fetchedTileCount, setFetchedTileCount] = React.useState(null);
+  const cachedTileRows = tsId ? dbTilesByTsId?.[tsId] : undefined;
+  const tileCount = cachedTileRows !== undefined ? cachedTileRows.length : fetchedTileCount;
+  React.useEffect(() => {
+    setFetchedTileCount(null);
+    if (!open || !tsId || cachedTileRows !== undefined) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const token = await getValidToken();
+        const r = await workerFetch(`${WORKER_URL}/rest/v1/tiles?tileset_id=eq.${tsId}&select=id`, {
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        });
+        const rows = r.ok ? await r.json() : null;
+        if (!cancelled && Array.isArray(rows)) setFetchedTileCount(rows.length);
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, [open, tsId, cachedTileRows === undefined]);
+
   // Re-initialise colour inputs and reset modal state whenever the target tileset changes
   React.useEffect(() => {
     if (tsData) {
@@ -1147,16 +1168,17 @@ function TilesetGearModal({
           {/* Delete tileset — owners/admins only; exact tileset name must be typed in a modal */}
           {canManage && (
             <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 8 }}>
-              <button style={{ ...btn(true, C.danger, "rgba(248,113,113,0.18)"), justifyContent: "center", fontSize: 11, width: "100%" }}
+              <button style={{ ...btn(tileCount === 0, C.danger, "rgba(248,113,113,0.18)"), justifyContent: "center", fontSize: 11, width: "100%", opacity: tileCount === 0 ? 1 : 0.6, cursor: tileCount === 0 ? "pointer" : "not-allowed" }}
+                disabled={tileCount !== 0}
                 onClick={() => { setDeleteError(null); setDeleteConfirm(true); }}>
-                🗑 Delete Tileset
+                {tileCount === null ? 'Checking tiles…' : tileCount === 0 ? '🗑 Delete tileset' : `Delete all tiles first (${tileCount} remaining)`}
               </button>
             </div>
           )}
           {deleteConfirm && canManage && (
             <TypeToConfirmModal
               title="Delete tileset"
-              message="The tileset must have no tiles left. This cannot be undone."
+              message="This tileset has no tiles left. This cannot be undone."
               expected={tsData.name}
               confirmLabel="Delete tileset"
               busy={deleteBusy}
@@ -1424,12 +1446,6 @@ function InfoModalBody(props) {
     setDeleteBusy(true);
     setDeleteError(null);
     try {
-      // Block deletion of the last tile in a tileset
-      if ((dbTilesByTsId[t.tilesetId] ?? []).length === 1) {
-        setDeleteError('This is the last tile in the tileset. To remove it, delete the entire tileset from Tileset Settings.');
-        setDeleteBusy(false);
-        return;
-      }
       const path = currentPath;
       // Never delete a file another loaded tile still points at.
       let sharedWith = null;
@@ -3589,7 +3605,7 @@ function App() {
   // Race-condition fix: tilesLoading=false and setDbTilesByTsId are set in the same async block, so wait for both
   // tilesLoading=false and the active tileset's rows in dbTilesByTsId (flatDefaultTiles recomputes from that same state).
   useEffect(() => {
-    if (!pendingGridLoadRef.current || flatDefaultTiles.length === 0) return;
+    if (!pendingGridLoadRef.current || (flatDefaultTiles.length === 0 && !manifest)) return;
     // flatDefaultTiles holds only the active tileset (+ globals). If the palette has d: tiles, wait until the
     // initial fetch finished and the active tileset's rows are cached; tiles of other tilesets are matched by
     // codename against the active tileset below (their rows were pre-fetched into dbTilesByTsId by the load effect).
