@@ -6561,7 +6561,8 @@ function App() {
       Object.entries(groups).forEach(([k, ts]) => { const f = SensorUI.makeFolder({ scope: newTsDef.id, folderKey: k, label: k, tiles: ts }); if (f) newTilesRaw.push(buildSensorTile(f)); });
     }
     const newTilesForDropdown = SensorUI.hideSensorVariants(newTilesRaw); // a sensor folder is one entry, never its variants
-    const globalTilesForDropdown = SensorUI.hideSensorVariants(flatDefaultTiles.filter(t => !t.isDb));
+    // global tiles only: the outgoing tileset's own sensor folders are not valid replacements in the incoming tileset
+    const globalTilesForDropdown = SensorUI.hideSensorVariants(flatDefaultTiles.filter(t => (t.isSensor ? t.sensorFolder.scope === SensorUI.SCOPE_GLOBAL : !t.isDb)));
 
     const handleConfirm = () => {
       const pending = tilesetSwitchPending;
