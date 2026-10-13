@@ -49,6 +49,20 @@
     return order.map(bit => (bit === null ? { bit: null, filled: false, centre: true } : { bit, filled: ok && code[bit] === "1", centre: false }));
   };
 
+  // Click on a bit of the 3x3 grid: flips that bit of the typed text (a short or empty text is padded with zeros first).
+  const toggleCodeBit = (text, bit) => {
+    const raw = String(text == null ? "" : text).replace(/[^01]/g, "").slice(0, 8).padEnd(8, "0").split("");
+    raw[bit] = raw[bit] === "1" ? "0" : "1";
+    return raw.join("");
+  };
+  // "acts as <code>" hint: the normalised code when the typed (valid) code is not normalised, else null.
+  const normalisedHint = text => {
+    const p = parseCodeInput(text);
+    if (!p.ok || p.value === null) return null;
+    const n = Sensor.normalise(p.value);
+    return n === p.value ? null : n;
+  };
+
   // ── Group-level fields ────────────────────────────────────────────────────────────────────────────────
   // These DB columns are shared by every row of a (tileset, folder_key) sensor group.
   // Size and offsets are NOT group fields: they belong to each variant.
@@ -182,7 +196,7 @@
   return {
     SCOPE_GLOBAL, GROUP_COLUMNS, DIVERGENCE_FIELDS,
     sensorRef, parseSensorRef, isSensorRef,
-    parseCodeInput, parseRollInput, codeFieldState, codeGridCells,
+    parseCodeInput, parseRollInput, codeFieldState, codeGridCells, toggleCodeBit, normalisedHint,
     splitGroupPatch, divergence, makeFolder, engineFolder,
     deriveLayer, opsToCss, opsLabel, composePlan, composeKey,
     planSensorSwitch, resolveLoadedSensorRef,

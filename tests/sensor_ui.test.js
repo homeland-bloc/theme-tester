@@ -192,4 +192,15 @@ test("resolveLoadedSensorRef", () => {
   assert.strictEqual(U.resolveLoadedSensorRef("s:old|Walls", null, ["Walls"]), null);
 });
 
+test("toggleCodeBit / normalisedHint", () => {
+  assert.strictEqual(U.toggleCodeBit("", 1), "01000000");
+  assert.strictEqual(U.toggleCodeBit("01000000", 1), "00000000");
+  assert.strictEqual(U.toggleCodeBit("0101", 7), "01010001");
+  assert.strictEqual(U.toggleCodeBit("01000000", 3), "01010000");
+  assert.strictEqual(U.normalisedHint("10000000"), "00000000"); // NW alone has no N and W
+  assert.strictEqual(U.normalisedHint("01010000"), null);
+  assert.strictEqual(U.normalisedHint("0101"), null);
+  assert.strictEqual(U.normalisedHint(""), null);
+});
+
 console.log(`${passed} passed`);
