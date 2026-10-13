@@ -136,6 +136,16 @@
   // Engine view of a folder (what sensor.js expects). Unlabelled tiles stay out: the resolver never picks them.
   const engineFolder = folder => ({ key: folder.ref, settings: folder.settings, tiles: folder.labelled });
 
+  // ── Global (manifest) sensor folders ──────────────────────────────────────────────────────────────────
+  // cfg is the manifest's sensor block: { codes, names?, order?, spin, flip, symbol }. Files in `order` come first (in that order), the rest
+  // keep manifest order. A file's explicit name (cfg.names) wins; null means "no explicit name" (caller falls back).
+  const globalFolderFiles = (files, cfg) => {
+    const order = cfg && Array.isArray(cfg.order) ? cfg.order : null;
+    if (!order) return files.slice();
+    return [...order.filter(f => files.includes(f)), ...files.filter(f => !order.includes(f))];
+  };
+  const globalFileName = (file, cfg) => (cfg && cfg.names && cfg.names[file]) || null;
+
   // ── Image preloading (loading overlay) ────────────────────────────────────────────────────────────────
   // load(url, cb): starts loading and calls cb(ok) once, synchronously when the image is already cached. -> { total, done, failed,
   // isDone(), promise }. isDone() is true right after the call when everything was cached, so callers can skip any overlay.
@@ -277,6 +287,7 @@
     sensorRef, parseSensorRef, isSensorRef,
     parseCodeInput, parseRollInput, codeFieldState, codeGridCells, toggleCodeBit, normalisedHint, parseSymbolInput, usedSymbols, suggestSymbol,
     splitGroupPatch, divergence, makeFolder, engineFolder,
+    globalFolderFiles, globalFileName,
     preloadImages, progressLabel, imageOps, withFreshVersion,
     variantOwners, hideSensorVariants, canonicalRef, canonicalRefs, folderPreviewTiles,
     deriveLayer, opsToCss, opsLabel, composePlan, composeKey,

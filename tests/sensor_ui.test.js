@@ -277,4 +277,21 @@ test("preloadImages: counts, dedupes, skips the overlay for cached images", asyn
   assert.strictEqual(U.progressLabel("Loading tiles", 0, 0), "Loading tiles");
 });
 
+test("global Rails folder: six explicit codenames, loop order, codes unchanged", () => {
+  const m = JSON.parse(require("fs").readFileSync(__dirname + "/../Resources/manifest.json", "utf8")).global;
+  const cfg = m.sensor.rails, files = U.globalFolderFiles(m.folders.rails, cfg);
+  assert.deepStrictEqual(files, ["TL.png", "TR.png", "BL.png", "BR.png", "Fence.png", "Ver.png"]);
+  assert.deepStrictEqual(m.folders.rails, files); // the manifest file order agrees too
+  assert.deepStrictEqual(files.map(f => U.globalFileName(f, cfg)), ["RailTopLeft", "RailTopRight", "RailBottomLeft", "RailBottomRight", "RailHorizontal", "RailVertical"]);
+  assert.deepStrictEqual(files.map(f => cfg.codes[f]), ["01010000", "01001000", "00010010", "00001010", "00011000", "01000010"]);
+  // folder built the way the app does: variants come out in that order, first four = the loop
+  const tiles = files.map((f, i) => ({ ref: "g:Resources/Global/Rails/" + f, codename: U.globalFileName(f, cfg), sensorCode: cfg.codes[f], sensorRoll: 1, sortIndex: i }));
+  const folder = U.makeFolder({ scope: "global", folderKey: "rails", label: "Rails", tiles: tiles.slice().reverse(), cfg });
+  assert.deepStrictEqual(folder.labelled.map(t => t.codename), ["RailTopLeft", "RailTopRight", "RailBottomLeft", "RailBottomRight", "RailHorizontal", "RailVertical"]);
+  assert.deepStrictEqual(U.folderPreviewTiles(folder).map(t => t.codename), ["RailTopLeft", "RailTopRight", "RailBottomLeft", "RailBottomRight"]);
+  // other global folders are untouched
+  assert.deepStrictEqual(U.globalFolderFiles(m.folders.water, m.sensor.water), m.folders.water);
+  assert.strictEqual(U.globalFileName("1.png", m.sensor.water), null);
+});
+
 console.log(`${passed} passed`);

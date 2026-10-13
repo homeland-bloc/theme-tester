@@ -188,8 +188,13 @@ const TILE_SETTINGS = {
 const load = (k, d) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } };
 
 // Derive a human-readable codename from a tile's src path (display only)
+// Folders with explicit names in the manifest ("names" in the sensor block, e.g. Global/Rails) never get a stem-derived codename.
+const NO_DERIVED_NAMES = ["Global/Rails/"];
+// Codename to show for a tile: its explicit (manifest) name, else the stem-derived one.
+const tileCodename = t => (t && t.namedCodename ? t.codename : deriveCodename(t && t.src));
 const deriveCodename = src => {
   if (!src) return null;
+  if (NO_DERIVED_NAMES.some(p => src.includes(p))) return null;
   const file = src.split("/").pop().replace(/\.[^.]+$/, "");
   const map = {
     // Global water
@@ -1280,7 +1285,7 @@ function InfoModalBody(props) {
   const currentMult = getTileMultiplier(t);
   const defaultOff  = getDefaultOffset(t);
   const currentOff  = getTileOffset(t);
-  const defaultCodename_ = t.isDefault ? (deriveCodename(t.src) ?? "") : "";
+  const defaultCodename_ = t.isDefault ? (tileCodename(t) ?? "") : "";
   const canEditDb = !!(currentUser && t.isDb && t.dbId && (userProfile?.role === 'admin' || t.tilesetOwnerId === currentUser.id));
   const [multInput,         setMultInput]         = React.useState(String(currentMult));
   const [oxInput,           setOxInput]           = React.useState(String(currentOff.ox));
@@ -3561,12 +3566,15 @@ function App() {
         if (!files || files.length === 0) continue;
         const folderPath = gDef.folderPaths?.[key] ?? `Global/${key}/`;
         const label = displayLabel(key, folderPath);
-        const sensorCfg = gDef.sensor?.[key]; // optional { codes: {file: code}, spin, flip, symbol }
-        const folderTiles = files
+        const sensorCfg = gDef.sensor?.[key]; // optional { codes: {file: code}, names: {file: codename}, order: [file], spin, flip, symbol }
+        const ordered = SensorUI.globalFolderFiles(files, sensorCfg);
+        const folderTiles = ordered
           .map((fn, i) => {
             const t = makeTile(`${folderPath}${fn}`);
             t.folderKey = `global_${key}`; t.folderLabel = label;
             t.codename = `Global_${fn.replace(/\.[^.]+$/, '')}`;
+            const given = SensorUI.globalFileName(fn, sensorCfg);
+            if (given) { t.codename = given; t.namedCodename = true; }
             if (sensorCfg) {
               t.sensorCode = sensorCfg.codes?.[fn] ?? null; t.sensorRoll = 1; t.sortIndex = i;
               t.dbRotatable = !!sensorCfg.spin; t.dbFlippable = !!sensorCfg.flip; t.symbol = sensorCfg.symbol ?? null;
@@ -4566,7 +4574,7 @@ function App() {
       const paintTile = tilesByRefRef.current.get(tileId);
       if (paintTile) {
         const name = paintTile.folderLabel
-          ?? deriveCodename(paintTile.src)
+          ?? tileCodename(paintTile)
           ?? (paintTile.codename ?? '').split('_').slice(1).join('-')
           ?? paintTile.src?.split('/').pop().replace(/\.[^.]+$/, '');
         const ts = paintTile.tilesetName ?? null;
@@ -5744,7 +5752,7 @@ function App() {
     if (ref === REPLACE_ERASE_REF) return "Empty";
     const t = getTile(ref);
     if (t && t.isSensor) return `${t.label} (sensor folder)`;
-    return (t ? (t.isSpace ? "Space" : (deriveCodename(t.src) || t.codename)) : null) || ref;
+    return (t ? (t.isSpace ? "Space" : (tileCodename(t) || t.codename)) : null) || ref;
   };
 
   const flashReplaceMsg = (msg, closeAfter) => {
@@ -6150,7 +6158,7 @@ function App() {
           <div style={{ width: 24, height: 24, flexShrink: 0 }}>
             <img src={t.blobSrc ?? t.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated" }} />
           </div>
-          <span style={{ fontSize: 11, color: C.text }}>{deriveCodename(t.src) || t.codename || t.ref}</span>
+          <span style={{ fontSize: 11, color: C.text }}>{tileCodename(t) || t.codename || t.ref}</span>
         </label>
       );
     };
