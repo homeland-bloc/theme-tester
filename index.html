@@ -138,6 +138,10 @@ const MAX_HISTORY = 60;
 // s:<tilesetId>|<folderKey> sensor folder (reserved). "space" / "warn" are the two special tiles.
 const { makeRef, parseRef, countRefs, createPalette, clonePalette, paletteIndexFor, refAt, removeUnused, remapEntry, encodeForStorage, decodeFromStorage, planSwitch, applySwitchPlan, SPACE_REF, WARN_REF } = window.TilePalette;
 const SensorEngine = window.Sensor, SensorUI = window.SensorUI;
+// Selection mode and mirroring: Rectangle + Diagonal on first load, later choices persist in localStorage.
+const SELECTION_MODES = ["single", "line", "rect", "fill"];
+const loadSelectionMode = () => { const v = load("oph_sel_mode", "rect"); return SELECTION_MODES.includes(v) ? v : "rect"; };
+const loadMirror = () => { const v = load("oph_mirror", null); return v && typeof v === "object" ? { v: !!v.v, h: !!v.h, d: !!v.d } : { v: false, h: false, d: true }; };
 // Starred list from storage: drop removed tools; the individual selection / mirroring modes fold into their group shortcut; no duplicates.
 const migrateStarred = list => {
   const SEL = ["single", "line", "rect", "fill"], MIR = ["mirrorV", "mirrorH", "mirrorD"], seen = new Set(), out = [];
@@ -163,6 +167,8 @@ const OPHELIA_BG = {
   Cafe:      { bg1: "#AD6B45", bg2: "#B5714A" },
   Pharmacy:  { bg1: "#95a4ae", bg2: "#a2b0b8" },
 };
+// Light / dark background colours of a tileset: its own columns, else the built-in table, else a neutral default.
+const tilesetBg = ts => (ts && ts.bg_color_light && ts.bg_color_dark) ? { bg1: ts.bg_color_light, bg2: ts.bg_color_dark } : ((ts && OPHELIA_BG[ts.name]) ?? { bg1: "#1a2332", bg2: "#1e2838" });
 // Tilesets that are still work-in-progress — shown with a WIP badge in the UI.
 
 // Default per-tile settings: src pattern → property value.
@@ -2546,9 +2552,9 @@ function App() {
   const [sel,         setSel]       = useState(null);
   const [eraser,      setEraser]    = useState(false);
   const [handMode,    setHandMode]  = useState(true);
-  const [mirrorV,     setMirrorV]   = useState(false);
-  const [mirrorH,     setMirrorH]   = useState(false);
-  const [mirrorD,     setMirrorD]   = useState(false);
+  const [mirrorV,     setMirrorV]   = useState(() => loadMirror().v);
+  const [mirrorH,     setMirrorH]   = useState(() => loadMirror().h);
+  const [mirrorD,     setMirrorD]   = useState(() => loadMirror().d);
   const [showGuides,    setShowGuides]    = useState(false);
   const [clearMapConfirmOpen, setClearMapConfirmOpen] = useState(false);
   const [downloadConfirmOpen, setDownloadConfirmOpen] = useState(false);
@@ -2563,7 +2569,7 @@ function App() {
   const [zoomEditing, setZoomEdit]  = useState(false);
   const [zoomInput,   setZoomInput] = useState("");
   const [painting,    setPainting]  = useState(false);
-  const [selectionMode, setSelectionMode] = useState('single'); // 'single' | 'line' | 'rect' | 'fill'
+  const [selectionMode, setSelectionMode] = useState(loadSelectionMode); // 'single' | 'line' | 'rect' | 'fill'
   const [eyedropperMode, setEyedropperMode] = useState(false); // eyedropper pick tool
   const [highlightMode, setHighlightMode] = useState(false);
   const [highlightedCells, setHighlightedCells] = useState(new Set()); // Set of "r,c" strings — primary + mirror
@@ -2778,7 +2784,8 @@ function App() {
     }
   }, [highlightedCells.size, duplicateMode]);
   useEffect(() => { zoomRef.current         = zoom;          }, [zoom]);
-  useEffect(() => { selectionModeRef.current = selectionMode; }, [selectionMode]);
+  useEffect(() => { selectionModeRef.current = selectionMode; save("oph_sel_mode", selectionMode); }, [selectionMode]);
+  useEffect(() => { save("oph_mirror", { v: mirrorV, h: mirrorH, d: mirrorD }); }, [mirrorV, mirrorH, mirrorD]);
   useEffect(() => { gridRef.current = grid; }, [grid]);
   useEffect(() => { mirrorVRef.current = mirrorV; }, [mirrorV]);
   useEffect(() => { mirrorHRef.current = mirrorH; }, [mirrorH]);
@@ -7352,6 +7359,7 @@ function App() {
                               <label key={ts.name} data-active-ts={checked ? "true" : undefined} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", cursor: "pointer", userSelect: "none" }}
                                 onClick={e => { e.preventDefault(); switchTileset(ts.name); setTilesetDropOpen(false); }}>
                                 <input type="checkbox" readOnly checked={checked} style={{ accentColor: C.accent, cursor: "pointer", width: 13, height: 13, pointerEvents: "none" }} />
+                                {(() => { const p = tilesetBg(ts); return (<span data-ts-bg style={{ display: "inline-flex", gap: 2, flexShrink: 0 }}><span style={{ width: 10, height: 10, borderRadius: 2, background: p.bg1, border: `1px solid ${C.border}` }} title="Light background" /><span style={{ width: 10, height: 10, borderRadius: 2, background: p.bg2, border: `1px solid ${C.border}` }} title="Dark background" /></span>); })()}
                                 <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
                                   <span style={{ fontSize: 11, color: nameColor, fontWeight: checked ? 600 : 400 }}>{ts.name}</span>
                                   {(ts.is_wip || (isAdmin && !ts.is_published)) && (
@@ -8697,10 +8705,10 @@ function App() {
       {/* ══ BOTTOM BAR ═══════════════════════════════════════════════ */}
       <div style={{ flexShrink: 0, background: C.panelDeep, borderTop: `1px solid ${C.border}` }}>
 
-        {/* Row 1 (always visible): Undo | Zoom | Redo | fold toggle */}
+        {/* Row 1 (always visible): Undo | Zoom | Redo (together) | fold toggle */}
         <div style={{ display: "flex", alignItems: "center", padding: "5px 14px 3px", gap: 6 }}>
-          <button style={btn(histIdx > 0, C.accent, C.accentDim)} onClick={undo} disabled={histIdx <= 0} title="Undo (Ctrl+Z)">Undo</button>
           <div style={{ flex: 1, display: "flex", justifyContent: "center", alignItems: "center", gap: 6 }}>
+            <button style={btn(histIdx > 0, C.accent, C.accentDim)} onClick={undo} disabled={histIdx <= 0} title="Undo (Ctrl+Z)">Undo</button>
             <button style={{ ...btn(false), padding: "4px 9px", fontSize: 15, fontWeight: 700, lineHeight: 1 }} onClick={e => changeZoom(-ZOOM_STEP * (e.shiftKey ? 5 : 1))}>−</button>
             <span onClick={() => applyZoom(calcFitZoom(gridW, gridH))}
               style={{ minWidth: 52, textAlign: "center", display: "inline-block", fontSize: 13, fontFamily: "monospace", fontWeight: 700, color: C.text, background: "rgba(180,40,40,0.10)", borderRadius: 7, padding: "3px 6px", border: `1px solid ${C.border}`, cursor: "pointer", userSelect: "none" }}
@@ -8708,8 +8716,8 @@ function App() {
               {Math.round(zoom / ZOOM_STEP) * 10}%
             </span>
             <button style={{ ...btn(false), padding: "4px 9px", fontSize: 15, fontWeight: 700, lineHeight: 1 }} onClick={e => changeZoom(ZOOM_STEP * (e.shiftKey ? 5 : 1))}>+</button>
+            <button style={btn(histIdx < history.length - 1, C.accent, C.accentDim)} onClick={redo} disabled={histIdx >= history.length - 1} title="Redo (Ctrl+Y)">Redo</button>
           </div>
-          <button style={btn(histIdx < history.length - 1, C.accent, C.accentDim)} onClick={redo} disabled={histIdx >= history.length - 1} title="Redo (Ctrl+Y)">Redo</button>
           <button onClick={() => setBottomOpen(o => !o)}
             style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 11, padding: "2px 4px", lineHeight: 1, flexShrink: 0 }}
             title={bottomOpen ? "Collapse bottom" : "Expand bottom"}>
@@ -8719,21 +8727,21 @@ function App() {
 
         {/* Rows 2-3: foldable */}
         {bottomOpen && (<>
-          {/* Row 2: Map name | Clear Map | Download */}
+          {/* Row 2: Map name | Download */}
           <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 8, padding: "3px 14px" }}>
             <input type="text" value={mapName} onChange={e => setMapName(e.target.value)}
               placeholder="map name…"
               style={{ width: 180, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 6, color: C.text, fontFamily: "'Inter', sans-serif", fontSize: 11, padding: "4px 8px", outline: "none" }}
               spellCheck={false} />
+            <button style={btn(true, C.soft, C.softDim)} onClick={() => setDownloadConfirmOpen(true)}>Download</button>
+          </div>
+
+          {/* Row 3: Clear Map | History */}
+          <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 8, padding: "3px 14px" }}>
             <button style={btn(true, "#ef4444", "rgba(239,68,68,0.25)")}
               onClick={() => setClearMapConfirmOpen(true)}>
               Clear Map
             </button>
-            <button style={btn(true, C.soft, C.softDim)} onClick={() => setDownloadConfirmOpen(true)}>Download</button>
-          </div>
-
-          {/* Row 3: History */}
-          <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 8, padding: "3px 14px" }}>
             <button style={btn(true, C.accent, C.accentDim)}
               title={`History (${histIdx + 1}/${history.length})`}
               onClick={() => setHistoryModalOpen(true)}>🕘 Show History</button>
@@ -8743,10 +8751,7 @@ function App() {
           {(() => {
             const byAlpha = (a, b) => a.name.localeCompare(b.name);
             const sortedTilesets = [...dbTilesets].sort(byAlpha);
-            const getBgForTs = ts => {
-              if (ts.bg_color_light && ts.bg_color_dark) return { bg1: ts.bg_color_light, bg2: ts.bg_color_dark };
-              return OPHELIA_BG[ts.name] ?? { bg1: "#1a2332", bg2: "#1e2838" };
-            };
+            const getBgForTs = tilesetBg;
             const isAdmin = userProfile?.role === 'admin';
             const activePresetLabel = selectedBgPreset === 'custom' ? '✏ Custom' : (selectedBgPreset ?? 'Custom');
             const renderBgItem = ts => {
@@ -8772,7 +8777,8 @@ function App() {
               );
             };
             return (
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, padding: "3px 14px 5px", alignItems: "center", position: "relative" }}>
+              // Hidden for now (local tilesets will need the preset logic later): the state, applyBgPreset and the custom-colour modal stay.
+              <div data-bg-preset-row style={{ display: "none", flexWrap: "wrap", gap: 8, padding: "3px 14px 5px", alignItems: "center", position: "relative" }}>
                 <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1, userSelect: "none" }}>Background</span>
                 {/* Swatches */}
                 <div style={{ display: "flex", alignItems: "center", gap: 3 }}>
