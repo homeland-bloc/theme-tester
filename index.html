@@ -119,6 +119,7 @@
 <div id="root"></div>
 <script src="tile_palette.js"></script>
 <script src="sensor.js"></script>
+<script src="sensor_ui.js"></script>
 <script type="text/babel" data-presets="oph">
 const { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } = React;
 
@@ -136,6 +137,7 @@ const MAX_HISTORY = 60;
 // Tiles are identified by refs (tile_palette.js): d:<uuid> DB tile, g:<Resources path> global tile, u:<n> local upload,
 // s:<tilesetId>|<folderKey> sensor folder (reserved). "space" / "warn" are the two special tiles.
 const { makeRef, parseRef, createPalette, clonePalette, paletteIndexFor, refAt, removeUnused, remapEntry, encodeForStorage, decodeFromStorage, planSwitch, applySwitchPlan, SPACE_REF, WARN_REF } = window.TilePalette;
+const SensorEngine = window.Sensor, SensorUI = window.SensorUI;
 const REPLACE_ERASE_REF = "__erase__"; // sentinel: replace-with-empty in the Replace modal
 
 // All Supabase requests go through the Worker.
@@ -256,6 +258,21 @@ const buildDbTile = (row, tsRow) => {
     tile.folderLabel = row.folder_key;
   }
   return tile;
+};
+
+// The logical tile of a sensor folder (ref s:<tilesetId|global>|<folderKey>). It is what the map stores and what the card selects.
+// Flags, size and offsets come from the folder's first variant; the image shown on the map is derived per cell (see sensorLayer).
+// Spin / flip live in the folder settings, never on the tile, so the legacy per-cell rotation paths stay off for it.
+const buildSensorTile = f => {
+  const v = f.first;
+  return {
+    ref: f.ref, isSensor: true, sensorFolder: f, folderLabel: f.label, label: f.label, isDefault: true, isDb: false,
+    src: v.src, blobSrc: v.blobSrc, codename: null, symbol: f.symbol,
+    tilesetName: v.tilesetName, tilesetId: v.tilesetId, tilesetOwnerId: v.tilesetOwnerId, sortIndex: v.sortIndex,
+    dbSizeMultiplier: v.dbSizeMultiplier, dbOffsetX: v.dbOffsetX, dbOffsetY: v.dbOffsetY,
+    dbOtgPassable: v.dbOtgPassable, dbMirrorOffset: v.dbMirrorOffset, dbBottomRender: v.dbBottomRender,
+    dbPriority: v.dbPriority, dbAutoShadow: v.dbAutoShadow, dbRotatable: false, dbFlippable: false,
+  };
 };
 
 // Convert a data URL to a blob URL for faster browser rendering (blob URLs bypass data URI parsing overhead)
@@ -1909,6 +1926,148 @@ function InfoModalBody(props) {
   );
 }
 
+// ── Sensor folder components (top level: not nested in App, so their state survives App re-renders) ──
+const SENSOR_YELLOW = "#f5c518";
+const STATUS_COLORS = { explicit: "#34d399", derived: "#60a5fa", composed: "#c084fc", missing: "#f87171" };
+const sensorBtnStyle = (color = C.accent) => ({ background: "rgba(255,255,255,0.04)", border: `1px solid ${color}`, borderRadius: 6, color, cursor: "pointer", fontSize: 11, padding: "3px 10px", fontFamily: "'Inter', sans-serif" });
+const tileUrl = t => (t ? (t.blobSrc ?? t.src) : null);
+const fromLabel = e => (e.derivedFrom ? `from ${e.derivedFrom.tile.codename ?? e.derivedFrom.code} (${SensorUI.opsLabel(e.ops)})` : null);
+
+// The image for a resolver result / pool entry: derived variants are the source image with CSS spin/flip; composed ones are a
+// canvas image (falling back to the folder's explicit 00000000 variant while pending or when composing fails).
+function sensorEntryVisual(entry, code, status, recipe, folderRef, candidates, requestComposed) {
+  if (status === "composed") {
+    const url = requestComposed(folderRef, code, recipe);
+    if (url && url !== "fail") return { src: url, css: "", state: "composed" };
+    const fb = candidates["00000000"];
+    const fbTile = fb && fb.status === "explicit" ? fb.pool[0].tile : null;
+    return { src: tileUrl(fbTile), css: "", state: url === "fail" ? "failed" : "pending" };
+  }
+  return { src: tileUrl(entry.tile), css: SensorUI.opsToCss(entry.ops), state: "ok" };
+}
+
+function SensorWarningModal({ folder, onClose }) {
+  const fmt = v => (v === null || v === undefined ? "(not set)" : String(v));
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-box" onClick={e => e.stopPropagation()} style={{ maxWidth: 420, maxHeight: "80vh", overflowY: "auto" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <span style={{ fontSize: 13, fontWeight: 700, color: SENSOR_YELLOW }}>⚠ {folder.label}: settings differ</span>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
+        </div>
+        {folder.warnings.length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <span style={{ fontSize: 11, color: C.muted }}>These settings are shared by the whole folder, but the variants disagree. The first variant is used.</span>
+            {folder.warnings.map(w => (
+              <div key={w.field} style={{ fontSize: 12, color: C.text }}>
+                <b>{w.label}</b>
+                {w.values.map((v, i) => (
+                  <div key={i} style={{ fontSize: 11, color: C.muted, marginLeft: 8 }}>{fmt(v.value)} — {v.tiles.join(", ")}</div>
+                ))}
+              </div>
+            ))}
+          </div>
+        )}
+        {folder.unlabelled.length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <b style={{ fontSize: 12, color: C.text }}>Tiles without a sensor code (never auto-placed)</b>
+            <span style={{ fontSize: 11, color: C.muted }}>Open a tile's info and give it a sensor code to use it.</span>
+            {folder.unlabelled.map(t => <div key={t.ref} style={{ fontSize: 11, color: C.muted, marginLeft: 8 }}>{t.codename ?? t.ref}</div>)}
+          </div>
+        )}
+        <button style={sensorBtnStyle()} onClick={onClose}>OK</button>
+      </div>
+    </div>
+  );
+}
+
+// Simulator: 3x3 grid, centre fixed, eight neighbours toggleable. Shows what sensor.resolve() returns. Edits nothing.
+function SensorSimulationPanel({ folder, candidates, requestComposed, onClose }) {
+  const [bits, setBits] = useState(() => Array(8).fill(false));
+  const [seed, setSeed] = useState(0);
+  const engine = useMemo(() => SensorUI.engineFolder(folder), [folder]);
+  const code = bits.map(b => (b ? "1" : "0")).join("");
+  const res = SensorEngine.resolve(engine, code, { x: seed, y: seed * 7 + 1, salt: folder.ref, candidates });
+  const cov = useMemo(() => SensorEngine.coverage(engine), [engine]);
+  const required = useMemo(() => SensorEngine.computeRequiredBase(engine), [engine]);
+  const pool = res ? candidates[res.code].pool : [];
+  const pct = SensorEngine.pickPercentages(pool);
+  const vis = res ? sensorEntryVisual(res.entry, res.code, res.status, res.recipe, folder.ref, candidates, requestComposed) : null;
+  const cellBox = { width: 44, height: 44, borderRadius: 6, boxSizing: "border-box" };
+  const setFromCode = c => { setBits(c.split("").map(ch => ch === "1")); };
+  const order = [0, 1, 2, 3, null, 4, 5, 6, 7];
+  return (
+    <div className="modal-backdrop" onClick={onClose} style={{ zIndex: 3000 }}>
+      <div className="modal-box" onClick={e => e.stopPropagation()} style={{ maxWidth: 560, maxHeight: "90vh", overflowY: "auto", gap: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <span style={{ fontSize: 13, fontWeight: 700, color: SENSOR_YELLOW }}>✨ Sensor folder simulation: {folder.label}</span>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
+        </div>
+        <span style={{ fontSize: 11, color: C.muted }}>Simulator - toggle neighbours to see which variant appears. This does not edit anything.</span>
+        <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
+          <div data-testid="sim-grid" style={{ display: "grid", gridTemplateColumns: "repeat(3, 44px)", gap: 4 }}>
+            {order.map((bit, i) => bit === null ? (
+              <div key={i} style={{ ...cellBox, display: "flex", alignItems: "center", justifyContent: "center", background: SENSOR_YELLOW, color: "#000", fontWeight: 800, fontSize: 18 }} title="Centre cell (the tile itself)">✨</div>
+            ) : (
+              <button key={i} data-bit={SensorEngine.BIT_NAMES[bit]} onClick={() => setBits(b => b.map((v, j) => (j === bit ? !v : v)))}
+                title={`${SensorEngine.BIT_NAMES[bit]}: ${bits[bit] ? "same folder" : "empty"}`}
+                style={{ ...cellBox, cursor: "pointer", border: `2px solid ${bits[bit] ? SENSOR_YELLOW : C.border}`, background: bits[bit] ? "rgba(245,197,24,0.35)" : "transparent", color: C.muted, fontSize: 9 }}>
+                {SensorEngine.BIT_NAMES[bit]}
+              </button>
+            ))}
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 150 }}>
+            <div data-testid="sim-chosen" style={{ width: 96, height: 96, borderRadius: 8, background: C.panelDeep, border: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
+              {vis && vis.src ? <img src={vis.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", transform: vis.css || undefined }} /> : <span style={{ fontSize: 22 }}>{res ? "…" : "⚠️"}</span>}
+            </div>
+            <div style={{ fontSize: 11, color: C.text }}>
+              <b>Chosen variant:</b>{" "}
+              {res ? <span data-testid="sim-code" style={{ fontFamily: "monospace" }}>{res.code}</span> : "none usable"}
+            </div>
+            {res && <div style={{ fontSize: 10, color: C.muted }}>
+              {res.status}{res.tile ? ` · ${res.tile.codename ?? res.tile.ref}` : ""}{res.derivedFrom ? ` · ${fromLabel(res.entry)}` : ""}
+              {vis && vis.state === "pending" ? " · composing…" : ""}{vis && vis.state === "failed" ? " · composing failed, showing 00000000" : ""}
+            </div>}
+            <div style={{ fontSize: 10, color: C.muted }}>Neighbours: <span style={{ fontFamily: "monospace" }}>{code}</span></div>
+            <button style={sensorBtnStyle()} onClick={() => setSeed(s => s + 1)} title="Rolls depend on the cell position; try another position">Roll again</button>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 160, flex: 1 }}>
+            <span style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: 0.8 }}>Pool of {res ? res.code : "-"}</span>
+            {pct.length === 0 && <span style={{ fontSize: 11, color: C.muted }}>-</span>}
+            {pct.map((p, i) => {
+              const e = pool[i];
+              return (
+                <div key={String(p.ref)} data-testid="sim-pool-row" style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: C.text }}>
+                  <span style={{ width: 42, textAlign: "right", fontFamily: "monospace" }}>{(p.probability * 100).toFixed(p.probability * 100 % 1 === 0 ? 0 : 1)}%</span>
+                  <span style={{ color: C.muted }}>roll {p.roll}</span>
+                  <span>{e.composed ? "composed" : (e.tile?.codename ?? String(p.ref))}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <span style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: 0.8 }}>Coverage of the 47 codes (click one to load it)</span>
+          <div style={{ display: "flex", gap: 10, fontSize: 10, color: C.muted, flexWrap: "wrap" }}>
+            {Object.entries(STATUS_COLORS).map(([k, col]) => <span key={k}><span style={{ display: "inline-block", width: 9, height: 9, background: col, borderRadius: 2, marginRight: 4 }} />{k} ({cov.filter(x => x.status === k).length})</span>)}
+          </div>
+          <div data-testid="sim-coverage" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(78px, 1fr))", gap: 3 }}>
+            {cov.map(x => (
+              <button key={x.code} data-status={x.status} onClick={() => setFromCode(x.code)} title={`${x.code}: ${x.status}`}
+                style={{ fontFamily: "monospace", fontSize: 10, padding: "2px 0", cursor: "pointer", color: "#000", background: STATUS_COLORS[x.status], border: x.code === (res && res.code) ? "2px solid #fff" : "1px solid transparent", borderRadius: 4, opacity: 0.9 }}>{x.code}</button>
+            ))}
+          </div>
+          <div data-testid="sim-required" style={{ fontSize: 11, color: required.length ? C.danger : C.muted }}>
+            {!folder.settings.spin ? "Spin is off: no composed variants. Every code you want must be an explicit tile (or flip-derived)."
+              : required.length ? `Base codes still required for composition: ${required.join(", ")}` : "All four base codes exist: missing codes can be composed."}
+          </div>
+        </div>
+        <button style={sensorBtnStyle()} onClick={onClose}>Close</button>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const savedColors = load(SK.colors, { bg1: DEFAULT_BG1, bg2: DEFAULT_BG2 });
   const mobile = isMobileDevice();
@@ -2297,6 +2456,8 @@ function App() {
   const [dragTargetCell, setDragTargetCell] = useState(null);   // [r,c] cell under cursor while dragging
   // Folder panel (floating modal)
   const [openFolderKey,    setOpenFolderKey]    = useState(null);
+  const [sensorWarnFolder, setSensorWarnFolder] = useState(null); // sensor folder whose warning list is open
+  const [sensorSimFolder, setSensorSimFolder] = useState(null);   // sensor folder whose simulation panel is open (ref)
   const [folderPanelAnchor, setFolderPanelAnchor] = useState({ x: 0, y: 0 });
   const folderPanelRef    = useRef(null);
   const openFolderKeyRef  = useRef(null); // always-current key for reliable toggle
@@ -2951,6 +3112,79 @@ function App() {
       }
     }
   };
+  // Unfolded sensor folder: real variants (info button, clicking does NOT select), unlabelled tiles, then the derived variants
+  // (generated, no info button) and the simulation button.
+  const renderSensorPanel = entry => {
+    const sensor = entry.sensor;
+    const cands = sensorFolders.get(sensor.ref)?.candidates;
+    const cardSz = isMobile ? 56 : 72;
+    const cols = 4;
+    const panelW = cardSz * cols + 5 * (cols - 1) + 12;
+    const maxH = Math.min(520, window.innerHeight - 32);
+    const anchorX = Math.min(folderPanelAnchor.x, window.innerWidth - panelW - 8);
+    const anchorY = Math.min(folderPanelAnchor.y, window.innerHeight - maxH - 8);
+    const hasWarn = sensor.warnings.length > 0 || sensor.unlabelled.length > 0;
+    const heading = (text, extra) => (
+      <div style={{ gridColumn: "1 / -1", fontSize: 9, fontWeight: 700, color: extra ? SENSOR_YELLOW : C.muted, textTransform: "uppercase", letterSpacing: 0.8, borderTop: extra ? `1px dashed ${SENSOR_YELLOW}` : "none", paddingTop: extra ? 8 : 0, marginTop: extra ? 4 : 0 }}>{text}</div>
+    );
+    const realCard = t => {
+      const failed = failedTiles.has(t.ref);
+      const isStarred = starredTiles.includes(t.ref);
+      return (
+        <div key={t.ref} data-sensor-variant={t.ref} title={`${t.codename ?? ""} ${t.sensorCode ?? "(no code)"}`.trim()}
+          style={{ width: cardSz, height: cardSz, borderRadius: 8, border: `2px solid ${failed ? C.danger : C.border}`, position: "relative", overflow: "visible", opacity: failed ? 0.55 : 1 }}>
+          <div style={{ position: "absolute", inset: 0, borderRadius: 6, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", background: C.panelDeep }}>
+            {failed ? <span style={{ fontSize: 18 }}>⚠️</span>
+              : <img src={t.blobSrc ?? t.src} alt="" onError={() => markFailed(t.ref)} className={tileCardLightBg ? "tile-img-checker" : undefined} style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated" }} />}
+          </div>
+          <span style={{ position: "absolute", left: 2, bottom: 1, fontSize: 7, fontFamily: "monospace", color: "#fff", background: "rgba(0,0,0,0.65)", borderRadius: 3, padding: "0 2px", pointerEvents: "none" }}>{t.sensorCode ?? "no code"}</span>
+          <span onClick={ev => { ev.stopPropagation(); setInfoTile(t.ref); }}
+            style={{ position: "absolute", top: -7, right: -7, width: 18, height: 18, fontSize: 15, cursor: "pointer", color: isStarred ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "18px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%" }}
+            title="Tile info">ⓘ</span>
+        </div>
+      );
+    };
+    const derived = cands ? SensorEngine.ALL_CODES.map(c => cands[c]).filter(c => c.status === "derived" || c.status === "composed") : [];
+    return (
+      <div ref={folderPanelRef} data-sensor-panel={sensor.ref}
+        style={{ position: "fixed", left: anchorX, top: anchorY, width: panelW, maxHeight: maxH, background: C.panel, border: `1px solid ${SENSOR_YELLOW}`, borderRadius: 10,
+          boxShadow: "0 8px 32px rgba(0,0,0,0.7), 0 0 10px rgba(245,197,24,0.35)", zIndex: 2000, overflow: "hidden", display: "flex", flexDirection: "column" }}>
+        <div style={{ padding: "5px 8px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0, gap: 6 }}>
+          <span style={{ fontSize: 10, fontWeight: 700, color: SENSOR_YELLOW, letterSpacing: 0.5 }}>✨ {entry.label}</span>
+          <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            {hasWarn && <button onClick={() => setSensorWarnFolder(sensor)} style={{ ...sensorBtnStyle(SENSOR_YELLOW), padding: "0 6px", fontSize: 12 }} title="Shared settings differ / tiles without a code">⚠</button>}
+            <button onClick={() => setOpenFolderKey(null)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 15, lineHeight: 1, padding: "0 2px" }}>×</button>
+          </span>
+        </div>
+        <div style={{ overflowY: "auto", padding: 6 }}>
+          <div style={{ display: "grid", gridTemplateColumns: `repeat(${cols}, ${cardSz}px)`, gap: 5 }}>
+            {heading(`Variants (${sensor.labelled.length})`)}
+            {sensor.labelled.map(realCard)}
+            {sensor.unlabelled.length > 0 && heading(`Unlabelled (not auto-placed) (${sensor.unlabelled.length})`)}
+            {sensor.unlabelled.map(realCard)}
+            {derived.length > 0 && heading(`Derived (${derived.length}) - generated, not editable`, true)}
+            {derived.map(cd => {
+              const e = cd.pool[0];
+              const vis = sensorEntryVisual(e, cd.code, cd.status, cd.recipe, sensor.ref, cands, requestComposed);
+              const label = cd.status === "composed" ? "composed from the base tiles" : fromLabel(e);
+              return (
+                <div key={cd.code} data-sensor-derived={cd.code} title={`${cd.code}: ${label}`} style={{ width: cardSz }}>
+                  <div style={{ width: cardSz, height: cardSz, borderRadius: 8, border: `1px dashed ${SENSOR_YELLOW}`, background: C.panelDeep, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", position: "relative" }}>
+                    {vis.src ? <img src={vis.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", transform: vis.css || undefined, opacity: vis.state === "pending" ? 0.4 : 1 }} /> : <span style={{ fontSize: 14 }}>…</span>}
+                    <span style={{ position: "absolute", left: 2, bottom: 1, fontSize: 7, fontFamily: "monospace", color: "#fff", background: "rgba(0,0,0,0.65)", borderRadius: 3, padding: "0 2px" }}>{cd.code}</span>
+                  </div>
+                  <div style={{ fontSize: 8, color: C.muted, lineHeight: 1.2, marginTop: 2, wordBreak: "break-word" }}>{label}</div>
+                </div>
+              );
+            })}
+          </div>
+          <div style={{ marginTop: 8 }}>
+            <button data-sensor-sim-open={sensor.ref} style={sensorBtnStyle(SENSOR_YELLOW)} onClick={() => setSensorSimFolder(sensor.ref)}>Sensor folder simulation</button>
+          </div>
+        </div>
+      </div>
+    );
+  };
   // Close folder panel on outside click
   useEffect(() => {
     if (!openFolderKey) return;
@@ -3000,7 +3234,10 @@ function App() {
       if (isActive) {
         flatItems.forEach(t => entries.push({ type: 'flat', tile: t }));
         Object.entries(folderGroups).forEach(([key, tiles]) => {
-          entries.push({ type: 'folder', key: `${tsDef.name}/${key}`, label: key, tiles });
+          // A folder with at least one coded tile is a sensor folder; its logical tile joins the contained list.
+          const sensor = SensorUI.makeFolder({ scope: tsDef.id, folderKey: key, label: key, tiles });
+          if (sensor) flatTiles.push(buildSensorTile(sensor));
+          entries.push({ type: 'folder', key: `${tsDef.name}/${key}`, label: key, tiles, sensor });
         });
         const cnt = entries.reduce((n, e) => n + (e.tiles?.length ?? 1), 0);
         entriesPerTs.push({ name: tsDef.name, entries, count: cnt, tilesetId: tsDef.id, tilesetOwnerId: tsDef.owner_id });
@@ -3023,21 +3260,112 @@ function App() {
         if (!files || files.length === 0) continue;
         const folderPath = gDef.folderPaths?.[key] ?? `Global/${key}/`;
         const label = displayLabel(key, folderPath);
+        const sensorCfg = gDef.sensor?.[key]; // optional { codes: {file: code}, spin, flip, symbol }
         const folderTiles = files
-          .map(fn => {
+          .map((fn, i) => {
             const t = makeTile(`${folderPath}${fn}`);
             t.folderKey = `global_${key}`; t.folderLabel = label;
             t.codename = `Global_${fn.replace(/\.[^.]+$/, '')}`;
+            if (sensorCfg) {
+              t.sensorCode = sensorCfg.codes?.[fn] ?? null; t.sensorRoll = 1; t.sortIndex = i;
+              t.dbRotatable = !!sensorCfg.spin; t.dbFlippable = !!sensorCfg.flip; t.symbol = sensorCfg.symbol ?? null;
+            }
             return t;
           });
         flatTiles.push(...folderTiles);
-        glbEntries.push({ type: 'folder', key: `global_${key}`, label, tiles: folderTiles });
+        const sensor = sensorCfg ? SensorUI.makeFolder({ scope: SensorUI.SCOPE_GLOBAL, folderKey: key, label, tiles: folderTiles, cfg: sensorCfg }) : null;
+        if (sensor) flatTiles.push(buildSensorTile(sensor));
+        glbEntries.push({ type: 'folder', key: `global_${key}`, label, tiles: folderTiles, sensor });
       }
     }
 
     const tsEntries = entriesPerTs.flatMap(ts => ts.entries);
     return { tilesetEntriesPerTs: entriesPerTs, tilesetEntries: tsEntries, globalEntries: glbEntries, flatDefaultTiles: flatTiles, tilesetTileCount: tsCount };
   }, [manifest, activeTileset, dbTilesets, dbTilesByTsId]);
+
+  // ── Sensor folders: candidates per folder, and the derived layer ──
+  // sensorFolders: Map(s: ref -> { ui (folder), folder (engine view), candidates }). The map stores only the logical s: entry;
+  // sensorLayer derives, per cell, which variant to show from the grid (memoised on grid / palette / folders, never saved).
+  const sensorFolders = useMemo(() => {
+    const m = new Map();
+    [...tilesetEntries, ...globalEntries].forEach(e => {
+      if (e.type !== 'folder' || !e.sensor) return;
+      const folder = SensorUI.engineFolder(e.sensor);
+      m.set(e.sensor.ref, { ui: e.sensor, folder, candidates: SensorEngine.buildCandidates(folder) });
+    });
+    return m;
+  }, [tilesetEntries, globalEntries]);
+  const sensorLayer = useMemo(() => SensorUI.deriveLayer({ grid, refs: palette.refs, folders: sensorFolders }), [grid, palette, sensorFolders]);
+
+  // Composed variants (quadrants of the base tiles drawn on a canvas). Cache: key -> blob URL | "fail" | "pending".
+  const composedRef = useRef(new Map());
+  const [, setComposedTick] = useState(0);
+  const loadTileImage = src => new Promise((resolve, reject) => {
+    const im = new Image();
+    im.crossOrigin = "anonymous"; // needed so toBlob() is not blocked by a tainted canvas
+    im.onload = () => resolve(im);
+    im.onerror = () => reject(new Error(`image failed to load: ${src}`));
+    im.src = src;
+  });
+  const tileImageUrl = ref => { const t = tilesByRefRef.current.get(ref); return t ? (t.blobSrc ?? t.src) : null; };
+  const composedKeyFor = (folderRef, code, recipe) => `${SensorUI.composeKey(folderRef, code)}|${recipe.map(e => tileImageUrl(e.sourceTileRef)).join(",")}`;
+  const composeVariant = async recipe => {
+    const imgs = new Map();
+    for (const e of recipe) {
+      if (imgs.has(e.sourceTileRef)) continue;
+      const url = tileImageUrl(e.sourceTileRef);
+      if (!url) throw new Error(`missing base tile ${e.sourceTileRef}`);
+      imgs.set(e.sourceTileRef, await loadTileImage(url));
+    }
+    const first = imgs.values().next().value;
+    const W = first.naturalWidth || 100, H = first.naturalHeight || 100;
+    const cv = document.createElement("canvas");
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext("2d");
+    ctx.imageSmoothingEnabled = false;
+    for (const p of SensorUI.composePlan(recipe, W, H)) {
+      ctx.save();
+      ctx.beginPath(); ctx.rect(p.x, p.y, p.w, p.h); ctx.clip();
+      ctx.translate(W / 2, H / 2); ctx.rotate(p.steps * Math.PI / 2);
+      ctx.drawImage(imgs.get(p.sourceTileRef), -W / 2, -H / 2, W, H);
+      ctx.restore();
+    }
+    const blob = await new Promise((resolve, reject) => cv.toBlob(b => (b ? resolve(b) : reject(new Error("toBlob returned null"))), "image/png"));
+    return URL.createObjectURL(blob);
+  };
+  // -> blob URL when ready, "fail" when composing failed (CORS taint / missing base), null while pending. Starts the work once.
+  const requestComposed = (folderRef, code, recipe) => {
+    const key = composedKeyFor(folderRef, code, recipe);
+    const cache = composedRef.current;
+    const hit = cache.get(key);
+    if (hit === undefined) {
+      cache.set(key, "pending");
+      composeVariant(recipe)
+        .then(url => cache.set(key, url))
+        .catch(err => { console.warn(`[sensor] compose failed for ${folderRef} ${code}:`, err); cache.set(key, "fail"); })
+        .finally(() => setComposedTick(n => n + 1));
+      return null;
+    }
+    return hit === "pending" ? null : hit;
+  };
+  useEffect(() => {
+    sensorLayer.forEach(d => { if (!d.warn && d.status === "composed") requestComposed(d.folderRef, d.code, d.recipe); });
+  }, [sensorLayer]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // What to draw in a cell holding a sensor tile: { src, css } (css = extra transform for derived variants) or { warn: true }.
+  // Composed variants fall back to the folder's 00000000 variant while pending or when composing fails.
+  const sensorVisual = (t, r, c) => {
+    const d = sensorLayer.get(`${r},${c}`);
+    if (!d || d.warn) return { warn: true };
+    if (d.status === "composed") {
+      const url = requestComposed(d.folderRef, d.code, d.recipe);
+      if (url && url !== "fail") return { src: url, css: "" };
+      const fb = sensorFolders.get(d.folderRef)?.candidates["00000000"];
+      const fbTile = fb && fb.status === "explicit" ? fb.pool[0].tile : null;
+      return fbTile ? { src: fbTile.blobSrc ?? fbTile.src, css: "" } : { warn: true };
+    }
+    return { src: d.tile.blobSrc ?? d.tile.src, css: SensorUI.opsToCss(d.ops) };
+  };
 
   // Switch tileset — updates the tile panel and BG colours, and converts board tiles by codename.
   // Fetches the new tileset's tiles if not yet cached, then rewrites the matching PALETTE ENTRIES (cells stay untouched).
@@ -6554,6 +6882,10 @@ function App() {
       <OTGSettingsModal />
       <HistoryModal />
       <FailedTileModal />
+      {sensorWarnFolder && <SensorWarningModal folder={sensorWarnFolder} onClose={() => setSensorWarnFolder(null)} />}
+      {sensorSimFolder && sensorFolders.get(sensorSimFolder) && (
+        <SensorSimulationPanel folder={sensorFolders.get(sensorSimFolder).ui} candidates={sensorFolders.get(sensorSimFolder).candidates} requestComposed={requestComposed} onClose={() => setSensorSimFolder(null)} />
+      )}
       <ToolInfoModal />
       <MemoryModal />
       <ConvertModal />
@@ -6877,6 +7209,7 @@ function App() {
         const allEntries = [...tilesetEntries, ...globalEntries];
         const entry = allEntries.find(e => e.type === 'folder' && e.key === openFolderKey);
         if (!entry) return null;
+        if (entry.sensor) return renderSensorPanel(entry);
         const cardSz = isMobile ? 56 : 72;
         const cols = entry.tiles.length > 16 ? 5 : 4; // wider panel for large folders
         const panelW = cardSz * cols + 5 * (cols - 1) + 12;
@@ -7208,7 +7541,54 @@ function App() {
                     );
                   };
 
+                  // Sensor folder card: 2x2 preview of the first four variants, sparkle centre, yellow glow. The card body selects the
+                  // logical sensor tile; the corner button unfolds the variants.
+                  const renderSensorFolderCard = entry => {
+                    const { key, label, sensor } = entry;
+                    const isThisOpen = openFolderKey === key;
+                    const active = !eraser && sel === sensor.ref;
+                    const preview = sensor.labelled.slice(0, 4);
+                    const hasWarn = sensor.warnings.length > 0 || sensor.unlabelled.length > 0;
+                    const corner = { position: "absolute", top: -7, width: 18, height: 18, fontSize: 11, cursor: "pointer", lineHeight: "18px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" };
+                    return (
+                      <div key={key} data-sensor-card={sensor.ref}
+                        onClick={() => {
+                          setSel(sensor.ref); setEraser(false);
+                          setHandMode(false); setMagnetMode(false); setEyedropperMode(false);
+                          if (highlightMode) { setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }
+                        }}
+                        onMouseDown={e => e.stopPropagation()}
+                        onTouchStart={e => e.stopPropagation()}
+                        title={`${label} (sensor folder: places the right variant automatically)`}
+                        style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: "pointer", position: "relative", overflow: "visible",
+                          border: `${active ? 3 : 2}px solid ${SENSOR_YELLOW}`,
+                          boxShadow: `0 0 ${active ? 12 : 7}px ${active ? 3 : 1}px rgba(245,197,24,${active ? 0.75 : 0.5})`,
+                          background: active ? "rgba(245,197,24,0.12)" : C.panelDeep, transition: "box-shadow 0.12s, background 0.12s" }}>
+                        <div style={{ position: "absolute", inset: 0, borderRadius: 6, overflow: "hidden", display: "grid", gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr", gap: 1 }}>
+                          {preview.map(t => (
+                            <div key={t.ref} style={{ display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", background: C.panelDeep }}>
+                              <img src={t.blobSrc ?? t.src} alt="" className={tileCardLightBg ? "tile-img-checker" : undefined} style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated" }} />
+                            </div>
+                          ))}
+                          {Array.from({ length: Math.max(0, 4 - preview.length) }).map((_, i) => <div key={`e${i}`} style={{ background: C.panelDeep }} />)}
+                        </div>
+                        <div style={{ position: "absolute", inset: 0, zIndex: 3, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
+                          <span style={{ fontSize: 22, lineHeight: 1, filter: "drop-shadow(0 1px 3px rgba(0,0,0,0.9))" }}>✨</span>
+                        </div>
+                        <span data-sensor-unfold={sensor.ref} onClick={e => { e.stopPropagation(); toggleFolder(key, e); }}
+                          style={{ ...corner, right: -7, color: isThisOpen ? SENSOR_YELLOW : "rgba(255,255,255,0.85)" }}
+                          title={isThisOpen ? "Fold" : "Unfold variants"}>{isThisOpen ? "▼" : "▶"}</span>
+                        {hasWarn && (
+                          <span data-sensor-warn={sensor.ref} onClick={e => { e.stopPropagation(); setSensorWarnFolder(sensor); }}
+                            style={{ ...corner, right: 14, color: SENSOR_YELLOW }}
+                            title={sensor.warnings.length ? "The variants disagree on shared settings" : "Some tiles have no sensor code"}>⚠</span>
+                        )}
+                      </div>
+                    );
+                  };
+
                   const renderFolderCard = entry => {
+                    if (entry.sensor) return renderSensorFolderCard(entry);
                     const { key, label, tiles: fTiles } = entry;
                     const isThisOpen = openFolderKey === key;
                     const folderActive = !eraser && fTiles.some(t => t.ref === sel);
@@ -7932,19 +8312,21 @@ function App() {
                     if (!isBottomTile(t) || isPriorityTile(t)) return null;
                     const mult   = getTileMultiplier(t);
                     const off    = getEffectiveOffset(t, r, c);
-                    const rotDeg = (gridRotations[`${r},${c}`] ?? 0) * 90;
-                    const fStep  = gridFlips[`${r},${c}`] ?? 0;
+                    const sv = t.isSensor ? sensorVisual(t, r, c) : null; if (sv && sv.warn) return null;
+                    const imgSrc = sv ? sv.src : (t.blobSrc ?? t.src), svCss = sv && sv.css ? " " + sv.css : "";
+                    const rotDeg = sv ? 0 : (gridRotations[`${r},${c}`] ?? 0) * 90;
+                    const fStep  = sv ? 0 : (gridFlips[`${r},${c}`] ?? 0);
                     const fxB = (fStep === 1 || fStep === 2) ? -1 : 1; const fyB = (fStep === 2 || fStep === 3) ? -1 : 1;
                     const cellPx = CELL * zoom;
                     const ox = (off.ox / 100) * cellPx;
                     const oy = (off.oy / 100) * cellPx;
-                    const tileImg = <img key={`bot${r}-${c}`} src={t.blobSrc ?? t.src} alt="" draggable={false} decoding="async"
-                      style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%) rotate(${rotDeg}deg) scale(${fxB}, ${fyB})`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 1 }}
+                    const tileImg = <img key={`bot${r}-${c}`} src={imgSrc} alt="" draggable={false} decoding="async"
+                      style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%) rotate(${rotDeg}deg) scale(${fxB}, ${fyB})${svCss}`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 1 }}
                     />;
                     if (!isAutoShadowTile(t)) return tileImg;
                     return [
-                      <img key={`sbot${r}-${c}`} src={t.blobSrc ?? t.src} alt="" draggable={false}
-                        style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy + 0.3 * cellPx, width: cellPx * mult, height: "auto", transform: `translateY(-50%) scale(${fxB}, ${fyB})`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 0, filter: "brightness(0)", opacity: 0.2 }}
+                      <img key={`sbot${r}-${c}`} src={imgSrc} alt="" draggable={false}
+                        style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy + 0.3 * cellPx, width: cellPx * mult, height: "auto", transform: `translateY(-50%) scale(${fxB}, ${fyB})${svCss}`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 0, filter: "brightness(0)", opacity: 0.2 }}
                       />,
                       tileImg,
                     ];
@@ -7959,19 +8341,21 @@ function App() {
                     if (isBottomTile(t)) return null;
                     const mult   = getTileMultiplier(t);
                     const off    = getEffectiveOffset(t, r, c);
-                    const rotDeg = (gridRotations[`${r},${c}`] ?? 0) * 90;
-                    const fStep  = gridFlips[`${r},${c}`] ?? 0;
+                    const sv = t.isSensor ? sensorVisual(t, r, c) : null; if (sv && sv.warn) return null;
+                    const imgSrc = sv ? sv.src : (t.blobSrc ?? t.src), svCss = sv && sv.css ? " " + sv.css : "";
+                    const rotDeg = sv ? 0 : (gridRotations[`${r},${c}`] ?? 0) * 90;
+                    const fStep  = sv ? 0 : (gridFlips[`${r},${c}`] ?? 0);
                     const fxN = (fStep === 1 || fStep === 2) ? -1 : 1; const fyN = (fStep === 2 || fStep === 3) ? -1 : 1;
                     const cellPx = CELL * zoom;
                     const ox = (off.ox / 100) * cellPx;
                     const oy = (off.oy / 100) * cellPx;
-                    const tileImg = <img key={`t${r}-${c}`} src={t.blobSrc ?? t.src} alt="" draggable={false} decoding="async"
-                      style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%) rotate(${rotDeg}deg) scale(${fxN}, ${fyN})`, pointerEvents: "none", imageRendering: "pixelated", zIndex: r + 2 }}
+                    const tileImg = <img key={`t${r}-${c}`} src={imgSrc} alt="" draggable={false} decoding="async"
+                      style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%) rotate(${rotDeg}deg) scale(${fxN}, ${fyN})${svCss}`, pointerEvents: "none", imageRendering: "pixelated", zIndex: r + 2 }}
                     />;
                     if (!isAutoShadowTile(t)) return tileImg;
                     return [
-                      <img key={`s${r}-${c}`} src={t.blobSrc ?? t.src} alt="" draggable={false}
-                        style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy + 0.3 * cellPx, width: cellPx * mult, height: "auto", transform: `translateY(-50%) scale(${fxN}, ${fyN})`, pointerEvents: "none", imageRendering: "pixelated", zIndex: r + 1, filter: "brightness(0)", opacity: 0.2 }}
+                      <img key={`s${r}-${c}`} src={imgSrc} alt="" draggable={false}
+                        style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy + 0.3 * cellPx, width: cellPx * mult, height: "auto", transform: `translateY(-50%) scale(${fxN}, ${fyN})${svCss}`, pointerEvents: "none", imageRendering: "pixelated", zIndex: r + 1, filter: "brightness(0)", opacity: 0.2 }}
                       />,
                       tileImg,
                     ];
@@ -7985,19 +8369,21 @@ function App() {
                     if (!isPriorityTile(t)) return null;
                     const mult   = getTileMultiplier(t);
                     const off    = getEffectiveOffset(t, r, c);
-                    const rotDeg = (gridRotations[`${r},${c}`] ?? 0) * 90;
-                    const fStep  = gridFlips[`${r},${c}`] ?? 0;
+                    const sv = t.isSensor ? sensorVisual(t, r, c) : null; if (sv && sv.warn) return null;
+                    const imgSrc = sv ? sv.src : (t.blobSrc ?? t.src), svCss = sv && sv.css ? " " + sv.css : "";
+                    const rotDeg = sv ? 0 : (gridRotations[`${r},${c}`] ?? 0) * 90;
+                    const fStep  = sv ? 0 : (gridFlips[`${r},${c}`] ?? 0);
                     const fxP = (fStep === 1 || fStep === 2) ? -1 : 1; const fyP = (fStep === 2 || fStep === 3) ? -1 : 1;
                     const cellPx = CELL * zoom;
                     const ox = (off.ox / 100) * cellPx;
                     const oy = (off.oy / 100) * cellPx;
-                    const tileImg = <img key={`prio${r}-${c}`} src={t.blobSrc ?? t.src} alt="" draggable={false} decoding="async"
-                      style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%) rotate(${rotDeg}deg) scale(${fxP}, ${fyP})`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 9999 }}
+                    const tileImg = <img key={`prio${r}-${c}`} src={imgSrc} alt="" draggable={false} decoding="async"
+                      style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%) rotate(${rotDeg}deg) scale(${fxP}, ${fyP})${svCss}`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 9999 }}
                     />;
                     if (!isAutoShadowTile(t)) return tileImg;
                     return [
-                      <img key={`sprio${r}-${c}`} src={t.blobSrc ?? t.src} alt="" draggable={false}
-                        style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy + 0.3 * cellPx, width: cellPx * mult, height: "auto", transform: `translateY(-50%) scale(${fxP}, ${fyP})`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 9998, filter: "brightness(0)", opacity: 0.2 }}
+                      <img key={`sprio${r}-${c}`} src={imgSrc} alt="" draggable={false}
+                        style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy + 0.3 * cellPx, width: cellPx * mult, height: "auto", transform: `translateY(-50%) scale(${fxP}, ${fyP})${svCss}`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 9998, filter: "brightness(0)", opacity: 0.2 }}
                       />,
                       tileImg,
                     ];
@@ -8011,7 +8397,8 @@ function App() {
                   const warnings = [];
                   grid.forEach((row, r) => row.forEach((id, c) => {
                     if (id == null || refAt(palette, id) === SPACE_REF) return;
-                    if (getCellTile(id)) return;
+                    const gt = getCellTile(id);
+                    if (gt && !(gt.isSensor && sensorLayer.get(`${r},${c}`)?.warn)) return;
                     warnings.push(
                       <div key={`ghost${r}-${c}`} style={{ position: "absolute", left: c * cellPx, top: (r + 1) * cellPx, width: cellPx, height: cellPx, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none", zIndex: 10003 }}>
                         <span style={{ fontSize, lineHeight: 1 }}>⚠️</span>
