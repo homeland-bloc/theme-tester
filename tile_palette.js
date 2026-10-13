@@ -103,6 +103,42 @@
     return { palette: { refs }, grid: newGrid, merged: true };
   };
 
+  // ── Symbols ───────────────────────────────────────────────────────────
+  // Single-character tile symbols (seeds come later; no encoder here). '6' is the warn tile and '7' the space tile: nothing else may
+  // use them and suggestions skip them. OFFICIAL_SYMBOLS is the part of the official table that is settled (codename stems);
+  // spawn / objective / springpad digits are not listed, so digits are never suggested.
+  const SYMBOL_WARN = "6", SYMBOL_SPACE = "7";
+  const RESERVED_SYMBOLS = Object.freeze({ [SYMBOL_WARN]: WARN_REF, [SYMBOL_SPACE]: SPACE_REF });
+  const OFFICIAL_SYMBOLS = Object.freeze({
+    M: "Wall1", X: "Wall2", Y: "Crate", C: "Barrel", F: "Bush", T: "Cactus", B: "Skull", N: "Fence", W: "Water", a: "Rope",
+    c: "Teleporter blue", d: "Teleporter green", e: "Teleporter red", f: "Teleporter yellow", w: "Fast", z: "Slow",
+  });
+  const isReservedSymbol = ch => Object.prototype.hasOwnProperty.call(RESERVED_SYMBOLS, ch);
+  const symbolForSpecial = ref => (ref === WARN_REF ? SYMBOL_WARN : ref === SPACE_REF ? SYMBOL_SPACE : null);
+  const specialForSymbol = ch => (isReservedSymbol(ch) ? RESERVED_SYMBOLS[ch] : null);
+  const SUGGESTION_POOL = "ABDEGHIJKLOPQRSUVZbghijklmnopqrstuvxy".split("").concat("!#$%&*+-=?@^~<>".split(""));
+  // First free character for a tileset-exclusive tile: not reserved, not official, not in `used`, never a digit. null when exhausted.
+  const suggestSymbol = used => {
+    const taken = new Set(used || []);
+    return SUGGESTION_POOL.find(ch => !taken.has(ch) && !isReservedSymbol(ch) && !(ch in OFFICIAL_SYMBOLS)) ?? null;
+  };
+
+  // ── Counting ──────────────────────────────────────────────────────────
+  // -> [{ ref, count }] for every entry used on the map, highest count first (ties keep palette order). Empty cells and free
+  // slots are not counted; special tiles (space / warn) are entries like any other. A sensor folder is one entry (cells hold its s: ref).
+  const countRefs = (palette, grid) => {
+    const counts = new Map();
+    for (const row of grid) for (const c of row) {
+      if (c == null) continue;
+      const ref = palette.refs[c];
+      if (ref == null) continue;
+      counts.set(ref, (counts.get(ref) || 0) + 1);
+    }
+    return Array.from(counts, ([ref, count]) => ({ ref, count, order: palette.refs.indexOf(ref) }))
+      .sort((a, b) => (b.count - a.count) || (a.order - b.order))
+      .map(({ ref, count }) => ({ ref, count }));
+  };
+
   // ── Storage: {v:2, palette:[ref strings], grid:[[1-based index | null]]} ──────────────────────────────────
   // Global refs are written as the bare Resources path, exactly like the format before refs existed, so older
   // saves and newer saves are interchangeable. d:/u:/space/warn are written as they are.
@@ -174,7 +210,8 @@
     KINDS, SPACE_REF, WARN_REF, STORAGE_VERSION,
     makeRef, parseRef, isRef, refKind,
     createPalette, clonePalette, indexOfRef, paletteIndexFor, refAt,
-    usedIndexes, removeUnused, compactForExport, remapEntry,
+    usedIndexes, removeUnused, compactForExport, remapEntry, countRefs,
+    SYMBOL_WARN, SYMBOL_SPACE, RESERVED_SYMBOLS, OFFICIAL_SYMBOLS, isReservedSymbol, symbolForSpecial, specialForSymbol, suggestSymbol,
     encodeForStorage, decodeFromStorage,
     planSwitch, applySwitchPlan,
   };

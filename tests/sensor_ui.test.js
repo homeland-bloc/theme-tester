@@ -45,8 +45,9 @@ test("codeGridCells", () => {
 
 test("splitGroupPatch", () => {
   const { group, own } = U.splitGroupPatch({ symbol: "W", rotatable: true, codename: "a", sensor_code: "00000000", sensor_roll: 2, offset_x: 1 });
-  assert.deepStrictEqual(group, { symbol: "W", rotatable: true, offset_x: 1 });
-  assert.deepStrictEqual(own, { codename: "a", sensor_code: "00000000", sensor_roll: 2 });
+  assert.deepStrictEqual(group, { symbol: "W", rotatable: true });
+  assert.deepStrictEqual(U.splitGroupPatch({ size_multiplier: 1.5, offset_x: 1, offset_y: 2, show_tile_count: true }).group, {});
+  assert.deepStrictEqual(own, { codename: "a", sensor_code: "00000000", sensor_roll: 2, offset_x: 1 }); // offsets stay on the row
 });
 
 test("makeFolder: plain, sensor, mixed", () => {
@@ -69,7 +70,7 @@ test("divergence ignores code, image, codename, sort, roll; reports flags/size/o
   assert.deepStrictEqual(U.divergence([a, b]), []);
   const c = T("c", "00001000", { dbBottomRender: false, dbSizeMultiplier: 2, dbOffsetX: 0, symbol: null });
   const d = U.divergence([a, b, c]).map(x => x.field).sort();
-  assert.deepStrictEqual(d, ["dbBottomRender", "dbSizeMultiplier", "symbol"]);
+  assert.deepStrictEqual(d, ["dbBottomRender", "symbol"]); // size and offsets are per variant, never a divergence
   // unlabelled tiles are not compared
   assert.deepStrictEqual(U.divergence([a, T("u", null, { dbBottomRender: false })]), []);
 });
@@ -189,6 +190,108 @@ test("resolveLoadedSensorRef", () => {
   assert.strictEqual(U.resolveLoadedSensorRef("s:old|Gone", "new", ["Walls"]), null);
   assert.strictEqual(U.resolveLoadedSensorRef("s:global|water", "new", ["water"]), null);
   assert.strictEqual(U.resolveLoadedSensorRef("s:old|Walls", null, ["Walls"]), null);
+});
+
+test("toggleCodeBit / normalisedHint", () => {
+  assert.strictEqual(U.toggleCodeBit("", 1), "01000000");
+  assert.strictEqual(U.toggleCodeBit("01000000", 1), "00000000");
+  assert.strictEqual(U.toggleCodeBit("0101", 7), "01010001");
+  assert.strictEqual(U.toggleCodeBit("01000000", 3), "01010000");
+  assert.strictEqual(U.normalisedHint("10000000"), "00000000"); // NW alone has no N and W
+  assert.strictEqual(U.normalisedHint("01010000"), null);
+  assert.strictEqual(U.normalisedHint("0101"), null);
+  assert.strictEqual(U.normalisedHint(""), null);
+});
+
+test("pickers: a sensor folder is one entry, variants hidden / canonicalised", () => {
+  const v1 = { ref: "d:1", sensorCode: "00000000" }, v2 = { ref: "d:2", sensorCode: "00001000" }, un = { ref: "d:3", sensorCode: null };
+  const folder = { tiles: [v1, v2, un], labelled: [v1, v2] };
+  const plain = { ref: "d:9" }, sTile = { ref: "s:ts|F", isSensor: true, sensorFolder: folder };
+  const list = [v1, v2, un, plain, sTile];
+  assert.deepStrictEqual(U.hideSensorVariants(list).map(t => t.ref), ["d:9", "s:ts|F"]);
+  const owners = U.variantOwners(list);
+  assert.strictEqual(U.canonicalRef("d:2", owners), "s:ts|F");
+  assert.strictEqual(U.canonicalRef("d:9", owners), "d:9");
+  assert.deepStrictEqual(U.canonicalRefs(["d:1", "d:9", "d:2", "s:ts|F"], owners), ["s:ts|F", "d:9"]);
+  assert.deepStrictEqual(U.folderPreviewTiles(folder).map(t => t.ref), ["d:1", "d:2"]);
+  assert.deepStrictEqual(U.hideSensorVariants([v1, v2]).map(t => t.ref), ["d:1", "d:2"]); // no folder entry in the list: nothing hidden
+});
+
+test("parseSymbolInput: empty, last code point, 6 and 7 reserved; suggestions skip used symbols", () => {
+  assert.deepStrictEqual(U.parseSymbolInput(""), { ok: true, value: null });
+  assert.deepStrictEqual(U.parseSymbolInput("ab"), { ok: true, value: "b" });
+  assert.strictEqual(U.parseSymbolInput("6").ok, false);
+  assert.strictEqual(U.parseSymbolInput("7").ok, false);
+  assert.match(U.parseSymbolInput("6").error, /warn/);
+  assert.match(U.parseSymbolInput("7").error, /space/);
+  assert.strictEqual(U.parseSymbolInput("8").ok, true);
+  assert.deepStrictEqual(U.usedSymbols([{ symbol: "A" }, { symbol: null }, {}]), ["A"]);
+  assert.strictEqual(U.suggestSymbol([{ symbol: "A" }, { symbol: "B" }]), "D");
+});
+
+test("imageOps: dimensions and where pixels land", () => {
+  const at = (r, x, y) => [r.matrix[0] * x + r.matrix[2] * y + r.matrix[4], r.matrix[1] * x + r.matrix[3] * y + r.matrix[5]];
+  // 4x2 image, pixel (0,0) is its top-left corner point
+  let r = U.imageOps([], 4, 2);
+  assert.deepStrictEqual([r.width, r.height, at(r, 0, 0)], [4, 2, [0, 0]]);
+  r = U.imageOps(["rotR"], 4, 2); // clockwise: the top-left goes to the top-right
+  assert.deepStrictEqual([r.width, r.height, at(r, 0, 0), at(r, 4, 0), at(r, 0, 2)], [2, 4, [2, 0], [2, 4], [0, 0]]);
+  r = U.imageOps(["rotL"], 4, 2); // counter-clockwise: the top-left goes to the bottom-left
+  assert.deepStrictEqual([r.width, r.height, at(r, 0, 0), at(r, 4, 0)], [2, 4, [0, 4], [0, 0]]);
+  r = U.imageOps(["flipH"], 4, 2);
+  assert.deepStrictEqual([r.width, r.height, at(r, 0, 0), at(r, 4, 2)], [4, 2, [4, 0], [0, 2]]);
+  r = U.imageOps(["flipV"], 4, 2);
+  assert.deepStrictEqual([at(r, 0, 0), at(r, 4, 2)], [[0, 2], [4, 0]]);
+  // rotR x2 = flipH + flipV; rotR then rotL = identity; order matters (rotR then flipH != flipH then rotR)
+  const a = U.imageOps(["rotR", "rotR"], 4, 2), b = U.imageOps(["flipH", "flipV"], 4, 2);
+  assert.deepStrictEqual(a.matrix.map(Math.abs), b.matrix.map(Math.abs));
+  assert.deepStrictEqual(at(a, 1, 1), at(b, 1, 1));
+  const id = U.imageOps(["rotR", "rotL"], 4, 2);
+  assert.deepStrictEqual([id.width, id.height, at(id, 3, 1)], [4, 2, [3, 1]]);
+  assert.notDeepStrictEqual(at(U.imageOps(["rotR", "flipH"], 4, 2), 0, 0), at(U.imageOps(["flipH", "rotR"], 4, 2), 0, 0));
+  assert.deepStrictEqual(U.imageOps(["bogus"], 3, 3).matrix, [1, 0, 0, 1, 0, 0]);
+});
+test("withFreshVersion replaces any old ?v=", () => {
+  assert.strictEqual(U.withFreshVersion("https://x/y/a.png?v=1", 22), "https://x/y/a.png?v=22");
+  assert.strictEqual(U.withFreshVersion("https://x/y/a.png", 5), "https://x/y/a.png?v=5");
+});
+
+test("preloadImages: counts, dedupes, skips the overlay for cached images", async () => {
+  const progress = [];
+  const cached = U.preloadImages(["a", "b", "a", null], (u, cb) => cb(true), (d, t) => progress.push([d, t]));
+  assert.strictEqual(cached.total, 2);
+  assert.ok(cached.isDone()); // everything was cached: nothing to wait for
+  assert.deepStrictEqual(progress, [[1, 2], [2, 2]]);
+  assert.deepStrictEqual(await cached.promise, { total: 2, failed: 0 });
+  const pending = [];
+  const slow = U.preloadImages(["x", "y", "z"], (u, cb) => pending.push([u, cb]));
+  assert.ok(!slow.isDone());
+  pending[0][1](true); pending[1][1](false); pending[1][1](true); // a second call for the same url is ignored
+  assert.strictEqual(slow.done, 2);
+  assert.ok(!slow.isDone());
+  pending[2][1](true);
+  assert.ok(slow.isDone());
+  assert.deepStrictEqual(await slow.promise, { total: 3, failed: 1 });
+  assert.deepStrictEqual(await U.preloadImages([], () => {}).promise, { total: 0, failed: 0 });
+  assert.strictEqual(U.progressLabel("Loading tiles", 12, 30), "Loading tiles 12/30");
+  assert.strictEqual(U.progressLabel("Loading tiles", 0, 0), "Loading tiles");
+});
+
+test("global Rails folder: six explicit codenames, loop order, codes unchanged", () => {
+  const m = JSON.parse(require("fs").readFileSync(__dirname + "/../Resources/manifest.json", "utf8")).global;
+  const cfg = m.sensor.rails, files = U.globalFolderFiles(m.folders.rails, cfg);
+  assert.deepStrictEqual(files, ["TL.png", "TR.png", "BL.png", "BR.png", "Fence.png", "Ver.png"]);
+  assert.deepStrictEqual(m.folders.rails, files); // the manifest file order agrees too
+  assert.deepStrictEqual(files.map(f => U.globalFileName(f, cfg)), ["RailTopLeft", "RailTopRight", "RailBottomLeft", "RailBottomRight", "RailHorizontal", "RailVertical"]);
+  assert.deepStrictEqual(files.map(f => cfg.codes[f]), ["01010000", "01001000", "00010010", "00001010", "00011000", "01000010"]);
+  // folder built the way the app does: variants come out in that order, first four = the loop
+  const tiles = files.map((f, i) => ({ ref: "g:Resources/Global/Rails/" + f, codename: U.globalFileName(f, cfg), sensorCode: cfg.codes[f], sensorRoll: 1, sortIndex: i }));
+  const folder = U.makeFolder({ scope: "global", folderKey: "rails", label: "Rails", tiles: tiles.slice().reverse(), cfg });
+  assert.deepStrictEqual(folder.labelled.map(t => t.codename), ["RailTopLeft", "RailTopRight", "RailBottomLeft", "RailBottomRight", "RailHorizontal", "RailVertical"]);
+  assert.deepStrictEqual(U.folderPreviewTiles(folder).map(t => t.codename), ["RailTopLeft", "RailTopRight", "RailBottomLeft", "RailBottomRight"]);
+  // other global folders are untouched
+  assert.deepStrictEqual(U.globalFolderFiles(m.folders.water, m.sensor.water), m.folders.water);
+  assert.strictEqual(U.globalFileName("1.png", m.sensor.water), null);
 });
 
 console.log(`${passed} passed`);
