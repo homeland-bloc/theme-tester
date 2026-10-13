@@ -1198,6 +1198,10 @@ function InfoModalBody(props) {
   const [codenameInput,     setCodenameInput]     = React.useState(t.isDb ? (t.codename ?? '') : (tileNames[t.ref] || defaultCodename_));
   const [folderKeyInput,    setFolderKeyInput]    = React.useState(t.folderLabel ?? '');
   const [sortIndexInput,    setSortIndexInput]    = React.useState(t.sortIndex != null ? String(t.sortIndex) : '');
+  const [sensorCodeInput,   setSensorCodeInput]   = React.useState(t.sensorCode ?? '');
+  const [sensorRollInput,   setSensorRollInput]   = React.useState(t.sensorRoll != null ? String(t.sensorRoll) : '1');
+  const [symbolInput,       setSymbolInput]       = React.useState(t.symbol ?? '');
+  const [sensorError,       setSensorError]       = React.useState(null);
     // Raw DB row for this tile (image_url, sensor_code ...). The file name is parsed from image_url before the '?'.
     const dbRow = t.isDb ? (dbTilesByTsId[t.tilesetId] ?? []).find(r => r.id === t.dbId) : null;
     const currentPath = dbRow ? repoPathFromUrl(dbRow.image_url) : null;
@@ -1213,8 +1217,18 @@ function InfoModalBody(props) {
     setCodenameInput(t.isDb ? (t.codename ?? '') : (tileNames[t.ref] || defaultCodename_));
     setFolderKeyInput(t.folderLabel ?? '');
     setSortIndexInput(t.sortIndex != null ? String(t.sortIndex) : '');
+    setSensorCodeInput(t.sensorCode ?? '');
+    setSensorRollInput(t.sensorRoll != null ? String(t.sensorRoll) : '1');
+    setSymbolInput(t.symbol ?? '');
     setFileNameInput(currentFileName);
   }, [t.dbId]);
+  // Sensor fields: parsed values, edit state against the DB value, and whether this tile belongs to a sensor group
+  // (a folder where at least one row has a sensor code). Group fields saved from any variant go to every row of the folder.
+  const codeParsed = SensorUI.parseCodeInput(sensorCodeInput);
+  const rollParsed = SensorUI.parseRollInput(sensorRollInput);
+  const codeState = SensorUI.codeFieldState(sensorCodeInput, t.sensorCode);
+  const inSensorGroup = !!(t.isDb && t.folderLabel && ((dbTilesByTsId[t.tilesetId] ?? []).some(r => r.folder_key === t.folderLabel && r.id !== t.dbId && r.sensor_code != null) || (codeParsed.ok && codeParsed.value != null)));
+  const groupNote = inSensorGroup ? <span style={{ fontSize: 9, color: SENSOR_YELLOW, marginLeft: 4, fontWeight: 400 }}>applies to the whole folder</span> : null;
   const [flagTooltip,       setFlagTooltip]       = React.useState(null);
   const [deleteConfirmId,   setDeleteConfirmId]   = React.useState(null);
   const [deleteConfirmInput, setDeleteConfirmInput] = React.useState('');
@@ -1332,7 +1346,28 @@ function InfoModalBody(props) {
       return resp.ok;
     };
 
+    // One multi-row PATCH of the group-level columns onto every row of (tileset, folder_key).
+    const patchGroup = async (folderKey, body) => {
+      const token = await getValidToken();
+      const url = `${WORKER_URL}/rest/v1/tiles?tileset_id=eq.${encodeURIComponent(t.tilesetId)}&folder_key=eq.${encodeURIComponent(folderKey)}`;
+      const resp = await workerFetch(url, {
+        method: 'PATCH',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+        body: JSON.stringify(body),
+      });
+      if (resp.ok) {
+        setDbTilesByTsId(prev => {
+          const tsId = t.tilesetId;
+          if (!prev[tsId]) return prev;
+          return { ...prev, [tsId]: prev[tsId].map(row => row.folder_key === folderKey ? { ...row, ...body } : row) };
+        });
+      }
+      return resp.ok;
+    };
+
     const doSave = async () => {
+      if (!codeParsed.ok || !rollParsed.ok) { setSensorError(codeParsed.error || rollParsed.error); return; }
+      setSensorError(null);
       const savedScroll = modalScrollRef.current?.scrollTop ?? 0;
       setSaveStatus('saving');
       setRenameError(null);
@@ -1354,6 +1389,9 @@ function InfoModalBody(props) {
           codename: codenameInput.trim() || t.codename,
           folder_key: folderKeyInput.trim() || null,
           sort_index: sortIndexInput !== '' ? parseInt(sortIndexInput, 10) : null,
+          sensor_code: codeParsed.value,
+          sensor_roll: rollParsed.value ?? 1,
+          symbol: symbolInput.trim() ? [...symbolInput.trim()][0] : null,
           last_updated_at: new Date().toISOString(),
           last_updated_by: currentUser.id,
         };
@@ -1380,7 +1418,14 @@ function InfoModalBody(props) {
           body.image_url = rawUrl(newPath);
         }
         try {
-          ok = await patchTile(body);
+          if (inSensorGroup && body.folder_key) {
+            // Group columns go to every row of the folder in one PATCH; the rest stays per tile.
+            const { group, own } = SensorUI.splitGroupPatch(body);
+            ok = await patchTile(own);
+            if (ok) ok = await patchGroup(body.folder_key, { ...group, last_updated_at: body.last_updated_at, last_updated_by: body.last_updated_by });
+          } else {
+            ok = await patchTile(body);
+          }
         } catch { ok = false; }
         if (!ok && moved) setRenameRecovery({ ...moved, body });
       } catch (err) {
@@ -1572,10 +1617,10 @@ function InfoModalBody(props) {
                   <button style={{ ...btn(false), fontSize: 10, padding: "3px 7px" }}
                     disabled={!codenameInput.trim()}
                     onClick={() => { setFileNameInput(defaultFileName({ codename: codenameInput.trim(), ext: fileExtOf(currentFileName) })); setRenameError(null); }}>Use codename</button>
-                  {dbRow?.sensor_code && (
+                  {codeParsed.ok && codeParsed.value && (
                     <button style={{ ...btn(false), fontSize: 10, padding: "3px 7px" }}
                       disabled={!folderKeyInput.trim()}
-                      onClick={() => { setFileNameInput(defaultFileName({ sensor: true, folderKey: folderKeyInput.trim(), sensorCode: dbRow.sensor_code })); setRenameError(null); }}>Use codename + sensor code</button>
+                      onClick={() => { setFileNameInput(defaultFileName({ sensor: true, folderKey: folderKeyInput.trim(), sensorCode: codeParsed.value })); setRenameError(null); }}>Use codename + sensor code</button>
                   )}
                 </div>
               ) : (
@@ -1619,9 +1664,50 @@ function InfoModalBody(props) {
           </div>
         )}
 
+        {/* Sensor fields — DB tiles. Code: 8 chars of 0/1, empty = none ("00000000" is a real code). */}
+        {t.isDb && (() => {
+          const col = codeState === "saved" ? "#4ade80" : codeState === "edited" ? "#f97316" : C.danger;
+          const rollState = rollParsed.ok && (rollParsed.value ?? 1) === (t.sensorRoll ?? 1) ? "#4ade80" : "#f97316";
+          return (
+            <div data-sensor-fields style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>sensor_code</span>
+                <div style={{ display: "flex", flexDirection: "column", gap: 3, flex: 1 }}>
+                  <input data-sensor-code value={sensorCodeInput} maxLength={8} readOnly={!canEditDb}
+                    onChange={e => { if (canEditDb) { setSensorCodeInput(e.target.value.replace(/[^01]/g, '')); setSensorError(null); } }}
+                    placeholder="none (8 digits of 0/1)" spellCheck={false}
+                    style={{ background: !canEditDb ? "transparent" : "rgba(180,40,40,0.09)", border: `1px solid ${col}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none", letterSpacing: 2 }} />
+                  <span style={{ fontSize: 9, color: col }}>
+                    {codeState === "saved" ? (t.sensorCode == null ? "no sensor code (saved)" : "saved") : codeState === "edited" ? "edited, not saved" : "needs exactly 8 characters of 0 and 1"}
+                  </span>
+                </div>
+                <SensorCodeGrid code={codeParsed.ok ? codeParsed.value : null} color={col} />
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>sensor_roll</span>
+                <input data-sensor-roll type="number" min="0" step="1" value={sensorRollInput} readOnly={!canEditDb}
+                  onChange={e => { if (canEditDb) { setSensorRollInput(e.target.value); setSensorError(null); } }}
+                  style={{ width: 72, background: !canEditDb ? "transparent" : "rgba(180,40,40,0.09)", border: `1px solid ${rollParsed.ok ? rollState : C.danger}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none" }} />
+                <span style={{ fontSize: 10, color: rollParsed.ok && rollParsed.value === 0 ? C.danger : C.muted }}>
+                  {rollParsed.ok && rollParsed.value === 0 ? "never picked" : "weight when several tiles share a code"}
+                </span>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>symbol{groupNote}</span>
+                <input data-symbol value={symbolInput} readOnly={!canEditDb} maxLength={2}
+                  onChange={e => { if (canEditDb) setSymbolInput([...e.target.value].slice(-1)[0] ?? ''); }}
+                  placeholder="-"
+                  style={{ width: 40, textAlign: "center", background: !canEditDb ? "transparent" : "rgba(180,40,40,0.09)", border: `1px solid ${(symbolInput.trim() || null) === (t.symbol ?? null) ? "#4ade80" : "#f97316"}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none" }} />
+                <span style={{ fontSize: 10, color: C.muted }}>one character, used by seeds</span>
+              </div>
+              {sensorError && <span style={{ fontSize: 11, color: C.danger }}>{sensorError}</span>}
+            </div>
+          );
+        })()}
+
         {/* Size multiplier */}
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Size multiplier (%)<FlagTip id="size_multiplier" /></span>
+          <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Size multiplier (%)<FlagTip id="size_multiplier" />{groupNote}</span>
           <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepMult(-0.05)}>−</button>
           <input type="number" value={multInput} step="0.05"
             onChange={e => setMultInput(e.target.value)}
@@ -1639,7 +1725,7 @@ function InfoModalBody(props) {
         <FlagDesc id="size_multiplier" />
 
         {/* Offsets */}
-        <span style={{ fontSize: 11, color: C.muted, fontWeight: 600 }}>Offsets (%) 📐</span>
+        <span style={{ fontSize: 11, color: C.muted, fontWeight: 600 }}>Offsets (%) 📐{groupNote}</span>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Horizontal<FlagTip id="offset_h" /></span>
           <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepOx(-1)}>−</button>
@@ -1670,6 +1756,7 @@ function InfoModalBody(props) {
           <div style={{ padding: "4px 6px", background: "rgba(255,255,255,0.04)", borderRadius: 4, fontSize: 10, color: C.muted, lineHeight: 1.5 }}>{FLAG_TIPS[flagTooltip]}</div>
         )}
 
+        {inSensorGroup && <span style={{ fontSize: 10, color: SENSOR_YELLOW }}>Flags (rotatable, flippable, bottom, priority, shadow, OTG, mirror offset, count) apply to the whole folder.</span>}
         {/* Boolean flags — 2-column grid.
              Each pair of flag labels occupies one row; the inline tooltip description
              is placed as the NEXT grid item with gridColumn:"1/-1" so it spans both
@@ -1944,6 +2031,19 @@ function sensorEntryVisual(entry, code, status, recipe, folderRef, candidates, r
     return { src: tileUrl(fbTile), css: "", state: url === "fail" ? "failed" : "pending" };
   }
   return { src: tileUrl(entry.tile), css: SensorUI.opsToCss(entry.ops), state: "ok" };
+}
+
+// 3x3 view of a sensor code: neighbour cells "1" filled, "0" outlined, centre an X. Colour = state (green saved, orange edited).
+function SensorCodeGrid({ code, color }) {
+  const cells = SensorUI.codeGridCells(code);
+  return (
+    <div data-sensor-grid style={{ display: "grid", gridTemplateColumns: "repeat(3, 14px)", gap: 2, flexShrink: 0 }} title={code ? `Neighbours: ${code}` : "No sensor code"}>
+      {cells.map((c, i) => (
+        <div key={i} data-cell={c.centre ? "x" : c.filled ? "1" : "0"}
+          style={{ width: 14, height: 14, boxSizing: "border-box", borderRadius: 3, border: `1.5px solid ${color}`, background: c.filled ? color : "transparent", color, fontSize: 10, lineHeight: "11px", textAlign: "center", fontWeight: 700 }}>{c.centre ? "✕" : ""}</div>
+      ))}
+    </div>
+  );
 }
 
 function SensorWarningModal({ folder, onClose }) {

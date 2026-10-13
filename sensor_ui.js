@@ -48,8 +48,6 @@
     const order = [0, 1, 2, 3, null, 4, 5, 6, 7];
     return order.map(bit => (bit === null ? { bit: null, filled: false, centre: true } : { bit, filled: ok && code[bit] === "1", centre: false }));
   };
-  // Name for a sensor tile image: <codename>_<sensorcode><ext>. Null when either part is missing.
-  const codenameSensorFileName = (codename, code, ext) => (codename && Sensor.isCode(code) ? `${codename}_${code}${ext || ".png"}` : null);
 
   // ── Group-level fields ────────────────────────────────────────────────────────────────────────────────
   // These DB columns are shared by every row of a (tileset, folder_key) sensor group.
@@ -183,7 +181,7 @@
   return {
     SCOPE_GLOBAL, GROUP_COLUMNS, DIVERGENCE_FIELDS,
     sensorRef, parseSensorRef, isSensorRef,
-    parseCodeInput, parseRollInput, codeFieldState, codeGridCells, codenameSensorFileName,
+    parseCodeInput, parseRollInput, codeFieldState, codeGridCells,
     splitGroupPatch, divergence, makeFolder, engineFolder,
     deriveLayer, opsToCss, opsLabel, composePlan, composeKey,
     planSensorSwitch, resolveLoadedSensorRef,

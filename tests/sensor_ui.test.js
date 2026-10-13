@@ -43,12 +43,6 @@ test("codeGridCells", () => {
   assert.ok(U.codeGridCells(null).every(c => !c.filled));
 });
 
-test("file name from codename + code", () => {
-  assert.strictEqual(U.codenameSensorFileName("WaterLine", "01101011", ".png"), "WaterLine_01101011.png");
-  assert.strictEqual(U.codenameSensorFileName("", "01101011"), null);
-  assert.strictEqual(U.codenameSensorFileName("X", null), null);
-});
-
 test("splitGroupPatch", () => {
   const { group, own } = U.splitGroupPatch({ symbol: "W", rotatable: true, codename: "a", sensor_code: "00000000", sensor_roll: 2, offset_x: 1 });
   assert.deepStrictEqual(group, { symbol: "W", rotatable: true, offset_x: 1 });
