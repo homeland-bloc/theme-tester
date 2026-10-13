@@ -2041,7 +2041,8 @@ function InfoModalBody(props) {
 
 // ── Sensor folder components (top level: not nested in App, so their state survives App re-renders) ──
 const SENSOR_YELLOW = "#f5c518";
-const STATUS_COLORS = { explicit: "#34d399", derived: "#60a5fa", composed: "#c084fc", missing: "#f87171" };
+const STATUS_COLORS = { explicit: "#34d399", derived: "#60a5fa", composed: "#c084fc", fallback: "#fbbf24", missing: "#f87171" };
+const STATUS_HELP = { explicit: "has its own tile", derived: "spin/flip of a tile", composed: "built from quadrants", fallback: "uses the nearest variant or 00000000", missing: "should be composed but cannot be" };
 const sensorBtnStyle = (color = C.accent) => ({ background: "rgba(255,255,255,0.04)", border: `1px solid ${color}`, borderRadius: 6, color, cursor: "pointer", fontSize: 11, padding: "3px 10px", fontFamily: "'Inter', sans-serif" });
 const tileUrl = t => (t ? (t.blobSrc ?? t.src) : null);
 const fromLabel = e => (e.derivedFrom ? `from ${e.derivedFrom.tile.codename ?? e.derivedFrom.code} (${SensorUI.opsLabel(e.ops)})` : null);
@@ -2116,6 +2117,8 @@ function SensorSimulationPanel({ folder, candidates, requestComposed, onClose })
   const res = SensorEngine.resolve(engine, code, { x: seed, y: seed * 7 + 1, salt: folder.ref, candidates });
   const cov = useMemo(() => SensorEngine.coverage(engine), [engine]);
   const required = useMemo(() => SensorEngine.computeRequiredBase(engine), [engine]);
+  const mode = useMemo(() => SensorEngine.folderMode(engine), [engine]);
+  const shownCov = useMemo(() => (mode.cardinalOnly ? cov.filter(x => SensorEngine.CARDINAL_CODES.includes(x.code)) : cov), [cov, mode]);
   const pool = res ? candidates[res.code].pool : [];
   const pct = SensorEngine.pickPercentages(pool);
   const vis = res ? sensorEntryVisual(res.entry, res.code, res.status, res.recipe, folder.ref, candidates, requestComposed) : null;
@@ -2173,19 +2176,23 @@ function SensorSimulationPanel({ folder, candidates, requestComposed, onClose })
           </div>
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          <span style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: 0.8 }}>Coverage of the 47 codes (click one to load it)</span>
+          <span style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: 0.8 }}>{`Coverage of the ${shownCov.length} ${mode.cardinalOnly ? "cardinal " : ""}codes (click one to load it)`}</span>
           <div style={{ display: "flex", gap: 10, fontSize: 10, color: C.muted, flexWrap: "wrap" }}>
-            {Object.entries(STATUS_COLORS).map(([k, col]) => <span key={k}><span style={{ display: "inline-block", width: 9, height: 9, background: col, borderRadius: 2, marginRight: 4 }} />{k} ({cov.filter(x => x.status === k).length})</span>)}
+            {Object.entries(STATUS_COLORS).map(([k, col]) => <span key={k} title={STATUS_HELP[k]}><span style={{ display: "inline-block", width: 9, height: 9, background: col, borderRadius: 2, marginRight: 4 }} />{k} ({shownCov.filter(x => x.status === k).length})</span>)}
           </div>
           <div data-testid="sim-coverage" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(78px, 1fr))", gap: 3 }}>
-            {cov.map(x => (
-              <button key={x.code} data-status={x.status} onClick={() => setFromCode(x.code)} title={`${x.code}: ${x.status}`}
+            {shownCov.map(x => (
+              <button key={x.code} data-status={x.status} onClick={() => setFromCode(x.code)} title={`${x.code}: ${x.status}${x.fallbackCode ? ` (uses ${x.fallbackCode})` : ""}`}
                 style={{ fontFamily: "monospace", fontSize: 10, padding: "2px 0", cursor: "pointer", color: "#000", background: STATUS_COLORS[x.status], border: x.code === (res && res.code) ? "2px solid #fff" : "1px solid transparent", borderRadius: 4, opacity: 0.9 }}>{x.code}</button>
             ))}
           </div>
           <div data-testid="sim-required" style={{ fontSize: 11, color: required.length ? C.danger : C.muted }}>
-            {!folder.settings.spin ? "Spin is off: no composed variants. Every code you want must be an explicit tile (or flip-derived)."
-              : required.length ? `Base codes still required for composition: ${required.join(", ")}` : "All four base codes exist: missing codes can be composed."}
+            {mode.kind === "fence"
+              ? "Simple fence rule: only the four cardinal neighbours count. An exact match among the three variants wins, anything else shows 00000000."
+              : mode.kind === "compose"
+                ? `${[mode.spin && "Spin", mode.flip && "Flip"].filter(Boolean).join(" and ")} on: codes without a tile are derived or built from tile quadrants (rotated${mode.flip ? "/mirrored" : ""} as allowed).`
+                  + (required.length ? ` Quadrants still missing: ${required.join(", ")}.` : " Every quadrant slot has a source.")
+                : "Connections mode (no spin, no flip): a code without its own tile uses the variant with the most matching neighbours and the fewest dangling connections, otherwise 00000000."}
           </div>
         </div>
         <button style={sensorBtnStyle()} onClick={onClose}>Close</button>
@@ -3457,7 +3464,7 @@ function App() {
     for (const p of SensorUI.composePlan(recipe, W, H)) {
       ctx.save();
       ctx.beginPath(); ctx.rect(p.x, p.y, p.w, p.h); ctx.clip();
-      ctx.translate(W / 2, H / 2); ctx.rotate(p.steps * Math.PI / 2);
+      ctx.translate(W / 2, H / 2); ctx.rotate(p.steps * Math.PI / 2); if (p.flip) ctx.scale(-1, 1);
       ctx.drawImage(imgs.get(p.sourceTileRef), -W / 2, -H / 2, W, H);
       ctx.restore();
     }

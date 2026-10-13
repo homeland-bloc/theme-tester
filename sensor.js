@@ -98,32 +98,83 @@
     return missingIsHoriz ? "edgeV" : "edgeH";
   };
 
-  const BASE_FOR_TYPE = { outer: "00001011", edgeH: "01101011", edgeV: "01101011", inner: "01111111", interior: "11111111" };
-  const BASE_CODES = ["00001011", "01101011", "01111111", "11111111"];
+  // ── Quadrant library ──────────────────────────────────────────────────────────────────────────────────
+  // Every explicit (usable) tile contributes its four quadrants, each classified by position (0 TL, 1 TR, 2 BR, 3 BL)
+  // and type. A "slot" is a (position, type) pair: 4 x 5 = 20 slots. A slot is covered when some tile quadrant lands on it
+  // under the transforms the folder allows: flip (horizontal mirror, TL<->TR and BL<->BR) and spin (clockwise quarter
+  // turns; an odd number of turns swaps edgeH and edgeV). Order of application: flip first, then spin.
+  const SLOT_TYPES = ["outer", "edgeH", "edgeV", "inner", "interior"];
+  const FLIP_POS = [1, 0, 3, 2];
+  const SWAP_EDGE = { outer: "outer", edgeH: "edgeV", edgeV: "edgeH", inner: "inner", interior: "interior" };
+  const POS_NAMES = ["top-left", "top-right", "bottom-right", "bottom-left"];
+  const slotKey = (q, type) => q + "|" + type;
+  const slotLabel = (q, type) => {
+    if (type === "outer") return POS_NAMES[q] + " outer corner";
+    if (type === "inner") return POS_NAMES[q] + " inner corner";
+    if (type === "interior") return POS_NAMES[q] + " interior";
+    if (type === "edgeH") return POS_NAMES[q] + (q === 0 || q === 1 ? " top edge" : " bottom edge");
+    return POS_NAMES[q] + (q === 0 || q === 3 ? " left edge" : " right edge");
+  };
+  const ALL_SLOTS = (() => { const out = []; for (let q = 0; q < 4; q++) for (const t of SLOT_TYPES) out.push({ quadrant: q, type: t, key: slotKey(q, t), label: slotLabel(q, t) }); return out; })();
 
-  // Base codes the folder still lacks (explicit, usable) before composition is possible. [] = composable.
-  const computeRequiredBase = folder => {
-    const { pools } = explicitPools(folder);
-    return BASE_CODES.filter(c => !pools[c]);
+  // Transforms allowed by the folder settings, cheapest first: [{ flip, steps }].
+  const transformsFor = ({ spin: sp, flip: fl }) => {
+    const out = [];
+    for (let f = 0; f <= (fl ? 1 : 0); f++) for (let k = 0; k <= (sp ? 3 : 0); k++) out.push({ flip: !!f, steps: k });
+    return out.sort((a, b) => ((a.flip ? 1 : 0) + (a.steps ? 1 : 0)) - ((b.flip ? 1 : 0) + (b.steps ? 1 : 0)));
+  };
+  const landing = (sq, type, t) => {
+    const pos = ((t.flip ? FLIP_POS[sq] : sq) + t.steps) % 4;
+    return { quadrant: pos, type: t.steps % 2 ? SWAP_EDGE[type] : type };
   };
 
-  // Recipe for one code: 4 entries { quadrant, type, sourceCode, sourceTileRef, sourceQuadrant, spinSteps }.
-  // Rotating source quadrant `sourceQuadrant` clockwise by `spinSteps` quarter-turns lands it on `quadrant`.
-  // null if spin is off, a base tile is missing, or the code is invalid.
-  const compositionRecipe = (folder, code, _pools) => {
-    if (!isCode(code) || !settingsOf(folder).spin) return null;
+  // slot key -> { code, tileRef, sourceQuadrant, flip, spinSteps } (cheapest source; ties go to the lowest code, then quadrant).
+  const quadrantLibrary = (folder, _pools) => {
     const pools = _pools || explicitPools(folder).pools;
-    if (BASE_CODES.some(c => !pools[c])) return null;
+    const ts = transformsFor(settingsOf(folder));
+    const lib = new Map(), costOf = new Map();
+    for (const code of Object.keys(pools).sort()) {
+      const tile = pools[code][0].tile;
+      for (let sq = 0; sq < 4; sq++) {
+        const type = quadrantType(code, sq);
+        for (const t of ts) {
+          const to = landing(sq, type, t), key = slotKey(to.quadrant, to.type);
+          const cost = (t.flip ? 1 : 0) + (t.steps ? 1 : 0);
+          if (costOf.has(key) && costOf.get(key) <= cost) continue;
+          costOf.set(key, cost);
+          lib.set(key, { code, tileRef: tileRef(tile), sourceQuadrant: sq, flip: t.flip, spinSteps: t.steps });
+        }
+      }
+    }
+    return lib;
+  };
+
+  // Slots (objects with a label) that no tile can supply under the folder's transforms. Without spin and flip nothing is
+  // composed, so this is [] there. Composition per code only needs the four slots that code uses.
+  const missingSlots = folder => {
+    const st = settingsOf(folder);
+    if (!st.spin && !st.flip) return [];
+    const lib = quadrantLibrary(folder);
+    return ALL_SLOTS.filter(s => !lib.has(s.key));
+  };
+  const computeRequiredBase = folder => missingSlots(folder).map(s => s.label);
+
+  // Recipe for one code: 4 entries { quadrant, type, slot, sourceCode, sourceTileRef, sourceQuadrant, spinSteps, flip }.
+  // The source tile is mirrored first when `flip`, then rotated clockwise by `spinSteps` quarter-turns about the image
+  // centre; that puts source quadrant `sourceQuadrant` onto `quadrant`. null if spin and flip are both off, a slot has no
+  // source, or the code is invalid.
+  const compositionRecipe = (folder, code, _lib) => {
+    const st = settingsOf(folder);
+    if (!isCode(code) || (!st.spin && !st.flip)) return null;
+    const lib = _lib || quadrantLibrary(folder);
     const norm = normalise(code);
     const recipe = [];
     for (let q = 0; q < 4; q++) {
-      const type = quadrantType(norm, q), bits = quadrantBits(norm, q), srcCode = BASE_FOR_TYPE[type];
-      let sq = -1;
-      for (let i = 0; i < 4; i++) if (quadrantBits(srcCode, i) === bits) { sq = i; break; }
-      if (sq < 0) return null;
+      const type = quadrantType(norm, q), src = lib.get(slotKey(q, type));
+      if (!src) return null;
       recipe.push({
-        quadrant: q, quadrantName: QUAD_NAMES[q], type, sourceCode: srcCode,
-        sourceTileRef: tileRef(pools[srcCode][0].tile), sourceQuadrant: sq, spinSteps: (q - sq + 4) % 4,
+        quadrant: q, quadrantName: QUAD_NAMES[q], type, slot: slotLabel(q, type), sourceCode: src.code,
+        sourceTileRef: src.tileRef, sourceQuadrant: src.sourceQuadrant, spinSteps: src.spinSteps, flip: src.flip,
       });
     }
     return recipe;
@@ -133,6 +184,28 @@
   const composeQuadrants = (recipe, drawFn) => {
     if (!Array.isArray(recipe) || typeof drawFn !== "function") return [];
     return recipe.map((entry, i) => drawFn(entry, i));
+  };
+
+  // ── Simple fence ──────────────────────────────────────────────────────────────────────────────────────
+  // A folder whose usable coded variants are exactly {00000000, 00011000, 01000010} is resolved by the four cardinal bits only.
+  const FENCE_CODES = ["00000000", "00011000", "01000010"];
+  const isFenceFolder = (folder, _pools) => {
+    const keys = Object.keys(_pools || explicitPools(folder).pools).sort();
+    return keys.length === 3 && FENCE_CODES.every(c => keys.includes(c));
+  };
+  const CARDINAL_BITS = [N, W, E, S];
+  const cardinalOnly = code => { const b = code.split(""); return b.map((v, i) => (CARDINAL_BITS.includes(i) ? v : "0")).join(""); };
+  // True when no coded variant uses a diagonal bit (fence, rope, rails): only the 16 cardinal codes matter.
+  const usesOnlyCardinals = (folder, _pools) => {
+    const codes = Object.keys(_pools || explicitPools(folder).pools);
+    return codes.length > 0 && codes.every(c => cardinalOnly(c) === c);
+  };
+  const CARDINAL_CODES = ALL_CODES.filter(c => cardinalOnly(c) === c);
+  // What a folder does with the codes it has no tile for: "fence" | "compose" (spin and/or flip) | "connections" (scoring).
+  const folderMode = folder => {
+    const { pools } = explicitPools(folder), st = settingsOf(folder);
+    const fence = isFenceFolder(folder, pools);
+    return { kind: fence ? "fence" : (st.spin || st.flip) ? "compose" : "connections", spin: st.spin, flip: st.flip, cardinalOnly: usesOnlyCardinals(folder, pools) };
   };
 
   // ── Candidates ────────────────────────────────────────────────────────────────────────────────────────
@@ -161,10 +234,13 @@
     }
     for (const code of Object.keys(derived)) { out[code].status = "derived"; out[code].pool = derived[code].pool; }
 
-    if (st.spin) {
+    const fence = isFenceFolder(folder, pools);
+    Object.defineProperty(out, "_fence", { value: fence, enumerable: false });
+    if ((st.spin || st.flip) && !fence) {
+      const lib = quadrantLibrary(folder, pools);
       for (const code of ALL_CODES) {
         if (out[code].status !== "missing") continue;
-        const recipe = compositionRecipe(folder, code, pools);
+        const recipe = compositionRecipe(folder, code, lib);
         if (!recipe) continue;
         out[code].status = "composed";
         out[code].recipe = recipe;
@@ -211,14 +287,24 @@
   };
 
   // ── Coverage ──────────────────────────────────────────────────────────────────────────────────────────
+  // One row per code: { code, status: explicit|derived|composed|fallback|missing, fallbackCode?, sources, poolPercentages }.
+  // "fallback": no tile of its own, the resolver uses another code (nearest, or 00000000). "missing" (red): the folder is
+  // meant to compose its missing codes (spin and/or flip) but this one cannot be composed.
   const coverage = folder => {
     const cands = buildCandidates(folder);
+    const mode = folderMode(folder);
     return ALL_CODES.map(code => {
       const c = cands[code];
+      let status = c.status, fallbackCode = null;
+      if (status === "missing") {
+        const r = resolve(folder, code, { x: 0, y: 0, candidates: cands });
+        fallbackCode = r ? r.code : null;
+        status = mode.kind === "compose" ? "missing" : "fallback";
+      }
       const sources = c.status === "composed" ? c.recipe
         : c.status === "derived" ? c.pool.map(e => ({ ref: e.derivedFrom.ref, code: e.derivedFrom.code, ops: e.ops }))
         : c.pool.map(e => ({ ref: e.ref, code }));
-      return { code, status: c.status, sources, poolPercentages: pickPercentages(c.pool) };
+      return { code, status, fallbackCode, sources, poolPercentages: pickPercentages(c.pool) };
     });
   };
 
@@ -235,6 +321,14 @@
     const avail = ALL_CODES.filter(code => cands[code].status !== "missing" && cands[code].pool.length > 0);
     if (!avail.length) return null;
     const salt = saltToInt(c.salt != null ? c.salt : folder.key);
+
+    if (cands._fence) { // simple fence: cardinal bits only, exact match among the three variants, else 00000000
+      const card = cardinalOnly(nb), code = avail.includes(card) ? card : "00000000";
+      const cand = cands[code];
+      const entry = weightedPick(cand.pool, e => e.roll, hash2D(c.x | 0, c.y | 0, salt));
+      if (!entry) return null;
+      return { code, status: cand.status, ref: entry.ref, tile: entry.tile, ops: entry.ops, derivedFrom: entry.derivedFrom, recipe: null, entry };
+    }
 
     let winners;
     if (avail.includes(nb)) winners = [nb]; // exact match wins outright
@@ -258,10 +352,10 @@
   };
 
   return {
-    BIT_NAMES, OFFSETS, ALL_CODES, BASE_CODES, QUAD_NAMES,
+    BIT_NAMES, OFFSETS, ALL_CODES, CARDINAL_CODES, FENCE_CODES, SLOT_TYPES, ALL_SLOTS, QUAD_NAMES,
     isCode, normalise, spin, flipH, neighbourCode,
     buildCandidates, coverage, computeRequiredBase, compositionRecipe, composeQuadrants,
-    quadrantBits, quadrantType,
+    quadrantBits, quadrantType, quadrantLibrary, missingSlots, slotLabel, folderMode, isFenceFolder, cardinalOnly, usesOnlyCardinals,
     resolve, hash2D, stringToInt, weightedPick, pickPercentages,
   };
 });

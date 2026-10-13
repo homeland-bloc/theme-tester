@@ -102,14 +102,68 @@ test("quadrantType covers all five types", () => {
   assert.strictEqual(S.quadrantType("11111111", 0), "interior");
 });
 
-test("composition needs spin and all four bases", () => {
+test("composition needs spin or flip and a source for every slot", () => {
   const noSpin = folder("n", water.tiles.slice(), {});
   assert.ok(!Object.values(S.buildCandidates(noSpin)).some(c => c.status === "composed"));
-  const missing = folder("m", water.tiles.slice(0, 3), { spin: true });
-  assert.deepStrictEqual(S.computeRequiredBase(missing), ["11111111"]);
-  assert.ok(!Object.values(S.buildCandidates(missing)).some(c => c.status === "composed"));
-  assert.strictEqual(S.compositionRecipe(missing, "00011111"), null);
-  assert.deepStrictEqual(S.computeRequiredBase(folder("e", [], {})).length, 4);
+  assert.deepStrictEqual(S.computeRequiredBase(noSpin), []); // nothing is composed, so nothing is required
+  // three of the four water bases are still enough: the interior quadrant also exists in 00001011
+  assert.deepStrictEqual(S.computeRequiredBase(folder("m", water.tiles.slice(0, 3), { spin: true })), []);
+  // a lone interior tile: every non-interior slot is missing
+  const lone = folder("lone", [T("i", "11111111")], { spin: true });
+  const miss = S.computeRequiredBase(lone);
+  assert.strictEqual(miss.length, 16);
+  assert.ok(miss.includes("bottom-left outer corner") && !miss.some(m => m.endsWith("interior")));
+  assert.strictEqual(S.compositionRecipe(lone, "00011111"), null);
+  assert.strictEqual(S.computeRequiredBase(folder("e", [], { spin: true })).length, 20);
+});
+
+test("water with spin: 4 explicit, 9 derived, 34 composed", () => {
+  const cands = S.buildCandidates(water);
+  const n = st => S.ALL_CODES.filter(c => cands[c].status === st).length;
+  assert.deepStrictEqual([n("explicit"), n("derived"), n("composed"), n("missing")], [4, 9, 34, 0]);
+  for (const c of S.ALL_CODES) if (cands[c].status === "composed") assert.ok(cands[c].recipe.every(e => e.flip === false));
+});
+
+// Depth water, flip only: the left half of the tile set is explicit, the right half is mirrored from it.
+const depthTop = ["00001011", "01101011", "00011111", "01111111"]; // TL corner, left edge, top edge, inner corner (+ interior quadrants)
+const depthBottom = ["01101000", "11111000", "11111011", "11111111"]; // BL corner, bottom edge, BL inner corner, interior
+const depth = folder("depth", [...depthTop, ...depthBottom].map((c, i) => T("d" + i, c)), { flip: true });
+test("flip-only depth water: no missing slots, all codes composed or explicit", () => {
+  assert.deepStrictEqual(S.computeRequiredBase(depth), []);
+  const cands = S.buildCandidates(depth);
+  assert.ok(S.ALL_CODES.every(c => cands[c].status !== "missing"));
+  assert.ok(S.ALL_CODES.some(c => cands[c].status === "composed"));
+  // flip-derived codes exist too: the mirror of the TL corner
+  assert.strictEqual(cands["00010110"].status, "derived");
+  assert.deepStrictEqual(cands["00010110"].pool[0].ops, ["flipH"]);
+});
+test("flip-only composition: recipes use flip and never spin", () => {
+  const cands = S.buildCandidates(depth);
+  for (const code of S.ALL_CODES) {
+    if (cands[code].status !== "composed") continue;
+    cands[code].recipe.forEach((e, q) => {
+      assert.strictEqual(e.spinSteps, 0);
+      // flipping the source quadrant lands on q; its bits mirror the target's
+      const srcQ = e.flip ? [1, 0, 3, 2][e.sourceQuadrant] : e.sourceQuadrant;
+      assert.strictEqual(srcQ, q);
+      assert.strictEqual(S.quadrantType(S.flipH(e.sourceCode), q) === e.type || !e.flip, true);
+    });
+  }
+  const anyFlip = S.ALL_CODES.some(c => cands[c].recipe && cands[c].recipe.some(e => e.flip));
+  assert.ok(anyFlip);
+});
+test("too few tiles report the exact missing slots", () => {
+  const f = folder("few", [T("a", "00001011"), T("b", "11111111")], { flip: true });
+  const miss = S.computeRequiredBase(f);
+  // TL corner + its mirror give top-left/top-right outer; left/top edges and the interior come from the corner's other quadrants
+  assert.ok(miss.includes("bottom-left outer corner"));
+  assert.ok(miss.includes("bottom-right outer corner"));
+  assert.ok(!miss.includes("top-left outer corner") && !miss.includes("top-right outer corner"));
+  assert.ok(!miss.includes("top-left interior"));
+  assert.strictEqual(S.buildCandidates(f)["00010110"].status, "derived");
+  assert.notStrictEqual(S.buildCandidates(f)["01010000"].status, "composed");
+  const withSpin = folder("few2", f.tiles, { spin: true, flip: true });
+  assert.ok(!S.computeRequiredBase(withSpin).includes("bottom-left outer corner"));
 });
 
 test("coverage: 47 rows with code, status, sources, poolPercentages", () => {
@@ -123,18 +177,24 @@ test("coverage: 47 rows with code, status, sources, poolPercentages", () => {
 });
 
 const fence = folder("fence", [T("f0", "00000000"), T("fh", "00011000"), T("fv", "01000010")]);
-test("fence", () => {
-  assert.strictEqual(at(fence, "00000000").ref, "f0");
-  assert.strictEqual(at(fence, bits(["W", "E"])).ref, "fh");
-  assert.strictEqual(at(fence, bits(["N", "S"])).ref, "fv");
-  assert.strictEqual(at(fence, bits(["W", "E", "S"])).ref, "fh"); // T junction: Horizontal 2/0 beats Vertical 1/0
-  assert.strictEqual(at(fence, bits(["N", "S", "W", "E"])).ref, "f0"); // tie -> 00000000
-  // E only: Horizontal matched 1 dangling 1; Vertical matched 0; fence 0 matched 0 -> Horizontal
-  assert.strictEqual(at(fence, bits(["E"])).ref, "fh");
+test("simple fence: cardinal bits only, exact match else 00000000", () => {
+  const cases = [
+    [[], "f0"], [["E"], "f0"], [["W"], "f0"], [["N"], "f0"], [["S"], "f0"], [["W", "E"], "fh"], [["N", "S"], "fv"],
+    [["N", "W"], "f0"], [["W", "E", "S"], "f0"], [["N", "W", "E"], "f0"], [["N", "S", "W", "E"], "f0"],
+    [["NW", "NE", "SW", "SE"], "f0"], [["W", "E", "NW", "SE"], "fh"], [["N", "S", "NE"], "fv"],
+  ];
+  for (const [names, ref] of cases) assert.strictEqual(at(fence, bits(names)).ref, ref, names.join("+") || "lone");
+  assert.strictEqual(S.folderMode(fence).kind, "fence");
+  assert.ok(S.isFenceFolder(fence));
+  // a roll-0 fence piece, or an extra code, turns the rule off
+  assert.ok(!S.isFenceFolder(folder("x", [T("f0", "00000000"), T("fh", "00011000"), T("fv", "01000010", 0)])));
+  assert.ok(!S.isFenceFolder(folder("y", [T("f0", "00000000"), T("fh", "00011000"), T("fv", "01000010"), T("e", "00001000")])));
+  // a sibling variant of an existing code keeps the fence rule
+  assert.ok(S.isFenceFolder(folder("z", [T("f0", "00000000"), T("fh", "00011000"), T("fh2", "00011000"), T("fv", "01000010")])));
 });
 
 const rope = folder("rope", [T("r0", "00000000"), T("rr", "00001000"), T("rt", "01000000"), T("rtr", "01001000")]);
-test("rope", () => {
+test("rope keeps the scoring rule", () => {
   assert.strictEqual(at(rope, bits(["N", "E"])).ref, "rtr");
   assert.strictEqual(at(rope, bits(["N", "E", "W"])).ref, "rtr");
   assert.strictEqual(at(rope, bits(["E"])).ref, "rr");
@@ -209,6 +269,23 @@ test("determinism: 1000 repeated resolves identical", () => {
     assert.strictEqual(JSON.stringify(S.resolve(rails, "00000000", { x: 5, y: 9, salt: "rails" }).ref), first);
     assert.strictEqual(S.resolve(rails, "00000000", { x: 5, y: 9, salt: "rails", candidates: cands }).ref, JSON.parse(first));
   }
+});
+
+test("coverage: fallback vs missing, cardinal-only detection", () => {
+  const cov = S.coverage(fence);
+  assert.strictEqual(cov.find(r => r.code === "00001000").status, "fallback");
+  assert.strictEqual(cov.find(r => r.code === "00001000").fallbackCode, "00000000");
+  assert.ok(cov.every(r => r.status === "explicit" || r.status === "fallback"));
+  assert.ok(S.folderMode(fence).cardinalOnly && S.folderMode(rope).cardinalOnly && S.folderMode(rails).cardinalOnly);
+  assert.ok(!S.folderMode(water).cardinalOnly);
+  assert.strictEqual(S.CARDINAL_CODES.length, 16);
+  assert.strictEqual(S.folderMode(water).kind, "compose");
+  assert.strictEqual(S.folderMode(rope).kind, "connections");
+  // spin on but composition impossible -> red
+  const bad = S.coverage(folder("bad", [T("i", "11111111")], { spin: true }));
+  assert.ok(bad.some(r => r.status === "missing"));
+  // no spin/flip -> fallback, never red
+  assert.ok(S.coverage(rope).every(r => r.status !== "missing"));
 });
 
 console.log(`\n${passed} passed`);

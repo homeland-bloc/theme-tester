@@ -146,12 +146,12 @@
   };
 
   // ── Composition plan (the canvas side lives in index.html) ────────────────────────────────────────────
-  // For each quadrant of a w x h target: the clip rect and the source tile to draw rotated clockwise by `steps` quarter-turns
-  // around the image centre, so source quadrant sq lands on quadrant q.
+  // For each quadrant of a w x h target: the clip rect and the source tile to draw. The source is mirrored left-right first when
+  // `flip`, then rotated clockwise by `steps` quarter-turns around the image centre, so source quadrant sq lands on quadrant q.
   const composePlan = (recipe, w, h) => {
     const hw = w / 2, hh = h / 2;
     const RECTS = [[0, 0], [hw, 0], [hw, hh], [0, hh]]; // TL TR BR BL
-    return (recipe || []).map(e => ({ quadrant: e.quadrant, x: RECTS[e.quadrant][0], y: RECTS[e.quadrant][1], w: hw, h: hh, sourceTileRef: e.sourceTileRef, steps: e.spinSteps }));
+    return (recipe || []).map(e => ({ quadrant: e.quadrant, x: RECTS[e.quadrant][0], y: RECTS[e.quadrant][1], w: hw, h: hh, sourceTileRef: e.sourceTileRef, steps: e.spinSteps, flip: !!e.flip }));
   };
   const composeKey = (folderRef, code) => `${folderRef}#${code}`;
 
