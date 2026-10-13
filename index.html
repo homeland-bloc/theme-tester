@@ -2078,7 +2078,7 @@ function SensorWarningModal({ folder, onClose }) {
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal-box" onClick={e => e.stopPropagation()} style={{ maxWidth: 420, maxHeight: "80vh", overflowY: "auto" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <span style={{ fontSize: 13, fontWeight: 700, color: SENSOR_YELLOW }}>⚠ {folder.label}: settings differ</span>
+          <span style={{ fontSize: 13, fontWeight: 700, color: SENSOR_YELLOW }}>⚠ {folder.label}: {folder.warnings.length ? "settings differ" : "tiles without a sensor code"}</span>
           <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
         </div>
         {folder.warnings.length > 0 && (
@@ -5797,6 +5797,7 @@ function App() {
     if (ref === SPACE_REF) return "Space";
     if (ref === REPLACE_ERASE_REF) return "Empty";
     const t = getTile(ref);
+    if (t && t.isSensor) return `${t.label} (sensor folder)`;
     return (t ? (t.isSpace ? "Space" : (deriveCodename(t.src) || t.codename)) : null) || ref;
   };
 
@@ -6050,9 +6051,11 @@ function App() {
     }
 
     // Step 2: full tile list — tileset tiles grouped with collapsible sections
-    const tilesetTiles_  = tiles.filter(t => parseRef(t.ref)?.kind === "d");
+    // A sensor folder (kind "s") is one tile here, listed with its tileset or with the globals.
+    const isGlobalSensor = t => SensorUI.parseSensorRef(t.ref)?.scope === SensorUI.SCOPE_GLOBAL;
+    const tilesetTiles_  = tiles.filter(t => parseRef(t.ref)?.kind === "d" || (parseRef(t.ref)?.kind === "s" && !isGlobalSensor(t)));
     const userTiles_     = tiles.filter(t => parseRef(t.ref)?.kind === "u");
-    const globalTiles_   = tiles.filter(t => parseRef(t.ref)?.kind === "g");
+    const globalTiles_   = tiles.filter(t => parseRef(t.ref)?.kind === "g" || (parseRef(t.ref)?.kind === "s" && isGlobalSensor(t)));
 
     // Group tileset tiles by tileset name
     const tsByName = {};
@@ -6400,6 +6403,16 @@ function App() {
       fromAll.add(t.ref);
       if (t.codename && toCodenameToRef[t.codename] !== undefined) refRemap[t.ref] = toCodenameToRef[t.codename];
     });
+    // Sensor folders convert by folder key, as one tile each.
+    if (fromTsDef && toTsDef) {
+      const sensorKeys = objs => new Set(objs.filter(t => t.folderLabel && SensorEngine.isCode(t.sensorCode)).map(t => t.folderLabel));
+      const toKeys = sensorKeys(toObjs);
+      sensorKeys(fromObjs).forEach(k => {
+        const fr = SensorUI.sensorRef(fromTsDef.id, k);
+        fromAll.add(fr);
+        if (toKeys.has(k)) refRemap[fr] = SensorUI.sensorRef(toTsDef.id, k);
+      });
+    }
 
     // Only the active tileset's tiles can be on the board, so count nothing for any other "From".
     const fromIsActive = fromTs === activeTileset;
