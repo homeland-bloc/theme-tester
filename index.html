@@ -131,7 +131,7 @@ const MIN_ZOOM = 0.25, MAX_ZOOM = 4;
 const ZOOM_STEP = 0.05;
 const snapTo10 = z => Math.round(z * 20) / 20;
 // oph_ov_* are SPARSE per-ref override maps: { [tileRef]: value }. Only user edits are stored; the default comes from the tile.
-const SK = { grid: "oph_grid", colors: "oph_colors", userTiles: "oph_user_tiles", multipliers: "oph_ov_multipliers", priority: "oph_ov_priority", offsets: "oph_ov_offsets", rotatable: "oph_ov_rotatable", gridW: "oph_gridW", gridH: "oph_gridH", tileNames: "oph_ov_tile_names", bottom: "oph_ov_bottom", mirrorOffset: "oph_ov_mirror_offset", gridOff: "oph_grid_off", activeTileset: "oph_active_ts", autoShadow: "oph_ov_auto_shadow", allowFlip: "oph_ov_allow_flip", otgWalls: "oph_ov_otg_walls", tileCount: "oph_ov_tile_count_map" };
+const SK = { grid: "oph_grid", colors: "oph_colors", userTiles: "oph_user_tiles", multipliers: "oph_ov_multipliers", priority: "oph_ov_priority", offsets: "oph_ov_offsets", rotatable: "oph_ov_rotatable", gridW: "oph_gridW", gridH: "oph_gridH", tileNames: "oph_ov_tile_names", bottom: "oph_ov_bottom", mirrorOffset: "oph_ov_mirror_offset", gridOff: "oph_grid_off", activeTileset: "oph_active_ts", autoShadow: "oph_ov_auto_shadow", allowFlip: "oph_ov_allow_flip", otgWalls: "oph_ov_otg_walls", };
 const ACCEPTED = "image/png,image/jpeg,image/gif,image/webp,image/svg+xml,image/bmp";
 const MAX_HISTORY = 60;
 // Tiles are identified by refs (tile_palette.js): d:<uuid> DB tile, g:<Resources path> global tile, u:<n> local upload,
@@ -247,7 +247,6 @@ const buildDbTile = (row, tsRow) => {
     dbBottomRender: row.bottom_render,
     dbPriority: row.priority,
     dbAutoShadow: row.auto_shadow,
-    dbShowTileCount: row.show_tile_count,
     // New columns: read from the row, not used by any logic yet.
     sensorCode: row.sensor_code ?? null,
     sensorRoll: row.sensor_roll ?? null,
@@ -1412,7 +1411,6 @@ function InfoModalBody(props) {
           priority: isPriorityTile(t),
           auto_shadow: isAutoShadowTile(t),
           otg_passable: !isOTGWall(t),
-          show_tile_count: !!t.dbShowTileCount,
           codename: codenameInput.trim() || t.codename,
           folder_key: folderKeyInput.trim() || null,
           sort_index: sortIndexInput !== '' ? parseInt(sortIndexInput, 10) : null,
@@ -1522,7 +1520,6 @@ function InfoModalBody(props) {
     bottom_render: "Tile renders below the player/unit layer (e.g. floor details, shadows).",
     priority: "Tile renders above the player/unit layer (e.g. tall objects that overlap characters).",
     auto_shadow: "Tile automatically casts a drop-shadow onto the layer below.",
-    show_tile_count: "Show a ×N badge on this tile card counting how many times it appears on the map.",
     size_multiplier: "Scales the tile's display size. 1.0 = normal, 1.5 = 50% larger, etc.",
     offset_h: "Shifts the tile horizontally (% of tile width). Positive = right.",
     offset_v: "Shifts the tile vertically (% of tile height). Positive = down.",
@@ -1785,7 +1782,7 @@ function InfoModalBody(props) {
           <div style={{ padding: "4px 6px", background: "rgba(255,255,255,0.04)", borderRadius: 4, fontSize: 10, color: C.muted, lineHeight: 1.5 }}>{FLAG_TIPS[flagTooltip]}</div>
         )}
 
-        {inSensorGroup && <span style={{ fontSize: 10, color: SENSOR_YELLOW }}>Flags (rotatable, flippable, bottom, priority, shadow, OTG, mirror offset, count) apply to the whole folder.</span>}
+        {inSensorGroup && <span style={{ fontSize: 10, color: SENSOR_YELLOW }}>Flags (rotatable, flippable, bottom, priority, shadow, OTG, mirror offset) apply to the whole folder.</span>}
         {/* Boolean flags — 2-column grid.
              Each pair of flag labels occupies one row; the inline tooltip description
              is placed as the NEXT grid item with gridColumn:"1/-1" so it spans both
@@ -1809,7 +1806,6 @@ function InfoModalBody(props) {
           const shadowOn = isAutoShadowTile(t);
           const shadowDef = defaultAutoShadowTile(t);
           const shadowColor = (shadowOn === shadowDef) ? "#4ade80" : "#f97316";
-          const countOn = !!t.dbShowTileCount;
           const putBool = (setter, val, def) => setter(prev => { const n = { ...prev }; if (val === def) delete n[t.ref]; else n[t.ref] = val; return n; });
           const ft = flagTooltip;
           const ls = { display: "flex", alignItems: "center", gap: 5, cursor: "pointer", userSelect: "none" };
@@ -1872,30 +1868,14 @@ function InfoModalBody(props) {
               </label>
               {(ft === 'bottom_render' || ft === 'priority') && <div style={ds}>{FLAG_TIPS[ft]}</div>}
 
-              {/* Row 4 — auto_shadow | show_tile_count (DB tiles only) */}
+              {/* Row 4 — auto_shadow */}
               <label style={ls}>
                 <input type="checkbox" checked={shadowOn} style={cs(shadowColor)}
                   onChange={ev => putBool(setAutoShadowTiles, ev.target.checked, shadowDef)} />
                 <span style={{ fontSize: 10, color: shadowColor, fontFamily: "monospace" }}>auto_shadow 👻</span><FlagTip id="auto_shadow" />
               </label>
-              {t.isDb ? (
-                <label style={{ ...ls, cursor: canEditDb ? "pointer" : "default" }}>
-                  <input type="checkbox" checked={countOn} disabled={!canEditDb}
-                    style={{ width: 13, height: 13, flexShrink: 0, accentColor: "#34d399", cursor: canEditDb ? "pointer" : "default" }}
-                    onChange={ev => {
-                      const checked = ev.target.checked;
-                      setTimeout(() => {
-                        setDbTilesByTsId(prev => {
-                          const tsId = t.tilesetId;
-                          if (!prev[tsId]) return prev;
-                          return { ...prev, [tsId]: prev[tsId].map(row => row.id === t.dbId ? { ...row, show_tile_count: checked } : row) };
-                        });
-                      }, 0);
-                    }} />
-                  <span style={{ fontSize: 10, color: "#34d399", fontFamily: "monospace" }}>show_tile_count 🧮</span><FlagTip id="show_tile_count" />
-                </label>
-              ) : <div />}
-              {(ft === 'auto_shadow' || ft === 'show_tile_count') && <div style={ds}>{FLAG_TIPS[ft]}</div>}
+              <div />
+              {(ft === 'auto_shadow') && <div style={ds}>{FLAG_TIPS[ft]}</div>}
             </div>
           );
         })()}
@@ -2678,9 +2658,6 @@ function App() {
   const [allowFlipMap, setAllowFlipMap] = useState(() => load(SK.allowFlip, {}));
   // Per-tile custom names (user-uploaded tiles): { [ref]: string }
   const [tileNames, setTileNames] = useState(() => load(SK.tileNames, {}));
-  // Tile count badge: master toggle and per-tile opt-in map { [ref]: bool }
-  const [showTileCount, setShowTileCount] = useState(() => load("oph_show_tile_count", false));
-  const [tileCountMap, setTileCountMap] = useState(() => load(SK.tileCount, {}));
   const [gridOffsets,       setGridOffsets]       = useState(() => load(SK.gridOff, {}));
   const [mirrorOffsetTiles, setMirrorOffsetTiles] = useState(() => load(SK.mirrorOffset, {}));
   const [showOffsetCenters, setShowOffsetCenters] = useState(false);
@@ -2868,8 +2845,6 @@ function App() {
   useEffect(() => { save(SK.tileNames,    tileNames);       }, [tileNames]);
   useEffect(() => { save("oph_tile_card_light_bg", tileCardLightBg); }, [tileCardLightBg]);
   useEffect(() => { save("oph_hide_default_labels", hideDefaultLabels); }, [hideDefaultLabels]);
-  useEffect(() => { save("oph_show_tile_count", showTileCount); }, [showTileCount]);
-  useEffect(() => { save(SK.tileCount, tileCountMap); }, [tileCountMap]);
   useEffect(() => {
     save("oph_theme", uiTheme);
     document.body.style.background = C.bg;
@@ -3174,25 +3149,6 @@ function App() {
     return (
       <span style={{ position: "absolute", top: 1, left: 2, fontSize: 7, fontWeight: 700, color: C.accentBright, background: "rgba(0,0,0,0.65)", borderRadius: 3, padding: "1px 3px", lineHeight: 1.3, pointerEvents: "none", zIndex: 5 }}>
         {mult}×
-      </span>
-    );
-  };
-
-  // Pre-computed tile ref → count in grid (for CountBadge).
-  const tileCounts = (() => {
-    const counts = {};
-    grid.forEach(row => row.forEach(id => { if (id != null) { const ref = refAt(palette, id); if (ref) counts[ref] = (counts[ref] ?? 0) + 1; } }));
-    return counts;
-  })();
-
-  // Count badge shown at bottom-right of tile cards — driven by the per-tile DB field show_tile_count.
-  const CountBadge = ({ t }) => {
-    if (!t.dbShowTileCount) return null;
-    const count = tileCounts[t.ref] ?? 0;
-    if (count === 0) return null;
-    return (
-      <span style={{ position: "absolute", bottom: -7, right: -7, fontSize: 10, fontWeight: 800, color: "#ffffff", background: "#059669", borderRadius: 4, padding: "1px 4px", lineHeight: 1.4, pointerEvents: "none", zIndex: 8, boxShadow: "0 1px 4px rgba(0,0,0,0.7)" }}>
-        ×{count}
       </span>
     );
   };
@@ -3671,7 +3627,6 @@ function App() {
     setBottomTiles(prune);
     setAutoShadowTiles(prune);
     setTileNames(prune);
-    setTileCountMap(prune);
   }, [flatDefaultTiles, userTiles, manifest, tilesLoading, dbTilesByTsId, dbTilesets, activeTileset]);
 
   // Load global manifest + tilesets list. Tiles are loaded on demand per tileset.
@@ -6492,7 +6447,7 @@ function App() {
           sort_index: createTsSortIdx !== '' ? Number(createTsSortIdx) : 0,
           rotatable: false, flippable: false, otg_passable: false,
           mirror_offset: false, bottom_render: false, priority: false,
-          auto_shadow: false, show_tile_count: false,
+          auto_shadow: false,
           size_multiplier: 1.0, offset_x: 0, offset_y: 0,
           ...(csCode.value ? { sensor_code: csCode.value } : {}),
           ...(csRoll.value != null ? { sensor_roll: csRoll.value } : {}),
@@ -6663,7 +6618,7 @@ function App() {
           sort_index: addTileSortIdx !== '' ? Number(addTileSortIdx) : 0,
           rotatable: false, flippable: false, otg_passable: false,
           mirror_offset: false, bottom_render: false, priority: false,
-          auto_shadow: false, show_tile_count: false,
+          auto_shadow: false,
           size_multiplier: 1.0, offset_x: 0, offset_y: 0,
           ...groupCopy,
           ...(addCode.value ? { sensor_code: addCode.value } : {}),
@@ -7179,7 +7134,6 @@ function App() {
                         title={isStarredF ? "Starred tile — click for info" : "Tile info"}>ⓘ</span>
                       <MultLabel t={t} />
                       <TileBadge t={t} />
-                      <CountBadge t={t} />
                     </div>
                   );
                 })}
@@ -7413,7 +7367,6 @@ function App() {
                           title={t.codename ?? (isStarred ? "Starred tile — click for info" : "Tile info")}>{isStarred ? "★" : "ⓘ"}</span>
                         <MultLabel t={t} />
                         <TileBadge t={t} />
-                        <CountBadge t={t} />
                       </div>
                     );
                   };
@@ -8548,7 +8501,6 @@ function App() {
                   <span style={{ fontSize: 12, color: C.text }}>Hide default tile settings labels</span>
                 </label>
                 <p style={{ fontSize: 11, color: C.muted, lineHeight: 1.5, margin: 0 }}>Hides size and offset badges on tile cards when those values are already the computed defaults. User-customized values are always shown.</p>
-                <p style={{ fontSize: 11, color: C.muted, lineHeight: 1.5, margin: 0, paddingTop: 4 }}>Tile count badges (🧮) are controlled per-tile via the <em>show_tile_count</em> flag in each tile's info modal.</p>
                 <div style={{ height: 1, background: C.border, margin: "4px 0" }} />
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
                   <span style={{ fontSize: 12, color: C.text }}>Recent tiles shown</span>
