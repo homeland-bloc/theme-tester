@@ -4,10 +4,11 @@
 // the variant drawn in a cell is derived from the grid (deriveLayer) and never stored in the map.
 // Browser: window.SensorUI (needs window.Sensor). Node: require("./sensor_ui.js").
 (function (root, factory) {
-  const api = factory(typeof module === "object" && module.exports ? require("./sensor.js") : root.Sensor);
+  const node = typeof module === "object" && module.exports;
+  const api = factory(node ? require("./sensor.js") : root.Sensor, node ? require("./tile_palette.js") : root.TilePalette);
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.SensorUI = api;
-})(typeof self !== "undefined" ? self : this, function (Sensor) {
+})(typeof self !== "undefined" ? self : this, function (Sensor, TilePalette) {
   const SCOPE_GLOBAL = "global";
 
   // ── Refs ──────────────────────────────────────────────────────────────────────────────────────────────
@@ -48,6 +49,17 @@
     const order = [0, 1, 2, 3, null, 4, 5, 6, 7];
     return order.map(bit => (bit === null ? { bit: null, filled: false, centre: true } : { bit, filled: ok && code[bit] === "1", centre: false }));
   };
+
+  // Symbol field: "" -> null; otherwise the last typed code point. '6' (warn tile) and '7' (space tile) are reserved for the special tiles.
+  const parseSymbolInput = text => {
+    const ch = [...String(text == null ? "" : text).trim()].slice(-1)[0];
+    if (ch === undefined) return { ok: true, value: null };
+    if (TilePalette.isReservedSymbol(ch)) return { ok: false, value: null, error: `'${ch}' is reserved for the ${ch === TilePalette.SYMBOL_WARN ? "warn" : "space"} tile.` };
+    return { ok: true, value: ch };
+  };
+  // Symbols already used by a tileset's tiles / folders (for suggestions): array of single characters.
+  const usedSymbols = tiles => (tiles || []).map(t => t && t.symbol).filter(Boolean);
+  const suggestSymbol = tiles => TilePalette.suggestSymbol(usedSymbols(tiles));
 
   // Click on a bit of the 3x3 grid: flips that bit of the typed text (a short or empty text is padded with zeros first).
   const toggleCodeBit = (text, bit) => {
@@ -213,7 +225,7 @@
   return {
     SCOPE_GLOBAL, GROUP_COLUMNS, DIVERGENCE_FIELDS,
     sensorRef, parseSensorRef, isSensorRef,
-    parseCodeInput, parseRollInput, codeFieldState, codeGridCells, toggleCodeBit, normalisedHint,
+    parseCodeInput, parseRollInput, codeFieldState, codeGridCells, toggleCodeBit, normalisedHint, parseSymbolInput, usedSymbols, suggestSymbol,
     splitGroupPatch, divergence, makeFolder, engineFolder,
     variantOwners, hideSensorVariants, canonicalRef, canonicalRefs, folderPreviewTiles,
     deriveLayer, opsToCss, opsLabel, composePlan, composeKey,

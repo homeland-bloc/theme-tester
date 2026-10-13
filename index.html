@@ -1409,7 +1409,8 @@ function InfoModalBody(props) {
     };
 
     const doSave = async () => {
-      if (!codeParsed.ok || !rollParsed.ok) { setSensorError(codeParsed.error || rollParsed.error); return; }
+      const symParsed = SensorUI.parseSymbolInput(symbolInput);
+      if (!codeParsed.ok || !rollParsed.ok || !symParsed.ok) { setSensorError(codeParsed.error || rollParsed.error || symParsed.error); return; }
       setSensorError(null);
       const savedScroll = modalScrollRef.current?.scrollTop ?? 0;
       setSaveStatus('saving');
@@ -1433,7 +1434,7 @@ function InfoModalBody(props) {
           sort_index: sortIndexInput !== '' ? parseInt(sortIndexInput, 10) : null,
           sensor_code: codeParsed.value,
           sensor_roll: rollParsed.value ?? 1,
-          symbol: symbolInput.trim() ? [...symbolInput.trim()][0] : null,
+          symbol: symParsed.value,
           last_updated_at: new Date().toISOString(),
           last_updated_by: currentUser.id,
         };
@@ -1739,9 +1740,9 @@ function InfoModalBody(props) {
                 <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>symbol{groupNote}</span>
                 <input data-symbol value={symbolInput} readOnly={!canEditDb} maxLength={2}
                   onChange={e => { if (canEditDb) setSymbolInput([...e.target.value].slice(-1)[0] ?? ''); }}
-                  placeholder="-"
-                  style={{ width: 40, textAlign: "center", background: !canEditDb ? "transparent" : "rgba(180,40,40,0.09)", border: `1px solid ${(symbolInput.trim() || null) === (t.symbol ?? null) ? "#4ade80" : "#f97316"}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none" }} />
-                <span style={{ fontSize: 10, color: C.muted }}>one character, used by seeds</span>
+                  placeholder={SensorUI.suggestSymbol(tiles.filter(x => x.tilesetId === t.tilesetId)) ?? "-"}
+                  style={{ width: 40, textAlign: "center", background: !canEditDb ? "transparent" : "rgba(180,40,40,0.09)", border: `1px solid ${!SensorUI.parseSymbolInput(symbolInput).ok ? C.danger : (symbolInput.trim() || null) === (t.symbol ?? null) ? "#4ade80" : "#f97316"}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none" }} />
+                <span style={{ fontSize: 10, color: SensorUI.parseSymbolInput(symbolInput).ok ? C.muted : C.danger }}>{SensorUI.parseSymbolInput(symbolInput).error ?? "one character, used by seeds (6 = warn, 7 = space are reserved)"}</span>
               </div>
               {sensorError && <span style={{ fontSize: 11, color: C.danger }}>{sensorError}</span>}
             </div>

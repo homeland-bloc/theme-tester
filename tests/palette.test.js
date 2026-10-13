@@ -186,4 +186,24 @@ test("countRefs: highest first, empty cells excluded, specials and sensor folder
   assert.deepStrictEqual(P.countRefs(pal, [[4]]), []); // a cell pointing at a free slot counts nothing
 });
 
+test("symbols: 6 = warn, 7 = space are reserved and never suggested", () => {
+  assert.strictEqual(P.symbolForSpecial("warn"), "6");
+  assert.strictEqual(P.symbolForSpecial("space"), "7");
+  assert.strictEqual(P.symbolForSpecial("d:x"), null);
+  assert.strictEqual(P.specialForSymbol("6"), "warn");
+  assert.strictEqual(P.specialForSymbol("7"), "space");
+  assert.strictEqual(P.specialForSymbol("8"), null);
+  assert.ok(P.isReservedSymbol("6") && P.isReservedSymbol("7") && !P.isReservedSymbol("M"));
+  const used = [];
+  for (let i = 0; i < 80; i++) {
+    const s = P.suggestSymbol(used);
+    if (s === null) break;
+    assert.ok(!P.isReservedSymbol(s) && !(s in P.OFFICIAL_SYMBOLS) && !/[0-9]/.test(s) && !used.includes(s));
+    used.push(s);
+  }
+  assert.ok(used.length > 20);
+  assert.strictEqual(P.suggestSymbol([]), "A");
+  assert.strictEqual(P.suggestSymbol(["A"]), "D"); // B is the official Skull symbol
+});
+
 console.log(`\n${passed} passed${process.exitCode ? ", FAILURES above" : ""}`);
