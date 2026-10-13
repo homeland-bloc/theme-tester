@@ -1333,6 +1333,9 @@ function InfoModalBody(props) {
   const [replaceImgPending, setReplaceImgPending] = React.useState(null);
   // Shape: { file, tile, tilesetFolderPath, previewUrl } or null
   const [replaceImgUploading, setReplaceImgUploading] = React.useState(false);
+  const [spinFlipOpen, setSpinFlipOpen] = React.useState(false);
+  const [linkBusy, setLinkBusy] = React.useState(false);
+  const [linkMsg, setLinkMsg] = React.useState(null);
 
   const cancelReplace = () => {
     if (replaceImgPending?.previewUrl) URL.revokeObjectURL(replaceImgPending.previewUrl);
@@ -1358,7 +1361,7 @@ function InfoModalBody(props) {
       const patchResp = await workerFetch(`${WORKER_URL}/rest/v1/tiles?id=eq.${tile.dbId}`, {
         method: 'PATCH',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
-        body: JSON.stringify({ image_url: newUrl }),
+        body: JSON.stringify({ image_url: newUrl, last_updated_at: new Date().toISOString(), last_updated_by: currentUser.id }), // newUrl carries a fresh ?v=
       });
       if (!patchResp.ok) throw new Error('DB patch failed');
       URL.revokeObjectURL(previewUrl);
@@ -1918,6 +1921,18 @@ function InfoModalBody(props) {
             </div>
           )}
 
+        {/* Spin / flip image (owned DB tiles) */}
+        {t.isDb && currentUser && (userProfile?.role === 'admin' || t.tilesetOwnerId === currentUser.id) && (
+          <>
+            <button data-spin-flip-open onClick={() => setSpinFlipOpen(true)}
+              style={{ ...btn(true, '#7dd3fc', 'rgba(125,211,252,0.15)'), width: '100%', justifyContent: 'center', fontSize: 11 }}>
+              🔃 Spin / flip image
+            </button>
+            {spinFlipOpen && <SpinFlipImageModal tile={t} getValidToken={getValidToken} workerFetch={workerFetch} currentUser={currentUser} btn={btn}
+              onClose={() => setSpinFlipOpen(false)} onApplied={() => { setSpinFlipOpen(false); setTsFetchTrigger(n => n + 1); setInfoTile(null); }} />}
+          </>
+        )}
+
         {/* Replace image (owned DB tiles) */}
         {t.isDb && currentUser && (userProfile?.role === 'admin' || t.tilesetOwnerId === currentUser.id) && (
           <>
@@ -1978,6 +1993,27 @@ function InfoModalBody(props) {
               style={{ ...btn(true, '#fbbf24', 'rgba(251,191,36,0.15)'), width: '100%', justifyContent: 'center', fontSize: 11 }}>
               🖼 Replace Image
             </button>
+            <button data-update-image-link disabled={linkBusy || !currentPath}
+              title="Gives the image link a fresh ?v= so browsers reload the current file (for when the file was changed on GitHub)"
+              onClick={async () => {
+                setLinkBusy(true); setLinkMsg(null);
+                try {
+                  const token = await getValidToken();
+                  const resp = await workerFetch(`${WORKER_URL}/rest/v1/tiles?id=eq.${t.dbId}`, {
+                    method: 'PATCH',
+                    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+                    body: JSON.stringify({ image_url: rawUrl(currentPath), last_updated_at: new Date().toISOString(), last_updated_by: currentUser.id }),
+                  });
+                  if (!resp.ok) throw new Error('DB patch failed');
+                  setTsFetchTrigger(n => n + 1);
+                  setLinkMsg({ ok: true, text: '✓ Image link refreshed' });
+                } catch (err) { setLinkMsg({ ok: false, text: 'Failed: ' + err.message }); }
+                finally { setLinkBusy(false); }
+              }}
+              style={{ ...btn(false, '#fbbf24', 'rgba(251,191,36,0.1)'), width: '100%', justifyContent: 'center', fontSize: 11 }}>
+              {linkBusy ? 'Updating…' : '🔗 Update image link'}
+            </button>
+            {linkMsg && <span style={{ fontSize: 11, color: linkMsg.ok ? '#4ade80' : C.danger }}>{linkMsg.text}</span>}
           </>
         )}
 
@@ -2082,6 +2118,102 @@ function TileThumb({ tile, light, onError, imgStyle }) {
   }
   if (!tile) return null;
   return <img src={tile.blobSrc ?? tile.src} alt="" onError={onError} className={light ? "tile-img-checker" : undefined} style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", ...imgStyle }} />;
+}
+
+// Spin / flip the image of a DB tile: live preview, then draw the result on a canvas (PNG), upload it over the same repo path
+// and PATCH image_url with a fresh ?v=. Every derived / composed variant is generated from this image, so they change too.
+function SpinFlipImageModal({ tile, getValidToken, workerFetch, currentUser, btn, onClose, onApplied }) {
+  const [ops, setOps] = React.useState([]);
+  const [img, setImg] = React.useState(null);
+  const [error, setError] = React.useState(null);
+  const [busy, setBusy] = React.useState(false);
+  const canvasRef = React.useRef(null);
+  const filePath = repoPathFromUrl(tile.src);
+  // fetch -> blob -> Image: not tied to a cached no-CORS copy of the same URL, and a CORS block gives one clear error
+  React.useEffect(() => {
+    let dead = false, objUrl = null;
+    (async () => {
+      try {
+        const resp = await fetch(SensorUI.withFreshVersion(tile.src, Date.now()), { mode: "cors", cache: "no-store" });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        objUrl = URL.createObjectURL(await resp.blob());
+        const im = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error("the image could not be decoded")); i.src = objUrl; });
+        if (!dead) setImg(im);
+      } catch (e) {
+        if (!dead) setError(`The browser could not read this image for editing (${e.message}). If this is a cross-origin (CORS) block, the image host does not allow it; nothing was changed.`);
+      }
+    })();
+    return () => { dead = true; if (objUrl) URL.revokeObjectURL(objUrl); };
+  }, [tile.src]);
+  const draw = (cv, im) => {
+    const r = SensorUI.imageOps(ops, im.naturalWidth, im.naturalHeight);
+    cv.width = r.width; cv.height = r.height;
+    const ctx = cv.getContext("2d");
+    ctx.imageSmoothingEnabled = false;
+    ctx.setTransform(...r.matrix);
+    ctx.drawImage(im, 0, 0);
+    return r;
+  };
+  React.useEffect(() => { if (img && canvasRef.current) draw(canvasRef.current, img); }, [img, ops]); // eslint-disable-line react-hooks/exhaustive-deps
+  const add = op => { setError(null); setOps(o => [...o, op]); };
+  const apply = async () => {
+    if (!img || busy) return;
+    if (!filePath) { setError("This tile image is not hosted in the ophelia repo, so it cannot be changed here."); return; }
+    setBusy(true); setError(null);
+    try {
+      const out = document.createElement("canvas");
+      draw(out, img);
+      let blob;
+      try {
+        blob = await new Promise((res, rej) => out.toBlob(b => (b ? res(b) : rej(new Error("toBlob returned null"))), "image/png"));
+      } catch (e) {
+        if (e && e.name === "SecurityError") throw new Error("The canvas is tainted by a cross-origin image, so the result cannot be read. Nothing was changed.");
+        throw e;
+      }
+      const token = await getValidToken();
+      await githubUpload(workerFetch, token, {
+        filePath, contentBase64: await fileToBase64(blob), overwrite: true,
+        commitMessage: `[${currentUser.username}] Spin/flip tile image: ${filePath.slice("Resources/".length)}`,
+      });
+      const patchResp = await workerFetch(`${WORKER_URL}/rest/v1/tiles?id=eq.${tile.dbId}`, {
+        method: "PATCH",
+        headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json", "Prefer": "return=minimal" },
+        body: JSON.stringify({ image_url: rawUrl(filePath), last_updated_at: new Date().toISOString(), last_updated_by: currentUser.id }),
+      });
+      if (!patchResp.ok) throw new Error("The image was uploaded but the database update failed (press Apply again to retry the link update)");
+      onApplied();
+    } catch (e) {
+      setError(/tainted|SecurityError/i.test(String(e && (e.name + e.message))) ? "The canvas is tainted by a cross-origin image, so the result cannot be read. Nothing was changed." : "Failed: " + e.message);
+    } finally { setBusy(false); }
+  };
+  const opBtn = (op, label, title) => <button key={op} disabled={!img || busy} onClick={() => add(op)} title={title} style={{ ...btn(false, "#7dd3fc", "rgba(125,211,252,0.15)"), fontSize: 11 }}>{label}</button>;
+  return (
+    <div className="modal-backdrop" style={{ zIndex: 10001 }} onClick={() => { if (!busy) onClose(); }}>
+      <div className="modal-box" data-spin-flip style={{ maxWidth: 360 }} onClick={e => e.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span style={{ fontSize: 13, fontWeight: 700, color: "#7dd3fc" }}>Spin / flip image: {tile.codename ?? ""}</span>
+          <button disabled={busy} onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18 }}>×</button>
+        </div>
+        <div style={{ background: C.panelDeep, borderRadius: 8, padding: 10, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 150 }}>
+          {img ? <div className="tile-img-checker" style={{ lineHeight: 0 }}><canvas ref={canvasRef} data-spin-flip-preview style={{ width: 128, height: "auto", imageRendering: "pixelated", display: "block" }} /></div>
+            : <span style={{ fontSize: 11, color: C.muted }}>{error ? "—" : "Loading image…"}</span>}
+        </div>
+        <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+          {opBtn("rotL", "⟲ Rotate left", "Rotate 90° counter-clockwise")}
+          {opBtn("rotR", "⟳ Rotate right", "Rotate 90° clockwise")}
+          {opBtn("flipH", "⇋ Flip horizontal", "Mirror left-right")}
+          {opBtn("flipV", "⇅ Flip vertical", "Mirror top-bottom")}
+          <button disabled={!ops.length || busy} onClick={() => setOps([])} style={{ ...btn(false), fontSize: 11 }}>Reset</button>
+        </div>
+        <span style={{ fontSize: 11, color: "#fbbf24", lineHeight: 1.5 }}>⚠ This overwrites the tile's image file. Every derived and composed variant of this tile is generated from it, so they all change too.</span>
+        {error && <span data-spin-flip-error style={{ fontSize: 11, color: C.danger, lineHeight: 1.5 }}>{error}</span>}
+        <div style={{ display: "flex", gap: 8 }}>
+          <button disabled={busy} onClick={onClose} style={{ ...btn(false), flex: 1, fontSize: 11 }}>Cancel</button>
+          <button data-spin-flip-apply disabled={!img || busy || !ops.length} onClick={apply} style={{ ...btn(true, "#7dd3fc", "rgba(125,211,252,0.18)"), flex: 1, fontSize: 11 }}>{busy ? "Applying…" : "Apply"}</button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function SensorWarningModal({ folder, onClose }) {

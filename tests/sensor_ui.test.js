@@ -229,4 +229,31 @@ test("parseSymbolInput: empty, last code point, 6 and 7 reserved; suggestions sk
   assert.strictEqual(U.suggestSymbol([{ symbol: "A" }, { symbol: "B" }]), "D");
 });
 
+test("imageOps: dimensions and where pixels land", () => {
+  const at = (r, x, y) => [r.matrix[0] * x + r.matrix[2] * y + r.matrix[4], r.matrix[1] * x + r.matrix[3] * y + r.matrix[5]];
+  // 4x2 image, pixel (0,0) is its top-left corner point
+  let r = U.imageOps([], 4, 2);
+  assert.deepStrictEqual([r.width, r.height, at(r, 0, 0)], [4, 2, [0, 0]]);
+  r = U.imageOps(["rotR"], 4, 2); // clockwise: the top-left goes to the top-right
+  assert.deepStrictEqual([r.width, r.height, at(r, 0, 0), at(r, 4, 0), at(r, 0, 2)], [2, 4, [2, 0], [2, 4], [0, 0]]);
+  r = U.imageOps(["rotL"], 4, 2); // counter-clockwise: the top-left goes to the bottom-left
+  assert.deepStrictEqual([r.width, r.height, at(r, 0, 0), at(r, 4, 0)], [2, 4, [0, 4], [0, 0]]);
+  r = U.imageOps(["flipH"], 4, 2);
+  assert.deepStrictEqual([r.width, r.height, at(r, 0, 0), at(r, 4, 2)], [4, 2, [4, 0], [0, 2]]);
+  r = U.imageOps(["flipV"], 4, 2);
+  assert.deepStrictEqual([at(r, 0, 0), at(r, 4, 2)], [[0, 2], [4, 0]]);
+  // rotR x2 = flipH + flipV; rotR then rotL = identity; order matters (rotR then flipH != flipH then rotR)
+  const a = U.imageOps(["rotR", "rotR"], 4, 2), b = U.imageOps(["flipH", "flipV"], 4, 2);
+  assert.deepStrictEqual(a.matrix.map(Math.abs), b.matrix.map(Math.abs));
+  assert.deepStrictEqual(at(a, 1, 1), at(b, 1, 1));
+  const id = U.imageOps(["rotR", "rotL"], 4, 2);
+  assert.deepStrictEqual([id.width, id.height, at(id, 3, 1)], [4, 2, [3, 1]]);
+  assert.notDeepStrictEqual(at(U.imageOps(["rotR", "flipH"], 4, 2), 0, 0), at(U.imageOps(["flipH", "rotR"], 4, 2), 0, 0));
+  assert.deepStrictEqual(U.imageOps(["bogus"], 3, 3).matrix, [1, 0, 0, 1, 0, 0]);
+});
+test("withFreshVersion replaces any old ?v=", () => {
+  assert.strictEqual(U.withFreshVersion("https://x/y/a.png?v=1", 22), "https://x/y/a.png?v=22");
+  assert.strictEqual(U.withFreshVersion("https://x/y/a.png", 5), "https://x/y/a.png?v=5");
+});
+
 console.log(`${passed} passed`);

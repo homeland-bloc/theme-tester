@@ -136,6 +136,30 @@
   // Engine view of a folder (what sensor.js expects). Unlabelled tiles stay out: the resolver never picks them.
   const engineFolder = folder => ({ key: folder.ref, settings: folder.settings, tiles: folder.labelled });
 
+  // ── Image spin / flip (tile modal) ────────────────────────────────────────────────────────────────────
+  // ops: "rotL" | "rotR" | "flipH" | "flipV", applied to the image in order. -> { width, height, matrix: [a, b, c, d, e, f] } for
+  // ctx.setTransform(...matrix) followed by ctx.drawImage(img, 0, 0): x' = a x + c y + e, y' = b x + d y + f. A quarter turn swaps width and height.
+  const mul = (m, n) => [ // m after n
+    m[0] * n[0] + m[2] * n[1], m[1] * n[0] + m[3] * n[1],
+    m[0] * n[2] + m[2] * n[3], m[1] * n[2] + m[3] * n[3],
+    m[0] * n[4] + m[2] * n[5] + m[4], m[1] * n[4] + m[3] * n[5] + m[5],
+  ];
+  const imageOps = (ops, w, h) => {
+    let m = [1, 0, 0, 1, 0, 0], cw = w, ch = h;
+    for (const op of ops || []) {
+      let step, nw = cw, nh = ch;
+      if (op === "rotR") { step = [0, 1, -1, 0, ch, 0]; nw = ch; nh = cw; }
+      else if (op === "rotL") { step = [0, -1, 1, 0, 0, cw]; nw = ch; nh = cw; }
+      else if (op === "flipH") step = [-1, 0, 0, 1, cw, 0];
+      else if (op === "flipV") step = [1, 0, 0, -1, 0, ch];
+      else continue;
+      m = mul(step, m); cw = nw; ch = nh;
+    }
+    return { width: cw, height: ch, matrix: m };
+  };
+  // Cache-busted link for a repo file: the same URL with a fresh ?v=.
+  const withFreshVersion = (url, v) => String(url).split("?")[0] + "?v=" + v;
+
   // ── Pickers ───────────────────────────────────────────────────────────────────────────────────────────
   // A sensor folder is ONE logical entry everywhere a tile is picked. `tiles` are UI tile objects; the folder's own entry is
   // the one with isSensor and sensorFolder (all its tiles, labelled or not, are the folder's members).
@@ -227,6 +251,7 @@
     sensorRef, parseSensorRef, isSensorRef,
     parseCodeInput, parseRollInput, codeFieldState, codeGridCells, toggleCodeBit, normalisedHint, parseSymbolInput, usedSymbols, suggestSymbol,
     splitGroupPatch, divergence, makeFolder, engineFolder,
+    imageOps, withFreshVersion,
     variantOwners, hideSensorVariants, canonicalRef, canonicalRefs, folderPreviewTiles,
     deriveLayer, opsToCss, opsLabel, composePlan, composeKey,
     planSensorSwitch, resolveLoadedSensorRef,
