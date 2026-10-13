@@ -7438,9 +7438,9 @@ function App() {
                         onTouchStart={e => e.stopPropagation()}
                         title={`${label} (sensor folder: places the right variant automatically)`}
                         style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: "pointer", position: "relative", overflow: "visible",
-                          border: `${active ? 3 : 2}px solid ${SENSOR_YELLOW}`,
-                          boxShadow: `0 0 ${active ? 12 : 7}px ${active ? 3 : 1}px rgba(245,197,24,${active ? 0.75 : 0.5})`,
-                          background: active ? "rgba(245,197,24,0.12)" : C.panelDeep, transition: "box-shadow 0.12s, background 0.12s" }}>
+                          border: `${active ? 3 : 2}px solid ${active ? C.accentBright : C.border}`,
+                          boxShadow: active ? `0 0 0 1px ${C.accentBright}44` : "none",
+                          background: active ? C.accentDim : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s, box-shadow 0.12s" }}>
                         <div style={{ position: "absolute", inset: 0, borderRadius: 6, overflow: "hidden", display: "grid", gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr", gap: 1 }}>
                           {preview.map(t => (
                             <div key={t.ref} style={{ display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", background: C.panelDeep }}>
