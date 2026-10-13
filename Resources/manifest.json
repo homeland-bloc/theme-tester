@@ -25,7 +25,7 @@
         "spin": true, "flip": false, "symbol": "W"
       },
       "rails": {
-        "codes": { "TL.png": "00001010", "TR.png": "00010010", "BL.png": "01001000", "BR.png": "01010000", "Ver.png": "01000010", "Fence.png": "00011000" },
+        "codes": { "TL.png": "01010000", "TR.png": "01001000", "BL.png": "00010010", "BR.png": "00001010", "Ver.png": "01000010", "Fence.png": "00011000" },
         "spin": false, "flip": false
       }
     }
