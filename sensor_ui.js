@@ -51,7 +51,8 @@
 
   // ── Group-level fields ────────────────────────────────────────────────────────────────────────────────
   // These DB columns are shared by every row of a (tileset, folder_key) sensor group.
-  const GROUP_COLUMNS = ["size_multiplier", "offset_x", "offset_y", "symbol", "rotatable", "flippable", "otg_passable", "bottom_render", "priority", "auto_shadow", "mirror_offset", "show_tile_count"];
+  // Size and offsets are NOT group fields: they belong to each variant.
+  const GROUP_COLUMNS = ["symbol", "rotatable", "flippable", "otg_passable", "bottom_render", "priority", "auto_shadow", "mirror_offset"];
   const splitGroupPatch = patch => {
     const group = {}, own = {};
     for (const k of Object.keys(patch || {})) (GROUP_COLUMNS.includes(k) ? group : own)[k] = patch[k];
@@ -60,9 +61,9 @@
 
   // ── Folders ───────────────────────────────────────────────────────────────────────────────────────────
   const cmpSort = (a, b) => ((a.sortIndex ?? 0) - (b.sortIndex ?? 0)) || String(a.ref).localeCompare(String(b.ref));
-  // Fields compared for the warning button. sensor_code, image, codename, sort index, sensor_roll, filename never count.
+  // Fields compared for the warning button. sensor_code, image, codename, sort index, sensor_roll, filename, size and offsets never count.
   const DIVERGENCE_FIELDS = [
-    ["dbSizeMultiplier", "Size multiplier"], ["dbOffsetX", "Offset X"], ["dbOffsetY", "Offset Y"], ["symbol", "Symbol"],
+    ["symbol", "Symbol"],
     ["dbBottomRender", "Bottom render"], ["dbPriority", "Priority"], ["dbAutoShadow", "Auto shadow"], ["dbOtgPassable", "OTG passable"],
     ["dbRotatable", "Rotatable"], ["dbFlippable", "Flippable"], ["dbMirrorOffset", "Mirror offset"],
   ];

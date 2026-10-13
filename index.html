@@ -3007,8 +3007,21 @@ function App() {
   const getEffectiveOffset = (t, r, c) => {
     const over = gridOffsets[`${r},${c}`];
     if (over !== undefined) return over;
-    return getTileOffset(t);
+    return getTileOffset(cellSizeTile(t, r, c));
   };
+  // Size and offsets are per variant: a sensor cell uses the CHOSEN variant's values (derived variants: their source tile;
+  // composed variants: the source tile of their first quadrant). Plain cells use their own tile.
+  const cellSizeTile = (t, r, c) => {
+    if (!t || !t.isSensor) return t;
+    const d = sensorLayerRef.current.get(`${r},${c}`);
+    if (!d || d.warn) return t;
+    if (d.status === "composed") {
+      const ref = d.recipe && d.recipe[0] && d.recipe[0].sourceTileRef;
+      return sensorFolders.get(d.folderRef)?.ui.tiles.find(x => x.ref === ref) ?? t;
+    }
+    return d.tile ?? t;
+  };
+  const getCellMultiplier = (t, r, c) => getTileMultiplier(cellSizeTile(t, r, c));
 
   // Spawn tile identification (src-based)
   const isSpawn1 = t => !!(t?.src && t.src.includes("Spawns/1.png")); // red
@@ -3433,6 +3446,8 @@ function App() {
     return m;
   }, [tilesetEntries, globalEntries]);
   const sensorLayer = useMemo(() => SensorUI.deriveLayer({ grid, refs: palette.refs, folders: sensorFolders }), [grid, palette, sensorFolders]);
+  const sensorLayerRef = useRef(sensorLayer);
+  sensorLayerRef.current = sensorLayer;
 
   // Composed variants (quadrants of the base tiles drawn on a canvas). Cache: key -> blob URL | "fail" | "pending".
   const composedRef = useRef(new Map());
@@ -3502,7 +3517,7 @@ function App() {
       const fbTile = fb && fb.status === "explicit" ? fb.pool[0].tile : null;
       return fbTile ? { src: fbTile.blobSrc ?? fbTile.src, css: "" } : { warn: true };
     }
-    return { src: d.tile.blobSrc ?? d.tile.src, css: SensorUI.opsToCss(d.ops) };
+    return { src: d.tile.blobSrc ?? d.tile.src, css: SensorUI.opsToCss(d.ops), ops: d.ops };
   };
 
   // Switch plan over the palette: d: entries by codename (planSwitch), s: entries by folder key (planSensorSwitch).
@@ -4902,7 +4917,7 @@ function App() {
   // Returns { ox, oy } override if the tile has mirror offset enabled and flags indicate a flip, else undefined.
   const computeMirrorOffsetOverride = (tileRef, fV, fH, fD) => {
     const tile = getTile(tileRef);
-    if (!tile) return undefined;
+    if (!tile || tile.isSensor) return undefined; // sensor cells take size and offsets from the chosen variant, per cell
     const mo = mirrorOffsetTilesRef.current[tile.ref] !== undefined
       ? mirrorOffsetTilesRef.current[tile.ref]
       : isDefaultMirrorOffset(tile);
@@ -5878,7 +5893,9 @@ function App() {
       const t = getCellTile(id);
       if (!t) return;
       if (t.isSpace) { spaceCells.push({ r, c }); return; }
-      draws.push({ ref: t.ref, z: isPriorityTile(t) ? 2 : (isBottomTile(t) ? 0 : 1), src: t.blobSrc ?? t.src, r, c, mult: getTileMultiplier(t), off: getEffectiveOffset(t, r, c), rotDeg: (gridRotations[`${r},${c}`] ?? 0) * 90, flipStep: gridFlips[`${r},${c}`] ?? 0 });
+      const sv = t.isSensor ? sensorVisual(t, r, c) : null;
+      if (sv && sv.warn) return;
+      draws.push({ ref: t.ref, z: isPriorityTile(t) ? 2 : (isBottomTile(t) ? 0 : 1), src: sv ? sv.src : (t.blobSrc ?? t.src), ops: sv ? (sv.ops || []) : null, r, c, mult: getCellMultiplier(t, r, c), off: getEffectiveOffset(t, r, c), rotDeg: (gridRotations[`${r},${c}`] ?? 0) * 90, flipStep: gridFlips[`${r},${c}`] ?? 0 });
     }));
     const filename = (mapName.trim() || "ophelia-map") + ".png";
     const finish = () => {
@@ -5905,7 +5922,7 @@ function App() {
     }))).then(loaded => {
       loaded.forEach(item => {
         if (!item) return;
-        const { img, r, c, mult, off, rotDeg, flipStep } = item;
+        const { img, r, c, mult, off, rotDeg, flipStep, ops } = item;
         const drawW = CELL * mult;
         const imgW = img.naturalWidth  ?? img.width;
         const imgH = img.naturalHeight ?? img.height;
@@ -5914,6 +5931,7 @@ function App() {
         const cy = r * CELL + padding + CELL / 2 + (off.oy / 100) * CELL;
         ctx.save();
         ctx.translate(cx, cy);
+        if (ops) for (const op of ops.slice().reverse()) { if (op === "spin") ctx.rotate(Math.PI / 2); else ctx.scale(-1, 1); } // sensor variant ops, last op first
         if (rotDeg) ctx.rotate(rotDeg * Math.PI / 180);
         if (flipStep) {
           const fx = (flipStep === 1 || flipStep === 2) ? -1 : 1;
@@ -8507,7 +8525,7 @@ function App() {
                     const t = getCellTile(id); if (!t) return null;
                     if (t.isSpace) return null;
                     if (!isBottomTile(t) || isPriorityTile(t)) return null;
-                    const mult   = getTileMultiplier(t);
+                    const mult   = getCellMultiplier(t, r, c);
                     const off    = getEffectiveOffset(t, r, c);
                     const sv = t.isSensor ? sensorVisual(t, r, c) : null; if (sv && sv.warn) return null;
                     const imgSrc = sv ? sv.src : (t.blobSrc ?? t.src), svCss = sv && sv.css ? " " + sv.css : "";
@@ -8536,7 +8554,7 @@ function App() {
                     if (t.isSpace) return null;
                     if (isPriorityTile(t)) return null;
                     if (isBottomTile(t)) return null;
-                    const mult   = getTileMultiplier(t);
+                    const mult   = getCellMultiplier(t, r, c);
                     const off    = getEffectiveOffset(t, r, c);
                     const sv = t.isSensor ? sensorVisual(t, r, c) : null; if (sv && sv.warn) return null;
                     const imgSrc = sv ? sv.src : (t.blobSrc ?? t.src), svCss = sv && sv.css ? " " + sv.css : "";
@@ -8564,7 +8582,7 @@ function App() {
                     const t = getCellTile(id); if (!t) return null;
                     if (t.isSpace) return null;
                     if (!isPriorityTile(t)) return null;
-                    const mult   = getTileMultiplier(t);
+                    const mult   = getCellMultiplier(t, r, c);
                     const off    = getEffectiveOffset(t, r, c);
                     const sv = t.isSensor ? sensorVisual(t, r, c) : null; if (sv && sv.warn) return null;
                     const imgSrc = sv ? sv.src : (t.blobSrc ?? t.src), svCss = sv && sv.css ? " " + sv.css : "";
@@ -8674,7 +8692,7 @@ function App() {
                     const t = getCellTile(id);
                     if (!t || t.isSpace) return;
                     const off = getEffectiveOffset(t, r, c);
-                    const mult = getTileMultiplier(t);
+                    const mult = getCellMultiplier(t, r, c);
                     if (off.ox === 0 && off.oy === 0 && mult === 1) return;
                     markers.push({ r, c, key: `${r}-${c}` });
                   }));

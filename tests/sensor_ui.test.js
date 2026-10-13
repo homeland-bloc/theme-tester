@@ -45,8 +45,9 @@ test("codeGridCells", () => {
 
 test("splitGroupPatch", () => {
   const { group, own } = U.splitGroupPatch({ symbol: "W", rotatable: true, codename: "a", sensor_code: "00000000", sensor_roll: 2, offset_x: 1 });
-  assert.deepStrictEqual(group, { symbol: "W", rotatable: true, offset_x: 1 });
-  assert.deepStrictEqual(own, { codename: "a", sensor_code: "00000000", sensor_roll: 2 });
+  assert.deepStrictEqual(group, { symbol: "W", rotatable: true });
+  assert.deepStrictEqual(U.splitGroupPatch({ size_multiplier: 1.5, offset_x: 1, offset_y: 2, show_tile_count: true }).group, {});
+  assert.deepStrictEqual(own, { codename: "a", sensor_code: "00000000", sensor_roll: 2, offset_x: 1 }); // offsets stay on the row
 });
 
 test("makeFolder: plain, sensor, mixed", () => {
@@ -69,7 +70,7 @@ test("divergence ignores code, image, codename, sort, roll; reports flags/size/o
   assert.deepStrictEqual(U.divergence([a, b]), []);
   const c = T("c", "00001000", { dbBottomRender: false, dbSizeMultiplier: 2, dbOffsetX: 0, symbol: null });
   const d = U.divergence([a, b, c]).map(x => x.field).sort();
-  assert.deepStrictEqual(d, ["dbBottomRender", "dbSizeMultiplier", "symbol"]);
+  assert.deepStrictEqual(d, ["dbBottomRender", "symbol"]); // size and offsets are per variant, never a divergence
   // unlabelled tiles are not compared
   assert.deepStrictEqual(U.divergence([a, T("u", null, { dbBottomRender: false })]), []);
 });
