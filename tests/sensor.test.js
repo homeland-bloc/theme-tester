@@ -152,6 +152,32 @@ test("flip-only composition: recipes use flip and never spin", () => {
   const anyFlip = S.ALL_CODES.some(c => cands[c].recipe && cands[c].recipe.some(e => e.flip));
   assert.ok(anyFlip);
 });
+// The canvas draws: mirror left-right (flip), then rotate clockwise `spinSteps` quarter turns, then keep quadrant q.
+// Simulate that on a 2x2 matrix of quadrant ids (position order TL TR BR BL) and check the source quadrant lands on q.
+const simulateDraw = (sq, flip, steps) => {
+  let m = [[0, 1], [3, 2]]; // [[TL, TR], [BL, BR]]
+  if (flip) m = m.map(r => r.slice().reverse());
+  for (let i = 0; i < steps; i++) m = [[m[1][0], m[0][0]], [m[1][1], m[0][1]]]; // rotate clockwise
+  const pos = [[0, 0], [0, 1], [1, 1], [1, 0]]; // quadrant -> [row, col]
+  return pos.findIndex(([r, c]) => m[r][c] === sq);
+};
+test("composition recipes are consistent with the canvas flip-then-rotate draw", () => {
+  for (const f of [depth, water, folder("both", depth.tiles, { flip: true, spin: true })]) {
+    const cands = S.buildCandidates(f);
+    let n = 0;
+    for (const code of S.ALL_CODES) {
+      if (cands[code].status !== "composed") continue;
+      cands[code].recipe.forEach((e, q) => {
+        assert.strictEqual(simulateDraw(e.sourceQuadrant, e.flip, e.spinSteps), q, `${code} q${q}`);
+        // the source quadrant really has the type this slot needs after the transform
+        const t = S.quadrantType(e.sourceCode, e.sourceQuadrant);
+        assert.strictEqual(e.spinSteps % 2 ? ({ edgeH: "edgeV", edgeV: "edgeH" }[t] || t) : t, e.type, `${code} q${q} type`);
+        n++;
+      });
+    }
+    assert.ok(n > 0);
+  }
+});
 test("too few tiles report the exact missing slots", () => {
   const f = folder("few", [T("a", "00001011"), T("b", "11111111")], { flip: true });
   const miss = S.computeRequiredBase(f);
