@@ -813,8 +813,43 @@ function TilesetGearModal({
   const [selectedTransferUserId, setSelectedTransferUserId] = React.useState('');
   const [profilesList,          setProfilesList]          = React.useState([]);
   const [profilesLoading,       setProfilesLoading]       = React.useState(false);
+  const [linkRefresh,           setLinkRefresh]           = React.useState(null); // null | { busy, ok, text }
 
   const tsData = (open && tsId) ? dbTilesets.find(ts => ts.id === tsId) : null;
+
+  // Give every tile image of the tileset a fresh ?v= (PATCH image_url per tile, a few at a time).
+  const refreshAllLinks = async () => {
+    if (!tsData) return;
+    setLinkRefresh({ busy: true, text: 'Reading tiles…' });
+    try {
+      const token = await getValidToken();
+      const hdr = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
+      const r = await workerFetch(`${WORKER_URL}/rest/v1/tiles?tileset_id=eq.${tsData.id}&select=id,image_url`, { headers: hdr });
+      if (!r.ok) throw new Error('could not read the tiles');
+      const rows = (await r.json()).filter(x => x.image_url);
+      const v = Date.now(), queue = rows.slice();
+      let done = 0, failed = 0;
+      const lane = async () => {
+        while (queue.length) {
+          const row = queue.shift();
+          try {
+            const pr = await workerFetch(`${WORKER_URL}/rest/v1/tiles?id=eq.${row.id}`, {
+              method: 'PATCH', headers: { ...hdr, 'Prefer': 'return=minimal' },
+              body: JSON.stringify({ image_url: SensorUI.withFreshVersion(row.image_url, v) }),
+            });
+            if (!pr.ok) failed++;
+          } catch { failed++; }
+          done++;
+          setLinkRefresh({ busy: true, text: `Refreshing ${done}/${rows.length}…` });
+        }
+      };
+      await Promise.all([lane(), lane(), lane(), lane()]);
+      if (onTsFetchTrigger) onTsFetchTrigger();
+      setLinkRefresh({ busy: false, ok: failed === 0, text: failed ? `${rows.length - failed} refreshed, ${failed} failed` : `✓ ${rows.length} image links refreshed` });
+    } catch (e) {
+      setLinkRefresh({ busy: false, ok: false, text: 'Failed: ' + e.message });
+    }
+  };
 
   // Tile count for the delete button: from the loaded cache, else one id-only read (no cascade delete exists).
   const [fetchedTileCount, setFetchedTileCount] = React.useState(null);
@@ -1160,6 +1195,18 @@ function TilesetGearModal({
                 onClick={() => setBulkOpen(true)}>
                 ✏️ Rename files to codenames
               </button>
+            </div>
+          )}
+          {/* Refresh all image links (fresh ?v= on every tile) — owners/admins */}
+          {canManage && (
+            <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 8, display: "flex", flexDirection: "column", gap: 4 }}>
+              <button data-refresh-all-links disabled={!!linkRefresh?.busy}
+                title="Gives every tile image link a fresh ?v= so browsers reload the current files"
+                style={{ ...btn(false, '#fbbf24', 'rgba(251,191,36,0.1)'), justifyContent: "center", fontSize: 11, width: "100%" }}
+                onClick={refreshAllLinks}>
+                🔗 Refresh all image links
+              </button>
+              {linkRefresh && <span style={{ fontSize: 10, color: linkRefresh.busy ? C.muted : linkRefresh.ok ? '#4ade80' : C.danger }}>{linkRefresh.text}</span>}
             </div>
           )}
           {bulkOpen && canManage && (
