@@ -203,4 +203,18 @@ test("toggleCodeBit / normalisedHint", () => {
   assert.strictEqual(U.normalisedHint(""), null);
 });
 
+test("pickers: a sensor folder is one entry, variants hidden / canonicalised", () => {
+  const v1 = { ref: "d:1", sensorCode: "00000000" }, v2 = { ref: "d:2", sensorCode: "00001000" }, un = { ref: "d:3", sensorCode: null };
+  const folder = { tiles: [v1, v2, un], labelled: [v1, v2] };
+  const plain = { ref: "d:9" }, sTile = { ref: "s:ts|F", isSensor: true, sensorFolder: folder };
+  const list = [v1, v2, un, plain, sTile];
+  assert.deepStrictEqual(U.hideSensorVariants(list).map(t => t.ref), ["d:9", "s:ts|F"]);
+  const owners = U.variantOwners(list);
+  assert.strictEqual(U.canonicalRef("d:2", owners), "s:ts|F");
+  assert.strictEqual(U.canonicalRef("d:9", owners), "d:9");
+  assert.deepStrictEqual(U.canonicalRefs(["d:1", "d:9", "d:2", "s:ts|F"], owners), ["s:ts|F", "d:9"]);
+  assert.deepStrictEqual(U.folderPreviewTiles(folder).map(t => t.ref), ["d:1", "d:2"]);
+  assert.deepStrictEqual(U.hideSensorVariants([v1, v2]).map(t => t.ref), ["d:1", "d:2"]); // no folder entry in the list: nothing hidden
+});
+
 console.log(`${passed} passed`);

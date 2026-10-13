@@ -131,7 +131,7 @@ const MIN_ZOOM = 0.25, MAX_ZOOM = 4;
 const ZOOM_STEP = 0.05;
 const snapTo10 = z => Math.round(z * 20) / 20;
 // oph_ov_* are SPARSE per-ref override maps: { [tileRef]: value }. Only user edits are stored; the default comes from the tile.
-const SK = { grid: "oph_grid", colors: "oph_colors", userTiles: "oph_user_tiles", multipliers: "oph_ov_multipliers", priority: "oph_ov_priority", offsets: "oph_ov_offsets", rotatable: "oph_ov_rotatable", tileRots: "oph_tile_rots", gridW: "oph_gridW", gridH: "oph_gridH", tileNames: "oph_ov_tile_names", bottom: "oph_ov_bottom", mirrorOffset: "oph_ov_mirror_offset", gridOff: "oph_grid_off", activeTileset: "oph_active_ts", autoShadow: "oph_ov_auto_shadow", allowFlip: "oph_ov_allow_flip", otgWalls: "oph_ov_otg_walls", tileCount: "oph_ov_tile_count_map" };
+const SK = { grid: "oph_grid", colors: "oph_colors", userTiles: "oph_user_tiles", multipliers: "oph_ov_multipliers", priority: "oph_ov_priority", offsets: "oph_ov_offsets", rotatable: "oph_ov_rotatable", gridW: "oph_gridW", gridH: "oph_gridH", tileNames: "oph_ov_tile_names", bottom: "oph_ov_bottom", mirrorOffset: "oph_ov_mirror_offset", gridOff: "oph_grid_off", activeTileset: "oph_active_ts", autoShadow: "oph_ov_auto_shadow", allowFlip: "oph_ov_allow_flip", otgWalls: "oph_ov_otg_walls", tileCount: "oph_ov_tile_count_map" };
 const ACCEPTED = "image/png,image/jpeg,image/gif,image/webp,image/svg+xml,image/bmp";
 const MAX_HISTORY = 60;
 // Tiles are identified by refs (tile_palette.js): d:<uuid> DB tile, g:<Resources path> global tile, u:<n> local upload,
@@ -157,8 +157,8 @@ const OPHELIA_BG = {
 // Default per-tile settings: src pattern → property value.
 // Functions like isDefaultRotatable/isDefaultOTGWall read from here.
 const TILE_SETTINGS = {
-  rotatable:    ["/Water/"],               // src substrings → tile is rotatable (spin) by default
-  flippable:    ["/Fence/", "/Rope/", "Jumppads/"],  // src substrings → tile is flippable by default
+  rotatable:    [],                        // spin / flip only exist for sensor folders now (folder settings, not tile defaults)
+  flippable:    [],
   otgPassable:  ["bush", "Bush", "SpeedTile", "SlowTile", "Objective", "Rope/", "Jumppads/", "Teleporters/", "HealPad", "Spawn", "SpawnPoint", "spawn"],
   mirrorOffset: ["Jumppads/", "Teleporters/", "HealPad"],
   bottomRender: ["/Water/", "Jumppads/", "Teleporters/", "SlowTile", "SpeedTile"],
@@ -1210,7 +1210,7 @@ function InfoModal(props) {
 }
 function InfoModalBody(props) {
   const {
-    t, getDefaultMultiplier, getTileMultiplier, getDefaultOffset, getTileOffset, currentUser, userProfile, tileNames, isPriorityTile, isBottomTile, isAutoShadowTile, defaultPriorityTile, defaultBottomTile, defaultAutoShadowTile, setTileMultipliers, setTileOffsets, getValidToken, workerFetch, setTsFetchTrigger, setInfoTile, userTiles, tiles, setTileNames, btn, isTileRotatable, isDefaultRotatable, isFlipAllowed, isDefaultFlippable, isOTGWall, isDefaultOTGWall, otgWallOverrides, isMirrorOffset, isDefaultMirrorOffset, setRotatableMap, setCardRotations, setCardFlipSteps, setCardFlipModes, setAllowFlipMap, cardFlipModes, setOtgWallOverrides, setMirrorOffsetTiles, setBottomTiles, setPriorityTiles, setAutoShadowTiles, setDbTilesByTsId, starredTiles, toggleStar, dbTilesets, dbTilesByTsId, deleteTile,
+    t, getDefaultMultiplier, getTileMultiplier, getDefaultOffset, getTileOffset, currentUser, userProfile, tileNames, isPriorityTile, isBottomTile, isAutoShadowTile, defaultPriorityTile, defaultBottomTile, defaultAutoShadowTile, setTileMultipliers, setTileOffsets, getValidToken, workerFetch, setTsFetchTrigger, setInfoTile, userTiles, tiles, setTileNames, btn, isTileRotatable, isDefaultRotatable, isFlipAllowed, isDefaultFlippable, isOTGWall, isDefaultOTGWall, otgWallOverrides, isMirrorOffset, isDefaultMirrorOffset, setRotatableMap, setAllowFlipMap, setOtgWallOverrides, setMirrorOffsetTiles, setBottomTiles, setPriorityTiles, setAutoShadowTiles, setDbTilesByTsId, starredTiles, toggleStar, dbTilesets, dbTilesByTsId, deleteTile,
     infoTile, getTile,
   } = props;
   const defaultMult = getDefaultMultiplier(t);
@@ -1515,8 +1515,8 @@ function InfoModalBody(props) {
   };
 
   const FLAG_TIPS = {
-    rotatable: "Tile can be rotated in 90° steps on the map.",
-    flippable: "Tile can be flipped horizontally on the map.",
+    rotatable: "Sensor folders only: missing codes may be built by spinning (and composing) this folder's tiles in 90° steps.",
+    flippable: "Sensor folders only: missing codes may be built by mirroring this folder's tiles left-right.",
     otg_passable: "Tile is treated as a one-tile-gap passable object, rendered above the ground layer.",
     mirror_offset: "When the tile is flipped, its render offset is mirrored along the horizontal axis.",
     bottom_render: "Tile renders below the player/unit layer (e.g. floor details, shadows).",
@@ -1817,33 +1817,24 @@ function InfoModalBody(props) {
           const ds = { gridColumn: "1 / -1", padding: "4px 6px", background: "rgba(255,255,255,0.04)", borderRadius: 4, fontSize: 10, color: C.muted, lineHeight: 1.5, marginTop: -2 };
           return (
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "4px 6px" }}>
-              {/* Row 1 — rotatable | flippable */}
+              {/* Row 1 — spin | flip: only meaningful for the tiles of a sensor folder */}
+              {inSensorGroup && <>
               <label style={ls}>
                 <input type="checkbox" checked={curSpin} style={cs(spinColor)}
                   onChange={ev => {
                     putBool(setRotatableMap, ev.target.checked, isDefaultRotatable(t));
-                    if (!ev.target.checked) {
-                      setCardRotations(prev => { const n = {...prev}; delete n[t.ref]; return n; });
-                      if (!isFlipAllowed(t)) {
-                        setCardFlipSteps(prev => { const n = {...prev}; delete n[t.ref]; return n; });
-                        setCardFlipModes(prev => { const n = {...prev}; delete n[t.ref]; return n; });
-                      }
-                    }
                   }} />
-                <span style={{ fontSize: 10, color: spinColor, fontFamily: "monospace" }}>rotatable 🐬</span><FlagTip id="rotatable" />
+                <span style={{ fontSize: 10, color: spinColor, fontFamily: "monospace" }}>spin (rotatable)</span><FlagTip id="rotatable" />
               </label>
               <label style={ls}>
                 <input type="checkbox" checked={curFlip} style={cs(flipColor)}
                   onChange={ev => {
                     putBool(setAllowFlipMap, ev.target.checked, isDefaultFlippable(t));
-                    if (!ev.target.checked) {
-                      setCardFlipSteps(prev => { const n = {...prev}; delete n[t.ref]; return n; });
-                      if ((cardFlipModes[t.ref] ?? 'flip') === 'flip') { setCardFlipModes(prev => { const n = {...prev}; delete n[t.ref]; return n; }); }
-                    }
                   }} />
-                <span style={{ fontSize: 10, color: flipColor, fontFamily: "monospace" }}>flippable 🦭</span><FlagTip id="flippable" />
+                <span style={{ fontSize: 10, color: flipColor, fontFamily: "monospace" }}>flip (flippable)</span><FlagTip id="flippable" />
               </label>
               {(ft === 'rotatable' || ft === 'flippable') && <div style={ds}>{FLAG_TIPS[ft]}</div>}
+              </>}
 
               {/* Row 2 — otg_passable | mirror_offset */}
               <label style={ls}>
@@ -2075,6 +2066,24 @@ function SensorCodeGrid({ code, color, onToggle }) {
       ))}
     </div>
   );
+}
+
+// One tile as one thumbnail. A sensor folder is a single logical entry: its four-image folder preview. Anything else: its image.
+function TileThumb({ tile, light, onError, imgStyle }) {
+  if (tile && tile.isSensor && tile.sensorFolder) {
+    const prev = SensorUI.folderPreviewTiles(tile.sensorFolder);
+    return (
+      <div data-folder-thumb style={{ width: "100%", height: "100%", display: "grid", gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr", gap: 1 }}>
+        {[0, 1, 2, 3].map(i => (
+          <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", background: C.panelDeep, minWidth: 0, minHeight: 0 }}>
+            {prev[i] && <img src={prev[i].blobSrc ?? prev[i].src} alt="" className={light ? "tile-img-checker" : undefined} style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated" }} />}
+          </div>
+        ))}
+      </div>
+    );
+  }
+  if (!tile) return null;
+  return <img src={tile.blobSrc ?? tile.src} alt="" onError={onError} className={light ? "tile-img-checker" : undefined} style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", ...imgStyle }} />;
 }
 
 function SensorWarningModal({ folder, onClose }) {
@@ -2503,6 +2512,7 @@ function App() {
   const tilesByRef = useMemo(() => new Map(tiles.map(t => [t.ref, t])), [tiles]);
   const tilesByRefRef = useRef(tilesByRef);
   tilesByRefRef.current = tilesByRef;
+  const sensorOwners = useMemo(() => SensorUI.variantOwners(tiles), [tiles]); // member ref -> its sensor folder's ref
   const tilesListRef = useRef(tiles);
   tilesListRef.current = tiles;
   // Safety net (dev only): two tile objects sharing one ref would re-introduce multi-select / stray flags.
@@ -2551,7 +2561,7 @@ function App() {
   const [showGuides,    setShowGuides]    = useState(false);
   const [clearMapConfirmOpen, setClearMapConfirmOpen] = useState(false);
   const [downloadConfirmOpen, setDownloadConfirmOpen] = useState(false);
-  const [mirrorSettings, setMirrorSettings] = useState({ mirrorSpawns: true, mirrorRotation: true, allowSwap: false });
+  const [mirrorSettings, setMirrorSettings] = useState({ mirrorSpawns: true, allowSwap: false });
   const [mirrorSettingsOpen, setMirrorSettingsOpen] = useState(false);
   const [tilesSettingsOpen,  setTilesSettingsOpen]  = useState(false);
   const [tileCardLightBg,    setTileCardLightBg]    = useState(() => load("oph_tile_card_light_bg", true));
@@ -2669,15 +2679,6 @@ function App() {
   // Tile count badge: master toggle and per-tile opt-in map { [ref]: bool }
   const [showTileCount, setShowTileCount] = useState(() => load("oph_show_tile_count", false));
   const [tileCountMap, setTileCountMap] = useState(() => load(SK.tileCount, {}));
-  // Per-tile card rotation step 0-3 (0=up,1=right,2=down,3=left) — used for next placement
-  const [cardRotations, setCardRotations] = useState({}); // { [ref]: degrees }
-  // Per-tile flip mode: 'spin' (default) or 'flip'
-  const [cardFlipModes, setCardFlipModes] = useState({}); // { [ref]: 'spin' | 'flip' }
-  // Per-tile flip cycle step 0-3 (0=none,1=flipX,2=flipX+Y,3=flipY)
-  const [cardFlipSteps, setCardFlipSteps] = useState({}); // { [ref]: 0|1|2|3 }
-  // Per-cell grid rotation: { "r,c": 0|1|2|3 }
-  const [gridRotations, setGridRotations] = useState(() => load(SK.tileRots, {}));
-  const [gridFlips,     setGridFlips]     = useState(() => load("oph_grid_flips", {})); // { "r,c": 0|1|2|3 }
   const [gridOffsets,       setGridOffsets]       = useState(() => load(SK.gridOff, {}));
   const [mirrorOffsetTiles, setMirrorOffsetTiles] = useState(() => load(SK.mirrorOffset, {}));
   const [showOffsetCenters, setShowOffsetCenters] = useState(false);
@@ -2714,18 +2715,11 @@ function App() {
   // Pre-decoded ImageBitmap cache for user-uploaded tiles (keyed by tile ref)
   const userBitmapCacheRef = useRef(new Map());
 
-  const dragRotationRef    = useRef(0); // rotation of tile currently being dragged
-  const dragFlipRef        = useRef(0); // flip step of tile currently being dragged
-  const gridRotationsRef   = useRef({}); // always-current gridRotations for drag pickup closures
-  const gridFlipsRef       = useRef({}); // always-current gridFlips for drag pickup closures
-  const cardFlipModesRef   = useRef({}); // always-current cardFlipModes for closures
-  const cardFlipStepsRef   = useRef({}); // always-current cardFlipSteps for closures
   const mirrorOffsetTilesRef = useRef({});
   const tileOffsetsRef       = useRef({});
   const rotatableMapRef      = useRef({}); // always-current rotatableMap for keyboard handler
   const allowFlipMapRef      = useRef({}); // always-current allowFlipMap for keyboard handler
-  const cardRotationsRef   = useRef({});
-  const mirrorSettingsRef  = useRef({ mirrorSpawns: true, mirrorRotation: true, allowSwap: false });
+  const mirrorSettingsRef  = useRef({ mirrorSpawns: true, allowSwap: false });
   const canvasContainerRef = useRef(null); // ref to the relative canvas container for accurate coordinate calc
 
   // Stable refs for touch/paint handlers
@@ -2801,8 +2795,6 @@ function App() {
   useEffect(() => { paintingRef.current = painting; }, [painting]);
   useEffect(() => { mirrorOffsetTilesRef.current = mirrorOffsetTiles; }, [mirrorOffsetTiles]);
   useEffect(() => { tileOffsetsRef.current       = tileOffsets;       }, [tileOffsets]);
-  useEffect(() => { cardFlipModesRef.current     = cardFlipModes;     }, [cardFlipModes]);
-  useEffect(() => { cardFlipStepsRef.current     = cardFlipSteps;     }, [cardFlipSteps]);
   useEffect(() => { rotatableMapRef.current      = rotatableMap;      }, [rotatableMap]);
   useEffect(() => { allowFlipMapRef.current      = allowFlipMap;      }, [allowFlipMap]);
 
@@ -2868,9 +2860,7 @@ function App() {
   useEffect(() => { save(SK.autoShadow, autoShadowTiles); }, [autoShadowTiles]);
   useEffect(() => { save(SK.rotatable,    rotatableMap);    }, [rotatableMap]);
   useEffect(() => { save(SK.allowFlip, allowFlipMap);       }, [allowFlipMap]);
-  useEffect(() => { save(SK.tileRots,     gridRotations);   }, [gridRotations]);
   useEffect(() => { save(SK.gridOff,      gridOffsets);       }, [gridOffsets]);
-  useEffect(() => { save("oph_grid_flips", gridFlips);        }, [gridFlips]);
   useEffect(() => { save(SK.mirrorOffset, mirrorOffsetTiles); }, [mirrorOffsetTiles]);
   useEffect(() => { save(SK.otgWalls, otgWallOverrides); }, [otgWallOverrides]);
   useEffect(() => { save(SK.tileNames,    tileNames);       }, [tileNames]);
@@ -3622,7 +3612,7 @@ function App() {
     }
 
     // ── History snap with the converted grid + palette, then apply state ──
-    const snap = { grid: newGrid, palette: clonePalette(newPal), w: gridWRef.current, h: gridHRef.current, tileset: newTilesetName, bg1: tsBg.bg1, bg2: tsBg.bg2, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current, label: `Switch from ${activeTileset ?? '(none)'} to ${newTilesetName}` };
+    const snap = { grid: newGrid, palette: clonePalette(newPal), w: gridWRef.current, h: gridHRef.current, tileset: newTilesetName, bg1: tsBg.bg1, bg2: tsBg.bg2, highlight: [...highlightedCellsRef.current], label: `Switch from ${activeTileset ?? '(none)'} to ${newTilesetName}` };
     setHistory(h => {
       const trimmed = h.slice(0, histIdxRef.current + 1);
       const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
@@ -3680,9 +3670,6 @@ function App() {
     setAutoShadowTiles(prune);
     setTileNames(prune);
     setTileCountMap(prune);
-    setCardRotations(prune);
-    setCardFlipSteps(prune);
-    setCardFlipModes(prune);
   }, [flatDefaultTiles, userTiles, manifest, tilesLoading, dbTilesByTsId, dbTilesets, activeTileset]);
 
   // Load global manifest + tilesets list. Tiles are loaded on demand per tileset.
@@ -3987,7 +3974,7 @@ function App() {
     });
     replacePalette(pal);
     setGridRaw(g);
-    setHistory([{ grid: g, palette: clonePalette(pal), w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [], rots: gridRotationsRef.current ?? {}, flips: gridFlipsRef.current ?? {}, label: "Load" }]);
+    setHistory([{ grid: g, palette: clonePalette(pal), w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [], label: "Load" }]);
     setHistIdx(0);
     histIdxRef.current = 0;
     if (unresolved > 0) warnCleared(unresolved, "load");
@@ -4033,7 +4020,7 @@ function App() {
   const pushBgHistory = useCallback(() => {
     if (bgHistTimerRef.current) clearTimeout(bgHistTimerRef.current);
     bgHistTimerRef.current = setTimeout(() => {
-      const snap = { grid: gridRef.current, palette: clonePalette(paletteRef.current), w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current };
+      const snap = { grid: gridRef.current, palette: clonePalette(paletteRef.current), w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...highlightedCellsRef.current]};
       setHistory(h => {
         const trimmed = h.slice(0, histIdxRef.current + 1);
         const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
@@ -4075,7 +4062,7 @@ function App() {
         setHistory(h => {
           const trimmed = h.slice(0, histIdx + 1);
           const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-          return [...capped, { grid: next, palette: palSnap, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current, label: snapLabel }];
+          return [...capped, { grid: next, palette: palSnap, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...highlightedCellsRef.current], label: snapLabel }];
         });
         setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
       }
@@ -4121,14 +4108,6 @@ function App() {
     highlightDragOffsetRef.current = null;
     highlightDragAnchorCell.current = null;
     isHighlightDraggingRef.current = false;
-    if (snap.rots !== undefined) {
-      setGridRotations(snap.rots);
-      gridRotationsRef.current = snap.rots;
-    }
-    if (snap.flips !== undefined) {
-      setGridFlips(snap.flips);
-      gridFlipsRef.current = snap.flips;
-    }
     if ("customCenter" in snap) {
       setCustomCenter(snap.customCenter);
       customCenterRef.current = snap.customCenter;
@@ -4164,25 +4143,19 @@ function App() {
     const getMirrorMetaFn = getMirrorMetaRef.current;
     const currentGrid = gridRef.current;
     const newG = currentGrid.map(row => [...row]);
-    const newRots = { ...gridRotationsRef.current };
-    const newFlips = { ...gridFlipsRef.current };
     const seenNew = new Set();
     oldCells.forEach(key => {
       const [r, c] = key.split(',').map(Number);
       const id = currentGrid[r]?.[c] ?? null; // palette index (same palette for the copies)
       if (id === null) return;
-      const srcRot = gridRotationsRef.current[key] ?? 0;
-      const srcFlip = gridFlipsRef.current[key] ?? 0;
       const srcRef = refAt(paletteRef.current, id);
-      const tile = tilesByRefRef.current.get(srcRef);
-      const isRotatable = tile ? isTileRotatable(tile) : false;
       const newR = r + dr, newC = c + dc;
       if (newR < 0 || newR >= gridHRef.current || newC < 0 || newC >= gridWRef.current) return;
       const placements = [];
       const primaryKey = `${newR},${newC}`;
       if (!seenNew.has(primaryKey)) {
         seenNew.add(primaryKey);
-        placements.push({ newR, newC, id, rot: srcRot, flip: srcFlip });
+        placements.push({ newR, newC, id });
       }
       if (getMirrorMetaFn) {
         getMirrorMetaFn(newR, newC).forEach(({ pos: [mr, mc], fV, fH, fD }) => {
@@ -4190,22 +4163,15 @@ function App() {
           if (!seenNew.has(mKey)) {
             seenNew.add(mKey);
             const mirrorId = (srcRef && ms.mirrorSpawns && (fH || fD)) ? paletteIndexFor(paletteRef.current, swapSpawnRef(srcRef)) : id;
-            const mirrorRot = (ms.mirrorRotation && isRotatable) ? applyRotMirror(srcRot, fV, fH, fD) : srcRot;
-            placements.push({ newR: mr, newC: mc, id: mirrorId, rot: mirrorRot, flip: srcFlip });
+            placements.push({ newR: mr, newC: mc, id: mirrorId });
           }
         });
       }
-      placements.forEach(({ newR: nr, newC: nc, id: tid, rot, flip }) => {
-        newG[nr][nc] = tid;
-        if (rot !== 0) newRots[`${nr},${nc}`] = rot; else delete newRots[`${nr},${nc}`];
-        if (flip) newFlips[`${nr},${nc}`] = flip; else delete newFlips[`${nr},${nc}`];
-      });
+      placements.forEach(({ newR: nr, newC: nc, id: tid }) => { newG[nr][nc] = tid; });
     });
     histLabelRef.current = "Duplicate Place";
     if (pushHistRef.current) pushHistRef.current();
     setGridStableRef.current(() => newG, true);
-    setGridRotations(newRots); gridRotationsRef.current = newRots;
-    setGridFlips(newFlips); gridFlipsRef.current = newFlips;
     setHighlightDragOffset(null); highlightDragOffsetRef.current = null;
     highlightDragAnchorCell.current = null;
   }, [tiles]);
@@ -4229,7 +4195,7 @@ function App() {
   const pushHistorySnapshot = useCallback(() => {
     const label = histLabelRef.current || "Draw";
     histLabelRef.current = "Draw";
-    const snap = { grid, palette: clonePalette(paletteRef.current), w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1, bg2, highlight: [...highlightedCellsRef.current], rots: { ...gridRotationsRef.current }, flips: { ...gridFlipsRef.current }, customCenter: customCenterRef.current, label };
+    const snap = { grid, palette: clonePalette(paletteRef.current), w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1, bg2, highlight: [...highlightedCellsRef.current], customCenter: customCenterRef.current, label };
     setHistory(h => {
       const trimmed = h.slice(0, histIdx + 1);
       const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
@@ -4323,20 +4289,6 @@ function App() {
     });
   }
 
-  // Flip a rotation step (0-3) based on mirror axes applied.
-  // Rotation convention: 0=NW corner, 1=NE corner, 2=SE corner, 3=SW corner
-  //   (equivalently, rotating a tile 90° CW each step)
-  // fV = horizontal flip (left↔right): swaps 0↔1 and 2↔3  (r XOR 1)
-  // fH = vertical flip (top↔bottom):   swaps 0↔3 and 1↔2  (3 - r)
-  // fD = 180° point reflection:         swaps 0↔2 and 1↔3  ((r+2) % 4)
-  const applyRotMirror = (rot, fV, fH, fD) => {
-    let r = rot;
-    if (fV) r ^= 1;            // horizontal flip: 0↔1, 2↔3
-    if (fH) r = 3 - r;         // vertical flip:   0↔3, 1↔2
-    if (fD) r = (r + 2) % 4;   // 180° rotation:   0↔2, 1↔3
-    return r;
-  };
-
   // Returns all grid cells on a straight line between two points (inclusive), using Bresenham's algorithm.
   const bresenhamLine = (r0, c0, r1, c1) => {
     const cells = [];
@@ -4356,7 +4308,6 @@ function App() {
   const paintCells = useCallback((r, c) => {
     const meta   = (getMirrorMetaRef.current ?? getMirrorMeta)(r, c);
     const tileId = eraser ? null : (sel ?? null); // tile ref
-    const rot    = tileId ? ((cardRotationsRef.current[tileId] ?? 0) / 90 % 4) : 0;
     const ms     = mirrorSettingsRef.current;
     setGrid(prev => {
       const g = prev.map(row => [...row]);
@@ -4368,43 +4319,6 @@ function App() {
       });
       return g;
     }, true);
-    if (!eraser && tileId) {
-      const tile = getTile(tileId);
-      const isTileRot = tile ? isTileRotatable(tile) : false;
-      const effectiveRot = isTileRot ? rot : 0;
-      setGridRotations(prev => {
-        const n = { ...prev };
-        meta.forEach(({ pos: [pr, pc], fV, fH, fD }) => {
-          const r = (ms.mirrorRotation && isTileRot) ? applyRotMirror(effectiveRot, fV, fH, fD) : effectiveRot;
-          if (r !== 0) n[`${pr},${pc}`] = r; else delete n[`${pr},${pc}`];
-        });
-        return n;
-      });
-      // Apply flip state from card flip mode — compute effective mode respecting spin/flip capability
-      const canSpin = tile ? isTileRotatable(tile) : false;
-      const canFlip = tile ? (allowFlipMapRef.current[tileId] !== undefined ? allowFlipMapRef.current[tileId] : isDefaultFlippable(tile)) : false;
-      const rawFMode = cardFlipModesRef.current[tileId] ?? 'spin';
-      const flipMode = !(canSpin || canFlip) ? 'spin' : (!canFlip ? 'spin' : (!canSpin ? 'flip' : rawFMode));
-      const flipStep = (flipMode === 'flip') ? (cardFlipStepsRef.current[tileId] ?? 0) : 0;
-      setGridFlips(prev => {
-        const n = { ...prev };
-        meta.forEach(({ pos: [pr, pc] }) => {
-          if (flipStep) n[`${pr},${pc}`] = flipStep; else delete n[`${pr},${pc}`];
-        });
-        return n;
-      });
-    } else if (eraser) {
-      setGridRotations(prev => {
-        const n = { ...prev };
-        meta.forEach(({ pos: [pr, pc] }) => { delete n[`${pr},${pc}`]; });
-        return n;
-      });
-      setGridFlips(prev => {
-        const n = { ...prev };
-        meta.forEach(({ pos: [pr, pc] }) => { delete n[`${pr},${pc}`]; });
-        return n;
-      });
-    }
     // Update per-cell offset overrides for mirror offset feature
     setGridOffsets(prev => {
       const n = { ...prev };
@@ -4421,9 +4335,6 @@ function App() {
   }, [eraser, sel, mirrorV, mirrorH, mirrorD, setGrid, tiles]);
 
   useEffect(() => { paintRef.current        = paintCells;           }, [paintCells]);
-  useEffect(() => { cardRotationsRef.current   = cardRotations;        }, [cardRotations]);
-  useEffect(() => { gridRotationsRef.current   = gridRotations;        }, [gridRotations]);
-  useEffect(() => { gridFlipsRef.current       = gridFlips;            }, [gridFlips]);
   useEffect(() => { mirrorSettingsRef.current  = mirrorSettings;       }, [mirrorSettings]);
   useEffect(() => { pushHistRef.current = pushHistorySnapshot;  }, [pushHistorySnapshot]);
 
@@ -4451,7 +4362,6 @@ function App() {
         histLabelRef.current = ts ? `Draw ${name} (${ts})` : (name ? `Draw ${name}` : "Draw");
       }
     }
-    const rot      = tileId ? ((cardRotationsRef.current[tileId] ?? 0) / 90 % 4) : 0;
     const ms       = mirrorSettingsRef.current;
     const placedMeta = [];
     setGrid(prev => {
@@ -4468,48 +4378,6 @@ function App() {
       });
       return g;
     });
-    if (!isEraser && tileId) {
-      const tile = getTile(tileId);
-      const isTileRot = tile ? isTileRotatable(tile) : false;
-      const effectiveRot = isTileRot ? rot : 0;
-      setGridRotations(prev => {
-        const n = { ...prev };
-        placedMeta.forEach(({ pos: [pr, pc], fV, fH, fD }) => {
-          const r = (ms.mirrorRotation && isTileRot) ? applyRotMirror(effectiveRot, fV, fH, fD) : effectiveRot;
-          if (r !== 0) n[`${pr},${pc}`] = r; else delete n[`${pr},${pc}`];
-        });
-        return n;
-      });
-      const canSpinC = tile ? isTileRotatable(tile) : false;
-      const canFlipC = tile ? (allowFlipMapRef.current[tileId] !== undefined ? allowFlipMapRef.current[tileId] : isDefaultFlippable(tile)) : false;
-      const rawFModeC = cardFlipModesRef.current[tileId] ?? 'spin';
-      const flipMode = !(canSpinC || canFlipC) ? 'spin' : (!canFlipC ? 'spin' : (!canSpinC ? 'flip' : rawFModeC));
-      const flipStep = (flipMode === 'flip') ? (cardFlipStepsRef.current[tileId] ?? 0) : 0;
-      setGridFlips(prev => {
-        const n = { ...prev };
-        placedMeta.forEach(({ pos: [pr, pc] }) => {
-          if (flipStep) n[`${pr},${pc}`] = flipStep; else delete n[`${pr},${pc}`];
-        });
-        return n;
-      });
-    } else if (isEraser) {
-      const metaFnE = getMirrorMetaRef.current ?? getMirrorMeta;
-      setGridRotations(prev => {
-        const n = { ...prev };
-        cells.forEach(([r, c]) => {
-          metaFnE(r, c).forEach(({ pos: [pr, pc] }) => { delete n[`${pr},${pc}`]; });
-        });
-        return n;
-      });
-      setGridFlips(prev => {
-        const n = { ...prev };
-        const metaFnF = getMirrorMetaRef.current ?? getMirrorMeta;
-        cells.forEach(([r, c]) => {
-          metaFnF(r, c).forEach(({ pos: [pr, pc] }) => { delete n[`${pr},${pc}`]; });
-        });
-        return n;
-      });
-    }
     // Per-cell offset overrides
     setGridOffsets(prev => {
       const n = { ...prev };
@@ -4576,7 +4444,7 @@ function App() {
         setHistory(h => {
           const trimmed = h.slice(0, selNextIdx);
           const capped = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-          return [...capped, { grid: gridRef.current, palette: clonePalette(paletteRef.current), w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...finalHighlight], primaryHighlight: [...primaryFinal], rots: gridRotationsRef.current, flips: gridFlipsRef.current, label: "Highlight" }];
+          return [...capped, { grid: gridRef.current, palette: clonePalette(paletteRef.current), w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...finalHighlight], primaryHighlight: [...primaryFinal], label: "Highlight" }];
         });
         setHistIdx(selNextIdx);
       }
@@ -4790,8 +4658,6 @@ function App() {
           // ── BLOCK OVERWRITE ON + OCCUPIED: defer until we know if user drags or taps
           pendingSwapRef.current = {
             r, c, existingId, x: e.clientX, y: e.clientY,
-            rot: gridRotationsRef.current[`${r},${c}`] ?? 0,
-            flip: gridFlipsRef.current[`${r},${c}`] ?? 0,
           };
         }
         return;
@@ -4802,23 +4668,10 @@ function App() {
         const mirrorPositions = getMirrorRef.current ? getMirrorRef.current(r, c) : getMirrorPositions(r, c);
         // The dragged tile is carried as a ref: its palette entry may be freed while the cell is empty.
         const pickupRef = refAt(paletteRef.current, existingId);
-        // Always preserve the rotation and flip of the picked-up tile (use refs for fresh values in stale closure)
-        dragRotationRef.current = gridRotationsRef.current[`${r},${c}`] ?? 0;
-        dragFlipRef.current = gridFlipsRef.current[`${r},${c}`] ?? 0;
         setGridRaw(prevGrid => {
           const g = prevGrid.map(row => [...row]);
           mirrorPositions.forEach(([pr, pc]) => { g[pr][pc] = null; });
           return g;
-        });
-        setGridRotations(prev => {
-          const n = { ...prev };
-          mirrorPositions.forEach(([pr, pc]) => { delete n[`${pr},${pc}`]; });
-          return n;
-        });
-        setGridFlips(prev => {
-          const n = { ...prev };
-          mirrorPositions.forEach(([pr, pc]) => { delete n[`${pr},${pc}`]; });
-          return n;
         });
         setGridOffsets(prev => {
           const n = { ...prev };
@@ -4984,7 +4837,7 @@ function App() {
     const onMove = e => {
       // Pending allowSwap tap-vs-drag: resolve if moved past threshold
       if (pendingSwapRef.current) {
-        const { r, c, existingId, x: sx, y: sy, rot, flip } = pendingSwapRef.current;
+        const { r, c, existingId, x: sx, y: sy } = pendingSwapRef.current;
         const dx = e.clientX - sx, dy = e.clientY - sy;
         if (Math.sqrt(dx*dx + dy*dy) > DRAG_THRESHOLD) {
           pendingSwapRef.current = null;
@@ -4992,15 +4845,11 @@ function App() {
           const pickupRef2 = refAt(paletteRef.current, existingId);
           const mirrorPositions = getMirrorRef.current ? getMirrorRef.current(r, c) : [];
           const allPos = [[r, c], ...mirrorPositions.filter(([pr, pc]) => pr !== r || pc !== c)];
-          dragRotationRef.current = rot;
-          dragFlipRef.current = flip;
           setGridRaw(prevGrid => {
             const g = prevGrid.map(row => [...row]);
             allPos.forEach(([pr, pc]) => { g[pr][pc] = null; });
             return g;
           });
-          setGridRotations(prev => { const n = { ...prev }; allPos.forEach(([pr, pc]) => { delete n[`${pr},${pc}`]; }); return n; });
-          setGridFlips(prev => { const n = { ...prev }; allPos.forEach(([pr, pc]) => { delete n[`${pr},${pc}`]; }); return n; });
           setGridOffsets(prev => { const n = { ...prev }; allPos.forEach(([pr, pc]) => { delete n[`${pr},${pc}`]; }); return n; });
           setDragTile(pickupRef2);
           dragTileRef.current = pickupRef2;
@@ -5103,34 +4952,7 @@ function App() {
             if (entry && (entry.id !== null || newG[newR][newC] === null)) newG[newR][newC] = entry.id;
           });
           setGridStableRef.current(() => newG, true);
-          // Precompute post-drag rotations/flips synchronously (refs not yet updated by useEffect)
-          // Fixes: tiles with implicit rot=0 not being mirrored when crossing mirror axis
           const ms = mirrorSettingsRef.current;
-          const postDragRots = { ...gridRotationsRef.current };
-          const rot_data = {};
-          oldCells.forEach(key => { rot_data[key] = postDragRots[key]; delete postDragRots[key]; });
-          newCells.forEach(({ oldKey, newR, newC, fV, fH, fD }) => {
-            const [or, oc] = oldKey.split(',').map(Number);
-            const tileId_d = tileData.find(d => d.r === or && d.c === oc)?.id ?? null; // palette index
-            const tileObj_d = tileId_d != null ? tilesByRefRef.current.get(refAt(paletteRef.current, tileId_d)) : null;
-            if (tileObj_d && !isTileRotatable(tileObj_d)) { delete postDragRots[`${newR},${newC}`]; return; }
-            const rawRot = rot_data[oldKey] !== undefined ? rot_data[oldKey] : dragRotationRef.current;
-            const needsMirror = ms.mirrorRotation && (fV || fH || fD);
-            if (rawRot === undefined && !needsMirror) return;
-            const newRot = needsMirror ? applyRotMirror(rawRot ?? 0, fV, fH, fD) : (rawRot ?? 0);
-            if (newRot !== 0) postDragRots[`${newR},${newC}`] = newRot;
-          });
-          setGridRotations(postDragRots);
-          gridRotationsRef.current = postDragRots;
-          // Move gridFlips
-          const postDragFlips = { ...gridFlipsRef.current };
-          const flip_data = {};
-          oldCells.forEach(key => { flip_data[key] = postDragFlips[key]; delete postDragFlips[key]; });
-          newCells.forEach(({ oldKey, newR, newC }) => {
-            if (flip_data[oldKey] !== undefined) postDragFlips[`${newR},${newC}`] = flip_data[oldKey];
-          });
-          setGridFlips(postDragFlips);
-          gridFlipsRef.current = postDragFlips;
           // Move gridOffsets
           setGridOffsets(prev => {
             const n = { ...prev };
@@ -5163,7 +4985,7 @@ function App() {
           setHistory(h => {
             const trimmed = h.slice(0, dragNextIdx);
             const capped = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-            return [...capped, { grid: newG, palette: clonePalette(paletteRef.current), w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...newHighlight], primaryHighlight: [...newPrimaryHighlight], rots: postDragRots, flips: postDragFlips, label: "Move" }];
+            return [...capped, { grid: newG, palette: clonePalette(paletteRef.current), w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...newHighlight], primaryHighlight: [...newPrimaryHighlight], label: "Move" }];
           });
           setHistIdx(dragNextIdx);
         }
@@ -5188,14 +5010,11 @@ function App() {
       setDragTargetCell(null);
       const cell = cellFromEvent(e.clientX, e.clientY);
       const id  = dragTileRef.current; // tile ref
-      const rot = dragRotationRef.current;
       if (cell) {
         const [r, c] = cell;
         const metaFn = getMirrorMetaRef.current;
         const meta = metaFn ? metaFn(r, c) : [{ pos: [r, c], fV: false, fH: false, fD: false }];
         const ms = mirrorSettingsRef.current;
-        const tile = tilesByRefRef.current.get(id);
-        const tileRot = tile ? isTileRotatable(tile) : false;
         const placedMeta = [];
         setGridStableRef.current(prev => {
           const anyEmpty = meta.some(({ pos: [pr, pc] }) => prev[pr]?.[pc] === null);
@@ -5212,21 +5031,6 @@ function App() {
           return g;
         });
         if (placedMeta.length) {
-          setGridRotations(prev => {
-            const n = { ...prev };
-            placedMeta.forEach(({ pos: [pr, pc], fV, fH, fD }) => {
-              n[`${pr},${pc}`] = (ms.mirrorRotation && tileRot) ? applyRotMirror(rot, fV, fH, fD) : rot;
-            });
-            return n;
-          });
-          const dragFlip = dragFlipRef.current;
-          setGridFlips(prev => {
-            const n = { ...prev };
-            placedMeta.forEach(({ pos: [pr, pc] }) => {
-              if (dragFlip) n[`${pr},${pc}`] = dragFlip; else delete n[`${pr},${pc}`];
-            });
-            return n;
-          });
           setGridOffsets(prev => {
             const n = { ...prev };
             placedMeta.forEach(({ pos: [pr, pc], fV, fH, fD }) => {
@@ -5377,23 +5181,10 @@ function App() {
         // Pick up for drag (block overwrite off); remove tile and mirror counterparts
         const touchPickupRef = refAt(paletteRef.current, existingId);
         const pickupPositions = getMirrorRef.current ? getMirrorRef.current(r, c) : [[r, c]];
-        // Always preserve the rotation and flip of the picked-up tile (use refs for fresh values in stale closure)
-        dragRotationRef.current = gridRotationsRef.current[`${r},${c}`] ?? 0;
-        dragFlipRef.current = gridFlipsRef.current[`${r},${c}`] ?? 0;
         setGridRaw(prev => {
           const g = prev.map(row => [...row]);
           pickupPositions.forEach(([pr, pc]) => { g[pr][pc] = null; });
           return g;
-        });
-        setGridRotations(prev => {
-          const n = { ...prev };
-          pickupPositions.forEach(([pr, pc]) => { delete n[`${pr},${pc}`]; });
-          return n;
-        });
-        setGridFlips(prev => {
-          const n = { ...prev };
-          pickupPositions.forEach(([pr, pc]) => { delete n[`${pr},${pc}`]; });
-          return n;
         });
         setGridOffsets(prev => {
           const n = { ...prev };
@@ -5587,19 +5378,6 @@ function App() {
             oldCells.forEach(key => { const [or, oc] = key.split(',').map(Number); tTileData.push({ r: or, c: oc, id: tNewG[or]?.[oc] ?? null }); tNewG[or][oc] = null; });
             newCells.forEach(({ oldKey, newR, newC }) => { const [or, oc] = oldKey.split(',').map(Number); const entry = tTileData.find(d => d.r === or && d.c === oc); if (entry && (entry.id !== null || tNewG[newR][newC] === null)) tNewG[newR][newC] = entry.id; });
             setGridStableRef.current(() => tNewG, true);
-            const tms = mirrorSettingsRef.current;
-            const tPostRots = { ...gridRotationsRef.current };
-            const tRotData = {};
-            oldCells.forEach(k => { tRotData[k] = tPostRots[k]; delete tPostRots[k]; });
-            newCells.forEach(({ oldKey, newR, newC, fV, fH, fD }) => { const raw = tRotData[oldKey]; const nm = tms.mirrorRotation && (fV || fH || fD); if (raw === undefined && !nm) return; const nr = nm ? applyRotMirror(raw ?? 0, fV, fH, fD) : (raw ?? 0); if (nr !== 0) tPostRots[`${newR},${newC}`] = nr; });
-            setGridRotations(tPostRots);
-            gridRotationsRef.current = tPostRots;
-            const tPostFlips = { ...gridFlipsRef.current };
-            const tFlipData = {};
-            oldCells.forEach(k => { tFlipData[k] = tPostFlips[k]; delete tPostFlips[k]; });
-            newCells.forEach(({ oldKey, newR, newC }) => { if (tFlipData[oldKey] !== undefined) tPostFlips[`${newR},${newC}`] = tFlipData[oldKey]; });
-            setGridFlips(tPostFlips);
-            gridFlipsRef.current = tPostFlips;
             setGridOffsets(prev => { const n = { ...prev }; const d = {}; oldCells.forEach(k => { d[k] = prev[k]; delete n[k]; }); newCells.forEach(({ oldKey, newR, newC }) => { if (d[oldKey] !== undefined) n[`${newR},${newC}`] = d[oldKey]; }); return n; });
             const newHighlight = new Set(newCells.map(({ newR, newC }) => `${newR},${newC}`));
             setHighlightedCells(newHighlight);
@@ -5610,7 +5388,7 @@ function App() {
             setHistory(h => {
               const trimmed = h.slice(0, tDragNextIdx);
               const capped = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-              return [...capped, { grid: tNewG, palette: clonePalette(paletteRef.current), w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...newHighlight], rots: tPostRots, flips: tPostFlips }];
+              return [...capped, { grid: tNewG, palette: clonePalette(paletteRef.current), w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...newHighlight] }];
             });
             setHistIdx(tDragNextIdx);
           }
@@ -5627,14 +5405,11 @@ function App() {
           const cell = cellAt(touch);
           const id = dragTileRef.current;
           const commit = setGridStableRef.current;
-          const rot = dragRotationRef.current;
           const ms = mirrorSettingsRef.current;
           if (cell) {
             const [r, c] = cell;
             const metaFn = getMirrorMetaRef.current;
             const meta = metaFn ? metaFn(r, c) : [{ pos: [r, c], fV: false, fH: false, fD: false }];
-            const tile = tilesByRefRef.current.get(id);
-            const tileRot = tile ? isTileRotatable(tile) : false;
             const anyEmpty = meta.some(({ pos: [pr, pc] }) => gridRef.current?.[pr]?.[pc] === null);
             if (anyEmpty) {
               const placedMeta = [];
@@ -5649,21 +5424,6 @@ function App() {
                   }
                 });
                 return g;
-              });
-              setGridRotations(prev => {
-                const n = { ...prev };
-                placedMeta.forEach(({ pos: [pr, pc], fV, fH, fD }) => {
-                  n[`${pr},${pc}`] = (ms.mirrorRotation && tileRot) ? applyRotMirror(rot, fV, fH, fD) : rot;
-                });
-                return n;
-              });
-              const tDragFlip = dragFlipRef.current;
-              setGridFlips(prev => {
-                const n = { ...prev };
-                placedMeta.forEach(({ pos: [pr, pc] }) => {
-                  if (tDragFlip) n[`${pr},${pc}`] = tDragFlip; else delete n[`${pr},${pc}`];
-                });
-                return n;
               });
               setGridOffsets(prev => {
                 const n = { ...prev };
@@ -5720,23 +5480,6 @@ function App() {
         }
         if (e.key === "e" || e.key === "E") { setEraser(true); setSel(null); setHandMode(false); setEyedropperMode(false); setDuplicateMode(false); setMagnetMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }
         if (e.key === "w" || e.key === "W") { setEyedropperMode(true); setEraser(false); setHandMode(false); setDuplicateMode(false); setMagnetMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }
-        if (e.key === "r" || e.key === "R") {
-          const id = selRef.current;
-          if (id != null) {
-            const tile = tilesByRefRef.current.get(id);
-            const rMap = rotatableMapRef.current;
-            const fMap = allowFlipMapRef.current;
-            const canSpin = tile ? (rMap[id] !== undefined ? rMap[id] : isDefaultRotatable(tile)) : true;
-            const canFlip = tile ? (fMap[id] !== undefined ? fMap[id] : isDefaultFlippable(tile)) : false;
-            const rawMode = cardFlipModesRef.current[id] ?? 'spin';
-            const mode = !canFlip ? 'spin' : (!canSpin ? 'flip' : rawMode);
-            if (mode === 'flip' && canFlip) {
-              setCardFlipSteps(prev => ({ ...prev, [id]: ((prev[id] ?? 0) + 1) % 4 }));
-            } else if (mode !== 'flip' && canSpin) {
-              setCardRotations(prev => ({ ...prev, [id]: ((prev[id] ?? 0) + 90) % 360 }));
-            }
-          }
-        }
         if (e.key === "c" || e.key === "C") { setConvertOpen(true); }
         if (e.key === "z" || e.key === "Z") { undo(); }
         if (e.key === "x" || e.key === "X") { redo(); }
@@ -5752,24 +5495,6 @@ function App() {
         if (e.key === "m" || e.key === "M") {
           if (magnetModeRef.current) { setMagnetMode(false); }
           else { setMagnetMode(true); setEraser(false); setHandMode(false); setEyedropperMode(false); setDuplicateMode(false); setHighlightMode(false); setSel(null); }
-        }
-        if (e.key === "[" || e.key === "]") {
-          const id = selRef.current;
-          if (id != null) {
-            const tile = tilesByRefRef.current.get(id);
-            const rMap = rotatableMapRef.current;
-            const fMap = allowFlipMapRef.current;
-            const canSpin = tile ? (rMap[id] !== undefined ? rMap[id] : isDefaultRotatable(tile)) : true;
-            const canFlip = tile ? (fMap[id] !== undefined ? fMap[id] : isDefaultFlippable(tile)) : false;
-            const rawMode = cardFlipModesRef.current[id] ?? 'spin';
-            const mode = !canFlip ? 'spin' : (!canSpin ? 'flip' : rawMode);
-            const dir = e.key === "[" ? -1 : 1;
-            if (mode === 'flip' && canFlip) {
-              setCardFlipSteps(prev => ({ ...prev, [id]: (((prev[id] ?? 0) + dir) % 4 + 4) % 4 }));
-            } else if (mode !== 'flip' && canSpin) {
-              setCardRotations(prev => ({ ...prev, [id]: (((prev[id] ?? 0) + dir * 90) % 360 + 360) % 360 }));
-            }
-          }
         }
         if (e.key === "+" || e.key === "=") { e.preventDefault(); changeZoom(ZOOM_STEP); }
         if (e.key === "-") { e.preventDefault(); changeZoom(-ZOOM_STEP); }
@@ -5789,22 +5514,6 @@ function App() {
         Array.from({ length: w }, (__, c) => (prev[r] && c < prev[r].length ? prev[r][c] : null))
       );
       return g;
-    });
-    setGridRotations(prev => {
-      const n = {};
-      Object.entries(prev).forEach(([k, v]) => {
-        const [r, c] = k.split(",").map(Number);
-        if (r < h && c < w) n[k] = v;
-      });
-      return n;
-    });
-    setGridFlips(prev => {
-      const n = {};
-      Object.entries(prev).forEach(([k, v]) => {
-        const [r, c] = k.split(",").map(Number);
-        if (r < h && c < w) n[k] = v;
-      });
-      return n;
     });
     setGridOffsets(prev => {
       const n = {};
@@ -5899,7 +5608,7 @@ function App() {
       if (t.isSpace) { spaceCells.push({ r, c }); return; }
       const sv = t.isSensor ? sensorVisual(t, r, c) : null;
       if (sv && sv.warn) return;
-      draws.push({ ref: t.ref, z: isPriorityTile(t) ? 2 : (isBottomTile(t) ? 0 : 1), src: sv ? sv.src : (t.blobSrc ?? t.src), ops: sv ? (sv.ops || []) : null, r, c, mult: getCellMultiplier(t, r, c), off: getEffectiveOffset(t, r, c), rotDeg: (gridRotations[`${r},${c}`] ?? 0) * 90, flipStep: gridFlips[`${r},${c}`] ?? 0 });
+      draws.push({ ref: t.ref, z: isPriorityTile(t) ? 2 : (isBottomTile(t) ? 0 : 1), src: sv ? sv.src : (t.blobSrc ?? t.src), ops: sv ? (sv.ops || []) : null, r, c, mult: getCellMultiplier(t, r, c), off: getEffectiveOffset(t, r, c) });
     }));
     const filename = (mapName.trim() || "ophelia-map") + ".png";
     const finish = () => {
@@ -5926,7 +5635,7 @@ function App() {
     }))).then(loaded => {
       loaded.forEach(item => {
         if (!item) return;
-        const { img, r, c, mult, off, rotDeg, flipStep, ops } = item;
+        const { img, r, c, mult, off, ops } = item;
         const drawW = CELL * mult;
         const imgW = img.naturalWidth  ?? img.width;
         const imgH = img.naturalHeight ?? img.height;
@@ -5936,12 +5645,6 @@ function App() {
         ctx.save();
         ctx.translate(cx, cy);
         if (ops) for (const op of ops.slice().reverse()) { if (op === "spin") ctx.rotate(Math.PI / 2); else ctx.scale(-1, 1); } // sensor variant ops, last op first
-        if (rotDeg) ctx.rotate(rotDeg * Math.PI / 180);
-        if (flipStep) {
-          const fx = (flipStep === 1 || flipStep === 2) ? -1 : 1;
-          const fy = (flipStep === 2 || flipStep === 3) ? -1 : 1;
-          ctx.scale(fx, fy);
-        }
         ctx.drawImage(img, -drawW / 2, -drawH / 2, drawW, drawH);
         ctx.restore();
       });
@@ -6314,7 +6017,7 @@ function App() {
       mirroring: { label: "Mirroring", icon: "🪞", color: C.pale, desc: "Mirrors every paint action across one or more axes. Horizontal mirrors left↔right. Vertical mirrors top↔bottom. Diagonal applies a 180° point reflection. All three can be combined.", iconColor: null },
       convert: { label: "Convert", icon: "🔄", color: C.soft, desc: "Remaps tiles on the board from one tileset to another by matching tile names. Tiles with no equivalent in the target tileset are left as-is.", iconColor: null },
       magnet: { label: "Magnet", icon: "🧲", color: "#2563eb", desc: "Sets a custom mirror origin for the map. All mirroring axes (H, V, D) pivot around this point instead of the true map centre. Click any cell on the canvas to place the origin. Use the size dropdown on the card to choose a 1×1 or 2×2 centre zone. Useful for asymmetric or experimental Showdown layouts.", iconColor: null },
-      hotkeys: { label: "Hotkeys", icon: "⌨️", color: C.text, desc: "Keyboard shortcuts: E = Erase, W = Eyedropper, R = Rotate selected tile, Z = Undo, X = Redo, Ctrl+Z = Undo, Ctrl+Y = Redo, Escape = Clear highlight.", iconColor: null },
+      hotkeys: { label: "Hotkeys", icon: "⌨️", color: C.text, desc: "Keyboard shortcuts: E = Erase, W = Eyedropper, Z = Undo, X = Redo, Ctrl+Z = Undo, Ctrl+Y = Redo, Escape = Clear highlight.", iconColor: null },
       warn: { label: "Warn", icon: "⚠️", color: "#f97316", desc: "Places an invisible warning marker tile. Warning markers appear as semi-transparent ⚠️ overlays on the canvas but are not exported as tiles — useful for marking hazardous or incomplete areas.", iconColor: null },
       duplicate: { label: "Duplicate", icon: "💞", color: "#e879a0", desc: "Copies the highlighted region to a new position without moving the originals. Drag the highlighted area to preview the copy placement, then press Apply. Mirror-aware: if any mirror axis is active, the copy is extended to also cover mirror positions.", iconColor: "#e879a0" },
     };
@@ -6526,7 +6229,6 @@ function App() {
     const keys = [
       ["E", "Erase tool"],
       ["W", "Pick (eyedropper) tool"],
-      ["R", "Rotate selected tile"],
       ["C", "Open Convert modal"],
       ["Z / Ctrl+Z", "Undo"],
       ["X / Ctrl+Y", "Redo"],
@@ -7092,7 +6794,7 @@ function App() {
           boxShadow: "0 4px 16px rgba(0,0,0,0.4)",
         }}>Reconnecting…</div>
       )}
-      <InfoModal infoTile={infoTile} getTile={getTile} getDefaultMultiplier={getDefaultMultiplier} getTileMultiplier={getTileMultiplier} getDefaultOffset={getDefaultOffset} getTileOffset={getTileOffset} currentUser={currentUser} userProfile={userProfile} tileNames={tileNames} isPriorityTile={isPriorityTile} isBottomTile={isBottomTile} isAutoShadowTile={isAutoShadowTile} defaultPriorityTile={defaultPriorityTile} defaultBottomTile={defaultBottomTile} defaultAutoShadowTile={defaultAutoShadowTile} setTileMultipliers={setTileMultipliers} setTileOffsets={setTileOffsets} getValidToken={getValidToken} workerFetch={workerFetch} setTsFetchTrigger={setTsFetchTrigger} setInfoTile={setInfoTile} userTiles={userTiles} tiles={tiles} setTileNames={setTileNames} btn={btn} isTileRotatable={isTileRotatable} isDefaultRotatable={isDefaultRotatable} isFlipAllowed={isFlipAllowed} isDefaultFlippable={isDefaultFlippable} isOTGWall={isOTGWall} isDefaultOTGWall={isDefaultOTGWall} otgWallOverrides={otgWallOverrides} isMirrorOffset={isMirrorOffset} isDefaultMirrorOffset={isDefaultMirrorOffset} setRotatableMap={setRotatableMap} setCardRotations={setCardRotations} setCardFlipSteps={setCardFlipSteps} setCardFlipModes={setCardFlipModes} setAllowFlipMap={setAllowFlipMap} cardFlipModes={cardFlipModes} setOtgWallOverrides={setOtgWallOverrides} setMirrorOffsetTiles={setMirrorOffsetTiles} setBottomTiles={setBottomTiles} setPriorityTiles={setPriorityTiles} setAutoShadowTiles={setAutoShadowTiles} setDbTilesByTsId={setDbTilesByTsId} starredTiles={starredTiles} toggleStar={toggleStar} dbTilesets={dbTilesets} dbTilesByTsId={dbTilesByTsId} deleteTile={deleteTile} />
+      <InfoModal infoTile={infoTile} getTile={getTile} getDefaultMultiplier={getDefaultMultiplier} getTileMultiplier={getTileMultiplier} getDefaultOffset={getDefaultOffset} getTileOffset={getTileOffset} currentUser={currentUser} userProfile={userProfile} tileNames={tileNames} isPriorityTile={isPriorityTile} isBottomTile={isBottomTile} isAutoShadowTile={isAutoShadowTile} defaultPriorityTile={defaultPriorityTile} defaultBottomTile={defaultBottomTile} defaultAutoShadowTile={defaultAutoShadowTile} setTileMultipliers={setTileMultipliers} setTileOffsets={setTileOffsets} getValidToken={getValidToken} workerFetch={workerFetch} setTsFetchTrigger={setTsFetchTrigger} setInfoTile={setInfoTile} userTiles={userTiles} tiles={tiles} setTileNames={setTileNames} btn={btn} isTileRotatable={isTileRotatable} isDefaultRotatable={isDefaultRotatable} isFlipAllowed={isFlipAllowed} isDefaultFlippable={isDefaultFlippable} isOTGWall={isOTGWall} isDefaultOTGWall={isDefaultOTGWall} otgWallOverrides={otgWallOverrides} isMirrorOffset={isMirrorOffset} isDefaultMirrorOffset={isDefaultMirrorOffset} setRotatableMap={setRotatableMap} setAllowFlipMap={setAllowFlipMap} setOtgWallOverrides={setOtgWallOverrides} setMirrorOffsetTiles={setMirrorOffsetTiles} setBottomTiles={setBottomTiles} setPriorityTiles={setPriorityTiles} setAutoShadowTiles={setAutoShadowTiles} setDbTilesByTsId={setDbTilesByTsId} starredTiles={starredTiles} toggleStar={toggleStar} dbTilesets={dbTilesets} dbTilesByTsId={dbTilesByTsId} deleteTile={deleteTile} />
       <ReplaceModal />
       <OTGSettingsModal />
       <HistoryModal />
@@ -7451,24 +7153,10 @@ function App() {
                   const active = sel === t.ref && !eraser;
                   const failed = failedTiles.has(t.ref);
                   const isStarredF = starredTiles.includes(t.ref);
-                  const canSpinF  = isTileRotatable(t);
-                  const canFlipF  = isFlipAllowed(t);
-                  const rotatable = canSpinF || canFlipF;
-                  const rotDeg = cardRotations[t.ref] ?? 0;
-                  const rawFMode  = cardFlipModes[t.ref] ?? 'spin';
-                  const fMode = !rotatable ? 'spin' : (!canFlipF ? 'spin' : (!canSpinF ? 'flip' : rawFMode));
-                  const fStep = (fMode === 'flip') ? (cardFlipSteps[t.ref] ?? 0) : 0;
-                  const fxF = (fStep === 1 || fStep === 2) ? -1 : 1; const fyF = (fStep === 2 || fStep === 3) ? -1 : 1;
-                  const imgTf = (fMode === 'flip') ? `scale(${fxF}, ${fyF})` : `rotate(${rotDeg}deg)`;
-                  const eFx = (fStep === 1 || fStep === 2) ? -1 : 1; const eFy = (fStep === 2 || fStep === 3) ? -1 : 1;
                   return (
                     <div key={t.ref}
                       onClick={() => {
                         if (failed) { setFailedWarning(true); return; }
-                        if (rotatable && sel === t.ref && !eraser) {
-                          if (fMode === 'flip' && canFlipF) { setCardFlipSteps(prev => ({ ...prev, [t.ref]: ((prev[t.ref] ?? 0) + 1) % 4 })); }
-                          else if (fMode !== 'flip' && canSpinF) { setCardRotations(prev => ({ ...prev, [t.ref]: (prev[t.ref] ?? 0) + 90 })); }
-                        }
                         setSel(t.ref); setEraser(false);
                         setHandMode(false); setMagnetMode(false); setEyedropperMode(false);
                         if (highlightMode) { setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }
@@ -7479,13 +7167,8 @@ function App() {
                         position: "relative", opacity: failed ? 0.55 : 1, overflow: "visible" }}>
                       <div style={{ position: "absolute", inset: 0, borderRadius: 6, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", background: C.panelDeep }}>
                         {failed ? <span style={{ fontSize: 18 }}>⚠️</span>
-                          : <img src={t.blobSrc ?? t.src} alt="" onError={() => markFailed(t.ref)} className={tileCardLightBg ? "tile-img-checker" : undefined} style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", transform: imgTf, transition: "transform 0.15s" }} />}
+                          : <img src={t.blobSrc ?? t.src} alt="" onError={() => markFailed(t.ref)} className={tileCardLightBg ? "tile-img-checker" : undefined} style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", }} />}
                       </div>
-                      {rotatable && (
-                        <div style={{ position: "absolute", inset: 0, zIndex: 4, display: "flex", alignItems: "flex-end", justifyContent: "center", paddingBottom: 3, pointerEvents: "none" }}>
-                          <span style={{ fontSize: 20, lineHeight: 1, display: "inline-block", transform: (fMode === 'flip') ? `scale(${eFx}, ${eFy})` : `rotate(${rotDeg}deg)`, transition: "transform 0.15s", filter: "drop-shadow(0 1px 3px rgba(0,0,0,0.9))" }}>{(fMode === 'flip') ? "🦭" : "🐬"}</span>
-                        </div>
-                      )}
                       <span onClick={ev => { ev.stopPropagation(); setInfoTile(t.ref); }}
                         style={{ position: "absolute", top: -7, right: -7, width: 18, height: 18, fontSize: 15, cursor: "pointer", color: isStarredF ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "18px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
                         title={isStarredF ? "Starred tile — click for info" : "Tile info"}>ⓘ</span>
@@ -7700,44 +7383,15 @@ function App() {
                   const cardSz  = isMobile ? 56 : 64;
                   const cardGap = 5;
 
-                  const RotChevron = ({ rotDeg, flipStep = 0, mode = 'spin' }) => {
-                    const isFlipMode = mode === 'flip';
-                    const fx = (flipStep === 1 || flipStep === 2) ? -1 : 1;
-                    const fy = (flipStep === 2 || flipStep === 3) ? -1 : 1;
-                    const xform = isFlipMode ? `scale(${fx}, ${fy})` : `rotate(${rotDeg}deg)`;
-                    return (
-                      <div style={{ position: "absolute", inset: 0, zIndex: 4, display: "flex", alignItems: "flex-end", justifyContent: "center", paddingBottom: 3, pointerEvents: "none" }}>
-                        <span style={{ fontSize: 20, lineHeight: 1, display: "inline-block", transform: xform, transition: "transform 0.15s", filter: "drop-shadow(0 1px 3px rgba(0,0,0,0.9))" }}>{isFlipMode ? "🦭" : "🐬"}</span>
-                      </div>
-                    );
-                  };
                   const renderFlatCard = (t, opts = {}) => {
                     const { onDelete } = opts;
                     const active    = sel === t.ref && !eraser;
                     const failed    = failedTiles.has(t.ref);
-                    const canSpin   = isTileRotatable(t);
-                    const canFlip   = isFlipAllowed(t);
-                    const rotatable = canSpin || canFlip; // any rotation capability
-                    const rotDeg    = cardRotations[t.ref] ?? 0;
                     const isStarred = starredTiles.includes(t.ref);
-                    // Constrain flip mode to what's actually allowed
-                    const rawFMode  = cardFlipModes[t.ref] ?? 'spin';
-                    const flipMode  = !rotatable ? 'spin' : (!canFlip ? 'spin' : (!canSpin ? 'flip' : rawFMode));
-                    const flipStep  = (flipMode === 'flip') ? (cardFlipSteps[t.ref] ?? 0) : 0;
-                    const fx = (flipStep === 1 || flipStep === 2) ? -1 : 1;
-                    const fy = (flipStep === 2 || flipStep === 3) ? -1 : 1;
-                    const imgTransform = (flipMode === 'flip') ? `scale(${fx}, ${fy})` : `rotate(${rotDeg}deg)`;
                     return (
                       <div key={t.ref}
                         onClick={() => {
                           if (failed) { setFailedWarning(true); return; }
-                          if (rotatable && sel === t.ref && !eraser) {
-                            if (flipMode === 'flip' && canFlip) {
-                              setCardFlipSteps(prev => ({ ...prev, [t.ref]: ((prev[t.ref] ?? 0) + 1) % 4 }));
-                            } else if (flipMode !== 'flip' && canSpin) {
-                              setCardRotations(prev => ({ ...prev, [t.ref]: (prev[t.ref] ?? 0) + 90 }));
-                            }
-                          }
                           setSel(t.ref); setEraser(false);
                           setHandMode(false); setMagnetMode(false); setEyedropperMode(false);
                           if (highlightMode) { setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }
@@ -7746,9 +7400,8 @@ function App() {
                         {/* Inner clipped area for image */}
                         <div style={{ position: "absolute", inset: 0, borderRadius: 6, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", background: C.panelDeep }}>
                           {failed ? <span style={{ fontSize: 20 }}>⚠️</span>
-                            : <img src={t.blobSrc ?? t.src} alt="" onError={() => markFailed(t.ref)} className={tileCardLightBg ? "tile-img-checker" : undefined} style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", transform: imgTransform, transition: "transform 0.15s" }} />}
+                            : <img src={t.blobSrc ?? t.src} alt="" onError={() => markFailed(t.ref)} className={tileCardLightBg ? "tile-img-checker" : undefined} style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated" }} />}
                         </div>
-                        {rotatable && <RotChevron rotDeg={rotDeg} flipStep={flipStep} mode={flipMode} />}
                         {/* Info button: yellow if starred, white otherwise — top-right corner */}
                         <span onClick={e => { e.stopPropagation(); setInfoTile(t.ref); }}
                           style={{ position: "absolute", top: -7, right: -7, width: 18, height: 18, fontSize: 15, cursor: "pointer", color: "rgba(255,255,255,0.85)", lineHeight: "18px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
@@ -8210,7 +7863,7 @@ function App() {
                     <div style={{ width: "100%", flexBasis: "100%", flexShrink: 0 }}>
                       <button style={{ ...btn(false, C.danger, "rgba(248,113,113,0.14)"), fontSize: 9, padding: "3px 8px", width: "100%" }}
                         onClick={() => {
-                          if (!confirm("Reset all custom tile settings?\n\nThis will clear all custom multipliers, offsets, rotation flags, priority flags, and render-on-bottom flags, so every tile uses its own defaults again.\n\nThis cannot be undone.")) return;
+                          if (!confirm("Reset all custom tile settings?\n\nThis will clear all custom multipliers, offsets, spin/flip flags, priority flags, and render-on-bottom flags, so every tile uses its own defaults again.\n\nThis cannot be undone.")) return;
                           setTileMultipliers({});
                           setTileOffsets({});
                           setRotatableMap({});
@@ -8285,37 +7938,18 @@ function App() {
                 );
                 const st = getTile(selKey);
                 if (!st || !st.src) return null;
-                const scCanSpin = isTileRotatable(st);
-                const scCanFlip = isFlipAllowed(st);
-                const scAnyRot  = scCanSpin || scCanFlip;
-                const scRawMode = cardFlipModes[selKey] ?? 'spin';
-                const scMode    = !scAnyRot ? 'spin' : (!scCanFlip ? 'spin' : (!scCanSpin ? 'flip' : scRawMode));
-                const scFlipStep = (scMode === 'flip') ? (cardFlipSteps[selKey] ?? 0) : 0;
-                const scFx = (scFlipStep === 1 || scFlipStep === 2) ? -1 : 1;
-                const scFy = (scFlipStep === 2 || scFlipStep === 3) ? -1 : 1;
-                const scRotDeg = cardRotations[selKey] ?? 0;
-                const scImgTf  = scMode === 'flip' ? `scale(${scFx},${scFy})` : `rotate(${scRotDeg}deg)`;
                 return (
-                  <div onClick={() => {
-                    if (scMode === 'flip' && scCanFlip) { setCardFlipSteps(prev => ({ ...prev, [selKey]: ((prev[selKey] ?? 0) + 1) % 4 })); }
-                    else if (scMode !== 'flip' && scCanSpin) { setCardRotations(prev => ({ ...prev, [selKey]: (prev[selKey] ?? 0) + 90 })); }
-                  }}
-                    style={{ width: 32, height: 32, borderRadius: 6, cursor: scAnyRot ? "pointer" : "default", overflow: "hidden", position: "relative", border: `1px solid ${C.accentBright}`, background: C.accentDim }}
-                    title={scAnyRot ? `${st.label || "Tile"} — click to ${scMode === 'flip' ? 'flip' : 'rotate'}` : (st.label || "Tile (selected)")}>
-                    <img src={st.blobSrc ?? st.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", transform: scImgTf, transition: "transform 0.15s" }} />
-                    {scAnyRot && (
-                      <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
-                        <span style={{ fontSize: 13, lineHeight: 1, display: "inline-block", transform: scImgTf, transition: "transform 0.15s", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.9))" }}>{scMode === 'flip' ? "🦭" : "🐬"}</span>
-                      </div>
-                    )}
+                  <div style={{ width: 32, height: 32, borderRadius: 6, overflow: "hidden", position: "relative", border: `1px solid ${C.accentBright}`, background: C.accentDim }}
+                    title={st.label || "Tile (selected)"}>
+                    <TileThumb tile={st} />
                   </div>
                 );
               };
               const hasSelected = selKey !== null && !selAlreadyStarred;
               // Only tile refs (tiles, space, warn) are shown in the left strip; tool keys are not refs
-              const starredTileIds = starredTiles.filter(s => typeof s === "string" && parseRef(s));
+              const starredTileIds = SensorUI.canonicalRefs(starredTiles.filter(s => typeof s === "string" && parseRef(s)), sensorOwners);
               // Recent tiles: exclude current selection, starred tiles, and tiles that are not in the loaded (contained) list
-              const visibleRecent = recentTileIds.filter(id => {
+              const visibleRecent = SensorUI.canonicalRefs(recentTileIds, sensorOwners).filter(id => {
                 if (id === selKey || starredTiles.includes(id)) return false;
                 return tilesByRef.has(id);
               }).slice(0, recentTilesLimit);
@@ -8369,34 +8003,15 @@ function App() {
                     );
                   }
                   const active = sel === sid && !eraser;
-                  const stCanSpin = isTileRotatable(st);
-                  const stCanFlip = isFlipAllowed(st);
-                  const stAnyRot  = stCanSpin || stCanFlip;
-                  const stRawMode = cardFlipModes[sid] ?? 'spin';
-                  const stMode    = !stAnyRot ? 'spin' : (!stCanFlip ? 'spin' : (!stCanSpin ? 'flip' : stRawMode));
-                  const stFlipStep = (stMode === 'flip') ? (cardFlipSteps[sid] ?? 0) : 0;
-                  const stFx = (stFlipStep === 1 || stFlipStep === 2) ? -1 : 1;
-                  const stFy = (stFlipStep === 2 || stFlipStep === 3) ? -1 : 1;
-                  const stRotDeg = cardRotations[sid] ?? 0;
-                  const stImgTf  = stMode === 'flip' ? `scale(${stFx},${stFy})` : `rotate(${stRotDeg}deg)`;
                   return (
                     <div key={sid}
                       onClick={() => {
-                        if (stAnyRot && sel === sid && !eraser) {
-                          if (stMode === 'flip' && stCanFlip) { setCardFlipSteps(prev => ({ ...prev, [sid]: ((prev[sid] ?? 0) + 1) % 4 })); }
-                          else if (stMode !== 'flip' && stCanSpin) { setCardRotations(prev => ({ ...prev, [sid]: (prev[sid] ?? 0) + 90 })); }
-                        }
                         setSel(sid); setEraser(false); setHandMode(false); setMagnetMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set();
                       }}
                       style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", overflow: "hidden", position: "relative",
                         border: `1px solid ${active ? C.accentBright : C.border}`, background: active ? C.accentDim : C.panelDeep }}
-                      title={stAnyRot ? `${st.label || st.codename || "Tile"} — click to ${stMode === 'flip' ? 'flip' : 'rotate'}` : (st.label || st.codename || "Tile")}>
-                      <img src={st.blobSrc ?? st.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", transform: stImgTf, transition: "transform 0.15s" }} />
-                      {stAnyRot && (
-                        <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
-                          <span style={{ fontSize: 13, lineHeight: 1, display: "inline-block", transform: stImgTf, transition: "transform 0.15s", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.9))" }}>{stMode === 'flip' ? "🦭" : "🐬"}</span>
-                        </div>
-                      )}
+                      title={st.label || st.codename || "Tile"}>
+                      <TileThumb tile={st} />
                     </div>
                   );
                 })}
@@ -8407,34 +8022,15 @@ function App() {
                     const rt = getTile(rid);
                     if (!rt || !rt.src) return null;
                     const active = sel === rid && !eraser;
-                    const rcCanSpin = isTileRotatable(rt);
-                    const rcCanFlip = isFlipAllowed(rt);
-                    const rcAnyRot  = rcCanSpin || rcCanFlip;
-                    const rcRawMode = cardFlipModes[rid] ?? 'spin';
-                    const rcMode    = !rcAnyRot ? 'spin' : (!rcCanFlip ? 'spin' : (!rcCanSpin ? 'flip' : rcRawMode));
-                    const rcFlipStep = (rcMode === 'flip') ? (cardFlipSteps[rid] ?? 0) : 0;
-                    const rcFx = (rcFlipStep === 1 || rcFlipStep === 2) ? -1 : 1;
-                    const rcFy = (rcFlipStep === 2 || rcFlipStep === 3) ? -1 : 1;
-                    const rcRotDeg = cardRotations[rid] ?? 0;
-                    const rcImgTf  = rcMode === 'flip' ? `scale(${rcFx},${rcFy})` : `rotate(${rcRotDeg}deg)`;
                     return (
                       <div key={rid}
                         onClick={() => {
-                          if (rcAnyRot && sel === rid && !eraser) {
-                            if (rcMode === 'flip' && rcCanFlip) { setCardFlipSteps(prev => ({ ...prev, [rid]: ((prev[rid] ?? 0) + 1) % 4 })); }
-                            else if (rcMode !== 'flip' && rcCanSpin) { setCardRotations(prev => ({ ...prev, [rid]: (prev[rid] ?? 0) + 90 })); }
-                          }
                           setSel(rid); setEraser(false); setHandMode(false); setMagnetMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set();
                         }}
                         style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", overflow: "hidden", position: "relative",
                           border: `1px solid ${active ? C.accentBright : "rgba(255,255,255,0.25)"}`, background: active ? C.accentDim : C.panelDeep, opacity: 0.75 }}
                         title={`Recent: ${rt.label || rt.codename || "Tile"}`}>
-                        <img src={rt.blobSrc ?? rt.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", transform: rcImgTf, transition: "transform 0.15s" }} />
-                        {rcAnyRot && (
-                          <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
-                            <span style={{ fontSize: 10, lineHeight: 1, display: "inline-block", transform: rcImgTf, filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.9))" }}>{rcMode === 'flip' ? "🦭" : "🐬"}</span>
-                          </div>
-                        )}
+                        <TileThumb tile={rt} />
                       </div>
                     );
                   })}
@@ -8533,19 +8129,16 @@ function App() {
                     const off    = getEffectiveOffset(t, r, c);
                     const sv = t.isSensor ? sensorVisual(t, r, c) : null; if (sv && sv.warn) return null;
                     const imgSrc = sv ? sv.src : (t.blobSrc ?? t.src), svCss = sv && sv.css ? " " + sv.css : "";
-                    const rotDeg = sv ? 0 : (gridRotations[`${r},${c}`] ?? 0) * 90;
-                    const fStep  = sv ? 0 : (gridFlips[`${r},${c}`] ?? 0);
-                    const fxB = (fStep === 1 || fStep === 2) ? -1 : 1; const fyB = (fStep === 2 || fStep === 3) ? -1 : 1;
                     const cellPx = CELL * zoom;
                     const ox = (off.ox / 100) * cellPx;
                     const oy = (off.oy / 100) * cellPx;
                     const tileImg = <img key={`bot${r}-${c}`} src={imgSrc} alt="" draggable={false} decoding="async"
-                      style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%) rotate(${rotDeg}deg) scale(${fxB}, ${fyB})${svCss}`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 1 }}
+                      style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%)${svCss}`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 1 }}
                     />;
                     if (!isAutoShadowTile(t)) return tileImg;
                     return [
                       <img key={`sbot${r}-${c}`} src={imgSrc} alt="" draggable={false}
-                        style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy + 0.3 * cellPx, width: cellPx * mult, height: "auto", transform: `translateY(-50%) scale(${fxB}, ${fyB})${svCss}`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 0, filter: "brightness(0)", opacity: 0.2 }}
+                        style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy + 0.3 * cellPx, width: cellPx * mult, height: "auto", transform: `translateY(-50%)${svCss}`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 0, filter: "brightness(0)", opacity: 0.2 }}
                       />,
                       tileImg,
                     ];
@@ -8562,19 +8155,16 @@ function App() {
                     const off    = getEffectiveOffset(t, r, c);
                     const sv = t.isSensor ? sensorVisual(t, r, c) : null; if (sv && sv.warn) return null;
                     const imgSrc = sv ? sv.src : (t.blobSrc ?? t.src), svCss = sv && sv.css ? " " + sv.css : "";
-                    const rotDeg = sv ? 0 : (gridRotations[`${r},${c}`] ?? 0) * 90;
-                    const fStep  = sv ? 0 : (gridFlips[`${r},${c}`] ?? 0);
-                    const fxN = (fStep === 1 || fStep === 2) ? -1 : 1; const fyN = (fStep === 2 || fStep === 3) ? -1 : 1;
                     const cellPx = CELL * zoom;
                     const ox = (off.ox / 100) * cellPx;
                     const oy = (off.oy / 100) * cellPx;
                     const tileImg = <img key={`t${r}-${c}`} src={imgSrc} alt="" draggable={false} decoding="async"
-                      style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%) rotate(${rotDeg}deg) scale(${fxN}, ${fyN})${svCss}`, pointerEvents: "none", imageRendering: "pixelated", zIndex: r + 2 }}
+                      style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%)${svCss}`, pointerEvents: "none", imageRendering: "pixelated", zIndex: r + 2 }}
                     />;
                     if (!isAutoShadowTile(t)) return tileImg;
                     return [
                       <img key={`s${r}-${c}`} src={imgSrc} alt="" draggable={false}
-                        style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy + 0.3 * cellPx, width: cellPx * mult, height: "auto", transform: `translateY(-50%) scale(${fxN}, ${fyN})${svCss}`, pointerEvents: "none", imageRendering: "pixelated", zIndex: r + 1, filter: "brightness(0)", opacity: 0.2 }}
+                        style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy + 0.3 * cellPx, width: cellPx * mult, height: "auto", transform: `translateY(-50%)${svCss}`, pointerEvents: "none", imageRendering: "pixelated", zIndex: r + 1, filter: "brightness(0)", opacity: 0.2 }}
                       />,
                       tileImg,
                     ];
@@ -8590,19 +8180,16 @@ function App() {
                     const off    = getEffectiveOffset(t, r, c);
                     const sv = t.isSensor ? sensorVisual(t, r, c) : null; if (sv && sv.warn) return null;
                     const imgSrc = sv ? sv.src : (t.blobSrc ?? t.src), svCss = sv && sv.css ? " " + sv.css : "";
-                    const rotDeg = sv ? 0 : (gridRotations[`${r},${c}`] ?? 0) * 90;
-                    const fStep  = sv ? 0 : (gridFlips[`${r},${c}`] ?? 0);
-                    const fxP = (fStep === 1 || fStep === 2) ? -1 : 1; const fyP = (fStep === 2 || fStep === 3) ? -1 : 1;
                     const cellPx = CELL * zoom;
                     const ox = (off.ox / 100) * cellPx;
                     const oy = (off.oy / 100) * cellPx;
                     const tileImg = <img key={`prio${r}-${c}`} src={imgSrc} alt="" draggable={false} decoding="async"
-                      style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%) rotate(${rotDeg}deg) scale(${fxP}, ${fyP})${svCss}`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 9999 }}
+                      style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%)${svCss}`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 9999 }}
                     />;
                     if (!isAutoShadowTile(t)) return tileImg;
                     return [
                       <img key={`sprio${r}-${c}`} src={imgSrc} alt="" draggable={false}
-                        style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy + 0.3 * cellPx, width: cellPx * mult, height: "auto", transform: `translateY(-50%) scale(${fxP}, ${fyP})${svCss}`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 9998, filter: "brightness(0)", opacity: 0.2 }}
+                        style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy + 0.3 * cellPx, width: cellPx * mult, height: "auto", transform: `translateY(-50%)${svCss}`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 9998, filter: "brightness(0)", opacity: 0.2 }}
                       />,
                       tileImg,
                     ];
@@ -8987,15 +8574,6 @@ function App() {
                     <span style={{ fontSize: 12, fontWeight: 600, color: C.text }}>Mirror Spawns</span>
                   </div>
                   <span style={{ fontSize: 10, color: C.muted, paddingLeft: 22 }}>When using vertical or diagonal mirroring, red and blue spawn tiles swap automatically so the map stays balanced.</span>
-                </label>
-                <label style={{ display: "flex", flexDirection: "column", gap: 4, cursor: "pointer", userSelect: "none" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <input type="checkbox" checked={mirrorSettings.mirrorRotation}
-                      onChange={ev => setMirrorSettings(p => ({ ...p, mirrorRotation: ev.target.checked }))}
-                      style={{ width: 14, height: 14, accentColor: C.accent, cursor: "pointer" }} />
-                    <span style={{ fontSize: 12, fontWeight: 600, color: C.text }}>Mirror Rotation</span>
-                  </div>
-                  <span style={{ fontSize: 10, color: C.muted, paddingLeft: 22 }}>Mirrored tile copies have their rotation automatically flipped to match the mirroring axis (e.g. a left-pointing tile becomes right-pointing when mirrored horizontally).</span>
                 </label>
                 <div style={{ height: 1, background: C.border, margin: "4px 0" }} />
                 <button style={btn(false, C.muted, "rgba(255,255,255,0.08)")} onClick={() => { setMirrorSettingsOpen(false); setMemoryOpen(true); }} title="Storage usage">Memory…</button>

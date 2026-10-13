@@ -124,6 +124,23 @@
   // Engine view of a folder (what sensor.js expects). Unlabelled tiles stay out: the resolver never picks them.
   const engineFolder = folder => ({ key: folder.ref, settings: folder.settings, tiles: folder.labelled });
 
+  // ── Pickers ───────────────────────────────────────────────────────────────────────────────────────────
+  // A sensor folder is ONE logical entry everywhere a tile is picked. `tiles` are UI tile objects; the folder's own entry is
+  // the one with isSensor and sensorFolder (all its tiles, labelled or not, are the folder's members).
+  const variantOwners = tiles => {
+    const m = new Map();
+    for (const t of tiles || []) if (t && t.isSensor && t.sensorFolder) for (const v of t.sensorFolder.tiles) m.set(v.ref, t.ref);
+    return m;
+  };
+  // The list without the members of any sensor folder that is itself in the list.
+  const hideSensorVariants = tiles => { const o = variantOwners(tiles); return (tiles || []).filter(t => !o.has(t.ref)); };
+  // A member's ref becomes its folder's ref (starred / recent lists written before folders were logical entries).
+  const canonicalRef = (ref, owners) => (owners && owners.get(ref)) || ref;
+  // The refs with members mapped to their folder, first occurrence kept.
+  const canonicalRefs = (refs, owners) => { const seen = new Set(), out = []; for (const r of refs || []) { const c = canonicalRef(r, owners); if (!seen.has(c)) { seen.add(c); out.push(c); } } return out; };
+  // The (up to four) tiles of a folder shown as its preview, in folder order.
+  const folderPreviewTiles = folder => ((folder && folder.labelled) || []).slice(0, 4);
+
   // ── Derived layer ─────────────────────────────────────────────────────────────────────────────────────
   // folders: Map(sensorRef -> { folder: engine folder, candidates }). Returns Map("r,c" -> result) with one entry per cell that
   // holds an s: entry. result is sensor.resolve()'s answer plus { nb, folderRef }, or { warn: true, nb, folderRef } when the
@@ -198,6 +215,7 @@
     sensorRef, parseSensorRef, isSensorRef,
     parseCodeInput, parseRollInput, codeFieldState, codeGridCells, toggleCodeBit, normalisedHint,
     splitGroupPatch, divergence, makeFolder, engineFolder,
+    variantOwners, hideSensorVariants, canonicalRef, canonicalRefs, folderPreviewTiles,
     deriveLayer, opsToCss, opsLabel, composePlan, composeKey,
     planSensorSwitch, resolveLoadedSensorRef,
   };
