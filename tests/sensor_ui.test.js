@@ -256,4 +256,25 @@ test("withFreshVersion replaces any old ?v=", () => {
   assert.strictEqual(U.withFreshVersion("https://x/y/a.png", 5), "https://x/y/a.png?v=5");
 });
 
+test("preloadImages: counts, dedupes, skips the overlay for cached images", async () => {
+  const progress = [];
+  const cached = U.preloadImages(["a", "b", "a", null], (u, cb) => cb(true), (d, t) => progress.push([d, t]));
+  assert.strictEqual(cached.total, 2);
+  assert.ok(cached.isDone()); // everything was cached: nothing to wait for
+  assert.deepStrictEqual(progress, [[1, 2], [2, 2]]);
+  assert.deepStrictEqual(await cached.promise, { total: 2, failed: 0 });
+  const pending = [];
+  const slow = U.preloadImages(["x", "y", "z"], (u, cb) => pending.push([u, cb]));
+  assert.ok(!slow.isDone());
+  pending[0][1](true); pending[1][1](false); pending[1][1](true); // a second call for the same url is ignored
+  assert.strictEqual(slow.done, 2);
+  assert.ok(!slow.isDone());
+  pending[2][1](true);
+  assert.ok(slow.isDone());
+  assert.deepStrictEqual(await slow.promise, { total: 3, failed: 1 });
+  assert.deepStrictEqual(await U.preloadImages([], () => {}).promise, { total: 0, failed: 0 });
+  assert.strictEqual(U.progressLabel("Loading tiles", 12, 30), "Loading tiles 12/30");
+  assert.strictEqual(U.progressLabel("Loading tiles", 0, 0), "Loading tiles");
+});
+
 console.log(`${passed} passed`);

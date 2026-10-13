@@ -3656,6 +3656,61 @@ function App() {
     sensorLayer.forEach(d => { if (!d.warn && d.status === "composed") requestComposed(d.folderRef, d.code, d.recipe); });
   }, [sensorLayer]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ── Loading gate ──
+  // First load, tileset switch and composed-variant generation: preload the tileset's tile images with a counter, then wait for the
+  // composed variants the map needs. The overlay only appears when this is still running after a short grace period (never when
+  // everything is cached), and "Continue anyway" shows after ~15 s; the work keeps going in the background.
+  const [gate, setGate] = useState(null); // { token, label, done, total, timedOut }
+  const gateTokenRef = useRef(0);
+  const gateKeyRef = useRef(null);
+  const GATE_GRACE_MS = 150, GATE_TIMEOUT_MS = 15000;
+  const sleepMs = ms => new Promise(r => setTimeout(r, ms));
+  const loadImageForGate = (url, cb) => {
+    const im = new Image();
+    let once = false;
+    const fin = ok => { if (!once) { once = true; cb(ok); } };
+    im.onload = () => fin(true);
+    im.onerror = () => fin(false);
+    im.src = url;
+    if (im.complete && im.naturalWidth > 0) fin(true); // already cached: synchronous
+  };
+  const runLoadGate = async urls => {
+    const token = ++gateTokenRef.current;
+    const alive = () => gateTokenRef.current === token;
+    let shown = false;
+    const patch = p => { if (alive()) { shown = true; setGate(g => ({ token, label: "Loading tiles", done: 0, total: 0, timedOut: false, ...(g && g.token === token ? g : {}), ...p })); } };
+    const job = SensorUI.preloadImages(urls, loadImageForGate, (done, total) => { if (shown) patch({ label: "Loading tiles", done, total }); });
+    const grace = setTimeout(() => { if (alive() && !job.isDone()) patch({ label: "Loading tiles", done: job.done, total: job.total }); }, GATE_GRACE_MS);
+    const timeout = setTimeout(() => { if (alive() && shown) setGate(g => (g && g.token === token ? { ...g, timedOut: true } : g)); }, GATE_TIMEOUT_MS);
+    try {
+      await job.promise;
+      // the saved map resolves a moment later; then the layer effect queues the composed variants
+      for (let waited = 0; alive() && pendingGridLoadRef.current && waited < 5000; waited += 100) await sleepMs(100);
+      await sleepMs(250);
+      let total = 0;
+      while (alive()) {
+        const pending = [...composedRef.current.values()].filter(v => v === "pending").length;
+        total = Math.max(total, pending);
+        if (pending === 0) break;
+        patch({ label: "Generating variants", done: total - pending, total });
+        await sleepMs(100);
+      }
+    } finally {
+      clearTimeout(grace); clearTimeout(timeout);
+      if (alive()) setGate(null);
+    }
+  };
+  const dismissGate = () => { gateTokenRef.current++; setGate(null); };
+  // One run per tileset: after the first load and after every switch, once its tile rows are in.
+  useEffect(() => {
+    if (tilesLoading || !manifest || !activeTileset) return;
+    const tsDef = dbTilesets.find(ts => ts.name === activeTileset);
+    const rows = tsDef ? dbTilesByTsId[tsDef.id] : undefined;
+    if (!tsDef || rows === undefined || gateKeyRef.current === tsDef.id) return;
+    gateKeyRef.current = tsDef.id;
+    runLoadGate(rows.map(r => r.image_url));
+  }, [tilesLoading, manifest, activeTileset, dbTilesets, dbTilesByTsId]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // What to draw in a cell holding a sensor tile: { src, css } (css = extra transform for derived variants) or { warn: true }.
   // Composed variants fall back to the folder's 00000000 variant while pending or when composing fails.
   const sensorVisual = (t, r, c) => {
@@ -6996,6 +7051,14 @@ function App() {
       <InfoModal infoTile={infoTile} getTile={getTile} getDefaultMultiplier={getDefaultMultiplier} getTileMultiplier={getTileMultiplier} getDefaultOffset={getDefaultOffset} getTileOffset={getTileOffset} currentUser={currentUser} userProfile={userProfile} tileNames={tileNames} isPriorityTile={isPriorityTile} isBottomTile={isBottomTile} isAutoShadowTile={isAutoShadowTile} defaultPriorityTile={defaultPriorityTile} defaultBottomTile={defaultBottomTile} defaultAutoShadowTile={defaultAutoShadowTile} setTileMultipliers={setTileMultipliers} setTileOffsets={setTileOffsets} getValidToken={getValidToken} workerFetch={workerFetch} setTsFetchTrigger={setTsFetchTrigger} setInfoTile={setInfoTile} userTiles={userTiles} tiles={tiles} setTileNames={setTileNames} btn={btn} isTileRotatable={isTileRotatable} isDefaultRotatable={isDefaultRotatable} isFlipAllowed={isFlipAllowed} isDefaultFlippable={isDefaultFlippable} isOTGWall={isOTGWall} isDefaultOTGWall={isDefaultOTGWall} otgWallOverrides={otgWallOverrides} isMirrorOffset={isMirrorOffset} isDefaultMirrorOffset={isDefaultMirrorOffset} setRotatableMap={setRotatableMap} setAllowFlipMap={setAllowFlipMap} setOtgWallOverrides={setOtgWallOverrides} setMirrorOffsetTiles={setMirrorOffsetTiles} setBottomTiles={setBottomTiles} setPriorityTiles={setPriorityTiles} setAutoShadowTiles={setAutoShadowTiles} setDbTilesByTsId={setDbTilesByTsId} starredTiles={starredTiles} toggleStar={toggleStar} dbTilesets={dbTilesets} dbTilesByTsId={dbTilesByTsId} deleteTile={deleteTile} />
       <ReplaceModal />
       <TileCounterModal />
+      {gate && (
+        <div data-load-gate className="modal-backdrop" style={{ zIndex: 20000, background: "rgba(0,0,0,0.6)", flexDirection: "column", gap: 14 }}>
+          <div style={{ width: 32, height: 32, border: `3px solid ${C.border}`, borderTopColor: C.accentBright, borderRadius: "50%", animation: "oph-spin 0.8s linear infinite" }} />
+          <style>{`@keyframes oph-spin { to { transform: rotate(360deg); } }`}</style>
+          <span data-load-gate-label style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>{SensorUI.progressLabel(gate.label, gate.done, gate.total)}</span>
+          {gate.timedOut && <button data-load-gate-continue onClick={dismissGate} style={{ ...btn(true, C.accent, C.accentDim), fontSize: 12 }}>Continue anyway</button>}
+        </div>
+      )}
       <OTGSettingsModal />
       <HistoryModal />
       <FailedTileModal />

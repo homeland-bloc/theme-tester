@@ -136,6 +136,32 @@
   // Engine view of a folder (what sensor.js expects). Unlabelled tiles stay out: the resolver never picks them.
   const engineFolder = folder => ({ key: folder.ref, settings: folder.settings, tiles: folder.labelled });
 
+  // ── Image preloading (loading overlay) ────────────────────────────────────────────────────────────────
+  // load(url, cb): starts loading and calls cb(ok) once, synchronously when the image is already cached. -> { total, done, failed,
+  // isDone(), promise }. isDone() is true right after the call when everything was cached, so callers can skip any overlay.
+  const preloadImages = (urls, load, onProgress) => {
+    const list = Array.from(new Set((urls || []).filter(Boolean)));
+    const job = { total: list.length, done: 0, failed: 0, finished: false, isDone: () => job.finished };
+    let resolveFn;
+    job.promise = new Promise(r => { resolveFn = r; });
+    const finishIfDone = () => { if (!job.finished && job.done >= job.total) { job.finished = true; resolveFn({ total: job.total, failed: job.failed }); } };
+    list.forEach(url => {
+      let called = false;
+      load(url, ok => {
+        if (called) return;
+        called = true;
+        job.done++;
+        if (!ok) job.failed++;
+        if (onProgress) onProgress(job.done, job.total);
+        finishIfDone();
+      });
+    });
+    finishIfDone();
+    return job;
+  };
+  // "Loading tiles 12/30"
+  const progressLabel = (label, done, total) => (total > 0 ? `${label} ${done}/${total}` : label);
+
   // ── Image spin / flip (tile modal) ────────────────────────────────────────────────────────────────────
   // ops: "rotL" | "rotR" | "flipH" | "flipV", applied to the image in order. -> { width, height, matrix: [a, b, c, d, e, f] } for
   // ctx.setTransform(...matrix) followed by ctx.drawImage(img, 0, 0): x' = a x + c y + e, y' = b x + d y + f. A quarter turn swaps width and height.
@@ -251,7 +277,7 @@
     sensorRef, parseSensorRef, isSensorRef,
     parseCodeInput, parseRollInput, codeFieldState, codeGridCells, toggleCodeBit, normalisedHint, parseSymbolInput, usedSymbols, suggestSymbol,
     splitGroupPatch, divergence, makeFolder, engineFolder,
-    imageOps, withFreshVersion,
+    preloadImages, progressLabel, imageOps, withFreshVersion,
     variantOwners, hideSensorVariants, canonicalRef, canonicalRefs, folderPreviewTiles,
     deriveLayer, opsToCss, opsLabel, composePlan, composeKey,
     planSensorSwitch, resolveLoadedSensorRef,
