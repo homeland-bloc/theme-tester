@@ -5038,8 +5038,7 @@ function App() {
 
       if (existingId != null && !eraserRef.current && mirrorSettingsRef.current.allowSwap) {
         if (selectionModeRef.current === 'fill') {
-          // ── BLOCK OVERWRITE + FILL: select entire connected same-tile region ──
-          if (pushHistRef.current) pushHistRef.current();
+          // ── BLOCK OVERWRITE + FILL: select entire connected same-tile region (the commit on release pushes the one undo step) ──
           setPainting(true);
           paintingRef.current = true;
           selectionStartRef.current = [r, c];
