@@ -10,14 +10,32 @@ const folder = (key, tiles, settings = {}) => ({ key, tiles, settings: { spin: f
 const at = (f, nb, x = 3, y = 4) => S.resolve(f, nb, { x, y, salt: f.key });
 const bits = names => S.BIT_NAMES.map(n => (names.includes(n) ? "1" : "0")).join("");
 
+test("FALLBACK_CODE is 10100101 and can never collide with a real neighbourhood", () => {
+  assert.strictEqual(S.FALLBACK_CODE, "10100101");
+  assert.ok(S.isFallback(S.FALLBACK_CODE) && S.isCode(S.FALLBACK_CODE));
+  let seen = 0;
+  for (let n = 0; n < 256; n++) {
+    const code = n.toString(2).padStart(8, "0");
+    // the neighbourhood normaliser (what resolve() applies to the map) never yields the sentinel, for all 256 codes
+    assert.notStrictEqual(S.normaliseNeighbourhood(code), S.FALLBACK_CODE, code);
+    // the public normalise() passes the sentinel itself through unchanged and never returns it for any other code
+    if (code === S.FALLBACK_CODE) assert.strictEqual(S.normalise(code), code);
+    else assert.notStrictEqual(S.normalise(code), S.FALLBACK_CODE, code);
+    seen++;
+  }
+  assert.strictEqual(seen, 256);
+  assert.ok(!S.ALL_CODES.includes(S.FALLBACK_CODE));
+  assert.strictEqual(S.normaliseNeighbourhood(S.FALLBACK_CODE), "00000000"); // a real neighbourhood shaped like it is just 00000000
+});
+
 test("normalise: exactly 47 distinct codes", () => {
   assert.strictEqual(S.ALL_CODES.length, 47);
   const set = new Set();
   for (let n = 0; n < 256; n++) set.add(S.normalise(n.toString(2).padStart(8, "0")));
   assert.strictEqual(set.size, 48); // 47 + the fallback sentinel, which normalise() passes through
-  set.delete("10101010");
+  set.delete("10100101");
   assert.strictEqual(set.size, 47);
-  assert.strictEqual(S.normalise("10101010"), "10101010");
+  assert.strictEqual(S.normalise("10100101"), "10100101");
   assert.strictEqual(S.normalise("10000000"), "00000000");
   assert.strictEqual(S.normalise("11111111"), "11111111");
   assert.strictEqual(S.normalise("01010000"), "01010000");
@@ -378,15 +396,15 @@ test("recipes record source tile, quadrant and transform; majority tile supplies
   assert.strictEqual(S.buildCandidates(f)["01000010"].pool[0].majorityRef, "x2");
 });
 
-test("fallback sentinel 10101010: normalise passes it through, real neighbourhood is still normalised", () => {
-  assert.strictEqual(S.normalise("10101010"), "10101010");
-  assert.ok(S.isCode("10101010"));
+test("fallback sentinel 10100101: normalise passes it through, real neighbourhood is still normalised", () => {
+  assert.strictEqual(S.normalise("10100101"), "10100101");
+  assert.ok(S.isCode("10100101"));
   const f = folder("x", [TF("z", "00000000", false, false), TF("se", "00001010", false, false)]);
-  assert.strictEqual(at(f, "10101010").code, "00001010"); // a neighbourhood that looks like the sentinel is normalised like any other
+  assert.strictEqual(at(f, "10100101").code, "00000000"); // a neighbourhood shaped like the sentinel is normalised like any other (diagonals without orthogonals vanish)
 });
 
-test("exact mode: exact explicit match, derived by per-tile flags, else the 10101010 tile; no scoring", () => {
-  const f = folder("fence", [TF("c", "00000000", false, false), TF("h", "00011000", false, false), TF("v", "01000010", true, false), TF("fb", "10101010", false, false),
+test("exact mode: exact explicit match, derived by per-tile flags, else the 10100101 tile; no scoring", () => {
+  const f = folder("fence", [TF("c", "00000000", false, false), TF("h", "00011000", false, false), TF("v", "01000010", true, false), TF("fb", "10100101", false, false),
     TF("L", "00001000", false, true)]);
   assert.strictEqual(S.folderMode(f).kind, "exact");
   assert.ok(!S.isFenceFolder(f));
@@ -402,7 +420,7 @@ test("exact mode: exact explicit match, derived by per-tile flags, else the 1010
   for (const nb of ["01011010", "11111111", "01001000", "00001010"]) {
     const r = at(f, nb);
     assert.strictEqual(r.ref, "fb", nb);
-    assert.strictEqual(r.code, "10101010");
+    assert.strictEqual(r.code, "10100101");
     assert.strictEqual(r.recipe, null);
   }
   // v can spin (rotatable) -> 00011000 is explicit anyway; a spin-only code such as a lone W or E is not made by v alone
@@ -410,7 +428,7 @@ test("exact mode: exact explicit match, derived by per-tile flags, else the 1010
 });
 
 test("exact mode: nothing composed, coverage lists explicit/derived plus the fallback only", () => {
-  const tiles = [...base6(), TF("fb", "10101010", true, true)];
+  const tiles = [...base6(), TF("fb", "10100101", true, true)];
   const f = folder("w", tiles);
   const c = S.buildCandidates(f);
   assert.ok(Object.values(c).every(x => x.status !== "composed"));
@@ -418,31 +436,31 @@ test("exact mode: nothing composed, coverage lists explicit/derived plus the fal
   const cov = S.coverage(f);
   assert.ok(cov.every(r => ["explicit", "derived", "fallback-tile"].includes(r.status)));
   assert.strictEqual(cov.filter(r => r.status === "fallback-tile").length, 1);
-  assert.strictEqual(cov[cov.length - 1].code, "10101010");
-  assert.ok(!cov.some(r => r.code !== "10101010" && !c[r.code].pool.length));
+  assert.strictEqual(cov[cov.length - 1].code, "10100101");
+  assert.ok(!cov.some(r => r.code !== "10100101" && !c[r.code].pool.length));
   // sentinel never in the 47 and never a source
-  assert.ok(!S.ALL_CODES.includes("10101010"));
-  for (const r of cov) if (r.status === "derived") assert.ok(r.sources.every(s => s.code !== "10101010"));
+  assert.ok(!S.ALL_CODES.includes("10100101"));
+  for (const r of cov) if (r.status === "derived") assert.ok(r.sources.every(s => s.code !== "10100101"));
 });
 
 test("exact mode needs roll > 0: a roll-0 sentinel tile leaves the old behaviour", () => {
-  const off = folder("fence", [T("f0", "00000000"), T("fh", "00011000"), T("fv", "01000010"), T("fb", "10101010", 0)]);
+  const off = folder("fence", [T("f0", "00000000"), T("fh", "00011000"), T("fv", "01000010"), T("fb", "10100101", 0)]);
   assert.strictEqual(S.folderMode(off).kind, "fence");
   assert.strictEqual(at(off, "01011010").code, "00000000");
-  const on = folder("fence", [T("f0", "00000000"), T("fh", "00011000"), T("fv", "01000010"), T("fb", "10101010", 2)]);
+  const on = folder("fence", [T("f0", "00000000"), T("fh", "00011000"), T("fv", "01000010"), T("fb", "10100101", 2)]);
   assert.strictEqual(S.folderMode(on).kind, "exact");
   assert.strictEqual(at(on, "01011010").ref, "fb");
-  assert.strictEqual(at(on, "01011010").code, "10101010");
+  assert.strictEqual(at(on, "01011010").code, "10100101");
 });
 
 test("exact mode: fallback pool honours rolls", () => {
-  const f = folder("e", [T("a", "00000000"), T("fb1", "10101010", 1), T("fb2", "10101010", 3)]);
+  const f = folder("e", [T("a", "00000000"), T("fb1", "10100101", 1), T("fb2", "10100101", 3)]);
   const seen = {};
   for (let x = 0; x < 400; x++) { const r = S.resolve(f, "11111111", { x, y: x * 3, salt: "e" }); seen[r.ref] = (seen[r.ref] || 0) + 1; }
   assert.ok(seen.fb2 > seen.fb1 * 2, JSON.stringify(seen));
 });
 
-test("without a 10101010 tile: water still composes, rails still score, fence rule kept", () => {
+test("without a 10100101 tile: water still composes, rails still score, fence rule kept", () => {
   assert.strictEqual(S.folderMode(folder("w", base6())).kind, "compose");
   assert.strictEqual(S.folderMode(folder("r", [T("a", "00001010"), T("b", "00010010")])).kind, "connections");
   assert.strictEqual(S.folderMode(folder("f", [T("f0", "00000000"), T("fh", "00011000"), T("fv", "01000010")])).kind, "fence");

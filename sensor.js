@@ -14,8 +14,8 @@
   const isCode = c => typeof c === "string" && /^[01]{8}$/.test(c);
 
   // Sentinel code: the fallback tile of an exact-mode folder. Never a real neighbourhood (it is not normalised).
-  const FALLBACK = "10101010";
-  const isFallback = c => c === FALLBACK;
+  const FALLBACK_CODE = "10100101"; // the one place the value lives
+  const isFallback = c => c === FALLBACK_CODE;
 
   // Diagonal kept only if both adjacent orthogonals are set.
   const normaliseBits = code => {
@@ -27,7 +27,7 @@
     return b.join("");
   };
   // Public: the fallback sentinel passes through unchanged. Neighbourhoods inside the engine use normaliseBits.
-  const normalise = code => (code === FALLBACK ? code : normaliseBits(code));
+  const normalise = code => (code === FALLBACK_CODE ? code : normaliseBits(code));
 
   // Clockwise 90: source bit i moves to SPIN_TO[i].
   const SPIN_TO = [NE, E, SE, N, S, NW, W, SW];
@@ -70,7 +70,7 @@
   });
 
   // code -> usable (roll > 0) explicit variants, sorted. Unusable-only codes are reported in `disabled`. The fallback sentinel
-  // 10101010 never joins `pools` (it is never derived from, composed from or scored): its usable tiles are `fallback`.
+  // 10100101 never joins `pools` (it is never derived from, composed from or scored): its usable tiles are `fallback`.
   const explicitPools = folder => {
     const pools = {}, disabled = new Set(), fallback = [];
     for (const t of (folder.tiles || []).slice().sort(cmpTiles)) {
@@ -82,7 +82,7 @@
     }
     return { pools, disabled, fallback };
   };
-  // Exact mode: the folder has a usable (roll > 0) 10101010 tile.
+  // Exact mode: the folder has a usable (roll > 0) 10100101 tile.
   const isExactFolder = folder => explicitPools(folder).fallback.length > 0;
 
   const allEntries = pools => Object.keys(pools).sort().flatMap(c => pools[c]);
@@ -252,7 +252,7 @@
   };
 
   // ── Simple fence ──────────────────────────────────────────────────────────────────────────────────────
-  // Legacy rule, ONLY for folders without a 10101010 tile: a folder whose usable coded variants are exactly
+  // Legacy rule, ONLY for folders without a 10100101 tile: a folder whose usable coded variants are exactly
   // {00000000, 00011000, 01000010} is resolved by the four cardinal bits only.
   const FENCE_CODES = ["00000000", "00011000", "01000010"];
   const isFenceFolder = (folder, _pools) => {
@@ -268,7 +268,7 @@
     return codes.length > 0 && codes.every(c => cardinalOnly(c) === c);
   };
   const CARDINAL_CODES = ALL_CODES.filter(c => cardinalOnly(c) === c);
-  // What a folder does with the codes it has no tile for: "exact" (10101010 fallback tile) | "fence" | "compose" (a tile can spin
+  // What a folder does with the codes it has no tile for: "exact" (10100101 fallback tile) | "fence" | "compose" (a tile can spin
   // and/or flip) | "connections" (scoring).
   const folderMode = folder => {
     const { pools, fallback } = explicitPools(folder), can = folderCan(folder, pools);
@@ -278,7 +278,7 @@
 
   // ── Candidates ────────────────────────────────────────────────────────────────────────────────────────
   // -> { [code]: { code, status: explicit|derived|composed|missing, pool:[entry], recipe?, disabled? } } for all 47 codes.
-  // Exact-mode folders also carry "10101010": { status: "explicit", fallback: true, pool }. They never compose.
+  // Exact-mode folders also carry "10100101": { status: "explicit", fallback: true, pool }. They never compose.
   const buildCandidates = folder => {
     const { pools, disabled, fallback } = explicitPools(folder);
     const exact = fallback.length > 0;
@@ -309,7 +309,7 @@
     const fence = !exact && isFenceFolder(folder, pools);
     Object.defineProperty(out, "_fence", { value: fence, enumerable: false });
     Object.defineProperty(out, "_exact", { value: exact, enumerable: false });
-    if (exact) out[FALLBACK] = { code: FALLBACK, status: "explicit", fallback: true, pool: fallback, disabled: false };
+    if (exact) out[FALLBACK_CODE] = { code: FALLBACK_CODE, status: "explicit", fallback: true, pool: fallback, disabled: false };
     const can = folderCan(folder, pools);
     if (!exact && (can.spin || can.flip) && !fence) {
       const slots = slotOptions(folder, pools);
@@ -374,8 +374,8 @@
     if (cands._exact) { // exact mode: only what is reachable (explicit / derived) plus the fallback tile
       const rows = ALL_CODES.filter(code => cands[code].status === "explicit" || cands[code].status === "derived")
         .map(code => ({ code, status: cands[code].status, fallbackCode: null, sources: srcOf(cands[code]), poolPercentages: pickPercentages(cands[code].pool) }));
-      const fb = cands[FALLBACK];
-      rows.push({ code: FALLBACK, status: "fallback-tile", fallbackCode: null, sources: srcOf(fb), poolPercentages: pickPercentages(fb.pool) });
+      const fb = cands[FALLBACK_CODE];
+      rows.push({ code: FALLBACK_CODE, status: "fallback-tile", fallbackCode: null, sources: srcOf(fb), poolPercentages: pickPercentages(fb.pool) });
       return rows;
     }
     return ALL_CODES.map(code => {
@@ -404,8 +404,8 @@
     if (!avail.length) return null;
     const salt = saltToInt(c.salt != null ? c.salt : folder.key);
 
-    if (cands._exact) { // exact mode: exact match among explicit / derived tiles, else the 10101010 tile. No composition, no scoring.
-      const hit = cands[nb] && cands[nb].pool.length ? cands[nb] : null, cand = hit || cands[FALLBACK];
+    if (cands._exact) { // exact mode: exact match among explicit / derived tiles, else the 10100101 tile. No composition, no scoring.
+      const hit = cands[nb] && cands[nb].pool.length ? cands[nb] : null, cand = hit || cands[FALLBACK_CODE];
       const entry = weightedPick(cand.pool, e => e.roll, hash2D(c.x | 0, c.y | 0, salt));
       if (!entry) return null;
       return { code: cand.code, status: cand.status, fallback: !hit, ref: entry.ref, tile: entry.tile, ops: entry.ops, derivedFrom: entry.derivedFrom, recipe: null, entry };
@@ -441,7 +441,8 @@
 
   return {
     BIT_NAMES, OFFSETS, ALL_CODES, CARDINAL_CODES, FENCE_CODES, SLOT_TYPES, ALL_SLOTS, QUAD_NAMES,
-    FALLBACK, isFallback, isExactFolder, folderCan, canSpin, canFlip,
+    FALLBACK_CODE, isFallback, isExactFolder, folderCan, canSpin, canFlip,
+    normaliseNeighbourhood: normaliseBits,
     isCode, normalise, spin, flipH, neighbourCode,
     buildCandidates, coverage, computeRequiredBase, compositionRecipe, composeQuadrants,
     quadrantBits, quadrantType, quadrantLibrary, missingSlots, slotLabel, folderMode, isFenceFolder, cardinalOnly, usesOnlyCardinals,

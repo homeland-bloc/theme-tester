@@ -309,8 +309,8 @@ test("recipeLines: four lines with code, tile name and transform", () => {
   assert.strictEqual(U.transformLabel(true, 2), "flip, spin 2");
   assert.strictEqual(U.transformLabel(false, 0), "no transform");
   assert.ok(/exact shape/.test(U.FALLBACK_LABEL));
-  assert.strictEqual(U.parseCodeInput("10101010").value, "10101010");
-  assert.strictEqual(U.normalisedHint("10101010"), null); // the fallback sentinel never "acts as" anything
+  assert.strictEqual(U.parseCodeInput("10100101").value, "10100101");
+  assert.strictEqual(U.normalisedHint("10100101"), null); // the fallback sentinel never "acts as" anything
 });
 
 test("engineFolder passes per-variant flags: a tile without rotatable cannot derive", () => {

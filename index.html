@@ -783,14 +783,14 @@ function SensorOptionalFields({ code, onCode, roll, onRoll }) {
   return (
     <div data-sensor-optional style={{ display: "flex", flexDirection: "column", gap: 8 }}>
       <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-        <span style={{ fontSize: 11, color: C.muted }}>Sensor code (optional, 8 digits of 0/1; empty = not a sensor tile; 10101010 = fallback tile)</span>
+        <span style={{ fontSize: 11, color: C.muted }}>{`Sensor code (optional, 8 digits of 0/1; empty = not a sensor tile; ${SensorEngine.FALLBACK_CODE} = fallback tile)`}</span>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <input data-add-sensor-code value={code} maxLength={8} spellCheck={false} onChange={e => onCode(e.target.value.replace(/[^01]/g, ''))}
             placeholder="none" style={{ ...inp(cp.ok), width: 98, boxSizing: "border-box", letterSpacing: 2 }} />
           <SensorCodeGrid code={cp.ok ? cp.value : null} color={cp.ok ? "#f97316" : C.danger} onToggle={bit => onCode(SensorUI.toggleCodeBit(code, bit))} />
         </div>
         {SensorUI.normalisedHint(code) && <span data-normalised-hint style={{ fontSize: 10, color: C.muted }}>acts as {SensorUI.normalisedHint(code)}</span>}
-        {cp.ok && cp.value === SensorEngine.FALLBACK && <span data-fallback-label style={{ fontSize: 10, color: FALLBACK_TILE_COLOR }}>{SensorUI.FALLBACK_LABEL}</span>}
+        {cp.ok && cp.value === SensorEngine.FALLBACK_CODE && <span data-fallback-label style={{ fontSize: 10, color: FALLBACK_TILE_COLOR }}>{SensorUI.FALLBACK_LABEL}</span>}
         {!cp.ok && <span style={{ fontSize: 10, color: C.danger }}>{cp.error}</span>}
         <span style={{ fontSize: 10, color: C.muted }}>With a folder key, the image is named FolderKey_code. The symbol is copied from the folder's first variant.</span>
       </label>
@@ -1850,7 +1850,7 @@ function InfoModalBody(props) {
                     {codeState === "saved" ? (t.sensorCode == null ? "no sensor code (saved)" : "saved") : codeState === "edited" ? "edited, not saved" : "needs exactly 8 characters of 0 and 1"}
                   </span>
                   {SensorUI.normalisedHint(sensorCodeInput) && <span data-normalised-hint style={{ fontSize: 9, color: C.muted }}>acts as {SensorUI.normalisedHint(sensorCodeInput)}</span>}
-                  {codeParsed.ok && codeParsed.value === SensorEngine.FALLBACK && <span data-fallback-label style={{ fontSize: 9, color: FALLBACK_TILE_COLOR }}>{SensorUI.FALLBACK_LABEL}</span>}
+                  {codeParsed.ok && codeParsed.value === SensorEngine.FALLBACK_CODE && <span data-fallback-label style={{ fontSize: 9, color: FALLBACK_TILE_COLOR }}>{SensorUI.FALLBACK_LABEL}</span>}
                 </div>
                 <SensorCodeGrid code={codeParsed.ok ? codeParsed.value : null} color={col}
                   onToggle={canEditDb ? bit => { setSensorCodeInput(SensorUI.toggleCodeBit(sensorCodeInput, bit)); setSensorError(null); } : undefined} />
@@ -2193,9 +2193,9 @@ function InfoModalBody(props) {
 
 // ── Sensor folder components (top level: not nested in App, so their state survives App re-renders) ──
 const SENSOR_YELLOW = "#f5c518";
-const FALLBACK_TILE_COLOR = "#f472b6"; // the 10101010 fallback tile of an exact-mode folder: its own colour
+const FALLBACK_TILE_COLOR = "#f472b6"; // the fallback tile (SensorEngine.FALLBACK_CODE) of an exact-mode folder: its own colour
 const STATUS_COLORS = { explicit: "#34d399", derived: "#60a5fa", composed: "#c084fc", fallback: "#fbbf24", missing: "#f87171", "fallback-tile": FALLBACK_TILE_COLOR };
-const STATUS_HELP = { explicit: "has its own tile", derived: "spin/flip of a tile", composed: "built from quadrants", fallback: "uses the nearest variant or 00000000", missing: "should be composed but cannot be", "fallback-tile": "the 10101010 fallback tile" };
+const STATUS_HELP = { explicit: "has its own tile", derived: "spin/flip of a tile", composed: "built from quadrants", fallback: "uses the nearest variant or 00000000", missing: "should be composed but cannot be", "fallback-tile": "the fallback tile" };
 const sensorBtnStyle = (color = C.accent) => ({ background: "rgba(255,255,255,0.04)", border: `1px solid ${color}`, borderRadius: 6, color, cursor: "pointer", fontSize: 11, padding: "3px 10px", fontFamily: "'Inter', sans-serif" });
 const tileUrl = t => (t ? (t.blobSrc ?? t.src) : null);
 const fromLabel = e => (e.derivedFrom ? `from ${e.derivedFrom.tile.codename ?? e.derivedFrom.code} (${SensorUI.opsLabel(e.ops)})` : null);
@@ -2215,7 +2215,7 @@ function sensorEntryVisual(entry, code, status, recipe, folderRef, candidates, r
 
 // 3x3 view of a sensor code: neighbour cells "1" filled, "0" outlined, centre an X. Colour = state (green saved, orange edited).
 function SensorCodeGrid({ code, color, onToggle }) {
-  if (code === SensorEngine.FALLBACK) { // the sentinel has no 3x3 shape
+  if (code === SensorEngine.FALLBACK_CODE) { // the sentinel has no 3x3 shape
     return <div data-sensor-grid data-fallback-grid style={{ flexShrink: 0, border: `1.5px solid ${FALLBACK_TILE_COLOR}`, borderRadius: 4, color: FALLBACK_TILE_COLOR, fontSize: 11, fontWeight: 700, padding: "6px 8px", textAlign: "center" }} title={SensorUI.FALLBACK_LABEL}>Fallback tile</div>;
   }
   const cells = SensorUI.codeGridCells(code);
@@ -2394,26 +2394,26 @@ function SensorSimulationPanel({ folder, candidates, requestComposed, onClose })
   const [bits, setBits] = useState(() => Array(8).fill(false));
   const [seed, setSeed] = useState(0);
   const [hoverQ, setHoverQ] = useState(null); // quadrant (0 TL, 1 TR, 2 BR, 3 BL) hovered in the composed breakdown
-  const [pickedFallback, setPickedFallback] = useState(false); // the 10101010 row of an exact-mode folder was clicked
+  const [pickedFallback, setPickedFallback] = useState(false); // the fallback row of an exact-mode folder was clicked
   const engine = useMemo(() => SensorUI.engineFolder(folder), [folder]);
   const code = bits.map(b => (b ? "1" : "0")).join("");
-  const fbCand = candidates[SensorEngine.FALLBACK];
+  const fbCand = candidates[SensorEngine.FALLBACK_CODE];
   const res = pickedFallback && fbCand
-    ? (() => { const entry = SensorEngine.weightedPick(fbCand.pool, e => e.roll, SensorEngine.hash2D(seed, seed * 7 + 1, SensorEngine.stringToInt(folder.ref))); return entry && { code: SensorEngine.FALLBACK, status: "explicit", fallback: true, ref: entry.ref, tile: entry.tile, ops: entry.ops, derivedFrom: null, recipe: null, entry }; })()
+    ? (() => { const entry = SensorEngine.weightedPick(fbCand.pool, e => e.roll, SensorEngine.hash2D(seed, seed * 7 + 1, SensorEngine.stringToInt(folder.ref))); return entry && { code: SensorEngine.FALLBACK_CODE, status: "explicit", fallback: true, ref: entry.ref, tile: entry.tile, ops: entry.ops, derivedFrom: null, recipe: null, entry }; })()
     : SensorEngine.resolve(engine, code, { x: seed, y: seed * 7 + 1, salt: folder.ref, candidates });
-  const isFb = !!(res && res.code === SensorEngine.FALLBACK);
+  const isFb = !!(res && res.code === SensorEngine.FALLBACK_CODE);
   const nameOfRef = ref => { const t = folder.tiles.find(x => x.ref === ref); return t ? (t.codename ?? t.sensorCode ?? String(ref)) : String(ref); };
   const lines = res && res.recipe ? SensorUI.recipeLines(res.recipe, nameOfRef) : [];
   const cov = useMemo(() => SensorEngine.coverage(engine), [engine]);
   const required = useMemo(() => SensorEngine.computeRequiredBase(engine), [engine]);
   const mode = useMemo(() => SensorEngine.folderMode(engine), [engine]);
-  const shownCov = useMemo(() => (mode.cardinalOnly ? cov.filter(x => SensorEngine.CARDINAL_CODES.includes(x.code) || x.code === SensorEngine.FALLBACK) : cov), [cov, mode]);
+  const shownCov = useMemo(() => (mode.cardinalOnly ? cov.filter(x => SensorEngine.CARDINAL_CODES.includes(x.code) || x.code === SensorEngine.FALLBACK_CODE) : cov), [cov, mode]);
   const pool = res ? candidates[res.code].pool : [];
   const pct = SensorEngine.pickPercentages(pool);
   const vis = res ? sensorEntryVisual(res.entry, res.code, res.status, res.recipe, folder.ref, candidates, requestComposed) : null;
   const cellBox = { width: 44, height: 44, borderRadius: 6, boxSizing: "border-box" };
   const setFromCode = c => {
-    if (c === SensorEngine.FALLBACK) { setPickedFallback(true); return; } // the sentinel is a tile, not a neighbourhood
+    if (c === SensorEngine.FALLBACK_CODE) { setPickedFallback(true); return; } // the sentinel is a tile, not a neighbourhood
     setPickedFallback(false);
     setBits(c.split("").map(ch => ch === "1"));
   };
@@ -2491,7 +2491,7 @@ function SensorSimulationPanel({ folder, candidates, requestComposed, onClose })
           </div>
           <div data-testid="sim-required" style={{ fontSize: 11, color: required.length ? C.danger : C.muted }}>
             {mode.kind === "exact"
-              ? "Exact mode (this folder has a 10101010 fallback tile): the neighbours are normalised, an exact match among its tiles or their spin/flip (per tile) wins, anything else shows the fallback tile. Nothing is composed or scored."
+              ? `Exact mode (this folder has a ${SensorEngine.FALLBACK_CODE} fallback tile): the neighbours are normalised, an exact match among its tiles or their spin/flip (per tile) wins, anything else shows the fallback tile. Nothing is composed or scored.`
               : mode.kind === "fence"
               ? "Simple fence rule: only the four cardinal neighbours count. An exact match among the three variants wins, anything else shows 00000000."
               : mode.kind === "compose"
@@ -3584,7 +3584,7 @@ function App() {
       const isStarred = starredTiles.includes(t.ref);
       return (
         <div key={t.ref} data-sensor-variant={t.ref} title={`${t.codename ?? ""} ${t.sensorCode ?? "(no code)"}`.trim()}
-          style={{ width: cardSz, height: cardSz, borderRadius: 8, border: `2px solid ${failed ? C.danger : t.sensorCode === SensorEngine.FALLBACK ? FALLBACK_TILE_COLOR : C.border}`, position: "relative", overflow: "visible", opacity: failed ? 0.55 : 1 }}>
+          style={{ width: cardSz, height: cardSz, borderRadius: 8, border: `2px solid ${failed ? C.danger : t.sensorCode === SensorEngine.FALLBACK_CODE ? FALLBACK_TILE_COLOR : C.border}`, position: "relative", overflow: "visible", opacity: failed ? 0.55 : 1 }}>
           <div style={{ position: "absolute", inset: 0, borderRadius: 6, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", background: C.panelDeep }}>
             {failed ? <span style={{ fontSize: 18 }}>⚠️</span>
               : <img src={t.blobSrc ?? t.src} alt="" onError={() => markFailed(t.ref)} className={tileCardLightBg ? "tile-img-checker" : undefined} style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated" }} />}
