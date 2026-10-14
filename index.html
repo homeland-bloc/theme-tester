@@ -157,6 +157,72 @@ const migrateStarred = list => {
 const SHORTCUT_TILES_BAR_TOOLS = new Set(["erase", "hand", "eyedropper", "magnet", "highlight", "duplicate"]);
 const SHORTCUT_TOOLS_BAR = ["selectionGroup", "mirrorGroup", "guides", "overwrite", "offsetCenters", "otg", "replace", "convert", "tileCounter", "hotkeys"];
 const DEFAULT_STARRED = ["erase", "hand", "selectionGroup", "mirrorGroup", "guides", "overwrite"]; // only for users with no saved list
+// ── Highlight move (pure helpers; unit-tested by extracting this block, see tests/highlight_move.test.js) ──────────────────────
+// <highlight-move-helpers>
+// Mirror images of a cell, identity first. ctx = { v, h, d, cR, cC } where v = left<->right ("Horizontal" in the UI), h = top<->bottom
+// ("Vertical"), d = 180-degree point reflection ("Diagonal"). Same geometry as getMirrorMeta (the VD / HD / VHD entries land on the D cell).
+// Not bounds-checked and not de-duplicated: [{ k: "" | "V" | "H" | "D", pos: [r, c] }].
+const mirrorImages = (r, c, ctx) => {
+  const out = [{ k: "", pos: [r, c] }];
+  if (ctx.v) out.push({ k: "V", pos: [r, Math.round(2 * ctx.cC - c)] });
+  if (ctx.h) out.push({ k: "H", pos: [Math.round(2 * ctx.cR - r), c] });
+  if (ctx.d) out.push({ k: "D", pos: [Math.round(2 * ctx.cR - r), Math.round(2 * ctx.cC - c)] });
+  return out;
+};
+// Moving a highlight with mirroring, as ONE operation. Inputs: primary = the cells the user drew, (dr, dc) = the move, ctx = mirror
+// flags + centre + { rows, cols } of the grid, hasContent(r, c) = does the cell hold a tile.
+//   Source set S      = primary + all of its in-bounds mirror images, de-duplicated (a selection that overlaps its own mirror is ONE set).
+//   Where a cell goes  = a primary cell moves by (dr, dc). Any other cell of S is the mirror image (op k) of some primary p and moves to
+//                        the same image of p + (dr, dc), i.e. by the mirrored offset. A cell that is both primary and an image moves
+//                        as primary; a cell that is an image of several primaries follows the first one (row-major, ops "", V, H, D).
+//   Out of the grid    = the cell is dropped (its tile is lifted and lost), never wrapped or clamped. Per cell: a mirror partner whose
+//                        own target is inside still lands.
+//   Two cells, one target = the primary cell wins, then the earlier source (row-major); the other is dropped. Empty cells never write
+//                        and never block (transparent), so a move never erases tiles it does not land on.
+// Every source is read from the pre-move grid and cleared; every target is written at most once.
+// -> { sources, moves: [{ from, to, kind, drop }], writes: [{ from, to }], newPrimary, newHighlight }  (all positions are [r, c]).
+const planHighlightMove = ({ primary, dr, dc, ctx, hasContent }) => {
+  const rows = ctx.rows, cols = ctx.cols;
+  const inb = ([r, c]) => r >= 0 && r < rows && c >= 0 && c < cols;
+  const key = ([r, c]) => r + "," + c;
+  const byPos = (a, b) => a[0] - b[0] || a[1] - b[1];
+  const P = [...new Map((primary || []).filter(inb).map(p => [key(p), p])).values()].sort(byPos);
+  const primKeys = new Set(P.map(key));
+  const mover = new Map(); // source key -> { from, to, kind, op }
+  P.forEach(p => mover.set(key(p), { from: p, to: [p[0] + dr, p[1] + dc], kind: "primary", k: "" }));
+  P.forEach(p => {
+    const shifted = mirrorImages(p[0] + dr, p[1] + dc, ctx);
+    mirrorImages(p[0], p[1], ctx).forEach(({ k, pos }, i) => {
+      if (k === "" || !inb(pos) || mover.has(key(pos))) return;
+      mover.set(key(pos), { from: pos, to: shifted[i].pos, kind: "mirror", k });
+    });
+  });
+  const sources = [...mover.values()].map(m => m.from).sort(byPos);
+  const ordered = [...mover.values()].sort((a, b) => (a.kind === b.kind ? 0 : a.kind === "primary" ? -1 : 1) || byPos(a.from, b.from));
+  const claimed = new Set(), moves = [], writes = [];
+  ordered.forEach(m => {
+    let drop = null;
+    if (!hasContent(m.from[0], m.from[1])) drop = "empty";
+    else if (!inb(m.to)) drop = "bounds";
+    else if (claimed.has(key(m.to))) drop = "collision";
+    if (!drop) { claimed.add(key(m.to)); writes.push({ from: m.from, to: m.to }); }
+    moves.push({ from: m.from, to: m.to, kind: m.kind, drop });
+  });
+  const newPrimary = P.map(p => [p[0] + dr, p[1] + dc]).filter(inb);
+  const hl = new Map();
+  newPrimary.forEach(p => mirrorImages(p[0], p[1], ctx).forEach(({ pos }) => { if (inb(pos)) hl.set(key(pos), pos); }));
+  return { sources, moves, writes, newPrimary, newHighlight: [...hl.values()].sort(byPos) };
+};
+// Applies a plan to a grid (and an optional sparse per-cell map such as gridOffsets keyed "r,c"). Returns new copies; inputs untouched.
+const applyHighlightMovePlan = (grid, plan, sparse) => {
+  const g = grid.map(row => row.slice());
+  const sp = sparse ? { ...sparse } : null;
+  const content = plan.writes.map(w => ({ to: w.to, id: grid[w.from[0]][w.from[1]], extra: sparse ? sparse[w.from[0] + "," + w.from[1]] : undefined }));
+  plan.sources.forEach(([r, c]) => { g[r][c] = null; if (sp) delete sp[r + "," + c]; });
+  content.forEach(({ to: [r, c], id, extra }) => { g[r][c] = id; if (sp) { if (extra !== undefined) sp[r + "," + c] = extra; else delete sp[r + "," + c]; } });
+  return { grid: g, sparse: sp };
+};
+// </highlight-move-helpers>
 const REPLACE_ERASE_REF = "__erase__"; // sentinel: replace-with-empty in the Replace modal
 
 // All Supabase requests go through the Worker.
@@ -2989,6 +3055,24 @@ function App() {
   const bg1Ref   = useRef(bg1);
   const bg2Ref   = useRef(bg2);
   const histIdxRef = useRef(0);
+  // History: historyRef + histIdxRef are the single source of truth, written ONLY through commitHistory / setHistIndex (which mirror them into
+  // the history / histIdx state used for rendering). Entries are POST-action snapshots: history[histIdx] is the current state, undo restores
+  // history[histIdx - 1], redo history[histIdx + 1]. One user action = one pushHistoryEntry.
+  const historyRef = useRef(history);
+  const commitHistory = (entries, idx) => { historyRef.current = entries; histIdxRef.current = idx; setHistory(entries); setHistIdx(idx); };
+  const setHistIndex = idx => { histIdxRef.current = idx; setHistIdx(idx); };
+  const pushHistoryEntry = snap => {
+    const base = historyRef.current.slice(0, histIdxRef.current + 1); // a new action drops the redo tail
+    const capped = base.length >= MAX_HISTORY ? base.slice(1) : base;
+    const next = [...capped, snap];
+    commitHistory(next, next.length - 1);
+  };
+  // Snapshot of the state AFTER an action. Pass the values the action just computed (refs may lag a render); the rest is read live.
+  const makeSnap = (label, o = {}) => ({
+    grid: o.grid ?? gridRef.current, palette: clonePalette(paletteRef.current), w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current,
+    bg1: bg1Ref.current, bg2: bg2Ref.current,
+    highlight: [...(o.highlight ?? highlightedCellsRef.current)], primaryHighlight: [...(o.primary ?? primaryHighlightedCellsRef.current)], label,
+  });
   const bgHistTimerRef = useRef(null);
   const mirrorVRef = useRef(false);
   const mirrorHRef = useRef(false);
@@ -2997,7 +3081,6 @@ function App() {
   useEffect(() => { gridHRef.current = gridH; }, [gridH]);
   useEffect(() => { bg1Ref.current   = bg1;   }, [bg1]);
   useEffect(() => { bg2Ref.current   = bg2;   }, [bg2]);
-  useEffect(() => { histIdxRef.current = histIdx; }, [histIdx]);
   useEffect(() => { activeTilesetRef.current = activeTileset ?? null; }, [activeTileset]);
   useEffect(() => { selRef.current = sel; }, [sel]);
   useEffect(() => { eraserRef.current       = eraser;        }, [eraser]);
@@ -3896,12 +3979,7 @@ function App() {
 
     // ── History snap with the converted grid + palette, then apply state ──
     const snap = { grid: newGrid, palette: clonePalette(newPal), w: gridWRef.current, h: gridHRef.current, tileset: newTilesetName, bg1: tsBg.bg1, bg2: tsBg.bg2, highlight: [...highlightedCellsRef.current], label: `Switch from ${activeTileset ?? '(none)'} to ${newTilesetName}` };
-    setHistory(h => {
-      const trimmed = h.slice(0, histIdxRef.current + 1);
-      const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-      return [...capped, snap];
-    });
-    setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
+    pushHistoryEntry(snap);
     if (newPal !== paletteRef.current) replacePalette(newPal);
     if (newGrid !== currentGrid) setGridRaw(newGrid);
     setActiveTileset(newTilesetName);
@@ -4258,9 +4336,7 @@ function App() {
     });
     replacePalette(pal);
     setGridRaw(g);
-    setHistory([{ grid: g, palette: clonePalette(pal), w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [], label: "Load" }]);
-    setHistIdx(0);
-    histIdxRef.current = 0;
+    commitHistory([{ grid: g, palette: clonePalette(pal), w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [], label: "Load" }], 0);
     if (unresolved > 0) warnCleared(unresolved, "load");
   }, [tiles, flatDefaultTiles, manifest, dbTilesByTsId, dbTilesets, tilesLoading, activeTileset]); // eslint-disable-line
   useEffect(() => { if (activeTileset) save(SK.activeTileset, activeTileset); }, [activeTileset]);
@@ -4305,12 +4381,7 @@ function App() {
     if (bgHistTimerRef.current) clearTimeout(bgHistTimerRef.current);
     bgHistTimerRef.current = setTimeout(() => {
       const snap = { grid: gridRef.current, palette: clonePalette(paletteRef.current), w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...highlightedCellsRef.current]};
-      setHistory(h => {
-        const trimmed = h.slice(0, histIdxRef.current + 1);
-        const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-        return [...capped, snap];
-      });
-      setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
+      pushHistoryEntry(snap);
       bgHistTimerRef.current = null;
     }, 350);
   }, []);
@@ -4341,18 +4412,10 @@ function App() {
     if (!skipHistory) histLabelRef.current = "Draw";
     setGridRaw(prev => {
       const next = typeof updater === "function" ? updater(prev) : updater;
-      if (!skipHistory) {
-        const palSnap = clonePalette(paletteRef.current); // taken together with `next`, so undo restores entries removed later
-        setHistory(h => {
-          const trimmed = h.slice(0, histIdx + 1);
-          const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-          return [...capped, { grid: next, palette: palSnap, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...highlightedCellsRef.current], label: snapLabel }];
-        });
-        setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
-      }
+      if (!skipHistory) pushHistoryEntry(makeSnap(snapLabel, { grid: next })); // palette is taken together with `next`, so undo restores entries removed later
       return next;
     });
-  }, [histIdx]);
+  }, []);
 
   const applySnap = snap => {
     if (snap.palette) replacePalette(clonePalette(snap.palette)); // the snapshot's own palette: its indexes belong to it
@@ -4416,6 +4479,27 @@ function App() {
     applySnap(snap);
   };
 
+  // Move the highlight by (dr, dc) as ONE operation (see planHighlightMove for the rules): lift every selected cell plus its mirror images,
+  // write every target once, move the primary selection by (dr, dc), and push one undo step holding the state after the move.
+  const moveHighlightRef = useRef(() => {});
+  const moveHighlightBy = (dr, dc) => {
+    const g0 = gridRef.current;
+    const { cR, cC } = getEffectiveCenter();
+    const ctx = { v: mirrorVRef.current, h: mirrorHRef.current, d: mirrorDRef.current, cR, cC, rows: gridHRef.current, cols: gridWRef.current };
+    const keys = primaryHighlightedCellsRef.current.size ? primaryHighlightedCellsRef.current : highlightedCellsRef.current; // legacy snapshots had no primary set
+    const plan = planHighlightMove({ primary: [...keys].map(k => k.split(',').map(Number)), dr, dc, ctx, hasContent: (r, c) => g0[r]?.[c] != null });
+    const newG = applyHighlightMovePlan(g0, plan).grid;
+    setGridStableRef.current(() => newG, true);
+    setGridOffsets(prev => applyHighlightMovePlan(g0, plan, prev).sparse);
+    const toSet = cells => new Set(cells.map(([r, c]) => `${r},${c}`));
+    const newHighlight = toSet(plan.newHighlight), newPrimary = toSet(plan.newPrimary);
+    setHighlightedCells(newHighlight); highlightedCellsRef.current = newHighlight;
+    setPrimaryHighlightedCells(newPrimary); primaryHighlightedCellsRef.current = newPrimary;
+    gridRef.current = newG;
+    pushHistoryEntry(makeSnap("Move", { grid: newG, highlight: newHighlight, primary: newPrimary }));
+  };
+  useEffect(() => { moveHighlightRef.current = moveHighlightBy; });
+
   // Apply a duplicate: place copy of primary highlighted cells at current drag-offset position, with mirroring
   const applyDuplicate = useCallback(() => {
     const offset = highlightDragOffsetRef.current;
@@ -4461,18 +4545,20 @@ function App() {
   }, [tiles]);
 
   const undo = useCallback(() => {
-    if (histIdx <= 0) return;
-    const newIdx = histIdx - 1;
-    setHistIdx(newIdx);
-    restoreSnap(history[newIdx], () => setHistIdx(histIdx));
-  }, [history, histIdx, dbTilesets, ensureTilesetLoaded]);
+    const idx = histIdxRef.current;
+    if (idx <= 0) return;
+    const target = historyRef.current[idx - 1];
+    setHistIndex(idx - 1);
+    restoreSnap(target, () => setHistIndex(idx));
+  }, [dbTilesets, ensureTilesetLoaded]);
 
   const redo = useCallback(() => {
-    if (histIdx >= history.length - 1) return;
-    const newIdx = histIdx + 1;
-    setHistIdx(newIdx);
-    restoreSnap(history[newIdx], () => setHistIdx(histIdx));
-  }, [history, histIdx, dbTilesets, ensureTilesetLoaded]);
+    const idx = histIdxRef.current;
+    if (idx >= historyRef.current.length - 1) return;
+    const target = historyRef.current[idx + 1];
+    setHistIndex(idx + 1);
+    restoreSnap(target, () => setHistIndex(idx));
+  }, [dbTilesets, ensureTilesetLoaded]);
 
   // Push the current grid as a history snapshot (called once on mousedown, before any paint).
   // All cell writes during a drag use skipHistory=true, so the whole drag is one undo step.
@@ -4480,13 +4566,8 @@ function App() {
     const label = histLabelRef.current || "Draw";
     histLabelRef.current = "Draw";
     const snap = { grid, palette: clonePalette(paletteRef.current), w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1, bg2, highlight: [...highlightedCellsRef.current], customCenter: customCenterRef.current, label };
-    setHistory(h => {
-      const trimmed = h.slice(0, histIdx + 1);
-      const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-      return [...capped, snap];
-    });
-    setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
-  }, [histIdx, grid, bg1, bg2]);
+    pushHistoryEntry(snap);
+  }, [grid, bg1, bg2]);
 
   const loadFiles = files => {
     const imageFiles = [...files].filter(f => f.type.startsWith("image/"));
@@ -4721,16 +4802,8 @@ function App() {
         mirroredCells.forEach(([r, c]) => finalHighlight.add(`${r},${c}`));
         setHighlightedCells(finalHighlight);
         highlightedCellsRef.current = finalHighlight;
-        // Push AFTER state so undo restores the pre-selection state (tile stays, highlight clears)
-        // Update histIdxRef synchronously so rapid subsequent events see the correct index
-        const selNextIdx = Math.min(histIdxRef.current + 1, MAX_HISTORY - 1);
-        histIdxRef.current = selNextIdx;
-        setHistory(h => {
-          const trimmed = h.slice(0, selNextIdx);
-          const capped = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-          return [...capped, { grid: gridRef.current, palette: clonePalette(paletteRef.current), w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...finalHighlight], primaryHighlight: [...primaryFinal], label: "Highlight" }];
-        });
-        setHistIdx(selNextIdx);
+        // One undo step holding the state AFTER the selection (undo clears it again)
+        pushHistoryEntry(makeSnap("Highlight", { highlight: finalHighlight, primary: primaryFinal }));
       }
       setRectPreview(null);
       setPreviewCells(null);
@@ -5173,105 +5246,7 @@ function App() {
             highlightDragAnchorCell.current = null;
             return;
           }
-          // Compute per-cell mirrored offset so symmetric structures move in opposite directions
-          const anchorCell = highlightDragAnchorCell.current;
-          const [ar, ac] = anchorCell ?? [0, 0];
-          const { cR, cC } = getEffectiveCenter();
-          const anchorRowSign = ar < cR ? -1 : (ar > cR ? 1 : 0);
-          const anchorColSign = ac < cC ? -1 : (ac > cC ? 1 : 0);
-          const getEffectiveDelta = (r, c) => {
-            if (!mirrorVRef.current && !mirrorHRef.current && !mirrorDRef.current) return { dr, dc };
-            const cellRowSign = r < cR ? -1 : (r > cR ? 1 : 0);
-            const cellColSign = c < cC ? -1 : (c > cC ? 1 : 0);
-            const flipRow = (mirrorHRef.current || mirrorDRef.current) && anchorRowSign !== 0 && cellRowSign !== 0 && cellRowSign !== anchorRowSign;
-            const flipCol = (mirrorVRef.current || mirrorDRef.current) && anchorColSign !== 0 && cellColSign !== 0 && cellColSign !== anchorColSign;
-            return { dr: flipRow ? -dr : dr, dc: flipCol ? -dc : dc };
-          };
-          // Move grid tiles from old positions to new positions (with rotations and offsets)
-          const oldCells = [...highlightedCellsRef.current];
-          const newCells = oldCells
-            .map(key => {
-              const [r, c] = key.split(',').map(Number);
-              const delta = getEffectiveDelta(r, c);
-              const newR = r + delta.dr, newC = c + delta.dc;
-              const crossedV = c !== cC && newC !== cC && (c < cC) !== (newC < cC);
-              const crossedH = r !== cR && newR !== cR && (r < cR) !== (newR < cR);
-              return { oldKey: key, newR, newC,
-                fV: mirrorVRef.current && crossedV,
-                fH: mirrorHRef.current && crossedH,
-                fD: mirrorDRef.current && crossedV && crossedH };
-            })
-            .filter(({ newR, newC }) => newR >= 0 && newR < gridHRef.current && newC >= 0 && newC < gridWRef.current);
-
-          // Extend with mirror positions of new cells (auto-mirror-on-move when mirroring is active)
-          const seenNewKeys = new Set(newCells.map(({ newR, newC }) => `${newR},${newC}`));
-          const getMirrorMetaFn = getMirrorMetaRef.current;
-          if (getMirrorMetaFn && (mirrorVRef.current || mirrorHRef.current || mirrorDRef.current)) {
-            const extensions = [];
-            newCells.forEach(cell => {
-              getMirrorMetaFn(cell.newR, cell.newC).forEach(({ pos: [mr, mc], fV: mfV, fH: mfH, fD: mfD }) => {
-                const mKey = `${mr},${mc}`;
-                if (!seenNewKeys.has(mKey)) {
-                  seenNewKeys.add(mKey);
-                  extensions.push({ oldKey: cell.oldKey, newR: mr, newC: mc, fV: mfV, fH: mfH, fD: mfD, isMirrorExt: true });
-                }
-              });
-            });
-            newCells.push(...extensions);
-          }
-
-          // Pre-compute post-drag grid from the current-state ref so we can push it
-          // to history synchronously (React state updater functions run lazily)
-          const preGrid = gridRef.current;
-          const newG = preGrid.map(row => [...row]);
-          const tileData = [];
-          oldCells.forEach(key => {
-            const [r, c] = key.split(',').map(Number);
-            tileData.push({ r, c, id: newG[r]?.[c] ?? null });
-            newG[r][c] = null;
-          });
-          newCells.forEach(({ oldKey, newR, newC }) => {
-            const [r, c] = oldKey.split(',').map(Number);
-            const entry = tileData.find(d => d.r === r && d.c === c);
-            if (entry && (entry.id !== null || newG[newR][newC] === null)) newG[newR][newC] = entry.id;
-          });
-          setGridStableRef.current(() => newG, true);
-          const ms = mirrorSettingsRef.current;
-          // Move gridOffsets
-          setGridOffsets(prev => {
-            const n = { ...prev };
-            const off_data = {};
-            oldCells.forEach(key => {
-              off_data[key] = prev[key];
-              delete n[key];
-            });
-            newCells.forEach(({ oldKey, newR, newC }) => {
-              if (off_data[oldKey] !== undefined) n[`${newR},${newC}`] = off_data[oldKey];
-            });
-            return n;
-          });
-          // Update highlighted cells to new positions
-          const newHighlight = new Set(newCells.map(({ newR, newC }) => `${newR},${newC}`));
-          setHighlightedCells(newHighlight);
-          highlightedCellsRef.current = newHighlight;
-          // Move primary cells by plain (dr, dc)
-          const newPrimaryHighlight = new Set();
-          [...primaryHighlightedCellsRef.current].forEach(key => {
-            const [pr, pc] = key.split(',').map(Number);
-            const nr = pr + dr, nc = pc + dc;
-            if (nr >= 0 && nr < gridHRef.current && nc >= 0 && nc < gridWRef.current) newPrimaryHighlight.add(`${nr},${nc}`);
-          });
-          setPrimaryHighlightedCells(newPrimaryHighlight);
-          primaryHighlightedCellsRef.current = newPrimaryHighlight;
-          // Push post-drag snapshot; synchronous histIdxRef update prevents stale-ref trimming
-          const dragNextIdx = Math.min(histIdxRef.current + 1, MAX_HISTORY - 1);
-          histIdxRef.current = dragNextIdx;
-          setHistory(h => {
-            const trimmed = h.slice(0, dragNextIdx);
-            const capped = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-            return [...capped, { grid: newG, palette: clonePalette(paletteRef.current), w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...newHighlight], primaryHighlight: [...newPrimaryHighlight], label: "Move" }];
-          });
-          setHistIdx(dragNextIdx);
+          moveHighlightRef.current(dr, dc); // one atomic move, shared with the touch path
         }
         isHighlightDraggingRef.current = false;
         highlightDragAnchorCell.current = null;
@@ -5609,72 +5584,7 @@ function App() {
                 highlightDragAnchorCell.current = null;
                 return;
               }
-            // Compute per-cell mirrored offset so symmetric structures move in opposite directions
-            const anchorCell = highlightDragAnchorCell.current;
-            const [ar, ac] = anchorCell ?? [0, 0];
-            const { cR, cC } = getEffectiveCenter();
-            const anchorRowSign = ar < cR ? -1 : (ar > cR ? 1 : 0);
-            const anchorColSign = ac < cC ? -1 : (ac > cC ? 1 : 0);
-            const getEffectiveDelta = (r, c) => {
-              if (!mirrorVRef.current && !mirrorHRef.current && !mirrorDRef.current) return { dr, dc };
-              const cellRowSign = r < cR ? -1 : (r > cR ? 1 : 0);
-              const cellColSign = c < cC ? -1 : (c > cC ? 1 : 0);
-              const flipRow = (mirrorHRef.current || mirrorDRef.current) && anchorRowSign !== 0 && cellRowSign !== 0 && cellRowSign !== anchorRowSign;
-              const flipCol = (mirrorVRef.current || mirrorDRef.current) && anchorColSign !== 0 && cellColSign !== 0 && cellColSign !== anchorColSign;
-              return { dr: flipRow ? -dr : dr, dc: flipCol ? -dc : dc };
-            };
-            const oldCells = [...highlightedCellsRef.current];
-            const newCells = oldCells
-              .map(key => {
-                const [or, oc] = key.split(',').map(Number);
-                const delta = getEffectiveDelta(or, oc);
-                const newR = or + delta.dr, newC = oc + delta.dc;
-                const crossedV = oc !== cC && newC !== cC && (oc < cC) !== (newC < cC);
-                const crossedH = or !== cR && newR !== cR && (or < cR) !== (newR < cR);
-                return { oldKey: key, newR, newC,
-                  fV: mirrorVRef.current && crossedV,
-                  fH: mirrorHRef.current && crossedH,
-                  fD: mirrorDRef.current && crossedV && crossedH };
-              })
-              .filter(({ newR, newC }) => newR >= 0 && newR < gridHRef.current && newC >= 0 && newC < gridWRef.current);
-
-            // Extend with mirror positions of new cells (auto-mirror-on-move when mirroring is active)
-            const seenNewKeys = new Set(newCells.map(({ newR, newC }) => `${newR},${newC}`));
-            const getMirrorMetaFn = getMirrorMetaRef.current;
-            if (getMirrorMetaFn && (mirrorVRef.current || mirrorHRef.current || mirrorDRef.current)) {
-              const extensions = [];
-              newCells.forEach(cell => {
-                getMirrorMetaFn(cell.newR, cell.newC).forEach(({ pos: [mr, mc], fV: mfV, fH: mfH, fD: mfD }) => {
-                  const mKey = `${mr},${mc}`;
-                  if (!seenNewKeys.has(mKey)) {
-                    seenNewKeys.add(mKey);
-                    extensions.push({ oldKey: cell.oldKey, newR: mr, newC: mc, fV: mfV, fH: mfH, fD: mfD, isMirrorExt: true });
-                  }
-                });
-              });
-              newCells.push(...extensions);
-            }
-
-            // Precompute new grid synchronously so we can push it to history in one shot
-            const tPreGrid = gridRef.current;
-            const tNewG = tPreGrid.map(row => [...row]);
-            const tTileData = [];
-            oldCells.forEach(key => { const [or, oc] = key.split(',').map(Number); tTileData.push({ r: or, c: oc, id: tNewG[or]?.[oc] ?? null }); tNewG[or][oc] = null; });
-            newCells.forEach(({ oldKey, newR, newC }) => { const [or, oc] = oldKey.split(',').map(Number); const entry = tTileData.find(d => d.r === or && d.c === oc); if (entry && (entry.id !== null || tNewG[newR][newC] === null)) tNewG[newR][newC] = entry.id; });
-            setGridStableRef.current(() => tNewG, true);
-            setGridOffsets(prev => { const n = { ...prev }; const d = {}; oldCells.forEach(k => { d[k] = prev[k]; delete n[k]; }); newCells.forEach(({ oldKey, newR, newC }) => { if (d[oldKey] !== undefined) n[`${newR},${newC}`] = d[oldKey]; }); return n; });
-            const newHighlight = new Set(newCells.map(({ newR, newC }) => `${newR},${newC}`));
-            setHighlightedCells(newHighlight);
-            highlightedCellsRef.current = newHighlight;
-            // Push post-drag snapshot; synchronous histIdxRef update prevents stale-ref trimming
-            const tDragNextIdx = Math.min(histIdxRef.current + 1, MAX_HISTORY - 1);
-            histIdxRef.current = tDragNextIdx;
-            setHistory(h => {
-              const trimmed = h.slice(0, tDragNextIdx);
-              const capped = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-              return [...capped, { grid: tNewG, palette: clonePalette(paletteRef.current), w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...newHighlight] }];
-            });
-            setHistIdx(tDragNextIdx);
+            moveHighlightRef.current(dr, dc); // one atomic move, shared with the mouse path
           }
           isHighlightDraggingRef.current = false;
           highlightDragAnchorCell.current = null;
@@ -6348,7 +6258,7 @@ function App() {
               const label = isInitial ? "Initial state" : (snap.label || "Draw");
               return (
                 <div key={i}
-                  onClick={isInitial ? undefined : () => { const prevIdx = histIdxRef.current; restoreSnap(snap, () => setHistIdx(prevIdx)); setHistIdx(i); close(); }}
+                  onClick={isInitial ? undefined : () => { const prevIdx = histIdxRef.current; restoreSnap(snap, () => setHistIndex(prevIdx)); setHistIndex(i); close(); }}
                   style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 8px", borderRadius: 6,
                     cursor: isInitial ? "default" : "pointer",
                     background: isCurrent ? "rgba(37,99,235,0.18)" : "transparent",
