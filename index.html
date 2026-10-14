@@ -3101,7 +3101,9 @@ function App() {
       highlightDragOffsetRef.current = null;
       highlightDragAnchorCell.current = null;
     }
-  }, [highlightedCells.size, duplicateMode]);
+    // Deselect with nothing left to deselect: leave the eraser (Highlight stays on, ready for a new selection) instead of silently turning into a plain eraser
+    if (highlightedCells.size === 0 && eraser && highlightMode) { setEraser(false); eraserRef.current = false; }
+  }, [highlightedCells.size, duplicateMode, eraser, highlightMode]);
   useEffect(() => { zoomRef.current         = zoom;          }, [zoom]);
   useEffect(() => { selectionModeRef.current = selectionMode; save("oph_sel_mode", selectionMode); }, [selectionMode]);
   useEffect(() => { save("oph_mirror", { v: mirrorV, h: mirrorH, d: mirrorD }); }, [mirrorV, mirrorH, mirrorD]);
@@ -4500,6 +4502,108 @@ function App() {
   };
   useEffect(() => { moveHighlightRef.current = moveHighlightBy; });
 
+  // ── Highlight gesture: ONE implementation shared by Highlight (add) and Deselect (remove), mouse and touch ─────────────────────────
+  // Deselect = the Erase tool while Highlight is active. A press while Highlight is active is one of:
+  //   'drag'   press on a primary highlighted cell (not in Deselect): lift and move the region
+  //   'add'    start a selection in the current selection mode (single / line / rect / fill), added to the highlight on release
+  //   'remove' the same gesture in Deselect: what the gesture covers is removed from the highlight on release
+  //   'none'   Deselect with nothing highlighted
+  const hlOpRef = useRef("add");
+  const highlightPressKind = (r, c) => {
+    if (eraserRef.current && highlightModeRef.current) return highlightedCellsRef.current.size > 0 ? "remove" : "none";
+    return primaryHighlightedCellsRef.current.has(`${r},${c}`) && highlightedCellsRef.current.size > 0 ? "drag" : "add";
+  };
+  // Sets up the selection refs and previews for a gesture starting at (r, c); the same code for add and remove.
+  const startHighlightSelection = (r, c, op) => {
+    hlOpRef.current = op;
+    const key = `${r},${c}`;
+    selectionStartRef.current = [r, c];
+    selectionEndRef.current   = [r, c];
+    hoveredTilesRef.current   = new Set([key]);
+    lastLineCellRef.current   = [r, c];
+    const mode = selectionModeRef.current;
+    if (mode === 'single') setPreviewCells([[r, c]]);
+    else if (mode === 'line') setPreviewCells([[r, c]]);
+    else if (mode === 'rect') setRectPreview({ r1: r, c1: c, r2: r, c2: c });
+    else if (mode === 'fill') {
+      const originId = gridRef.current?.[r]?.[c] ?? null;
+      const fillSet = bfsFillRef.current(r, c, gridRef.current, gridWRef.current, gridHRef.current, originId !== null, true);
+      hoveredTilesRef.current = fillSet;
+      setPreviewCells([...fillSet].map(k => k.split(',').map(Number)));
+    }
+  };
+  // The cells the finished gesture covers, in the current selection mode.
+  const highlightGestureCells = mode => {
+    if (mode === 'rect') {
+      const out = [];
+      if (selectionStartRef.current) {
+        const [sr, sc] = selectionStartRef.current;
+        const [er, ec] = selectionEndRef.current ?? [sr, sc];
+        for (let r = Math.min(sr, er); r <= Math.max(sr, er); r++) for (let c = Math.min(sc, ec); c <= Math.max(sc, ec); c++) out.push([r, c]);
+      }
+      return out;
+    }
+    return [...hoveredTilesRef.current].map(k => k.split(',').map(Number)); // single, line, fill
+  };
+  const highlightKeySet = cells => new Set(cells.map(([r, c]) => `${r},${c}`));
+  // Applies the finished gesture (op in hlOpRef) to the highlight. Add: the covered cells and their mirror images join. Remove: every primary
+  // cell inside the covered cells or their mirror images leaves, and the mirror copies follow their primaries. One undo step per gesture.
+  const applyHighlightGesture = mode => {
+    const cells = highlightGestureCells(mode);
+    if (!cells.length) return;
+    const mirrorsOf = (r, c) => { const fn = getMirrorRef.current; return fn ? fn(r, c) : []; };
+    if (hlOpRef.current === "remove") {
+      const gone = new Set();
+      cells.forEach(([r, c]) => { gone.add(`${r},${c}`); mirrorsOf(r, c).forEach(([mr, mc]) => gone.add(`${mr},${mc}`)); });
+      const newPrimary = new Set([...primaryHighlightedCellsRef.current].filter(k => !gone.has(k)));
+      const newHighlight = new Set();
+      newPrimary.forEach(k => { const [r, c] = k.split(',').map(Number); newHighlight.add(k); mirrorsOf(r, c).forEach(([mr, mc]) => newHighlight.add(`${mr},${mc}`)); });
+      if (newPrimary.size === primaryHighlightedCellsRef.current.size) return; // nothing selected was touched: no state change, no undo step
+      setPrimaryHighlightedCells(newPrimary); primaryHighlightedCellsRef.current = newPrimary;
+      setHighlightedCells(newHighlight); highlightedCellsRef.current = newHighlight;
+      pushHistoryEntry(makeSnap("Deselect", { highlight: newHighlight, primary: newPrimary }));
+      return;
+    }
+    const primaryFinal = new Set(primaryHighlightedCellsRef.current);
+    cells.forEach(([r, c]) => primaryFinal.add(`${r},${c}`));
+    const finalHighlight = new Set(highlightedCellsRef.current);
+    cells.forEach(([r, c]) => { finalHighlight.add(`${r},${c}`); mirrorsOf(r, c).forEach(([mr, mc]) => finalHighlight.add(`${mr},${mc}`)); });
+    setPrimaryHighlightedCells(primaryFinal); primaryHighlightedCellsRef.current = primaryFinal;
+    setHighlightedCells(finalHighlight); highlightedCellsRef.current = finalHighlight;
+    pushHistoryEntry(makeSnap("Highlight", { highlight: finalHighlight, primary: primaryFinal }));
+  };
+  const applyHighlightGestureRef = useRef(() => {});
+  const highlightPressKindRef = useRef(() => "add");
+  const startHighlightSelectionRef = useRef(() => {});
+  useEffect(() => { applyHighlightGestureRef.current = applyHighlightGesture; highlightPressKindRef.current = highlightPressKind; startHighlightSelectionRef.current = startHighlightSelection; });
+
+  // Duplicate and Deselect (the Erase tool while Highlight is active) are mutually exclusive: turning one on turns the other off, refs included
+  // so a press in the same tick already sees the new mode. Every entry point (cards, shortcut bar, mobile) goes through these two.
+  const exitDuplicate = () => {
+    setDuplicateMode(false); duplicateModeRef.current = false;
+    setHighlightDragOffset(null); highlightDragOffsetRef.current = null; highlightDragAnchorCell.current = null;
+  };
+  const setDeselectMode = on => {
+    setEraser(on); eraserRef.current = on;
+    if (on) exitDuplicate();
+  };
+  const setDuplicateOn = on => {
+    if (!on) { exitDuplicate(); return; }
+    setDuplicateMode(true); duplicateModeRef.current = true;
+    setEraser(false); eraserRef.current = false;
+    setHandMode(false); setEyedropperMode(false); setMagnetMode(false); setSel(null);
+    if (!highlightModeRef.current) { setHighlightMode(true); highlightModeRef.current = true; }
+  };
+
+  // Deselect everything (Escape / Space): clears the highlight and the primary selection together, as one undo step.
+  const clearHighlightAll = label => {
+    if (highlightedCellsRef.current.size === 0 && primaryHighlightedCellsRef.current.size === 0) return;
+    const empty = new Set();
+    setHighlightedCells(empty); highlightedCellsRef.current = empty;
+    setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set();
+    pushHistoryEntry(makeSnap(label, { highlight: [], primary: [] }));
+  };
+
   // Apply a duplicate: place copy of primary highlighted cells at current drag-offset position, with mirroring
   const applyDuplicate = useCallback(() => {
     const offset = highlightDragOffsetRef.current;
@@ -4537,9 +4641,9 @@ function App() {
       }
       placements.forEach(({ newR: nr, newC: nc, id: tid }) => { newG[nr][nc] = tid; });
     });
-    histLabelRef.current = "Duplicate Place";
-    if (pushHistRef.current) pushHistRef.current();
     setGridStableRef.current(() => newG, true);
+    gridRef.current = newG;
+    pushHistoryEntry(makeSnap("Duplicate Place", { grid: newG })); // one undo step, state AFTER the copy (palette may have grown)
     setHighlightDragOffset(null); highlightDragOffsetRef.current = null;
     highlightDragAnchorCell.current = null;
   }, [tiles]);
@@ -4766,45 +4870,9 @@ function App() {
   const commitSelectionOnMouseUp = useCallback(() => {
     const mode = selectionModeRef.current;
 
-    // In highlight mode, commit to highlightedCells instead of the grid
+    // In highlight mode, commit to the highlight (add, or remove in Deselect) instead of the grid
     if (highlightModeRef.current) {
-      let newCells = [];
-      if (mode === 'single' || mode === 'line') {
-        newCells = [...hoveredTilesRef.current].map(k => k.split(',').map(Number));
-      } else if (mode === 'rect') {
-        if (selectionStartRef.current) {
-          const [sr, sc] = selectionStartRef.current;
-          const [er, ec] = selectionEndRef.current ?? [sr, sc];
-          for (let r = Math.min(sr, er); r <= Math.max(sr, er); r++)
-            for (let c = Math.min(sc, ec); c <= Math.max(sc, ec); c++)
-              newCells.push([r, c]);
-        }
-      } else if (mode === 'fill') {
-        newCells = [...hoveredTilesRef.current].map(k => k.split(',').map(Number));
-      }
-      if (newCells.length) {
-        // Track primary cells (only what the user drew — no mirrors)
-        const primaryFinal = new Set(primaryHighlightedCellsRef.current);
-        newCells.forEach(([r, c]) => primaryFinal.add(`${r},${c}`));
-        setPrimaryHighlightedCells(primaryFinal);
-        primaryHighlightedCellsRef.current = primaryFinal;
-        // Apply mirroring: include mirror positions of each highlighted cell
-        const getMirror = getMirrorRef.current;
-        const mirroredCells = [];
-        newCells.forEach(([r, c]) => {
-          mirroredCells.push([r, c]);
-          if (getMirror) {
-            getMirror(r, c).forEach(pos => mirroredCells.push(pos));
-          }
-        });
-        // Build final highlight synchronously so we can push it to history right away
-        const finalHighlight = new Set(highlightedCellsRef.current);
-        mirroredCells.forEach(([r, c]) => finalHighlight.add(`${r},${c}`));
-        setHighlightedCells(finalHighlight);
-        highlightedCellsRef.current = finalHighlight;
-        // One undo step holding the state AFTER the selection (undo clears it again)
-        pushHistoryEntry(makeSnap("Highlight", { highlight: finalHighlight, primary: primaryFinal }));
-      }
+      applyHighlightGestureRef.current(mode);
       setRectPreview(null);
       setPreviewCells(null);
       selectionStartRef.current = null;
@@ -4946,52 +5014,20 @@ function App() {
         }
         return;
       }
-      if (eraserRef.current && highlightModeRef.current && highlightedCellsRef.current.size > 0) {
-        const key = `${r},${c}`;
-        if (primaryHighlightedCellsRef.current.has(key)) {
-          const newPrimary = new Set(primaryHighlightedCellsRef.current);
-          newPrimary.delete(key);
-          const newAll = new Set();
-          const getMirrorFn = getMirrorMetaRef.current;
-          newPrimary.forEach(pk => {
-            newAll.add(pk);
-            const [pr, pc] = pk.split(',').map(Number);
-            if (getMirrorFn) getMirrorFn(pr, pc).forEach(({ pos: [mr, mc] }) => newAll.add(`${mr},${mc}`));
-          });
-          setPrimaryHighlightedCells(newPrimary);
-          primaryHighlightedCellsRef.current = newPrimary;
-          setHighlightedCells(newAll);
-          highlightedCellsRef.current = newAll;
-        }
-        return;
-      }
       if (highlightModeRef.current || duplicateModeRef.current) {
-        const key = `${r},${c}`;
-        if (primaryHighlightedCellsRef.current.has(key) && highlightedCellsRef.current.size > 0) {
+        const kind = highlightPressKindRef.current(r, c);
+        if (kind === 'drag') {
           // Start dragging the highlight region (only from primary cells)
           isHighlightDraggingRef.current = true;
           highlightDragAnchorCell.current = [r, c];
           setHighlightDragOffset({ dr: 0, dc: 0 });
           highlightDragOffsetRef.current = { dr: 0, dc: 0 };
           setDragPos({ x: e.clientX, y: e.clientY });
-        } else {
-          // Paint: add cells to highlighted set
+        } else if (kind !== 'none') {
+          // Selection gesture: add to the highlight, or remove from it in Deselect (same code, same selection modes)
           setPainting(true);
           paintingRef.current = true;
-          selectionStartRef.current = [r, c];
-          selectionEndRef.current   = [r, c];
-          hoveredTilesRef.current   = new Set([key]);
-          lastLineCellRef.current   = [r, c];
-          const mode = selectionModeRef.current;
-          if (mode === 'single') setPreviewCells([[r, c]]);
-          else if (mode === 'line') setPreviewCells([[r, c]]);
-          else if (mode === 'rect') setRectPreview({ r1: r, c1: c, r2: r, c2: c });
-          else if (mode === 'fill') {
-            const originId = gridRef.current?.[r]?.[c] ?? null;
-            const fillSet = bfsFill(r, c, gridRef.current, gridWRef.current, gridHRef.current, originId !== null, true);
-            hoveredTilesRef.current = fillSet;
-            setPreviewCells([...fillSet].map(k => k.split(',').map(Number)));
-          }
+          startHighlightSelectionRef.current(r, c, kind);
         }
         return;
       }
@@ -5393,34 +5429,18 @@ function App() {
 
       // ── HIGHLIGHT / DUPLICATE MODE ─────────────────────────────────
       if (highlightModeRef.current || duplicateModeRef.current) {
-        const key = `${r},${c}`;
-        if (primaryHighlightedCellsRef.current.has(key) && highlightedCellsRef.current.size > 0) {
+        const kind = highlightPressKindRef.current(r, c);
+        if (kind === 'drag') {
           // Tap on a primary highlighted cell → start dragging the region
           isHighlightDraggingRef.current = true;
           highlightDragAnchorCell.current = [r, c];
           setHighlightDragOffset({ dr: 0, dc: 0 });
           highlightDragOffsetRef.current = { dr: 0, dc: 0 };
           setDragPos({ x: e.touches[0].clientX, y: e.touches[0].clientY });
-        } else {
-          // Tap on empty area → start painting highlight selection
+        } else if (kind !== 'none') {
+          // Selection gesture (add, or remove in Deselect): the same shared code as the mouse
           isTouchPainting = true;
-          selectionStartRef.current = [r, c];
-          selectionEndRef.current   = [r, c];
-          hoveredTilesRef.current   = new Set([key]);
-          lastLineCellRef.current   = [r, c];
-          const mode = selectionModeRef.current;
-          if (mode === 'single') setPreviewCells([[r, c]]);
-          else if (mode === 'line') setPreviewCells([[r, c]]);
-          else if (mode === 'rect') setRectPreview({ r1: r, c1: c, r2: r, c2: c });
-          else if (mode === 'fill') {
-            const bfs = bfsFillRef.current;
-            if (bfs) {
-              const originId = gridRef.current?.[r]?.[c] ?? null;
-              const fillSet = bfs(r, c, gridRef.current, gridWRef.current, gridHRef.current, originId !== null, true);
-              hoveredTilesRef.current = fillSet;
-              setPreviewCells([...fillSet].map(k => k.split(',').map(Number)));
-            }
-          }
+          startHighlightSelectionRef.current(r, c, kind);
         }
         return;
       }
@@ -5664,14 +5684,8 @@ function App() {
       if (!e.ctrlKey && !e.metaKey && !e.altKey) {
         const tag = e.target.tagName;
         if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || e.target.isContentEditable) return;
-        if (e.key === "Escape" && highlightModeRef.current) {
-          setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set();
-        }
-        if (e.key === " " && highlightModeRef.current) {
-          e.preventDefault();
-          setHighlightedCells(new Set());
-          highlightedCellsRef.current = new Set();
-        }
+        if (e.key === "Escape" && highlightModeRef.current) clearHighlightAll("Clear highlight");
+        if (e.key === " " && highlightModeRef.current) { e.preventDefault(); clearHighlightAll("Clear highlight"); }
         if (e.key === "e" || e.key === "E") { setEraser(true); setSel(null); setHandMode(false); setEyedropperMode(false); setDuplicateMode(false); setMagnetMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }
         if (e.key === "w" || e.key === "W") { setEyedropperMode(true); setEraser(false); setHandMode(false); setDuplicateMode(false); setMagnetMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }
         if (e.key === "c" || e.key === "C") { setConvertOpen(true); }
@@ -5880,14 +5894,11 @@ function App() {
                 convert: "🔄", hotkeys: "⌨️",
               };
               const toolActionMap = {
-                erase: () => { if (highlightedCells.size > 0) { setEraser(e => !e); return; } setEraser(true); setSel(null); setHandMode(false); setEyedropperMode(false); setDuplicateMode(false); setMagnetMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); },
+                erase: () => { if (highlightedCells.size > 0) { setDeselectMode(!eraser); return; } setEraser(true); setSel(null); setHandMode(false); setEyedropperMode(false); setDuplicateMode(false); setMagnetMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); },
                 hand: () => { if (handMode) return; setHandMode(true); setEraser(false); setSel(null); setEyedropperMode(false); setDuplicateMode(false); setMagnetMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); },
                 duplicate: () => {
                   if (highlightedCells.size === 0 && !duplicateMode) return;
-                  const turningOn = !duplicateMode;
-                  setDuplicateMode(d => !d);
-                  if (turningOn) { setEraser(false); setHandMode(false); setEyedropperMode(false); setMagnetMode(false); setSel(null); if (!highlightMode) setHighlightMode(true); }
-                  else { setHighlightDragOffset(null); highlightDragOffsetRef.current = null; highlightDragAnchorCell.current = null; }
+                  setDuplicateOn(!duplicateMode);
                 },
                 tileCounter: () => setTileCounterOpen(o => !o),
                 space: () => { setSel(SPACE_REF); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); },
@@ -7842,8 +7853,8 @@ function App() {
                     return (
                       <div onClick={() => {
                         if (hlActive) {
-                          // Erase-from-highlight mode: toggle eraser without clearing the highlight
-                          setEraser(e => !e);
+                          // Deselect: toggle the eraser without clearing the highlight (turns Duplicate off)
+                          setDeselectMode(!eraser);
                         } else {
                           setEraser(true); setSel(null); setHandMode(false); setEyedropperMode(false); setDuplicateMode(false); setMagnetMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set();
                         }
@@ -8057,14 +8068,7 @@ function App() {
                     return (
                       <div onClick={() => {
                         if (!dupEnabled && !duplicateMode) return;
-                        const turningOn = !duplicateMode;
-                        setDuplicateMode(d => !d);
-                        if (turningOn) {
-                          setEraser(false); setHandMode(false); setEyedropperMode(false); setMagnetMode(false); setSel(null);
-                          if (!highlightMode) setHighlightMode(true);
-                        } else {
-                          setHighlightDragOffset(null); highlightDragOffsetRef.current = null; highlightDragAnchorCell.current = null;
-                        }
+                        setDuplicateOn(!duplicateMode);
                       }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: (dupEnabled || duplicateMode) ? "pointer" : "not-allowed",
                           border: `2px solid ${duplicateMode ? dupColor : dupHint ? "rgba(232,121,160,0.32)" : C.border}`,
