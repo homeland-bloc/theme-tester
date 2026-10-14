@@ -223,6 +223,27 @@ const applyHighlightMovePlan = (grid, plan, sparse) => {
   return { grid: g, sparse: sp };
 };
 // </highlight-move-helpers>
+
+// <history-helpers>
+// Undo / redo snapshots carry the per-cell offsets (gridOffsets) and the magnet (customCenter position + customCenterSize), next to the grid.
+// snapExtras: what a snapshot stores. restoreExtras: what applying a snapshot must set (a key is absent when the snapshot predates it).
+// patchLiveEntry: gridOffsets can change just AFTER the grid push of the same action (paint, drop); the entry pushed in that same tick
+// is amended so it holds the offsets of the state AFTER the action.
+const snapExtras = (offsets, customCenter, customCenterSize) => ({ gridOffsets: offsets, customCenter, customCenterSize });
+const restoreExtras = snap => {
+  const out = {};
+  if (snap && "gridOffsets" in snap && snap.gridOffsets && typeof snap.gridOffsets === "object") out.gridOffsets = snap.gridOffsets;
+  if (snap && "customCenter" in snap) out.customCenter = snap.customCenter ?? null;
+  if (snap && "customCenterSize" in snap && snap.customCenterSize >= 1 && snap.customCenterSize <= 4) out.customCenterSize = snap.customCenterSize;
+  return out;
+};
+const patchLiveEntry = (history, idx, liveEntry, offsets) => {
+  if (!liveEntry || history[idx] !== liveEntry) return null;
+  const next = history.slice();
+  next[idx] = { ...liveEntry, gridOffsets: offsets };
+  return next;
+};
+// </history-helpers>
 const REPLACE_ERASE_REF = "__erase__"; // sentinel: replace-with-empty in the Replace modal
 
 // All Supabase requests go through the Worker.
@@ -2978,7 +2999,8 @@ function App() {
   const [allowFlipMap, setAllowFlipMap] = useState(() => load(SK.allowFlip, {}));
   // Per-tile custom names (user-uploaded tiles): { [ref]: string }
   const [tileNames, setTileNames] = useState(() => load(SK.tileNames, {}));
-  const [gridOffsets,       setGridOffsets]       = useState(() => load(SK.gridOff, {}));
+  const [gridOffsets,       setGridOffsetsRaw]    = useState(() => load(SK.gridOff, {}));
+  const gridOffsetsRef = useRef(gridOffsets); // always the latest value, even before the next render (history snapshots read it)
   const [mirrorOffsetTiles, setMirrorOffsetTiles] = useState(() => load(SK.mirrorOffset, {}));
   const [showOffsetCenters, setShowOffsetCenters] = useState(false);
   // Collapsible tiles panel sections: true = collapsed
@@ -2998,7 +3020,7 @@ function App() {
   const [isMobile,    setIsMobile]  = useState(mobile);
 
   // History
-  const [history,  setHistory]  = useState([{ grid, palette: createPalette(), w: load(SK.gridW, GRID_W), h: load(SK.gridH, GRID_H), tileset: null }]);
+  const [history,  setHistory]  = useState([{ grid, palette: createPalette(), w: load(SK.gridW, GRID_W), h: load(SK.gridH, GRID_H), tileset: null, ...snapExtras(gridOffsets, customCenter, customCenterSize) }]);
   const [histIdx,  setHistIdx]  = useState(0);
 
   const fileRef   = useRef();
@@ -3066,12 +3088,30 @@ function App() {
     const capped = base.length >= MAX_HISTORY ? base.slice(1) : base;
     const next = [...capped, snap];
     commitHistory(next, next.length - 1);
+    liveEntryRef.current = snap;
+    Promise.resolve().then(() => { if (liveEntryRef.current === snap) liveEntryRef.current = null; });
+  };
+  const liveEntryRef = useRef(null); // the entry pushed in the current tick (see patchLiveEntry)
+  // Per-cell offsets: the ref is updated at once; an entry pushed earlier in the same tick is amended with the new value.
+  const setGridOffsets = updater => {
+    const next = typeof updater === "function" ? updater(gridOffsetsRef.current) : updater;
+    gridOffsetsRef.current = next;
+    setGridOffsetsRaw(next);
+    const patched = patchLiveEntry(historyRef.current, histIdxRef.current, liveEntryRef.current, next);
+    if (patched) { liveEntryRef.current = patched[histIdxRef.current]; commitHistory(patched, histIdxRef.current); }
+  };
+  // Magnet changes are one undo step (debounced like the background picker, so dragging the magnet is one step).
+  const magnetHistTimerRef = useRef(null);
+  const pushMagnetHistory = (label = "Magnet") => {
+    if (magnetHistTimerRef.current) clearTimeout(magnetHistTimerRef.current);
+    magnetHistTimerRef.current = setTimeout(() => { magnetHistTimerRef.current = null; pushHistoryEntry(makeSnap(label)); }, 350);
   };
   // Snapshot of the state AFTER an action. Pass the values the action just computed (refs may lag a render); the rest is read live.
   const makeSnap = (label, o = {}) => ({
     grid: o.grid ?? gridRef.current, palette: clonePalette(paletteRef.current), w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current,
     bg1: bg1Ref.current, bg2: bg2Ref.current,
     highlight: [...(o.highlight ?? highlightedCellsRef.current)], primaryHighlight: [...(o.primary ?? primaryHighlightedCellsRef.current)], label,
+    ...snapExtras(o.gridOffsets ?? gridOffsetsRef.current, customCenterRef.current, customCenterSizeRef.current),
   });
   const bgHistTimerRef = useRef(null);
   const mirrorVRef = useRef(false);
@@ -3993,7 +4033,7 @@ function App() {
     }
 
     // ── History snap with the converted grid + palette, then apply state ──
-    const snap = { grid: newGrid, palette: clonePalette(newPal), w: gridWRef.current, h: gridHRef.current, tileset: newTilesetName, bg1: tsBg.bg1, bg2: tsBg.bg2, highlight: [...highlightedCellsRef.current], label: `Switch from ${activeTileset ?? '(none)'} to ${newTilesetName}` };
+    const snap = { grid: newGrid, palette: clonePalette(newPal), w: gridWRef.current, h: gridHRef.current, tileset: newTilesetName, bg1: tsBg.bg1, bg2: tsBg.bg2, highlight: [...highlightedCellsRef.current], ...snapExtras(gridOffsetsRef.current, customCenterRef.current, customCenterSizeRef.current), label: `Switch from ${activeTileset ?? '(none)'} to ${newTilesetName}` };
     pushHistoryEntry(snap);
     if (newPal !== paletteRef.current) replacePalette(newPal);
     if (newGrid !== currentGrid) setGridRaw(newGrid);
@@ -4351,7 +4391,7 @@ function App() {
     });
     replacePalette(pal);
     setGridRaw(g);
-    commitHistory([{ grid: g, palette: clonePalette(pal), w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [], label: "Load" }], 0);
+    commitHistory([{ grid: g, palette: clonePalette(pal), w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [], ...snapExtras(gridOffsetsRef.current, customCenterRef.current, customCenterSizeRef.current), label: "Load" }], 0);
     if (unresolved > 0) warnCleared(unresolved, "load");
   }, [tiles, flatDefaultTiles, manifest, dbTilesByTsId, dbTilesets, tilesLoading, activeTileset]); // eslint-disable-line
   useEffect(() => { if (activeTileset) save(SK.activeTileset, activeTileset); }, [activeTileset]);
@@ -4395,7 +4435,7 @@ function App() {
   const pushBgHistory = useCallback(() => {
     if (bgHistTimerRef.current) clearTimeout(bgHistTimerRef.current);
     bgHistTimerRef.current = setTimeout(() => {
-      const snap = { grid: gridRef.current, palette: clonePalette(paletteRef.current), w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...highlightedCellsRef.current]};
+      const snap = { grid: gridRef.current, palette: clonePalette(paletteRef.current), w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...highlightedCellsRef.current], ...snapExtras(gridOffsetsRef.current, customCenterRef.current, customCenterSizeRef.current)};
       pushHistoryEntry(snap);
       bgHistTimerRef.current = null;
     }, 350);
@@ -4470,9 +4510,17 @@ function App() {
     highlightDragOffsetRef.current = null;
     highlightDragAnchorCell.current = null;
     isHighlightDraggingRef.current = false;
-    if ("customCenter" in snap) {
-      setCustomCenter(snap.customCenter);
-      customCenterRef.current = snap.customCenter;
+    const ex = restoreExtras(snap);
+    if ("gridOffsets" in ex) { setGridOffsets(ex.gridOffsets); save(SK.gridOff, ex.gridOffsets); }
+    if ("customCenter" in ex) {
+      setCustomCenter(ex.customCenter);
+      customCenterRef.current = ex.customCenter;
+      save("oph_custom_center", ex.customCenter);
+    }
+    if ("customCenterSize" in ex) {
+      setCustomCenterSize(ex.customCenterSize);
+      customCenterSizeRef.current = ex.customCenterSize;
+      save("oph_custom_center_size", ex.customCenterSize);
     }
   };
 
@@ -4505,13 +4553,14 @@ function App() {
     const plan = planHighlightMove({ primary: [...keys].map(k => k.split(',').map(Number)), dr, dc, ctx, hasContent: (r, c) => g0[r]?.[c] != null });
     const newG = applyHighlightMovePlan(g0, plan).grid;
     setGridStableRef.current(() => newG, true);
-    setGridOffsets(prev => applyHighlightMovePlan(g0, plan, prev).sparse);
+    const newOffsets = applyHighlightMovePlan(g0, plan, gridOffsetsRef.current).sparse;
+    setGridOffsets(newOffsets);
     const toSet = cells => new Set(cells.map(([r, c]) => `${r},${c}`));
     const newHighlight = toSet(plan.newHighlight), newPrimary = toSet(plan.newPrimary);
     setHighlightedCells(newHighlight); highlightedCellsRef.current = newHighlight;
     setPrimaryHighlightedCells(newPrimary); primaryHighlightedCellsRef.current = newPrimary;
     gridRef.current = newG;
-    pushHistoryEntry(makeSnap("Move", { grid: newG, highlight: newHighlight, primary: newPrimary }));
+    pushHistoryEntry(makeSnap("Move", { grid: newG, highlight: newHighlight, primary: newPrimary, gridOffsets: newOffsets }));
   };
   useEffect(() => { moveHighlightRef.current = moveHighlightBy; });
 
@@ -4682,7 +4731,7 @@ function App() {
   const pushHistorySnapshot = useCallback(() => {
     const label = histLabelRef.current || "Draw";
     histLabelRef.current = "Draw";
-    const snap = { grid, palette: clonePalette(paletteRef.current), w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1, bg2, highlight: [...highlightedCellsRef.current], customCenter: customCenterRef.current, label };
+    const snap = { grid, palette: clonePalette(paletteRef.current), w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1, bg2, highlight: [...highlightedCellsRef.current], ...snapExtras(gridOffsetsRef.current, customCenterRef.current, customCenterSizeRef.current), label };
     pushHistoryEntry(snap);
   }, [grid, bg1, bg2]);
 
@@ -4994,7 +5043,7 @@ function App() {
         const clampedC = Math.max(0, Math.min(gridWRef.current - 1, c));
         setCustomCenter({ r: clampedR, c: clampedC });
         customCenterRef.current = { r: clampedR, c: clampedC };
-        save("oph_custom_center", { r: clampedR, c: clampedC });
+        save("oph_custom_center", { r: clampedR, c: clampedC }); pushMagnetHistory();
       }
       return;
     }
@@ -5464,7 +5513,7 @@ function App() {
         const clampedC = Math.max(0, Math.min(gridWRef.current - 1, c));
         setCustomCenter({ r: clampedR, c: clampedC });
         customCenterRef.current = { r: clampedR, c: clampedC };
-        save("oph_custom_center", { r: clampedR, c: clampedC });
+        save("oph_custom_center", { r: clampedR, c: clampedC }); pushMagnetHistory();
         return;
       }
       const existingId = gridRef.current?.[r]?.[c];
@@ -5538,7 +5587,7 @@ function App() {
           const clampedC = Math.max(0, Math.min(gridWRef.current - 1, c));
           setCustomCenter({ r: clampedR, c: clampedC });
           customCenterRef.current = { r: clampedR, c: clampedC };
-          save("oph_custom_center", { r: clampedR, c: clampedC });
+          save("oph_custom_center", { r: clampedR, c: clampedC }); pushMagnetHistory();
         }
         return;
       }
@@ -8013,11 +8062,10 @@ function App() {
                                     e.stopPropagation();
                                     const val = e.target.value;
                                     if (val === "reset") {
-                                      histLabelRef.current = "Reset Origin";
-                                      pushHistorySnapshot();
                                       setCustomCenter(null); customCenterRef.current = null; save("oph_custom_center", null);
                                       const newSz = defaultSz;
                                       setCustomCenterSize(newSz); customCenterSizeRef.current = newSz; save("oph_custom_center_size", newSz);
+                                      pushMagnetHistory("Reset Origin");
                                       e.target.value = String(newSz);
                                     } else {
                                       const sz = parseInt(val, 10);
@@ -8025,6 +8073,7 @@ function App() {
                                       if (customCenter !== null) {
                                         setCustomCenter(prev => prev ? { ...prev } : null);
                                       }
+                                      pushMagnetHistory();
                                     }
                                   }}
                                   style={{ fontSize: 8, background: isNonDefault ? "rgba(37,99,235,0.55)" : "rgba(0,0,0,0.55)", border: `1px solid ${isNonDefault ? "#2563eb" : "rgba(255,255,255,0.25)"}`, borderRadius: 3, color: "#ffffff", colorScheme: "dark", padding: "1px 2px", cursor: "pointer", maxWidth: cardSz - 8 }}>
