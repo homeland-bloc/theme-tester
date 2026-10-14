@@ -76,9 +76,9 @@
   };
 
   // ── Group-level fields ────────────────────────────────────────────────────────────────────────────────
-  // These DB columns are shared by every row of a (tileset, folder_key) sensor group.
-  // Size and offsets are NOT group fields: they belong to each variant.
-  const GROUP_COLUMNS = ["symbol", "rotatable", "flippable", "otg_passable", "bottom_render", "priority", "auto_shadow", "mirror_offset"];
+  // Only the symbol is shared by every row of a (tileset, folder_key) sensor group. Size, offsets and all flags (priority, bottom_render,
+  // auto_shadow, otg_passable, mirror_offset, rotatable, flippable) belong to each variant.
+  const GROUP_COLUMNS = ["symbol"];
   const splitGroupPatch = patch => {
     const group = {}, own = {};
     for (const k of Object.keys(patch || {})) (GROUP_COLUMNS.includes(k) ? group : own)[k] = patch[k];
@@ -87,20 +87,24 @@
 
   // ── Folders ───────────────────────────────────────────────────────────────────────────────────────────
   const cmpSort = (a, b) => ((a.sortIndex ?? 0) - (b.sortIndex ?? 0)) || String(a.ref).localeCompare(String(b.ref));
-  // Fields compared for the warning button. sensor_code, image, codename, sort index, sensor_roll, filename, size and offsets never count.
+  // Fields compared for the folder's ⚖️ button. sensor_code, image, codename, sort index, sensor_roll and filename never count.
+  // Only a symbol mismatch is a real warning (it is the one group-synced field); flags, size and offsets are per variant by design,
+  // so their differences are informational.
   const DIVERGENCE_FIELDS = [
-    ["symbol", "Symbol"],
-    ["dbBottomRender", "Bottom render"], ["dbPriority", "Priority"], ["dbAutoShadow", "Auto shadow"], ["dbOtgPassable", "OTG passable"],
-    ["dbRotatable", "Rotatable"], ["dbFlippable", "Flippable"], ["dbMirrorOffset", "Mirror offset"],
+    ["symbol", "Symbol", "warning"],
+    ["dbBottomRender", "Bottom render", "info"], ["dbPriority", "Priority", "info"], ["dbAutoShadow", "Auto shadow", "info"], ["dbOtgPassable", "OTG passable", "info"],
+    ["dbRotatable", "Rotatable", "info"], ["dbFlippable", "Flippable", "info"], ["dbMirrorOffset", "Mirror offset", "info"],
+    ["dbSizeMultiplier", "Size", "info"], ["dbOffsetX", "Offset X", "info"], ["dbOffsetY", "Offset Y", "info"],
   ];
+  const DIVERGENCE_NOTE = "If these differences are intended, you can ignore this.";
   // DB numerics can arrive as strings ("1.5"); compare them as numbers.
   const norm = v => (v == null ? null : (typeof v === "string" && /^-?\d+(\.\d+)?$/.test(v)) ? Number(v) : v);
-  // -> [{ field, label, values: [{ value, tiles: [name] }] }] for fields where the labelled variants disagree.
+  // -> [{ field, label, level: "warning"|"info", values: [{ value, tiles: [name] }] }] for fields where the labelled variants disagree.
   const divergence = tiles => {
     const out = [];
     const list = tiles.filter(t => Sensor.isCode(t.sensorCode));
     if (list.length < 2) return out;
-    for (const [field, label] of DIVERGENCE_FIELDS) {
+    for (const [field, label, level] of DIVERGENCE_FIELDS) {
       const groups = new Map();
       for (const t of list) {
         const v = norm(t[field]);
@@ -108,7 +112,7 @@
         if (!groups.has(k)) groups.set(k, { value: v, tiles: [] });
         groups.get(k).tiles.push(t.codename || t.sensorCode || t.ref);
       }
-      if (groups.size > 1) out.push({ field, label, values: [...groups.values()] });
+      if (groups.size > 1) out.push({ field, label, level, values: [...groups.values()] });
     }
     return out;
   };
@@ -283,7 +287,7 @@
   };
 
   return {
-    SCOPE_GLOBAL, GROUP_COLUMNS, DIVERGENCE_FIELDS,
+    SCOPE_GLOBAL, GROUP_COLUMNS, DIVERGENCE_FIELDS, DIVERGENCE_NOTE,
     sensorRef, parseSensorRef, isSensorRef,
     parseCodeInput, parseRollInput, codeFieldState, codeGridCells, toggleCodeBit, normalisedHint, parseSymbolInput, usedSymbols, suggestSymbol,
     splitGroupPatch, divergence, makeFolder, engineFolder,

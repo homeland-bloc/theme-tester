@@ -45,9 +45,10 @@ test("codeGridCells", () => {
 
 test("splitGroupPatch", () => {
   const { group, own } = U.splitGroupPatch({ symbol: "W", rotatable: true, codename: "a", sensor_code: "00000000", sensor_roll: 2, offset_x: 1 });
-  assert.deepStrictEqual(group, { symbol: "W", rotatable: true });
+  assert.deepStrictEqual(group, { symbol: "W" }); // symbol is the only group-synced field
   assert.deepStrictEqual(U.splitGroupPatch({ size_multiplier: 1.5, offset_x: 1, offset_y: 2, show_tile_count: true }).group, {});
-  assert.deepStrictEqual(own, { codename: "a", sensor_code: "00000000", sensor_roll: 2, offset_x: 1 }); // offsets stay on the row
+  assert.deepStrictEqual(own, { rotatable: true, codename: "a", sensor_code: "00000000", sensor_roll: 2, offset_x: 1 }); // flags and offsets stay on the row
+  for (const k of ["priority", "bottom_render", "auto_shadow", "otg_passable", "mirror_offset", "rotatable", "flippable"]) assert.deepStrictEqual(U.splitGroupPatch({ [k]: true }).group, {});
 });
 
 test("makeFolder: plain, sensor, mixed", () => {
@@ -64,13 +65,17 @@ test("makeFolder: plain, sensor, mixed", () => {
   assert.strictEqual(g.symbol, "W");
 });
 
-test("divergence ignores code, image, codename, sort, roll; reports flags/size/offset/symbol", () => {
+test("divergence ignores code, image, codename, sort, roll; reports symbol as warning and flags/size/offset as info", () => {
   const a = T("a", "00000000", { src: "1.png", sensorRoll: 1, sortIndex: 1, dbBottomRender: true, dbSizeMultiplier: 1, dbOffsetX: 0, symbol: "W" });
   const b = T("b", "01000000", { src: "2.png", sensorRoll: 9, sortIndex: 5, dbBottomRender: true, dbSizeMultiplier: "1", dbOffsetX: 0, symbol: "W" });
   assert.deepStrictEqual(U.divergence([a, b]), []);
   const c = T("c", "00001000", { dbBottomRender: false, dbSizeMultiplier: 2, dbOffsetX: 0, symbol: null });
-  const d = U.divergence([a, b, c]).map(x => x.field).sort();
-  assert.deepStrictEqual(d, ["dbBottomRender", "symbol"]); // size and offsets are per variant, never a divergence
+  const dv = U.divergence([a, b, c]);
+  assert.deepStrictEqual(dv.map(x => x.field).sort(), ["dbBottomRender", "dbSizeMultiplier", "symbol"]);
+  // only the symbol is a real warning; per-variant fields are informational
+  assert.deepStrictEqual(dv.filter(x => x.level === "warning").map(x => x.field), ["symbol"]);
+  assert.ok(dv.filter(x => x.field !== "symbol").every(x => x.level === "info"));
+  assert.ok(/ignore this/.test(U.DIVERGENCE_NOTE));
   // unlabelled tiles are not compared
   assert.deepStrictEqual(U.divergence([a, T("u", null, { dbBottomRender: false })]), []);
 });
@@ -277,18 +282,18 @@ test("preloadImages: counts, dedupes, skips the overlay for cached images", asyn
   assert.strictEqual(U.progressLabel("Loading tiles", 0, 0), "Loading tiles");
 });
 
-test("global Rails folder: six explicit codenames, loop order, codes unchanged", () => {
+test("global Rails folder: six explicit codenames, order BR BL TR TL Fence Ver, codes unchanged", () => {
   const m = JSON.parse(require("fs").readFileSync(__dirname + "/../Resources/manifest.json", "utf8")).global;
   const cfg = m.sensor.rails, files = U.globalFolderFiles(m.folders.rails, cfg);
-  assert.deepStrictEqual(files, ["TL.png", "TR.png", "BL.png", "BR.png", "Fence.png", "Ver.png"]);
+  assert.deepStrictEqual(files, ["BR.png", "BL.png", "TR.png", "TL.png", "Fence.png", "Ver.png"]);
   assert.deepStrictEqual(m.folders.rails, files); // the manifest file order agrees too
-  assert.deepStrictEqual(files.map(f => U.globalFileName(f, cfg)), ["RailTopLeft", "RailTopRight", "RailBottomLeft", "RailBottomRight", "RailHorizontal", "RailVertical"]);
-  assert.deepStrictEqual(files.map(f => cfg.codes[f]), ["01010000", "01001000", "00010010", "00001010", "00011000", "01000010"]);
+  assert.deepStrictEqual(files.map(f => U.globalFileName(f, cfg)), ["RailBottomRight", "RailBottomLeft", "RailTopRight", "RailTopLeft", "RailHorizontal", "RailVertical"]);
+  assert.deepStrictEqual(files.map(f => cfg.codes[f]), ["00001010", "00010010", "01001000", "01010000", "00011000", "01000010"]);
   // folder built the way the app does: variants come out in that order, first four = the loop
   const tiles = files.map((f, i) => ({ ref: "g:Resources/Global/Rails/" + f, codename: U.globalFileName(f, cfg), sensorCode: cfg.codes[f], sensorRoll: 1, sortIndex: i }));
   const folder = U.makeFolder({ scope: "global", folderKey: "rails", label: "Rails", tiles: tiles.slice().reverse(), cfg });
-  assert.deepStrictEqual(folder.labelled.map(t => t.codename), ["RailTopLeft", "RailTopRight", "RailBottomLeft", "RailBottomRight", "RailHorizontal", "RailVertical"]);
-  assert.deepStrictEqual(U.folderPreviewTiles(folder).map(t => t.codename), ["RailTopLeft", "RailTopRight", "RailBottomLeft", "RailBottomRight"]);
+  assert.deepStrictEqual(folder.labelled.map(t => t.codename), ["RailBottomRight", "RailBottomLeft", "RailTopRight", "RailTopLeft", "RailHorizontal", "RailVertical"]);
+  assert.deepStrictEqual(U.folderPreviewTiles(folder).map(t => t.codename), ["RailBottomRight", "RailBottomLeft", "RailTopRight", "RailTopLeft"]);
   // other global folders are untouched
   assert.deepStrictEqual(U.globalFolderFiles(m.folders.water, m.sensor.water), m.folders.water);
   assert.strictEqual(U.globalFileName("1.png", m.sensor.water), null);
