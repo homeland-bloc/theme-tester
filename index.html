@@ -1889,7 +1889,7 @@ function InfoModalBody(props) {
           return (
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "4px 6px" }}>
               {/* Row 1 — spin | flip: only meaningful for the tiles of a sensor folder */}
-              {inSensorGroup && <>
+              {inSensorGroup && canEditDb && <>
               <label style={ls}>
                 <input type="checkbox" checked={curSpin} style={cs(spinColor)}
                   onChange={ev => {
@@ -2458,7 +2458,14 @@ function App() {
   // Auth: Discord login via OAuth + Firebase custom tokens
   const [currentUser, setCurrentUser] = useState(() => { try { return JSON.parse(localStorage.getItem('oph_user')); } catch { return null; } });
   const [authChecked, setAuthChecked] = useState(false); // true once Firebase auth state has been checked
-  const [userProfile, setUserProfile] = useState(null); // { role, ... } fetched from Supabase
+  const [realProfile, setUserProfile] = useState(null); // { role, ... } fetched from Supabase: the REAL role
+  // "Preview as user (UI only)": creators and admins can make the UI behave as a plain user. Persisted locally. It only changes what the UI
+  // shows (userProfile below); requests, tokens and the real profile are never touched.
+  const [previewAsUser, setPreviewAsUser] = useState(() => { try { return localStorage.getItem("oph_preview_as_user") === "1"; } catch { return false; } });
+  useEffect(() => { try { localStorage.setItem("oph_preview_as_user", previewAsUser ? "1" : "0"); } catch {} }, [previewAsUser]);
+  const canPreviewAsUser = realProfile?.role === 'creator' || realProfile?.role === 'admin';
+  const previewActive = !!(previewAsUser && canPreviewAsUser);
+  const userProfile = useMemo(() => (previewActive ? { ...realProfile, role: 'user' } : realProfile), [realProfile, previewActive]); // EFFECTIVE profile
   const [userDropOpen, setUserDropOpen] = useState(false);
   const [logoutConfirming, setLogoutConfirming] = useState(false);
   const [adminOpen, setAdminOpen] = useState(false);
@@ -3303,6 +3310,14 @@ function App() {
     return isDefaultOTGWall(t);
   };
 
+  // Who may open a tile's info (the ⓘ buttons): the tileset owner or an admin, by the EFFECTIVE role (Preview as user included);
+  // always for local uploads. Unfolding a sensor folder, its panel and the simulator stay open to everyone.
+  const canEditTile = t => {
+    if (!t) return false;
+    if (typeof t.ref === "string" && t.ref.startsWith("u:")) return true;
+    if (userProfile?.role === "admin") return true;
+    return !!(currentUser && t.tilesetOwnerId != null && t.tilesetOwnerId === currentUser.id && (t.isDb || (t.isSensor && t.sensorFolder?.scope !== SensorUI.SCOPE_GLOBAL)));
+  };
   // Tile defaults come straight off the tile (DB column, else the src-pattern fallback for global tiles).
   // The user override (sparse map keyed by ref) wins when present.
   const defaultPriorityTile   = t => t.dbPriority != null ? !!t.dbPriority : !!(t.src && TILE_SETTINGS.priority.some(p => t.src.includes(p)));
@@ -3486,9 +3501,11 @@ function App() {
               : <img src={t.blobSrc ?? t.src} alt="" onError={() => markFailed(t.ref)} className={tileCardLightBg ? "tile-img-checker" : undefined} style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated" }} />}
           </div>
           <span style={{ position: "absolute", left: 2, bottom: 1, fontSize: 7, fontFamily: "monospace", color: "#fff", background: "rgba(0,0,0,0.65)", borderRadius: 3, padding: "0 2px", pointerEvents: "none" }}>{t.sensorCode ?? "no code"}</span>
-          <span onClick={ev => { ev.stopPropagation(); setInfoTile(t.ref); }}
-            style={{ position: "absolute", top: -7, right: -7, width: 18, height: 18, fontSize: 15, cursor: "pointer", color: isStarred ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "18px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%" }}
-            title="Tile info">ⓘ</span>
+          {canEditTile(t) && (
+            <span onClick={ev => { ev.stopPropagation(); setInfoTile(t.ref); }}
+              style={{ position: "absolute", top: -7, right: -7, width: 18, height: 18, fontSize: 15, cursor: "pointer", color: isStarred ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "18px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%" }}
+              title="Tile info">ⓘ</span>
+          )}
         </div>
       );
     };
@@ -3949,7 +3966,7 @@ function App() {
     }
 
     (async () => {
-      const isAdmin = userProfile?.role === 'admin';
+      const isAdmin = realProfile?.role === 'admin'; // the request always uses the REAL role; preview filters the result below
       const tsBase = new URL(`${WORKER_URL}/rest/v1/tilesets`);
       if (isAdmin) {
         // admins see all tilesets
@@ -3969,7 +3986,9 @@ function App() {
         if (!tsResp.ok) {
           console.error('[tilesets] fetch failed:', tsResp.status, tsResp.statusText, await tsResp.text());
         }
-        const tilesets = tsResp.ok ? await tsResp.json() : [];
+        const fetchedTilesets = tsResp.ok ? await tsResp.json() : [];
+        // Preview as user: show what a plain user would see (published or own), without changing the request.
+        const tilesets = previewActive && Array.isArray(fetchedTilesets) ? fetchedTilesets.filter(ts => ts.is_published || (currentUser?.id && ts.owner_id === currentUser.id)) : fetchedTilesets;
         if (!Array.isArray(tilesets) || tilesets.length === 0) {
           console.error('[tilesets] empty or invalid response:', tilesets);
           setDbTilesets([]);
@@ -4056,7 +4075,7 @@ function App() {
         setTilesLoading(false);
       }
     })();
-  }, [currentUser?.id, tsFetchTrigger, userProfile?.role, isAuthenticated]);
+  }, [currentUser?.id, tsFetchTrigger, realProfile?.role, previewActive, isAuthenticated]);
 
   // On-demand tile loading: fetch tiles for the active tileset if not yet cached
   useEffect(() => {
@@ -7483,9 +7502,11 @@ function App() {
                         {failed ? <span style={{ fontSize: 18 }}>⚠️</span>
                           : <img src={t.blobSrc ?? t.src} alt="" onError={() => markFailed(t.ref)} className={tileCardLightBg ? "tile-img-checker" : undefined} style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", }} />}
                       </div>
+                      {canEditTile(t) && (
                       <span onClick={ev => { ev.stopPropagation(); setInfoTile(t.ref); }}
                         style={{ position: "absolute", top: -7, right: -7, width: 18, height: 18, fontSize: 15, cursor: "pointer", color: isStarredF ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "18px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
                         title={isStarredF ? "Starred tile — click for info" : "Tile info"}>ⓘ</span>
+                      )}
                       <MultLabel t={t} />
                       <TileBadge t={t} />
                     </div>
@@ -7554,6 +7575,13 @@ function App() {
                     ))}
                   </div>
                 </div>
+                {/* Preview as user — only for profiles whose REAL role is creator or admin */}
+                {canPreviewAsUser && (
+                  <label data-preview-as-user style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 12px", borderBottom: `1px solid ${C.border}`, cursor: "pointer", userSelect: "none" }}>
+                    <input type="checkbox" checked={previewAsUser} onChange={e => setPreviewAsUser(e.target.checked)} style={{ accentColor: C.accent, cursor: "pointer" }} />
+                    <span style={{ fontSize: 11, color: C.text }}>Preview as user (UI only)</span>
+                  </label>
+                )}
                 {/* Admin Dashboard — only visible to admins */}
                 {userProfile?.role === 'admin' && (
                   <button
@@ -7717,9 +7745,12 @@ function App() {
                             : <img src={t.blobSrc ?? t.src} alt="" onError={() => markFailed(t.ref)} className={tileCardLightBg ? "tile-img-checker" : undefined} style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated" }} />}
                         </div>
                         {/* Info button: yellow if starred, white otherwise — top-right corner */}
+                        {canEditTile(t) && (
                         <span onClick={e => { e.stopPropagation(); setInfoTile(t.ref); }}
                           style={{ position: "absolute", top: -7, right: -7, width: 18, height: 18, fontSize: 15, cursor: "pointer", color: "rgba(255,255,255,0.85)", lineHeight: "18px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
                           title={t.codename ?? (isStarred ? "Starred tile — click for info" : "Tile info")}>{isStarred ? "★" : "ⓘ"}</span>
+                        )}
+                        {!canEditTile(t) && isStarred && <span style={{ position: "absolute", top: -7, right: -7, width: 18, height: 18, fontSize: 13, color: "#fbbf24", lineHeight: "18px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", pointerEvents: "none" }} title="Starred tile">★</span>}
                         <MultLabel t={t} />
                         <TileBadge t={t} />
                       </div>
