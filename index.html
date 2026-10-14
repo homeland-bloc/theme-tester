@@ -153,6 +153,76 @@ const migrateStarred = list => {
   }
   return out;
 };
+// Which panel's shortcut bar a starred item belongs to. Space and Warn are tile refs (shown by the tile-ref branch of the Tiles bar).
+const SHORTCUT_TILES_BAR_TOOLS = new Set(["erase", "hand", "eyedropper", "magnet", "highlight", "duplicate"]);
+const SHORTCUT_TOOLS_BAR = ["selectionGroup", "mirrorGroup", "guides", "overwrite", "offsetCenters", "otg", "replace", "convert", "tileCounter", "hotkeys"];
+const DEFAULT_STARRED = ["erase", "hand", "selectionGroup", "mirrorGroup", "guides", "overwrite"]; // only for users with no saved list
+// ── Highlight move (pure helpers; unit-tested by extracting this block, see tests/highlight_move.test.js) ──────────────────────
+// <highlight-move-helpers>
+// Mirror images of a cell, identity first. ctx = { v, h, d, cR, cC } where v = left<->right ("Horizontal" in the UI), h = top<->bottom
+// ("Vertical"), d = 180-degree point reflection ("Diagonal"). Same geometry as getMirrorMeta (the VD / HD / VHD entries land on the D cell).
+// Not bounds-checked and not de-duplicated: [{ k: "" | "V" | "H" | "D", pos: [r, c] }].
+const mirrorImages = (r, c, ctx) => {
+  const out = [{ k: "", pos: [r, c] }];
+  if (ctx.v) out.push({ k: "V", pos: [r, Math.round(2 * ctx.cC - c)] });
+  if (ctx.h) out.push({ k: "H", pos: [Math.round(2 * ctx.cR - r), c] });
+  if (ctx.d) out.push({ k: "D", pos: [Math.round(2 * ctx.cR - r), Math.round(2 * ctx.cC - c)] });
+  return out;
+};
+// Moving a highlight with mirroring, as ONE operation. Inputs: primary = the cells the user drew, (dr, dc) = the move, ctx = mirror
+// flags + centre + { rows, cols } of the grid, hasContent(r, c) = does the cell hold a tile.
+//   Source set S      = primary + all of its in-bounds mirror images, de-duplicated (a selection that overlaps its own mirror is ONE set).
+//   Where a cell goes  = a primary cell moves by (dr, dc). Any other cell of S is the mirror image (op k) of some primary p and moves to
+//                        the same image of p + (dr, dc), i.e. by the mirrored offset. A cell that is both primary and an image moves
+//                        as primary; a cell that is an image of several primaries follows the first one (row-major, ops "", V, H, D).
+//   Out of the grid    = the cell is dropped (its tile is lifted and lost), never wrapped or clamped. Per cell: a mirror partner whose
+//                        own target is inside still lands.
+//   Two cells, one target = the primary cell wins, then the earlier source (row-major); the other is dropped. Empty cells never write
+//                        and never block (transparent), so a move never erases tiles it does not land on.
+// Every source is read from the pre-move grid and cleared; every target is written at most once.
+// -> { sources, moves: [{ from, to, kind, drop }], writes: [{ from, to }], newPrimary, newHighlight }  (all positions are [r, c]).
+const planHighlightMove = ({ primary, dr, dc, ctx, hasContent }) => {
+  const rows = ctx.rows, cols = ctx.cols;
+  const inb = ([r, c]) => r >= 0 && r < rows && c >= 0 && c < cols;
+  const key = ([r, c]) => r + "," + c;
+  const byPos = (a, b) => a[0] - b[0] || a[1] - b[1];
+  const P = [...new Map((primary || []).filter(inb).map(p => [key(p), p])).values()].sort(byPos);
+  const primKeys = new Set(P.map(key));
+  const mover = new Map(); // source key -> { from, to, kind, op }
+  P.forEach(p => mover.set(key(p), { from: p, to: [p[0] + dr, p[1] + dc], kind: "primary", k: "" }));
+  P.forEach(p => {
+    const shifted = mirrorImages(p[0] + dr, p[1] + dc, ctx);
+    mirrorImages(p[0], p[1], ctx).forEach(({ k, pos }, i) => {
+      if (k === "" || !inb(pos) || mover.has(key(pos))) return;
+      mover.set(key(pos), { from: pos, to: shifted[i].pos, kind: "mirror", k });
+    });
+  });
+  const sources = [...mover.values()].map(m => m.from).sort(byPos);
+  const ordered = [...mover.values()].sort((a, b) => (a.kind === b.kind ? 0 : a.kind === "primary" ? -1 : 1) || byPos(a.from, b.from));
+  const claimed = new Set(), moves = [], writes = [];
+  ordered.forEach(m => {
+    let drop = null;
+    if (!hasContent(m.from[0], m.from[1])) drop = "empty";
+    else if (!inb(m.to)) drop = "bounds";
+    else if (claimed.has(key(m.to))) drop = "collision";
+    if (!drop) { claimed.add(key(m.to)); writes.push({ from: m.from, to: m.to }); }
+    moves.push({ from: m.from, to: m.to, kind: m.kind, drop });
+  });
+  const newPrimary = P.map(p => [p[0] + dr, p[1] + dc]).filter(inb);
+  const hl = new Map();
+  newPrimary.forEach(p => mirrorImages(p[0], p[1], ctx).forEach(({ pos }) => { if (inb(pos)) hl.set(key(pos), pos); }));
+  return { sources, moves, writes, newPrimary, newHighlight: [...hl.values()].sort(byPos) };
+};
+// Applies a plan to a grid (and an optional sparse per-cell map such as gridOffsets keyed "r,c"). Returns new copies; inputs untouched.
+const applyHighlightMovePlan = (grid, plan, sparse) => {
+  const g = grid.map(row => row.slice());
+  const sp = sparse ? { ...sparse } : null;
+  const content = plan.writes.map(w => ({ to: w.to, id: grid[w.from[0]][w.from[1]], extra: sparse ? sparse[w.from[0] + "," + w.from[1]] : undefined }));
+  plan.sources.forEach(([r, c]) => { g[r][c] = null; if (sp) delete sp[r + "," + c]; });
+  content.forEach(({ to: [r, c], id, extra }) => { g[r][c] = id; if (sp) { if (extra !== undefined) sp[r + "," + c] = extra; else delete sp[r + "," + c]; } });
+  return { grid: g, sparse: sp };
+};
+// </highlight-move-helpers>
 const REPLACE_ERASE_REF = "__erase__"; // sentinel: replace-with-empty in the Replace modal
 
 // All Supabase requests go through the Worker.
@@ -713,15 +783,16 @@ function SensorOptionalFields({ code, onCode, roll, onRoll }) {
   return (
     <div data-sensor-optional style={{ display: "flex", flexDirection: "column", gap: 8 }}>
       <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-        <span style={{ fontSize: 11, color: C.muted }}>Sensor code (optional)</span>
+        <span style={{ fontSize: 11, color: C.muted }}>{`Sensor code (optional, 8 digits of 0/1; empty = not a sensor tile; ${SensorEngine.FALLBACK_CODE} = fallback tile)`}</span>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <input data-add-sensor-code value={code} maxLength={8} spellCheck={false} onChange={e => onCode(e.target.value.replace(/[^01]/g, ''))}
-            placeholder="8 digits of 0/1, empty = not a sensor tile" style={inp(cp.ok)} />
+            placeholder="none" style={{ ...inp(cp.ok), width: 98, boxSizing: "border-box", letterSpacing: 2 }} />
           <SensorCodeGrid code={cp.ok ? cp.value : null} color={cp.ok ? "#f97316" : C.danger} onToggle={bit => onCode(SensorUI.toggleCodeBit(code, bit))} />
         </div>
         {SensorUI.normalisedHint(code) && <span data-normalised-hint style={{ fontSize: 10, color: C.muted }}>acts as {SensorUI.normalisedHint(code)}</span>}
+        {cp.ok && cp.value === SensorEngine.FALLBACK_CODE && <span data-fallback-label style={{ fontSize: 10, color: FALLBACK_TILE_COLOR }}>{SensorUI.FALLBACK_LABEL}</span>}
         {!cp.ok && <span style={{ fontSize: 10, color: C.danger }}>{cp.error}</span>}
-        <span style={{ fontSize: 10, color: C.muted }}>With a folder key, the image is named FolderKey_code. Group settings are copied from the folder's first variant.</span>
+        <span style={{ fontSize: 10, color: C.muted }}>With a folder key, the image is named FolderKey_code. The symbol is copied from the folder's first variant.</span>
       </label>
       <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
         <span style={{ fontSize: 11, color: C.muted }}>Sensor roll (optional, default 1, 0 = never picked)</span>
@@ -1318,7 +1389,8 @@ function InfoModalBody(props) {
     setFileNameInput(currentFileName);
   }, [t.dbId]);
   // Sensor fields: parsed values, edit state against the DB value, and whether this tile belongs to a sensor group
-  // (a folder where at least one row has a sensor code). Group fields saved from any variant go to every row of the folder.
+  // (a folder where at least one row has a sensor code). Only the symbol is group-synced: saving it from any variant updates every row
+  // of the folder. Size, offsets and all flags are per variant.
   const codeParsed = SensorUI.parseCodeInput(sensorCodeInput);
   const rollParsed = SensorUI.parseRollInput(sensorRollInput);
   const codeState = SensorUI.codeFieldState(sensorCodeInput, t.sensorCode);
@@ -1444,7 +1516,7 @@ function InfoModalBody(props) {
       return resp.ok;
     };
 
-    // One multi-row PATCH of the group-level columns onto every row of (tileset, folder_key).
+    // One multi-row PATCH of the group-level column (symbol only) onto every row of (tileset, folder_key).
     const patchGroup = async (folderKey, body) => {
       const token = await getValidToken();
       const url = `${WORKER_URL}/rest/v1/tiles?tileset_id=eq.${encodeURIComponent(t.tilesetId)}&folder_key=eq.${encodeURIComponent(folderKey)}`;
@@ -1517,7 +1589,7 @@ function InfoModalBody(props) {
         }
         try {
           if (inSensorGroup && body.folder_key) {
-            // Group columns go to every row of the folder in one PATCH; the rest stays per tile.
+            // Only the symbol goes to every row of the folder in one PATCH; everything else stays on this variant's row.
             const { group, own } = SensorUI.splitGroupPatch(body);
             ok = await patchTile(own);
             if (ok) ok = await patchGroup(body.folder_key, { ...group, last_updated_at: body.last_updated_at, last_updated_by: body.last_updated_by });
@@ -1772,12 +1844,13 @@ function InfoModalBody(props) {
                 <div style={{ display: "flex", flexDirection: "column", gap: 3, flex: 1 }}>
                   <input data-sensor-code value={sensorCodeInput} maxLength={8} readOnly={!canEditDb}
                     onChange={e => { if (canEditDb) { setSensorCodeInput(e.target.value.replace(/[^01]/g, '')); setSensorError(null); } }}
-                    placeholder="none (8 digits of 0/1)" spellCheck={false}
-                    style={{ background: !canEditDb ? "transparent" : "rgba(180,40,40,0.09)", border: `1px solid ${col}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none", letterSpacing: 2 }} />
+                    placeholder="none" spellCheck={false}
+                    style={{ width: 98, boxSizing: "border-box", background: !canEditDb ? "transparent" : "rgba(180,40,40,0.09)", border: `1px solid ${col}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none", letterSpacing: 2 }} />
                   <span style={{ fontSize: 9, color: col }}>
                     {codeState === "saved" ? (t.sensorCode == null ? "no sensor code (saved)" : "saved") : codeState === "edited" ? "edited, not saved" : "needs exactly 8 characters of 0 and 1"}
                   </span>
                   {SensorUI.normalisedHint(sensorCodeInput) && <span data-normalised-hint style={{ fontSize: 9, color: C.muted }}>acts as {SensorUI.normalisedHint(sensorCodeInput)}</span>}
+                  {codeParsed.ok && codeParsed.value === SensorEngine.FALLBACK_CODE && <span data-fallback-label style={{ fontSize: 9, color: FALLBACK_TILE_COLOR }}>{SensorUI.FALLBACK_LABEL}</span>}
                 </div>
                 <SensorCodeGrid code={codeParsed.ok ? codeParsed.value : null} color={col}
                   onToggle={canEditDb ? bit => { setSensorCodeInput(SensorUI.toggleCodeBit(sensorCodeInput, bit)); setSensorError(null); } : undefined} />
@@ -1806,7 +1879,7 @@ function InfoModalBody(props) {
 
         {/* Size multiplier */}
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Size multiplier (%)<FlagTip id="size_multiplier" />{groupNote}</span>
+          <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Size multiplier (%)<FlagTip id="size_multiplier" /></span>
           <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepMult(-0.05)}>−</button>
           <input type="number" value={multInput} step="0.05"
             onChange={e => setMultInput(e.target.value)}
@@ -1824,7 +1897,7 @@ function InfoModalBody(props) {
         <FlagDesc id="size_multiplier" />
 
         {/* Offsets */}
-        <span style={{ fontSize: 11, color: C.muted, fontWeight: 600 }}>Offsets (%) 📐{groupNote}</span>
+        <span style={{ fontSize: 11, color: C.muted, fontWeight: 600 }}>Offsets (%) 📐</span>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Horizontal<FlagTip id="offset_h" /></span>
           <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepOx(-1)}>−</button>
@@ -1855,7 +1928,6 @@ function InfoModalBody(props) {
           <div style={{ padding: "4px 6px", background: "rgba(255,255,255,0.04)", borderRadius: 4, fontSize: 10, color: C.muted, lineHeight: 1.5 }}>{FLAG_TIPS[flagTooltip]}</div>
         )}
 
-        {inSensorGroup && <span style={{ fontSize: 10, color: SENSOR_YELLOW }}>Flags (rotatable, flippable, bottom, priority, shadow, OTG, mirror offset) apply to the whole folder.</span>}
         {/* Boolean flags — 2-column grid.
              Each pair of flag labels occupies one row; the inline tooltip description
              is placed as the NEXT grid item with gridColumn:"1/-1" so it spans both
@@ -1887,7 +1959,7 @@ function InfoModalBody(props) {
           return (
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "4px 6px" }}>
               {/* Row 1 — spin | flip: only meaningful for the tiles of a sensor folder */}
-              {inSensorGroup && <>
+              {inSensorGroup && canEditDb && <>
               <label style={ls}>
                 <input type="checkbox" checked={curSpin} style={cs(spinColor)}
                   onChange={ev => {
@@ -2121,8 +2193,9 @@ function InfoModalBody(props) {
 
 // ── Sensor folder components (top level: not nested in App, so their state survives App re-renders) ──
 const SENSOR_YELLOW = "#f5c518";
-const STATUS_COLORS = { explicit: "#34d399", derived: "#60a5fa", composed: "#c084fc", fallback: "#fbbf24", missing: "#f87171" };
-const STATUS_HELP = { explicit: "has its own tile", derived: "spin/flip of a tile", composed: "built from quadrants", fallback: "uses the nearest variant or 00000000", missing: "should be composed but cannot be" };
+const FALLBACK_TILE_COLOR = "#f472b6"; // the fallback tile (SensorEngine.FALLBACK_CODE) of an exact-mode folder: its own colour
+const STATUS_COLORS = { explicit: "#34d399", derived: "#60a5fa", composed: "#c084fc", fallback: "#fbbf24", missing: "#f87171", "fallback-tile": FALLBACK_TILE_COLOR };
+const STATUS_HELP = { explicit: "has its own tile", derived: "spin/flip of a tile", composed: "built from quadrants", fallback: "uses the nearest variant or 00000000", missing: "should be composed but cannot be", "fallback-tile": "the fallback tile" };
 const sensorBtnStyle = (color = C.accent) => ({ background: "rgba(255,255,255,0.04)", border: `1px solid ${color}`, borderRadius: 6, color, cursor: "pointer", fontSize: 11, padding: "3px 10px", fontFamily: "'Inter', sans-serif" });
 const tileUrl = t => (t ? (t.blobSrc ?? t.src) : null);
 const fromLabel = e => (e.derivedFrom ? `from ${e.derivedFrom.tile.codename ?? e.derivedFrom.code} (${SensorUI.opsLabel(e.ops)})` : null);
@@ -2142,13 +2215,17 @@ function sensorEntryVisual(entry, code, status, recipe, folderRef, candidates, r
 
 // 3x3 view of a sensor code: neighbour cells "1" filled, "0" outlined, centre an X. Colour = state (green saved, orange edited).
 function SensorCodeGrid({ code, color, onToggle }) {
+  if (code === SensorEngine.FALLBACK_CODE) { // the sentinel has no 3x3 shape
+    return <div data-sensor-grid data-fallback-grid style={{ flexShrink: 0, border: `1.5px solid ${FALLBACK_TILE_COLOR}`, borderRadius: 4, color: FALLBACK_TILE_COLOR, fontSize: 11, fontWeight: 700, padding: "6px 8px", textAlign: "center" }} title={SensorUI.FALLBACK_LABEL}>Fallback tile</div>;
+  }
   const cells = SensorUI.codeGridCells(code);
+  const px = isMobileDevice() ? 28 : 24; // finger-sized on mobile
   return (
-    <div data-sensor-grid style={{ display: "grid", gridTemplateColumns: "repeat(3, 14px)", gap: 2, flexShrink: 0 }} title={code ? `Neighbours: ${code}` : "No sensor code"}>
+    <div data-sensor-grid style={{ display: "grid", gridTemplateColumns: `repeat(3, ${px}px)`, gap: 3, flexShrink: 0 }} title={code ? `Neighbours: ${code}` : "No sensor code"}>
       {cells.map((c, i) => (
         <div key={i} data-cell={c.centre ? "x" : c.filled ? "1" : "0"} data-bit={c.centre ? undefined : SensorEngine.BIT_NAMES[c.bit]}
           onClick={onToggle && !c.centre ? () => onToggle(c.bit) : undefined}
-          style={{ cursor: onToggle && !c.centre ? "pointer" : undefined, width: 14, height: 14, boxSizing: "border-box", borderRadius: 3, border: `1.5px solid ${color}`, background: c.filled ? color : "transparent", color, fontSize: 10, lineHeight: "11px", textAlign: "center", fontWeight: 700 }}>{c.centre ? "✕" : ""}</div>
+          style={{ cursor: onToggle && !c.centre ? "pointer" : undefined, width: px, height: px, boxSizing: "border-box", borderRadius: 4, border: `1.5px solid ${color}`, background: c.filled ? color : "transparent", color, fontSize: 13, lineHeight: `${px - 3}px`, textAlign: "center", fontWeight: 700 }}>{c.centre ? "✕" : ""}</div>
       ))}
     </div>
   );
@@ -2270,24 +2347,33 @@ function SpinFlipImageModal({ tile, getValidToken, workerFetch, currentUser, btn
 
 function SensorWarningModal({ folder, onClose }) {
   const fmt = v => (v === null || v === undefined ? "(not set)" : String(v));
+  const real = folder.warnings.filter(w => w.level === "warning"), info = folder.warnings.filter(w => w.level !== "warning");
+  const diffRow = w => (
+    <div key={w.field} style={{ fontSize: 12, color: C.text }}>
+      <b>{w.label}</b>
+      {w.values.map((v, i) => (
+        <div key={i} style={{ fontSize: 11, color: C.muted, marginLeft: 8 }}>{fmt(v.value)} — {v.tiles.join(", ")}</div>
+      ))}
+    </div>
+  );
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal-box" onClick={e => e.stopPropagation()} style={{ maxWidth: 420, maxHeight: "80vh", overflowY: "auto" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <span style={{ fontSize: 13, fontWeight: 700, color: SENSOR_YELLOW }}>⚠ {folder.label}: {folder.warnings.length ? "settings differ" : "tiles without a sensor code"}</span>
+          <span style={{ fontSize: 13, fontWeight: 700, color: SENSOR_YELLOW }}>⚖️ {folder.label}: {folder.warnings.length ? (folder.warnings.some(w => w.level === "warning") ? "symbol differs" : "variants differ") : "tiles without a sensor code"}</span>
           <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
         </div>
-        {folder.warnings.length > 0 && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            <span style={{ fontSize: 11, color: C.muted }}>These settings are shared by the whole folder, but the variants disagree. The first variant is used.</span>
-            {folder.warnings.map(w => (
-              <div key={w.field} style={{ fontSize: 12, color: C.text }}>
-                <b>{w.label}</b>
-                {w.values.map((v, i) => (
-                  <div key={i} style={{ fontSize: 11, color: C.muted, marginLeft: 8 }}>{fmt(v.value)} — {v.tiles.join(", ")}</div>
-                ))}
-              </div>
-            ))}
+        {real.length > 0 && (
+          <div data-warn-real style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <span style={{ fontSize: 11, color: C.muted }}>The symbol is shared by the whole folder, but the variants disagree. Saving the symbol from any variant fixes it.</span>
+            {real.map(diffRow)}
+          </div>
+        )}
+        {info.length > 0 && (
+          <div data-warn-info style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <span style={{ fontSize: 11, color: C.muted }}>Flags, size and offsets are set per variant. These differ between variants:</span>
+            {info.map(diffRow)}
+            <span style={{ fontSize: 11, color: C.muted }}>{SensorUI.DIVERGENCE_NOTE}</span>
           </div>
         )}
         {folder.unlabelled.length > 0 && (
@@ -2304,21 +2390,33 @@ function SensorWarningModal({ folder, onClose }) {
 }
 
 // Simulator: 3x3 grid, centre fixed, eight neighbours toggleable. Shows what sensor.resolve() returns. Edits nothing.
-function SensorSimulationPanel({ folder, candidates, requestComposed, onClose }) {
+function SensorSimulationPanel({ folder, candidates, requestComposed, reroll = 0, onReroll, onClose }) {
   const [bits, setBits] = useState(() => Array(8).fill(false));
-  const [seed, setSeed] = useState(0);
+  const seed = 0; // fixed preview position; "Roll again" changes the folder's reroll seed, the same one the map uses
+  const [hoverQ, setHoverQ] = useState(null); // quadrant (0 TL, 1 TR, 2 BR, 3 BL) hovered in the composed breakdown
+  const [pickedFallback, setPickedFallback] = useState(false); // the fallback row of an exact-mode folder was clicked
   const engine = useMemo(() => SensorUI.engineFolder(folder), [folder]);
   const code = bits.map(b => (b ? "1" : "0")).join("");
-  const res = SensorEngine.resolve(engine, code, { x: seed, y: seed * 7 + 1, salt: folder.ref, candidates });
+  const fbCand = candidates[SensorEngine.FALLBACK_CODE];
+  const res = pickedFallback && fbCand
+    ? (() => { const entry = SensorEngine.weightedPick(fbCand.pool, e => e.roll, SensorEngine.hash2D(seed, seed * 7 + 1, SensorEngine.stringToInt(folder.ref), reroll)); return entry && { code: SensorEngine.FALLBACK_CODE, status: "explicit", fallback: true, ref: entry.ref, tile: entry.tile, ops: entry.ops, derivedFrom: null, recipe: null, entry }; })()
+    : SensorEngine.resolve(engine, code, { x: seed, y: seed * 7 + 1, salt: folder.ref, reroll, candidates });
+  const isFb = !!(res && res.code === SensorEngine.FALLBACK_CODE);
+  const nameOfRef = ref => { const t = folder.tiles.find(x => x.ref === ref); return t ? (t.codename ?? t.sensorCode ?? String(ref)) : String(ref); };
+  const lines = res && res.recipe ? SensorUI.recipeLines(res.recipe, nameOfRef) : [];
   const cov = useMemo(() => SensorEngine.coverage(engine), [engine]);
   const required = useMemo(() => SensorEngine.computeRequiredBase(engine), [engine]);
   const mode = useMemo(() => SensorEngine.folderMode(engine), [engine]);
-  const shownCov = useMemo(() => (mode.cardinalOnly ? cov.filter(x => SensorEngine.CARDINAL_CODES.includes(x.code)) : cov), [cov, mode]);
+  const shownCov = useMemo(() => (mode.cardinalOnly ? cov.filter(x => SensorEngine.CARDINAL_CODES.includes(x.code) || x.code === SensorEngine.FALLBACK_CODE) : cov), [cov, mode]);
   const pool = res ? candidates[res.code].pool : [];
   const pct = SensorEngine.pickPercentages(pool);
   const vis = res ? sensorEntryVisual(res.entry, res.code, res.status, res.recipe, folder.ref, candidates, requestComposed) : null;
   const cellBox = { width: 44, height: 44, borderRadius: 6, boxSizing: "border-box" };
-  const setFromCode = c => { setBits(c.split("").map(ch => ch === "1")); };
+  const setFromCode = c => {
+    if (c === SensorEngine.FALLBACK_CODE) { setPickedFallback(true); return; } // the sentinel is a tile, not a neighbourhood
+    setPickedFallback(false);
+    setBits(c.split("").map(ch => ch === "1"));
+  };
   const order = [0, 1, 2, 3, null, 4, 5, 6, 7];
   return (
     <div className="modal-backdrop" onClick={onClose} style={{ zIndex: 3000 }}>
@@ -2333,7 +2431,7 @@ function SensorSimulationPanel({ folder, candidates, requestComposed, onClose })
             {order.map((bit, i) => bit === null ? (
               <div key={i} style={{ ...cellBox, display: "flex", alignItems: "center", justifyContent: "center", background: SENSOR_YELLOW, color: "#000", fontWeight: 800, fontSize: 18 }} title="Centre cell (the tile itself)">✨</div>
             ) : (
-              <button key={i} data-bit={SensorEngine.BIT_NAMES[bit]} onClick={() => setBits(b => b.map((v, j) => (j === bit ? !v : v)))}
+              <button key={i} data-bit={SensorEngine.BIT_NAMES[bit]} onClick={() => { setPickedFallback(false); setBits(b => b.map((v, j) => (j === bit ? !v : v))); }}
                 title={`${SensorEngine.BIT_NAMES[bit]}: ${bits[bit] ? "same folder" : "empty"}`}
                 style={{ ...cellBox, cursor: "pointer", border: `2px solid ${bits[bit] ? SENSOR_YELLOW : C.border}`, background: bits[bit] ? "rgba(245,197,24,0.35)" : "transparent", color: C.muted, fontSize: 9 }}>
                 {SensorEngine.BIT_NAMES[bit]}
@@ -2341,19 +2439,29 @@ function SensorSimulationPanel({ folder, candidates, requestComposed, onClose })
             ))}
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 150 }}>
-            <div data-testid="sim-chosen" style={{ width: 96, height: 96, borderRadius: 8, background: C.panelDeep, border: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
+            <div data-testid="sim-chosen" style={{ position: "relative", width: 96, height: 96, borderRadius: 8, background: C.panelDeep, border: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
               {vis && vis.src ? <img src={vis.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", transform: vis.css || undefined }} /> : <span style={{ fontSize: 22 }}>{res ? "…" : "⚠️"}</span>}
+              {hoverQ != null && <div data-quad-highlight={SensorEngine.QUAD_NAMES[hoverQ]} style={{ position: "absolute", width: "50%", height: "50%", left: hoverQ === 1 || hoverQ === 2 ? "50%" : 0, top: hoverQ >= 2 ? "50%" : 0, border: `2px solid ${SENSOR_YELLOW}`, background: "rgba(245,197,24,0.28)", boxSizing: "border-box", pointerEvents: "none" }} />}
             </div>
             <div style={{ fontSize: 11, color: C.text }}>
               <b>Chosen variant:</b>{" "}
               {res ? <span data-testid="sim-code" style={{ fontFamily: "monospace" }}>{res.code}</span> : "none usable"}
             </div>
             {res && <div style={{ fontSize: 10, color: C.muted }}>
-              {res.status}{res.tile ? ` · ${res.tile.codename ?? res.tile.ref}` : ""}{res.derivedFrom ? ` · ${fromLabel(res.entry)}` : ""}
+              {isFb ? "fallback tile" : res.status}{res.tile ? ` · ${res.tile.codename ?? res.tile.ref}` : ""}{res.derivedFrom ? ` · ${fromLabel(res.entry)}` : ""}
               {vis && vis.state === "pending" ? " · composing…" : ""}{vis && vis.state === "failed" ? " · composing failed, showing 00000000" : ""}
             </div>}
-            <div style={{ fontSize: 10, color: C.muted }}>Neighbours: <span style={{ fontFamily: "monospace" }}>{code}</span></div>
-            <button style={sensorBtnStyle()} onClick={() => setSeed(s => s + 1)} title="Rolls depend on the cell position; try another position">Roll again</button>
+            {isFb && <div data-testid="sim-fallback-label" style={{ fontSize: 10, color: FALLBACK_TILE_COLOR, maxWidth: 200 }}>{SensorUI.FALLBACK_LABEL}</div>}
+            {lines.length > 0 && (
+              <div data-testid="sim-breakdown" style={{ display: "flex", flexDirection: "column", gap: 2, maxWidth: 260 }}>
+                {lines.map(l => (
+                  <div key={l.quadrant} data-quad-line={l.label} onMouseEnter={() => setHoverQ(l.quadrant)} onMouseLeave={() => setHoverQ(null)} onClick={() => setHoverQ(q => (q === l.quadrant ? null : l.quadrant))}
+                    style={{ fontSize: 10, fontFamily: "monospace", color: hoverQ === l.quadrant ? SENSOR_YELLOW : C.muted, cursor: "default", padding: "1px 3px", borderRadius: 3, background: hoverQ === l.quadrant ? "rgba(245,197,24,0.12)" : "transparent" }}>{l.text}</div>
+                ))}
+              </div>
+            )}
+            <div style={{ fontSize: 10, color: C.muted }}>Neighbours: <span style={{ fontFamily: "monospace" }}>{isFb ? "(any other shape)" : code}</span></div>
+            <button data-sim-roll style={sensorBtnStyle()} onClick={() => onReroll && onReroll()} title="New random seed for this folder: the map re-rolls its tied picks too">🎲 Roll again</button>
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 160, flex: 1 }}>
             <span style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: 0.8 }}>Pool of {res ? res.code : "-"}</span>
@@ -2364,7 +2472,7 @@ function SensorSimulationPanel({ folder, candidates, requestComposed, onClose })
                 <div key={String(p.ref)} data-testid="sim-pool-row" style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: C.text }}>
                   <span style={{ width: 42, textAlign: "right", fontFamily: "monospace" }}>{(p.probability * 100).toFixed(p.probability * 100 % 1 === 0 ? 0 : 1)}%</span>
                   <span style={{ color: C.muted }}>roll {p.roll}</span>
-                  <span>{e.composed ? "composed" : (e.tile?.codename ?? String(p.ref))}</span>
+                  <span>{e.composed ? `composed (majority: ${nameOfRef(e.majorityRef)})` : (e.tile?.codename ?? String(p.ref))}</span>
                 </div>
               );
             })}
@@ -2373,7 +2481,7 @@ function SensorSimulationPanel({ folder, candidates, requestComposed, onClose })
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           <span style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: 0.8 }}>{`Coverage of the ${shownCov.length} ${mode.cardinalOnly ? "cardinal " : ""}codes (click one to load it)`}</span>
           <div style={{ display: "flex", gap: 10, fontSize: 10, color: C.muted, flexWrap: "wrap" }}>
-            {Object.entries(STATUS_COLORS).map(([k, col]) => <span key={k} title={STATUS_HELP[k]}><span style={{ display: "inline-block", width: 9, height: 9, background: col, borderRadius: 2, marginRight: 4 }} />{k} ({shownCov.filter(x => x.status === k).length})</span>)}
+            {Object.entries(STATUS_COLORS).filter(([k]) => mode.kind !== "exact" ? k !== "fallback-tile" : (k === "explicit" || k === "derived" || k === "fallback-tile")).map(([k, col]) => <span key={k} title={STATUS_HELP[k]}><span style={{ display: "inline-block", width: 9, height: 9, background: col, borderRadius: 2, marginRight: 4 }} />{k} ({shownCov.filter(x => x.status === k).length})</span>)}
           </div>
           <div data-testid="sim-coverage" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(78px, 1fr))", gap: 3 }}>
             {shownCov.map(x => (
@@ -2382,7 +2490,9 @@ function SensorSimulationPanel({ folder, candidates, requestComposed, onClose })
             ))}
           </div>
           <div data-testid="sim-required" style={{ fontSize: 11, color: required.length ? C.danger : C.muted }}>
-            {mode.kind === "fence"
+            {mode.kind === "exact"
+              ? `Exact mode (this folder has a ${SensorEngine.FALLBACK_CODE} fallback tile): the neighbours are normalised, an exact match among its tiles or their spin/flip (per tile) wins, anything else shows the fallback tile. Nothing is composed or scored.`
+              : mode.kind === "fence"
               ? "Simple fence rule: only the four cardinal neighbours count. An exact match among the three variants wins, anything else shows 00000000."
               : mode.kind === "compose"
                 ? `${[mode.spin && "Spin", mode.flip && "Flip"].filter(Boolean).join(" and ")} on: codes without a tile are derived or built from tile quadrants (rotated${mode.flip ? "/mirrored" : ""} as allowed).`
@@ -2418,7 +2528,14 @@ function App() {
   // Auth: Discord login via OAuth + Firebase custom tokens
   const [currentUser, setCurrentUser] = useState(() => { try { return JSON.parse(localStorage.getItem('oph_user')); } catch { return null; } });
   const [authChecked, setAuthChecked] = useState(false); // true once Firebase auth state has been checked
-  const [userProfile, setUserProfile] = useState(null); // { role, ... } fetched from Supabase
+  const [realProfile, setUserProfile] = useState(null); // { role, ... } fetched from Supabase: the REAL role
+  // "Preview as user (UI only)": creators and admins can make the UI behave as a plain user. Persisted locally. It only changes what the UI
+  // shows (userProfile below); requests, tokens and the real profile are never touched.
+  const [previewAsUser, setPreviewAsUser] = useState(() => { try { return localStorage.getItem("oph_preview_as_user") === "1"; } catch { return false; } });
+  useEffect(() => { try { localStorage.setItem("oph_preview_as_user", previewAsUser ? "1" : "0"); } catch {} }, [previewAsUser]);
+  const canPreviewAsUser = realProfile?.role === 'creator' || realProfile?.role === 'admin';
+  const previewActive = !!(previewAsUser && canPreviewAsUser);
+  const userProfile = useMemo(() => (previewActive ? { ...realProfile, role: 'user' } : realProfile), [realProfile, previewActive]); // EFFECTIVE profile
   const [userDropOpen, setUserDropOpen] = useState(false);
   const [logoutConfirming, setLogoutConfirming] = useState(false);
   const [adminOpen, setAdminOpen] = useState(false);
@@ -2806,7 +2923,7 @@ function App() {
   const [infoTool,    setInfoTool]  = useState(null); // "erase" | "hand" | "space"
   // Starred tiles: up to 5, shown when tiles panel is collapsed
   // Tool keys ("erase", "hand", ...) are plain strings; tiles are stored as refs ("d:<uuid>", "g:<path>", "u:<n>", "space", "warn")
-  const [starredTiles, setStarredTiles] = useState(() => migrateStarred(load("oph_starred", ["selectionGroup", "mirrorGroup", "guides", "overwrite"])));
+  const [starredTiles, setStarredTiles] = useState(() => migrateStarred(load("oph_starred", DEFAULT_STARRED)));
   // A tile that belongs to a sensor folder stars the folder (the folder is the one logical entry).
   const toggleStar = rawId => setStarredTiles(prev => {
     const id = SensorUI.canonicalRef(rawId, sensorOwners);
@@ -2938,6 +3055,24 @@ function App() {
   const bg1Ref   = useRef(bg1);
   const bg2Ref   = useRef(bg2);
   const histIdxRef = useRef(0);
+  // History: historyRef + histIdxRef are the single source of truth, written ONLY through commitHistory / setHistIndex (which mirror them into
+  // the history / histIdx state used for rendering). Entries are POST-action snapshots: history[histIdx] is the current state, undo restores
+  // history[histIdx - 1], redo history[histIdx + 1]. One user action = one pushHistoryEntry.
+  const historyRef = useRef(history);
+  const commitHistory = (entries, idx) => { historyRef.current = entries; histIdxRef.current = idx; setHistory(entries); setHistIdx(idx); };
+  const setHistIndex = idx => { histIdxRef.current = idx; setHistIdx(idx); };
+  const pushHistoryEntry = snap => {
+    const base = historyRef.current.slice(0, histIdxRef.current + 1); // a new action drops the redo tail
+    const capped = base.length >= MAX_HISTORY ? base.slice(1) : base;
+    const next = [...capped, snap];
+    commitHistory(next, next.length - 1);
+  };
+  // Snapshot of the state AFTER an action. Pass the values the action just computed (refs may lag a render); the rest is read live.
+  const makeSnap = (label, o = {}) => ({
+    grid: o.grid ?? gridRef.current, palette: clonePalette(paletteRef.current), w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current,
+    bg1: bg1Ref.current, bg2: bg2Ref.current,
+    highlight: [...(o.highlight ?? highlightedCellsRef.current)], primaryHighlight: [...(o.primary ?? primaryHighlightedCellsRef.current)], label,
+  });
   const bgHistTimerRef = useRef(null);
   const mirrorVRef = useRef(false);
   const mirrorHRef = useRef(false);
@@ -2946,7 +3081,6 @@ function App() {
   useEffect(() => { gridHRef.current = gridH; }, [gridH]);
   useEffect(() => { bg1Ref.current   = bg1;   }, [bg1]);
   useEffect(() => { bg2Ref.current   = bg2;   }, [bg2]);
-  useEffect(() => { histIdxRef.current = histIdx; }, [histIdx]);
   useEffect(() => { activeTilesetRef.current = activeTileset ?? null; }, [activeTileset]);
   useEffect(() => { selRef.current = sel; }, [sel]);
   useEffect(() => { eraserRef.current       = eraser;        }, [eraser]);
@@ -2967,7 +3101,9 @@ function App() {
       highlightDragOffsetRef.current = null;
       highlightDragAnchorCell.current = null;
     }
-  }, [highlightedCells.size, duplicateMode]);
+    // Deselect with nothing left to deselect: leave the eraser (Highlight stays on, ready for a new selection) instead of silently turning into a plain eraser
+    if (highlightedCells.size === 0 && eraser && highlightMode) { setEraser(false); eraserRef.current = false; }
+  }, [highlightedCells.size, duplicateMode, eraser, highlightMode]);
   useEffect(() => { zoomRef.current         = zoom;          }, [zoom]);
   useEffect(() => { selectionModeRef.current = selectionMode; save("oph_sel_mode", selectionMode); }, [selectionMode]);
   useEffect(() => { save("oph_mirror", { v: mirrorV, h: mirrorH, d: mirrorD }); }, [mirrorV, mirrorH, mirrorD]);
@@ -3184,14 +3320,14 @@ function App() {
     if (over !== undefined) return over;
     return getTileOffset(cellSizeTile(t, r, c));
   };
-  // Size and offsets are per variant: a sensor cell uses the CHOSEN variant's values (derived variants: their source tile;
-  // composed variants: the source tile of their first quadrant). Plain cells use their own tile.
+  // Size, offsets and ALL flags are per variant: a sensor cell uses the CHOSEN variant's values (derived variants: their source
+  // tile; composed variants: the majority-source tile, ties to the best-ranked source). Plain cells use their own tile.
   const cellSizeTile = (t, r, c) => {
     if (!t || !t.isSensor) return t;
     const d = sensorLayerRef.current.get(`${r},${c}`);
     if (!d || d.warn) return t;
     if (d.status === "composed") {
-      const ref = d.recipe && d.recipe[0] && d.recipe[0].sourceTileRef;
+      const ref = (d.entry && d.entry.majorityRef) ?? (d.recipe && d.recipe[0] && d.recipe[0].sourceTileRef);
       return sensorFolders.get(d.folderRef)?.ui.tiles.find(x => x.ref === ref) ?? t;
     }
     return d.tile ?? t;
@@ -3263,6 +3399,14 @@ function App() {
     return isDefaultOTGWall(t);
   };
 
+  // Who may open a tile's info (the ⓘ buttons): the tileset owner or an admin, by the EFFECTIVE role (Preview as user included);
+  // always for local uploads. Unfolding a sensor folder, its panel and the simulator stay open to everyone.
+  const canEditTile = t => {
+    if (!t) return false;
+    if (typeof t.ref === "string" && t.ref.startsWith("u:")) return true;
+    if (userProfile?.role === "admin") return true;
+    return !!(currentUser && t.tilesetOwnerId != null && t.tilesetOwnerId === currentUser.id && (t.isDb || (t.isSensor && t.sensorFolder?.scope !== SensorUI.SCOPE_GLOBAL)));
+  };
   // Tile defaults come straight off the tile (DB column, else the src-pattern fallback for global tiles).
   // The user override (sparse map keyed by ref) wins when present.
   const defaultPriorityTile   = t => t.dbPriority != null ? !!t.dbPriority : !!(t.src && TILE_SETTINGS.priority.some(p => t.src.includes(p)));
@@ -3284,8 +3428,10 @@ function App() {
       if (id == null) return false;
       const t = tilesByRef.get(refAt(palette, id));
       if (!t || t.isSpace) return false;
+      const vt = cellSizeTile(t, r, c); // OTG passable is per variant; a folder-level override (Tools panel) covers variants without their own
+      if (otgWallOverrides[vt.ref] !== undefined) return otgWallOverrides[vt.ref];
       if (otgWallOverrides[t.ref] !== undefined) return otgWallOverrides[t.ref];
-      return isDefaultOTGWall(t);
+      return isDefaultOTGWall(vt);
     };
     const isEmpty = (r, c) => r >= 0 && r < gridH && c >= 0 && c < gridW && !isWall(r, c);
     const result = new Set();
@@ -3438,15 +3584,17 @@ function App() {
       const isStarred = starredTiles.includes(t.ref);
       return (
         <div key={t.ref} data-sensor-variant={t.ref} title={`${t.codename ?? ""} ${t.sensorCode ?? "(no code)"}`.trim()}
-          style={{ width: cardSz, height: cardSz, borderRadius: 8, border: `2px solid ${failed ? C.danger : C.border}`, position: "relative", overflow: "visible", opacity: failed ? 0.55 : 1 }}>
+          style={{ width: cardSz, height: cardSz, borderRadius: 8, border: `2px solid ${failed ? C.danger : t.sensorCode === SensorEngine.FALLBACK_CODE ? FALLBACK_TILE_COLOR : C.border}`, position: "relative", overflow: "visible", opacity: failed ? 0.55 : 1 }}>
           <div style={{ position: "absolute", inset: 0, borderRadius: 6, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", background: C.panelDeep }}>
             {failed ? <span style={{ fontSize: 18 }}>⚠️</span>
               : <img src={t.blobSrc ?? t.src} alt="" onError={() => markFailed(t.ref)} className={tileCardLightBg ? "tile-img-checker" : undefined} style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated" }} />}
           </div>
           <span style={{ position: "absolute", left: 2, bottom: 1, fontSize: 7, fontFamily: "monospace", color: "#fff", background: "rgba(0,0,0,0.65)", borderRadius: 3, padding: "0 2px", pointerEvents: "none" }}>{t.sensorCode ?? "no code"}</span>
-          <span onClick={ev => { ev.stopPropagation(); setInfoTile(t.ref); }}
-            style={{ position: "absolute", top: -7, right: -7, width: 18, height: 18, fontSize: 15, cursor: "pointer", color: isStarred ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "18px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%" }}
-            title="Tile info">ⓘ</span>
+          {canEditTile(t) && (
+            <span onClick={ev => { ev.stopPropagation(); setInfoTile(t.ref); }}
+              style={{ position: "absolute", top: -7, right: -7, width: 18, height: 18, fontSize: 15, cursor: "pointer", color: isStarred ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "18px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%" }}
+              title="Tile info">ⓘ</span>
+          )}
         </div>
       );
     };
@@ -3458,7 +3606,8 @@ function App() {
         <div style={{ padding: "5px 8px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0, gap: 6 }}>
           <span style={{ fontSize: 10, fontWeight: 700, color: SENSOR_YELLOW, letterSpacing: 0.5 }}>✨ {entry.label}</span>
           <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            {hasWarn && <button onClick={() => setSensorWarnFolder(sensor)} style={{ ...sensorBtnStyle(SENSOR_YELLOW), padding: "0 6px", fontSize: 12 }} title="Shared settings differ / tiles without a code">⚠</button>}
+            {sensorFolders.get(sensor.ref)?.rerollable && <button data-sensor-reroll-panel={sensor.ref} onClick={() => rerollFolder(sensor.ref)} style={{ ...sensorBtnStyle(SENSOR_YELLOW), padding: "0 6px", fontSize: 12 }} title="Reroll this folder's tied picks (not an undo step)">🎲</button>}
+            {hasWarn && <button data-sensor-warn={sensor.ref} onClick={() => setSensorWarnFolder(sensor)} style={{ ...sensorBtnStyle(SENSOR_YELLOW), padding: "0 6px", fontSize: 12 }} title={sensor.warnings.some(w => w.level === "warning") ? "The variants disagree on the symbol" : sensor.warnings.length ? "Variants differ in flags, size or offsets" : "Some tiles have no sensor code"}>⚖️</button>}
             <button onClick={() => setOpenFolderKey(null)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 15, lineHeight: 1, padding: "0 2px" }}>×</button>
           </span>
         </div>
@@ -3600,11 +3749,23 @@ function App() {
     [...tilesetEntries, ...globalEntries].forEach(e => {
       if (e.type !== 'folder' || !e.sensor) return;
       const folder = SensorUI.engineFolder(e.sensor);
-      m.set(e.sensor.ref, { ui: e.sensor, folder, candidates: SensorEngine.buildCandidates(folder) });
+      const candidates = SensorEngine.buildCandidates(folder);
+      m.set(e.sensor.ref, { ui: e.sensor, folder, candidates, rerollable: SensorEngine.hasRerollableTies(folder, candidates) });
     });
     return m;
   }, [tilesetEntries, globalEntries]);
-  const sensorLayer = useMemo(() => SensorUI.deriveLayer({ grid, refs: palette.refs, folders: sensorFolders }), [grid, palette, sensorFolders]);
+  // Reroll seeds: one integer per sensor folder (key = its s: ref, global folders included). Random at page load, changed only by the 🎲 buttons.
+  // Deliberately NOT persisted anywhere: not in localStorage, saved maps, undo snapshots or the seed format. The screen and Download Map both
+  // read the layer derived from this one map, so the export always matches what is shown.
+  const pageSeedRef = useRef(Math.floor(Math.random() * 0x7fffffff));
+  const [rerollSeeds, setRerollSeeds] = useState({}); // ref -> seed chosen by a 🎲 click this session
+  const rerollSeedMap = useMemo(() => {
+    const m = new Map();
+    sensorFolders.forEach((_, ref) => m.set(ref, rerollSeeds[ref] ?? ((SensorEngine.stringToInt(ref) ^ pageSeedRef.current) | 0)));
+    return m;
+  }, [sensorFolders, rerollSeeds]);
+  const rerollFolder = ref => setRerollSeeds(prev => ({ ...prev, [ref]: Math.floor(Math.random() * 0x7fffffff) }));
+  const sensorLayer = useMemo(() => SensorUI.deriveLayer({ grid, refs: palette.refs, folders: sensorFolders, rerolls: rerollSeedMap }), [grid, palette, sensorFolders, rerollSeedMap]);
   const sensorLayerRef = useRef(sensorLayer);
   sensorLayerRef.current = sensorLayer;
 
@@ -3833,12 +3994,7 @@ function App() {
 
     // ── History snap with the converted grid + palette, then apply state ──
     const snap = { grid: newGrid, palette: clonePalette(newPal), w: gridWRef.current, h: gridHRef.current, tileset: newTilesetName, bg1: tsBg.bg1, bg2: tsBg.bg2, highlight: [...highlightedCellsRef.current], label: `Switch from ${activeTileset ?? '(none)'} to ${newTilesetName}` };
-    setHistory(h => {
-      const trimmed = h.slice(0, histIdxRef.current + 1);
-      const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-      return [...capped, snap];
-    });
-    setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
+    pushHistoryEntry(snap);
     if (newPal !== paletteRef.current) replacePalette(newPal);
     if (newGrid !== currentGrid) setGridRaw(newGrid);
     setActiveTileset(newTilesetName);
@@ -3907,7 +4063,7 @@ function App() {
     }
 
     (async () => {
-      const isAdmin = userProfile?.role === 'admin';
+      const isAdmin = realProfile?.role === 'admin'; // the request always uses the REAL role; preview filters the result below
       const tsBase = new URL(`${WORKER_URL}/rest/v1/tilesets`);
       if (isAdmin) {
         // admins see all tilesets
@@ -3927,7 +4083,9 @@ function App() {
         if (!tsResp.ok) {
           console.error('[tilesets] fetch failed:', tsResp.status, tsResp.statusText, await tsResp.text());
         }
-        const tilesets = tsResp.ok ? await tsResp.json() : [];
+        const fetchedTilesets = tsResp.ok ? await tsResp.json() : [];
+        // Preview as user: show what a plain user would see (published or own), without changing the request.
+        const tilesets = previewActive && Array.isArray(fetchedTilesets) ? fetchedTilesets.filter(ts => ts.is_published || (currentUser?.id && ts.owner_id === currentUser.id)) : fetchedTilesets;
         if (!Array.isArray(tilesets) || tilesets.length === 0) {
           console.error('[tilesets] empty or invalid response:', tilesets);
           setDbTilesets([]);
@@ -4014,7 +4172,7 @@ function App() {
         setTilesLoading(false);
       }
     })();
-  }, [currentUser?.id, tsFetchTrigger, userProfile?.role, isAuthenticated]);
+  }, [currentUser?.id, tsFetchTrigger, realProfile?.role, previewActive, isAuthenticated]);
 
   // On-demand tile loading: fetch tiles for the active tileset if not yet cached
   useEffect(() => {
@@ -4193,9 +4351,7 @@ function App() {
     });
     replacePalette(pal);
     setGridRaw(g);
-    setHistory([{ grid: g, palette: clonePalette(pal), w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [], label: "Load" }]);
-    setHistIdx(0);
-    histIdxRef.current = 0;
+    commitHistory([{ grid: g, palette: clonePalette(pal), w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [], label: "Load" }], 0);
     if (unresolved > 0) warnCleared(unresolved, "load");
   }, [tiles, flatDefaultTiles, manifest, dbTilesByTsId, dbTilesets, tilesLoading, activeTileset]); // eslint-disable-line
   useEffect(() => { if (activeTileset) save(SK.activeTileset, activeTileset); }, [activeTileset]);
@@ -4240,12 +4396,7 @@ function App() {
     if (bgHistTimerRef.current) clearTimeout(bgHistTimerRef.current);
     bgHistTimerRef.current = setTimeout(() => {
       const snap = { grid: gridRef.current, palette: clonePalette(paletteRef.current), w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...highlightedCellsRef.current]};
-      setHistory(h => {
-        const trimmed = h.slice(0, histIdxRef.current + 1);
-        const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-        return [...capped, snap];
-      });
-      setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
+      pushHistoryEntry(snap);
       bgHistTimerRef.current = null;
     }, 350);
   }, []);
@@ -4276,18 +4427,10 @@ function App() {
     if (!skipHistory) histLabelRef.current = "Draw";
     setGridRaw(prev => {
       const next = typeof updater === "function" ? updater(prev) : updater;
-      if (!skipHistory) {
-        const palSnap = clonePalette(paletteRef.current); // taken together with `next`, so undo restores entries removed later
-        setHistory(h => {
-          const trimmed = h.slice(0, histIdx + 1);
-          const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-          return [...capped, { grid: next, palette: palSnap, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...highlightedCellsRef.current], label: snapLabel }];
-        });
-        setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
-      }
+      if (!skipHistory) pushHistoryEntry(makeSnap(snapLabel, { grid: next })); // palette is taken together with `next`, so undo restores entries removed later
       return next;
     });
-  }, [histIdx]);
+  }, []);
 
   const applySnap = snap => {
     if (snap.palette) replacePalette(clonePalette(snap.palette)); // the snapshot's own palette: its indexes belong to it
@@ -4351,6 +4494,129 @@ function App() {
     applySnap(snap);
   };
 
+  // Move the highlight by (dr, dc) as ONE operation (see planHighlightMove for the rules): lift every selected cell plus its mirror images,
+  // write every target once, move the primary selection by (dr, dc), and push one undo step holding the state after the move.
+  const moveHighlightRef = useRef(() => {});
+  const moveHighlightBy = (dr, dc) => {
+    const g0 = gridRef.current;
+    const { cR, cC } = getEffectiveCenter();
+    const ctx = { v: mirrorVRef.current, h: mirrorHRef.current, d: mirrorDRef.current, cR, cC, rows: gridHRef.current, cols: gridWRef.current };
+    const keys = primaryHighlightedCellsRef.current.size ? primaryHighlightedCellsRef.current : highlightedCellsRef.current; // legacy snapshots had no primary set
+    const plan = planHighlightMove({ primary: [...keys].map(k => k.split(',').map(Number)), dr, dc, ctx, hasContent: (r, c) => g0[r]?.[c] != null });
+    const newG = applyHighlightMovePlan(g0, plan).grid;
+    setGridStableRef.current(() => newG, true);
+    setGridOffsets(prev => applyHighlightMovePlan(g0, plan, prev).sparse);
+    const toSet = cells => new Set(cells.map(([r, c]) => `${r},${c}`));
+    const newHighlight = toSet(plan.newHighlight), newPrimary = toSet(plan.newPrimary);
+    setHighlightedCells(newHighlight); highlightedCellsRef.current = newHighlight;
+    setPrimaryHighlightedCells(newPrimary); primaryHighlightedCellsRef.current = newPrimary;
+    gridRef.current = newG;
+    pushHistoryEntry(makeSnap("Move", { grid: newG, highlight: newHighlight, primary: newPrimary }));
+  };
+  useEffect(() => { moveHighlightRef.current = moveHighlightBy; });
+
+  // ── Highlight gesture: ONE implementation shared by Highlight (add) and Deselect (remove), mouse and touch ─────────────────────────
+  // Deselect = the Erase tool while Highlight is active. A press while Highlight is active is one of:
+  //   'drag'   press on a primary highlighted cell (not in Deselect): lift and move the region
+  //   'add'    start a selection in the current selection mode (single / line / rect / fill), added to the highlight on release
+  //   'remove' the same gesture in Deselect: what the gesture covers is removed from the highlight on release
+  //   'none'   Deselect with nothing highlighted
+  const hlOpRef = useRef("add");
+  const highlightPressKind = (r, c) => {
+    if (eraserRef.current && highlightModeRef.current) return highlightedCellsRef.current.size > 0 ? "remove" : "none";
+    return primaryHighlightedCellsRef.current.has(`${r},${c}`) && highlightedCellsRef.current.size > 0 ? "drag" : "add";
+  };
+  // Sets up the selection refs and previews for a gesture starting at (r, c); the same code for add and remove.
+  const startHighlightSelection = (r, c, op) => {
+    hlOpRef.current = op;
+    const key = `${r},${c}`;
+    selectionStartRef.current = [r, c];
+    selectionEndRef.current   = [r, c];
+    hoveredTilesRef.current   = new Set([key]);
+    lastLineCellRef.current   = [r, c];
+    const mode = selectionModeRef.current;
+    if (mode === 'single') setPreviewCells([[r, c]]);
+    else if (mode === 'line') setPreviewCells([[r, c]]);
+    else if (mode === 'rect') setRectPreview({ r1: r, c1: c, r2: r, c2: c });
+    else if (mode === 'fill') {
+      const originId = gridRef.current?.[r]?.[c] ?? null;
+      const fillSet = bfsFillRef.current(r, c, gridRef.current, gridWRef.current, gridHRef.current, originId !== null, true);
+      hoveredTilesRef.current = fillSet;
+      setPreviewCells([...fillSet].map(k => k.split(',').map(Number)));
+    }
+  };
+  // The cells the finished gesture covers, in the current selection mode.
+  const highlightGestureCells = mode => {
+    if (mode === 'rect') {
+      const out = [];
+      if (selectionStartRef.current) {
+        const [sr, sc] = selectionStartRef.current;
+        const [er, ec] = selectionEndRef.current ?? [sr, sc];
+        for (let r = Math.min(sr, er); r <= Math.max(sr, er); r++) for (let c = Math.min(sc, ec); c <= Math.max(sc, ec); c++) out.push([r, c]);
+      }
+      return out;
+    }
+    return [...hoveredTilesRef.current].map(k => k.split(',').map(Number)); // single, line, fill
+  };
+  const highlightKeySet = cells => new Set(cells.map(([r, c]) => `${r},${c}`));
+  // Applies the finished gesture (op in hlOpRef) to the highlight. Add: the covered cells and their mirror images join. Remove: every primary
+  // cell inside the covered cells or their mirror images leaves, and the mirror copies follow their primaries. One undo step per gesture.
+  const applyHighlightGesture = mode => {
+    const cells = highlightGestureCells(mode);
+    if (!cells.length) return;
+    const mirrorsOf = (r, c) => { const fn = getMirrorRef.current; return fn ? fn(r, c) : []; };
+    if (hlOpRef.current === "remove") {
+      const gone = new Set();
+      cells.forEach(([r, c]) => { gone.add(`${r},${c}`); mirrorsOf(r, c).forEach(([mr, mc]) => gone.add(`${mr},${mc}`)); });
+      const newPrimary = new Set([...primaryHighlightedCellsRef.current].filter(k => !gone.has(k)));
+      const newHighlight = new Set();
+      newPrimary.forEach(k => { const [r, c] = k.split(',').map(Number); newHighlight.add(k); mirrorsOf(r, c).forEach(([mr, mc]) => newHighlight.add(`${mr},${mc}`)); });
+      if (newPrimary.size === primaryHighlightedCellsRef.current.size) return; // nothing selected was touched: no state change, no undo step
+      setPrimaryHighlightedCells(newPrimary); primaryHighlightedCellsRef.current = newPrimary;
+      setHighlightedCells(newHighlight); highlightedCellsRef.current = newHighlight;
+      pushHistoryEntry(makeSnap("Deselect", { highlight: newHighlight, primary: newPrimary }));
+      return;
+    }
+    const primaryFinal = new Set(primaryHighlightedCellsRef.current);
+    cells.forEach(([r, c]) => primaryFinal.add(`${r},${c}`));
+    const finalHighlight = new Set(highlightedCellsRef.current);
+    cells.forEach(([r, c]) => { finalHighlight.add(`${r},${c}`); mirrorsOf(r, c).forEach(([mr, mc]) => finalHighlight.add(`${mr},${mc}`)); });
+    setPrimaryHighlightedCells(primaryFinal); primaryHighlightedCellsRef.current = primaryFinal;
+    setHighlightedCells(finalHighlight); highlightedCellsRef.current = finalHighlight;
+    pushHistoryEntry(makeSnap("Highlight", { highlight: finalHighlight, primary: primaryFinal }));
+  };
+  const applyHighlightGestureRef = useRef(() => {});
+  const highlightPressKindRef = useRef(() => "add");
+  const startHighlightSelectionRef = useRef(() => {});
+  useEffect(() => { applyHighlightGestureRef.current = applyHighlightGesture; highlightPressKindRef.current = highlightPressKind; startHighlightSelectionRef.current = startHighlightSelection; });
+
+  // Duplicate and Deselect (the Erase tool while Highlight is active) are mutually exclusive: turning one on turns the other off, refs included
+  // so a press in the same tick already sees the new mode. Every entry point (cards, shortcut bar, mobile) goes through these two.
+  const exitDuplicate = () => {
+    setDuplicateMode(false); duplicateModeRef.current = false;
+    setHighlightDragOffset(null); highlightDragOffsetRef.current = null; highlightDragAnchorCell.current = null;
+  };
+  const setDeselectMode = on => {
+    setEraser(on); eraserRef.current = on;
+    if (on) exitDuplicate();
+  };
+  const setDuplicateOn = on => {
+    if (!on) { exitDuplicate(); return; }
+    setDuplicateMode(true); duplicateModeRef.current = true;
+    setEraser(false); eraserRef.current = false;
+    setHandMode(false); setEyedropperMode(false); setMagnetMode(false); setSel(null);
+    if (!highlightModeRef.current) { setHighlightMode(true); highlightModeRef.current = true; }
+  };
+
+  // Deselect everything (Escape / Space): clears the highlight and the primary selection together, as one undo step.
+  const clearHighlightAll = label => {
+    if (highlightedCellsRef.current.size === 0 && primaryHighlightedCellsRef.current.size === 0) return;
+    const empty = new Set();
+    setHighlightedCells(empty); highlightedCellsRef.current = empty;
+    setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set();
+    pushHistoryEntry(makeSnap(label, { highlight: [], primary: [] }));
+  };
+
   // Apply a duplicate: place copy of primary highlighted cells at current drag-offset position, with mirroring
   const applyDuplicate = useCallback(() => {
     const offset = highlightDragOffsetRef.current;
@@ -4388,26 +4654,28 @@ function App() {
       }
       placements.forEach(({ newR: nr, newC: nc, id: tid }) => { newG[nr][nc] = tid; });
     });
-    histLabelRef.current = "Duplicate Place";
-    if (pushHistRef.current) pushHistRef.current();
     setGridStableRef.current(() => newG, true);
+    gridRef.current = newG;
+    pushHistoryEntry(makeSnap("Duplicate Place", { grid: newG })); // one undo step, state AFTER the copy (palette may have grown)
     setHighlightDragOffset(null); highlightDragOffsetRef.current = null;
     highlightDragAnchorCell.current = null;
   }, [tiles]);
 
   const undo = useCallback(() => {
-    if (histIdx <= 0) return;
-    const newIdx = histIdx - 1;
-    setHistIdx(newIdx);
-    restoreSnap(history[newIdx], () => setHistIdx(histIdx));
-  }, [history, histIdx, dbTilesets, ensureTilesetLoaded]);
+    const idx = histIdxRef.current;
+    if (idx <= 0) return;
+    const target = historyRef.current[idx - 1];
+    setHistIndex(idx - 1);
+    restoreSnap(target, () => setHistIndex(idx));
+  }, [dbTilesets, ensureTilesetLoaded]);
 
   const redo = useCallback(() => {
-    if (histIdx >= history.length - 1) return;
-    const newIdx = histIdx + 1;
-    setHistIdx(newIdx);
-    restoreSnap(history[newIdx], () => setHistIdx(histIdx));
-  }, [history, histIdx, dbTilesets, ensureTilesetLoaded]);
+    const idx = histIdxRef.current;
+    if (idx >= historyRef.current.length - 1) return;
+    const target = historyRef.current[idx + 1];
+    setHistIndex(idx + 1);
+    restoreSnap(target, () => setHistIndex(idx));
+  }, [dbTilesets, ensureTilesetLoaded]);
 
   // Push the current grid as a history snapshot (called once on mousedown, before any paint).
   // All cell writes during a drag use skipHistory=true, so the whole drag is one undo step.
@@ -4415,13 +4683,8 @@ function App() {
     const label = histLabelRef.current || "Draw";
     histLabelRef.current = "Draw";
     const snap = { grid, palette: clonePalette(paletteRef.current), w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1, bg2, highlight: [...highlightedCellsRef.current], customCenter: customCenterRef.current, label };
-    setHistory(h => {
-      const trimmed = h.slice(0, histIdx + 1);
-      const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-      return [...capped, snap];
-    });
-    setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
-  }, [histIdx, grid, bg1, bg2]);
+    pushHistoryEntry(snap);
+  }, [grid, bg1, bg2]);
 
   const loadFiles = files => {
     const imageFiles = [...files].filter(f => f.type.startsWith("image/"));
@@ -4620,53 +4883,9 @@ function App() {
   const commitSelectionOnMouseUp = useCallback(() => {
     const mode = selectionModeRef.current;
 
-    // In highlight mode, commit to highlightedCells instead of the grid
+    // In highlight mode, commit to the highlight (add, or remove in Deselect) instead of the grid
     if (highlightModeRef.current) {
-      let newCells = [];
-      if (mode === 'single' || mode === 'line') {
-        newCells = [...hoveredTilesRef.current].map(k => k.split(',').map(Number));
-      } else if (mode === 'rect') {
-        if (selectionStartRef.current) {
-          const [sr, sc] = selectionStartRef.current;
-          const [er, ec] = selectionEndRef.current ?? [sr, sc];
-          for (let r = Math.min(sr, er); r <= Math.max(sr, er); r++)
-            for (let c = Math.min(sc, ec); c <= Math.max(sc, ec); c++)
-              newCells.push([r, c]);
-        }
-      } else if (mode === 'fill') {
-        newCells = [...hoveredTilesRef.current].map(k => k.split(',').map(Number));
-      }
-      if (newCells.length) {
-        // Track primary cells (only what the user drew — no mirrors)
-        const primaryFinal = new Set(primaryHighlightedCellsRef.current);
-        newCells.forEach(([r, c]) => primaryFinal.add(`${r},${c}`));
-        setPrimaryHighlightedCells(primaryFinal);
-        primaryHighlightedCellsRef.current = primaryFinal;
-        // Apply mirroring: include mirror positions of each highlighted cell
-        const getMirror = getMirrorRef.current;
-        const mirroredCells = [];
-        newCells.forEach(([r, c]) => {
-          mirroredCells.push([r, c]);
-          if (getMirror) {
-            getMirror(r, c).forEach(pos => mirroredCells.push(pos));
-          }
-        });
-        // Build final highlight synchronously so we can push it to history right away
-        const finalHighlight = new Set(highlightedCellsRef.current);
-        mirroredCells.forEach(([r, c]) => finalHighlight.add(`${r},${c}`));
-        setHighlightedCells(finalHighlight);
-        highlightedCellsRef.current = finalHighlight;
-        // Push AFTER state so undo restores the pre-selection state (tile stays, highlight clears)
-        // Update histIdxRef synchronously so rapid subsequent events see the correct index
-        const selNextIdx = Math.min(histIdxRef.current + 1, MAX_HISTORY - 1);
-        histIdxRef.current = selNextIdx;
-        setHistory(h => {
-          const trimmed = h.slice(0, selNextIdx);
-          const capped = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-          return [...capped, { grid: gridRef.current, palette: clonePalette(paletteRef.current), w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...finalHighlight], primaryHighlight: [...primaryFinal], label: "Highlight" }];
-        });
-        setHistIdx(selNextIdx);
-      }
+      applyHighlightGestureRef.current(mode);
       setRectPreview(null);
       setPreviewCells(null);
       selectionStartRef.current = null;
@@ -4808,52 +5027,20 @@ function App() {
         }
         return;
       }
-      if (eraserRef.current && highlightModeRef.current && highlightedCellsRef.current.size > 0) {
-        const key = `${r},${c}`;
-        if (primaryHighlightedCellsRef.current.has(key)) {
-          const newPrimary = new Set(primaryHighlightedCellsRef.current);
-          newPrimary.delete(key);
-          const newAll = new Set();
-          const getMirrorFn = getMirrorMetaRef.current;
-          newPrimary.forEach(pk => {
-            newAll.add(pk);
-            const [pr, pc] = pk.split(',').map(Number);
-            if (getMirrorFn) getMirrorFn(pr, pc).forEach(({ pos: [mr, mc] }) => newAll.add(`${mr},${mc}`));
-          });
-          setPrimaryHighlightedCells(newPrimary);
-          primaryHighlightedCellsRef.current = newPrimary;
-          setHighlightedCells(newAll);
-          highlightedCellsRef.current = newAll;
-        }
-        return;
-      }
       if (highlightModeRef.current || duplicateModeRef.current) {
-        const key = `${r},${c}`;
-        if (primaryHighlightedCellsRef.current.has(key) && highlightedCellsRef.current.size > 0) {
+        const kind = highlightPressKindRef.current(r, c);
+        if (kind === 'drag') {
           // Start dragging the highlight region (only from primary cells)
           isHighlightDraggingRef.current = true;
           highlightDragAnchorCell.current = [r, c];
           setHighlightDragOffset({ dr: 0, dc: 0 });
           highlightDragOffsetRef.current = { dr: 0, dc: 0 };
           setDragPos({ x: e.clientX, y: e.clientY });
-        } else {
-          // Paint: add cells to highlighted set
+        } else if (kind !== 'none') {
+          // Selection gesture: add to the highlight, or remove from it in Deselect (same code, same selection modes)
           setPainting(true);
           paintingRef.current = true;
-          selectionStartRef.current = [r, c];
-          selectionEndRef.current   = [r, c];
-          hoveredTilesRef.current   = new Set([key]);
-          lastLineCellRef.current   = [r, c];
-          const mode = selectionModeRef.current;
-          if (mode === 'single') setPreviewCells([[r, c]]);
-          else if (mode === 'line') setPreviewCells([[r, c]]);
-          else if (mode === 'rect') setRectPreview({ r1: r, c1: c, r2: r, c2: c });
-          else if (mode === 'fill') {
-            const originId = gridRef.current?.[r]?.[c] ?? null;
-            const fillSet = bfsFill(r, c, gridRef.current, gridWRef.current, gridHRef.current, originId !== null, true);
-            hoveredTilesRef.current = fillSet;
-            setPreviewCells([...fillSet].map(k => k.split(',').map(Number)));
-          }
+          startHighlightSelectionRef.current(r, c, kind);
         }
         return;
       }
@@ -4864,8 +5051,7 @@ function App() {
 
       if (existingId != null && !eraserRef.current && mirrorSettingsRef.current.allowSwap) {
         if (selectionModeRef.current === 'fill') {
-          // ── BLOCK OVERWRITE + FILL: select entire connected same-tile region ──
-          if (pushHistRef.current) pushHistRef.current();
+          // ── BLOCK OVERWRITE + FILL: select entire connected same-tile region (the commit on release pushes the one undo step) ──
           setPainting(true);
           paintingRef.current = true;
           selectionStartRef.current = [r, c];
@@ -5108,105 +5294,7 @@ function App() {
             highlightDragAnchorCell.current = null;
             return;
           }
-          // Compute per-cell mirrored offset so symmetric structures move in opposite directions
-          const anchorCell = highlightDragAnchorCell.current;
-          const [ar, ac] = anchorCell ?? [0, 0];
-          const { cR, cC } = getEffectiveCenter();
-          const anchorRowSign = ar < cR ? -1 : (ar > cR ? 1 : 0);
-          const anchorColSign = ac < cC ? -1 : (ac > cC ? 1 : 0);
-          const getEffectiveDelta = (r, c) => {
-            if (!mirrorVRef.current && !mirrorHRef.current && !mirrorDRef.current) return { dr, dc };
-            const cellRowSign = r < cR ? -1 : (r > cR ? 1 : 0);
-            const cellColSign = c < cC ? -1 : (c > cC ? 1 : 0);
-            const flipRow = (mirrorHRef.current || mirrorDRef.current) && anchorRowSign !== 0 && cellRowSign !== 0 && cellRowSign !== anchorRowSign;
-            const flipCol = (mirrorVRef.current || mirrorDRef.current) && anchorColSign !== 0 && cellColSign !== 0 && cellColSign !== anchorColSign;
-            return { dr: flipRow ? -dr : dr, dc: flipCol ? -dc : dc };
-          };
-          // Move grid tiles from old positions to new positions (with rotations and offsets)
-          const oldCells = [...highlightedCellsRef.current];
-          const newCells = oldCells
-            .map(key => {
-              const [r, c] = key.split(',').map(Number);
-              const delta = getEffectiveDelta(r, c);
-              const newR = r + delta.dr, newC = c + delta.dc;
-              const crossedV = c !== cC && newC !== cC && (c < cC) !== (newC < cC);
-              const crossedH = r !== cR && newR !== cR && (r < cR) !== (newR < cR);
-              return { oldKey: key, newR, newC,
-                fV: mirrorVRef.current && crossedV,
-                fH: mirrorHRef.current && crossedH,
-                fD: mirrorDRef.current && crossedV && crossedH };
-            })
-            .filter(({ newR, newC }) => newR >= 0 && newR < gridHRef.current && newC >= 0 && newC < gridWRef.current);
-
-          // Extend with mirror positions of new cells (auto-mirror-on-move when mirroring is active)
-          const seenNewKeys = new Set(newCells.map(({ newR, newC }) => `${newR},${newC}`));
-          const getMirrorMetaFn = getMirrorMetaRef.current;
-          if (getMirrorMetaFn && (mirrorVRef.current || mirrorHRef.current || mirrorDRef.current)) {
-            const extensions = [];
-            newCells.forEach(cell => {
-              getMirrorMetaFn(cell.newR, cell.newC).forEach(({ pos: [mr, mc], fV: mfV, fH: mfH, fD: mfD }) => {
-                const mKey = `${mr},${mc}`;
-                if (!seenNewKeys.has(mKey)) {
-                  seenNewKeys.add(mKey);
-                  extensions.push({ oldKey: cell.oldKey, newR: mr, newC: mc, fV: mfV, fH: mfH, fD: mfD, isMirrorExt: true });
-                }
-              });
-            });
-            newCells.push(...extensions);
-          }
-
-          // Pre-compute post-drag grid from the current-state ref so we can push it
-          // to history synchronously (React state updater functions run lazily)
-          const preGrid = gridRef.current;
-          const newG = preGrid.map(row => [...row]);
-          const tileData = [];
-          oldCells.forEach(key => {
-            const [r, c] = key.split(',').map(Number);
-            tileData.push({ r, c, id: newG[r]?.[c] ?? null });
-            newG[r][c] = null;
-          });
-          newCells.forEach(({ oldKey, newR, newC }) => {
-            const [r, c] = oldKey.split(',').map(Number);
-            const entry = tileData.find(d => d.r === r && d.c === c);
-            if (entry && (entry.id !== null || newG[newR][newC] === null)) newG[newR][newC] = entry.id;
-          });
-          setGridStableRef.current(() => newG, true);
-          const ms = mirrorSettingsRef.current;
-          // Move gridOffsets
-          setGridOffsets(prev => {
-            const n = { ...prev };
-            const off_data = {};
-            oldCells.forEach(key => {
-              off_data[key] = prev[key];
-              delete n[key];
-            });
-            newCells.forEach(({ oldKey, newR, newC }) => {
-              if (off_data[oldKey] !== undefined) n[`${newR},${newC}`] = off_data[oldKey];
-            });
-            return n;
-          });
-          // Update highlighted cells to new positions
-          const newHighlight = new Set(newCells.map(({ newR, newC }) => `${newR},${newC}`));
-          setHighlightedCells(newHighlight);
-          highlightedCellsRef.current = newHighlight;
-          // Move primary cells by plain (dr, dc)
-          const newPrimaryHighlight = new Set();
-          [...primaryHighlightedCellsRef.current].forEach(key => {
-            const [pr, pc] = key.split(',').map(Number);
-            const nr = pr + dr, nc = pc + dc;
-            if (nr >= 0 && nr < gridHRef.current && nc >= 0 && nc < gridWRef.current) newPrimaryHighlight.add(`${nr},${nc}`);
-          });
-          setPrimaryHighlightedCells(newPrimaryHighlight);
-          primaryHighlightedCellsRef.current = newPrimaryHighlight;
-          // Push post-drag snapshot; synchronous histIdxRef update prevents stale-ref trimming
-          const dragNextIdx = Math.min(histIdxRef.current + 1, MAX_HISTORY - 1);
-          histIdxRef.current = dragNextIdx;
-          setHistory(h => {
-            const trimmed = h.slice(0, dragNextIdx);
-            const capped = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-            return [...capped, { grid: newG, palette: clonePalette(paletteRef.current), w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...newHighlight], primaryHighlight: [...newPrimaryHighlight], label: "Move" }];
-          });
-          setHistIdx(dragNextIdx);
+          moveHighlightRef.current(dr, dc); // one atomic move, shared with the touch path
         }
         isHighlightDraggingRef.current = false;
         highlightDragAnchorCell.current = null;
@@ -5353,34 +5441,18 @@ function App() {
 
       // ── HIGHLIGHT / DUPLICATE MODE ─────────────────────────────────
       if (highlightModeRef.current || duplicateModeRef.current) {
-        const key = `${r},${c}`;
-        if (primaryHighlightedCellsRef.current.has(key) && highlightedCellsRef.current.size > 0) {
+        const kind = highlightPressKindRef.current(r, c);
+        if (kind === 'drag') {
           // Tap on a primary highlighted cell → start dragging the region
           isHighlightDraggingRef.current = true;
           highlightDragAnchorCell.current = [r, c];
           setHighlightDragOffset({ dr: 0, dc: 0 });
           highlightDragOffsetRef.current = { dr: 0, dc: 0 };
           setDragPos({ x: e.touches[0].clientX, y: e.touches[0].clientY });
-        } else {
-          // Tap on empty area → start painting highlight selection
+        } else if (kind !== 'none') {
+          // Selection gesture (add, or remove in Deselect): the same shared code as the mouse
           isTouchPainting = true;
-          selectionStartRef.current = [r, c];
-          selectionEndRef.current   = [r, c];
-          hoveredTilesRef.current   = new Set([key]);
-          lastLineCellRef.current   = [r, c];
-          const mode = selectionModeRef.current;
-          if (mode === 'single') setPreviewCells([[r, c]]);
-          else if (mode === 'line') setPreviewCells([[r, c]]);
-          else if (mode === 'rect') setRectPreview({ r1: r, c1: c, r2: r, c2: c });
-          else if (mode === 'fill') {
-            const bfs = bfsFillRef.current;
-            if (bfs) {
-              const originId = gridRef.current?.[r]?.[c] ?? null;
-              const fillSet = bfs(r, c, gridRef.current, gridWRef.current, gridHRef.current, originId !== null, true);
-              hoveredTilesRef.current = fillSet;
-              setPreviewCells([...fillSet].map(k => k.split(',').map(Number)));
-            }
-          }
+          startHighlightSelectionRef.current(r, c, kind);
         }
         return;
       }
@@ -5544,72 +5616,7 @@ function App() {
                 highlightDragAnchorCell.current = null;
                 return;
               }
-            // Compute per-cell mirrored offset so symmetric structures move in opposite directions
-            const anchorCell = highlightDragAnchorCell.current;
-            const [ar, ac] = anchorCell ?? [0, 0];
-            const { cR, cC } = getEffectiveCenter();
-            const anchorRowSign = ar < cR ? -1 : (ar > cR ? 1 : 0);
-            const anchorColSign = ac < cC ? -1 : (ac > cC ? 1 : 0);
-            const getEffectiveDelta = (r, c) => {
-              if (!mirrorVRef.current && !mirrorHRef.current && !mirrorDRef.current) return { dr, dc };
-              const cellRowSign = r < cR ? -1 : (r > cR ? 1 : 0);
-              const cellColSign = c < cC ? -1 : (c > cC ? 1 : 0);
-              const flipRow = (mirrorHRef.current || mirrorDRef.current) && anchorRowSign !== 0 && cellRowSign !== 0 && cellRowSign !== anchorRowSign;
-              const flipCol = (mirrorVRef.current || mirrorDRef.current) && anchorColSign !== 0 && cellColSign !== 0 && cellColSign !== anchorColSign;
-              return { dr: flipRow ? -dr : dr, dc: flipCol ? -dc : dc };
-            };
-            const oldCells = [...highlightedCellsRef.current];
-            const newCells = oldCells
-              .map(key => {
-                const [or, oc] = key.split(',').map(Number);
-                const delta = getEffectiveDelta(or, oc);
-                const newR = or + delta.dr, newC = oc + delta.dc;
-                const crossedV = oc !== cC && newC !== cC && (oc < cC) !== (newC < cC);
-                const crossedH = or !== cR && newR !== cR && (or < cR) !== (newR < cR);
-                return { oldKey: key, newR, newC,
-                  fV: mirrorVRef.current && crossedV,
-                  fH: mirrorHRef.current && crossedH,
-                  fD: mirrorDRef.current && crossedV && crossedH };
-              })
-              .filter(({ newR, newC }) => newR >= 0 && newR < gridHRef.current && newC >= 0 && newC < gridWRef.current);
-
-            // Extend with mirror positions of new cells (auto-mirror-on-move when mirroring is active)
-            const seenNewKeys = new Set(newCells.map(({ newR, newC }) => `${newR},${newC}`));
-            const getMirrorMetaFn = getMirrorMetaRef.current;
-            if (getMirrorMetaFn && (mirrorVRef.current || mirrorHRef.current || mirrorDRef.current)) {
-              const extensions = [];
-              newCells.forEach(cell => {
-                getMirrorMetaFn(cell.newR, cell.newC).forEach(({ pos: [mr, mc], fV: mfV, fH: mfH, fD: mfD }) => {
-                  const mKey = `${mr},${mc}`;
-                  if (!seenNewKeys.has(mKey)) {
-                    seenNewKeys.add(mKey);
-                    extensions.push({ oldKey: cell.oldKey, newR: mr, newC: mc, fV: mfV, fH: mfH, fD: mfD, isMirrorExt: true });
-                  }
-                });
-              });
-              newCells.push(...extensions);
-            }
-
-            // Precompute new grid synchronously so we can push it to history in one shot
-            const tPreGrid = gridRef.current;
-            const tNewG = tPreGrid.map(row => [...row]);
-            const tTileData = [];
-            oldCells.forEach(key => { const [or, oc] = key.split(',').map(Number); tTileData.push({ r: or, c: oc, id: tNewG[or]?.[oc] ?? null }); tNewG[or][oc] = null; });
-            newCells.forEach(({ oldKey, newR, newC }) => { const [or, oc] = oldKey.split(',').map(Number); const entry = tTileData.find(d => d.r === or && d.c === oc); if (entry && (entry.id !== null || tNewG[newR][newC] === null)) tNewG[newR][newC] = entry.id; });
-            setGridStableRef.current(() => tNewG, true);
-            setGridOffsets(prev => { const n = { ...prev }; const d = {}; oldCells.forEach(k => { d[k] = prev[k]; delete n[k]; }); newCells.forEach(({ oldKey, newR, newC }) => { if (d[oldKey] !== undefined) n[`${newR},${newC}`] = d[oldKey]; }); return n; });
-            const newHighlight = new Set(newCells.map(({ newR, newC }) => `${newR},${newC}`));
-            setHighlightedCells(newHighlight);
-            highlightedCellsRef.current = newHighlight;
-            // Push post-drag snapshot; synchronous histIdxRef update prevents stale-ref trimming
-            const tDragNextIdx = Math.min(histIdxRef.current + 1, MAX_HISTORY - 1);
-            histIdxRef.current = tDragNextIdx;
-            setHistory(h => {
-              const trimmed = h.slice(0, tDragNextIdx);
-              const capped = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-              return [...capped, { grid: tNewG, palette: clonePalette(paletteRef.current), w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...newHighlight] }];
-            });
-            setHistIdx(tDragNextIdx);
+            moveHighlightRef.current(dr, dc); // one atomic move, shared with the mouse path
           }
           isHighlightDraggingRef.current = false;
           highlightDragAnchorCell.current = null;
@@ -5689,14 +5696,8 @@ function App() {
       if (!e.ctrlKey && !e.metaKey && !e.altKey) {
         const tag = e.target.tagName;
         if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || e.target.isContentEditable) return;
-        if (e.key === "Escape" && highlightModeRef.current) {
-          setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set();
-        }
-        if (e.key === " " && highlightModeRef.current) {
-          e.preventDefault();
-          setHighlightedCells(new Set());
-          highlightedCellsRef.current = new Set();
-        }
+        if (e.key === "Escape" && highlightModeRef.current) clearHighlightAll("Clear highlight");
+        if (e.key === " " && highlightModeRef.current) { e.preventDefault(); clearHighlightAll("Clear highlight"); }
         if (e.key === "e" || e.key === "E") { setEraser(true); setSel(null); setHandMode(false); setEyedropperMode(false); setDuplicateMode(false); setMagnetMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }
         if (e.key === "w" || e.key === "W") { setEyedropperMode(true); setEraser(false); setHandMode(false); setDuplicateMode(false); setMagnetMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }
         if (e.key === "c" || e.key === "C") { setConvertOpen(true); }
@@ -5827,7 +5828,7 @@ function App() {
       if (t.isSpace) { spaceCells.push({ r, c }); return; }
       const sv = t.isSensor ? sensorVisual(t, r, c) : null;
       if (sv && sv.warn) return;
-      draws.push({ ref: t.ref, z: isPriorityTile(t) ? 2 : (isBottomTile(t) ? 0 : 1), src: sv ? sv.src : (t.blobSrc ?? t.src), ops: sv ? (sv.ops || []) : null, r, c, mult: getCellMultiplier(t, r, c), off: getEffectiveOffset(t, r, c) });
+      draws.push({ ref: t.ref, z: isPriorityTile(cellSizeTile(t, r, c)) ? 2 : (isBottomTile(cellSizeTile(t, r, c)) ? 0 : 1), src: sv ? sv.src : (t.blobSrc ?? t.src), ops: sv ? (sv.ops || []) : null, r, c, mult: getCellMultiplier(t, r, c), off: getEffectiveOffset(t, r, c) });
     }));
     const filename = (mapName.trim() || "ophelia-map") + ".png";
     const finish = () => {
@@ -5890,6 +5891,76 @@ function App() {
   const ocDim   = uiTheme === 'warm' ? 'rgba(232,121,249,0.16)' : 'rgba(167,139,250,0.16)';
   const owDim   = uiTheme === 'warm' ? 'rgba(251,113,133,0.16)' : 'rgba(129,140,248,0.16)';
   const mcDim   = uiTheme === 'warm' ? 'rgba(249,168,212,0.16)' : 'rgba(216,180,254,0.16)';
+
+  // Shortcut definitions shared by both bars: icon (the emoji badge of the Tools-section button), action, active state and colour per key.
+  // Tiles-panel bar: the essentials (SHORTCUT_TILES_BAR_TOOLS) and starred tiles/folders. Tools-panel bar: SHORTCUT_TOOLS_BAR.
+  const shortcutDefs = () => {
+              const toolIconMap = {
+                space: "🛸", erase: "🧼", hand: "👋", duplicate: "💞", tileCounter: "🧮",
+                selectionGroup: "🖌️", mirrorGroup: "🪞",
+                single: "S", line: "L", rect: "R", fill: "F",
+                mirrorV: "H", mirrorH: "V", mirrorD: "D",
+                guides: "🧭", offsetCenters: "🎯", replace: "♻️", overwrite: "🧱",
+                otg: "🧩",
+                eyedropper: "🧪", highlight: "🪄", magnet: "🧲",
+                convert: "🔄", hotkeys: "⌨️",
+              };
+              const toolActionMap = {
+                erase: () => { if (highlightedCells.size > 0) { setDeselectMode(!eraser); return; } setEraser(true); setSel(null); setHandMode(false); setEyedropperMode(false); setDuplicateMode(false); setMagnetMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); },
+                hand: () => { if (handMode) return; setHandMode(true); setEraser(false); setSel(null); setEyedropperMode(false); setDuplicateMode(false); setMagnetMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); },
+                duplicate: () => {
+                  if (highlightedCells.size === 0 && !duplicateMode) return;
+                  setDuplicateOn(!duplicateMode);
+                },
+                tileCounter: () => setTileCounterOpen(o => !o),
+                space: () => { setSel(SPACE_REF); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); },
+                single: () => setSelectionMode('single'),
+                line:   () => setSelectionMode('line'),
+                rect:   () => setSelectionMode('rect'),
+                fill:   () => setSelectionMode('fill'),
+                mirrorV: () => setMirrorV(v => !v),
+                mirrorH: () => setMirrorH(v => !v),
+                mirrorD: () => setMirrorD(v => !v),
+                guides: () => setShowGuides(v => !v),
+                offsetCenters: () => setShowOffsetCenters(v => !v),
+                replace: () => { setReplaceOpen(true); setReplaceStep(1); setReplaceA(null); setReplaceB(null); setReplaceMsg(""); },
+                overwrite: () => setMirrorSettings(p => ({ ...p, allowSwap: !p.allowSwap })),
+                otg: () => setShowOTG(v => !v),
+                eyedropper: () => { if (eyedropperMode) return; setEyedropperMode(true); setEraser(false); setHandMode(false); setHighlightMode(false); setMagnetMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); },
+                highlight: () => { const on = !highlightMode; setHighlightMode(h => !h); setEraser(false); setHandMode(false); setEyedropperMode(false); setMagnetMode(false); if (!on) { setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); } },
+                magnet: () => { if (magnetMode) { setMagnetMode(false); return; } setMagnetMode(true); setEraser(false); setHandMode(false); setHighlightMode(false); setEyedropperMode(false); setSel(null); },
+                convert: () => setConvertOpen(true),
+                hotkeys: () => setHotkeysOpen(true),
+              };
+              const toolActiveMap = {
+                space: sel === SPACE_REF && !eraser,
+                erase: eraser, hand: handMode, duplicate: duplicateMode, tileCounter: tileCounterOpen,
+                single: selectionMode === 'single',
+                line: selectionMode === 'line',
+                rect: selectionMode === 'rect',
+                fill: selectionMode === 'fill',
+                mirrorV, mirrorH, mirrorD,
+                guides: showGuides,
+                offsetCenters: showOffsetCenters,
+                replace: false,
+                overwrite: mirrorSettings.allowSwap,
+                otg: showOTG,
+                eyedropper: eyedropperMode,
+                highlight: highlightMode,
+                magnet: magnetMode,
+                convert: false, hotkeys: false,
+              };
+              const toolColorMap = {
+                space: C.accentBright, erase: C.danger, hand: "#fbbf24", duplicate: "#e879a0", tileCounter: C.soft,
+                single: C.accent, line: C.accent, rect: C.accent, fill: C.accent,
+                mirrorV: C.pale, mirrorH: C.soft, mirrorD: C.accentBright,
+                guides: gColor, offsetCenters: ocColor, replace: C.soft, overwrite: owColor,
+                otg: C.danger,
+                eyedropper: "#39ff14", highlight: "#a78bfa", magnet: "#2563eb",
+                convert: C.soft, hotkeys: C.text,
+              };
+    return { toolIconMap, toolActionMap, toolActiveMap, toolColorMap };
+  };
 
   // ── Shared styles ─────────────────────────────────────────────────
   const cardImgBgStyle = tileCardLightBg ? {
@@ -6210,7 +6281,7 @@ function App() {
               const label = isInitial ? "Initial state" : (snap.label || "Draw");
               return (
                 <div key={i}
-                  onClick={isInitial ? undefined : () => { const prevIdx = histIdxRef.current; restoreSnap(snap, () => setHistIdx(prevIdx)); setHistIdx(i); close(); }}
+                  onClick={isInitial ? undefined : () => { const prevIdx = histIdxRef.current; restoreSnap(snap, () => setHistIndex(prevIdx)); setHistIndex(i); close(); }}
                   style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 8px", borderRadius: 6,
                     cursor: isInitial ? "default" : "pointer",
                     background: isCurrent ? "rgba(37,99,235,0.18)" : "transparent",
@@ -6286,8 +6357,8 @@ function App() {
     // The selection-mode and mirroring info modals star the group shortcut (selectionGroup / mirrorGroup)
     const toolId = infoTool === "space" ? SPACE_REF : infoTool === "warn" ? WARN_REF : infoTool === "selectionMode" ? "selectionGroup" : infoTool === "mirroring" ? "mirrorGroup" : infoTool;
     const isStarredTool = starredTiles.includes(toolId);
-    // These tools have no functional starred shortcut; hide the star checkbox
-    const NON_STARREABLE = new Set(["hotkeys"]);
+    // Tools that cannot be starred hide the star checkbox
+    const NON_STARREABLE = new Set([]);
     return (
       <div className="modal-backdrop" onClick={() => setInfoTool(null)}>
         <div className="modal-box" onClick={e => e.stopPropagation()}>
@@ -6899,7 +6970,7 @@ function App() {
       const nameErr = checkFileName(baseName);
       if (nameErr) throw new Error(`Cannot use "${baseName}" as the image file name: ${nameErr}.`);
       const existing = await ensureTilesetLoaded(addTileTsId);
-      // A new variant joins its folder with the group settings of the folder's first coded variant.
+      // A new variant joins its folder with the symbol of the folder's first coded variant (the only group-synced field).
       const sibling = addCode.value && addTileFolderKey.trim()
         ? sortedRows(dbTilesByTsIdRef.current[addTileTsId]).find(r => r.folder_key === addTileFolderKey.trim() && r.sensor_code != null) : null;
       const groupCopy = sibling ? Object.fromEntries(SensorUI.GROUP_COLUMNS.filter(k => sibling[k] !== undefined).map(k => [k, sibling[k]])) : {};
@@ -7073,7 +7144,7 @@ function App() {
       <FailedTileModal />
       {sensorWarnFolder && <SensorWarningModal folder={sensorWarnFolder} onClose={() => setSensorWarnFolder(null)} />}
       {sensorSimFolder && sensorFolders.get(sensorSimFolder) && (
-        <SensorSimulationPanel folder={sensorFolders.get(sensorSimFolder).ui} candidates={sensorFolders.get(sensorSimFolder).candidates} requestComposed={requestComposed} onClose={() => setSensorSimFolder(null)} />
+        <SensorSimulationPanel folder={sensorFolders.get(sensorSimFolder).ui} candidates={sensorFolders.get(sensorSimFolder).candidates} requestComposed={requestComposed} reroll={rerollSeedMap.get(sensorSimFolder) ?? 0} onReroll={() => rerollFolder(sensorSimFolder)} onClose={() => setSensorSimFolder(null)} />
       )}
       <ToolInfoModal />
       <MemoryModal />
@@ -7441,9 +7512,11 @@ function App() {
                         {failed ? <span style={{ fontSize: 18 }}>⚠️</span>
                           : <img src={t.blobSrc ?? t.src} alt="" onError={() => markFailed(t.ref)} className={tileCardLightBg ? "tile-img-checker" : undefined} style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", }} />}
                       </div>
+                      {canEditTile(t) && (
                       <span onClick={ev => { ev.stopPropagation(); setInfoTile(t.ref); }}
                         style={{ position: "absolute", top: -7, right: -7, width: 18, height: 18, fontSize: 15, cursor: "pointer", color: isStarredF ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "18px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
                         title={isStarredF ? "Starred tile — click for info" : "Tile info"}>ⓘ</span>
+                      )}
                       <MultLabel t={t} />
                       <TileBadge t={t} />
                     </div>
@@ -7512,6 +7585,13 @@ function App() {
                     ))}
                   </div>
                 </div>
+                {/* Preview as user — only for profiles whose REAL role is creator or admin */}
+                {canPreviewAsUser && (
+                  <label data-preview-as-user style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 12px", borderBottom: `1px solid ${C.border}`, cursor: "pointer", userSelect: "none" }}>
+                    <input type="checkbox" checked={previewAsUser} onChange={e => setPreviewAsUser(e.target.checked)} style={{ accentColor: C.accent, cursor: "pointer" }} />
+                    <span style={{ fontSize: 11, color: C.text }}>Preview as user (UI only)</span>
+                  </label>
+                )}
                 {/* Admin Dashboard — only visible to admins */}
                 {userProfile?.role === 'admin' && (
                   <button
@@ -7675,9 +7755,12 @@ function App() {
                             : <img src={t.blobSrc ?? t.src} alt="" onError={() => markFailed(t.ref)} className={tileCardLightBg ? "tile-img-checker" : undefined} style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated" }} />}
                         </div>
                         {/* Info button: yellow if starred, white otherwise — top-right corner */}
+                        {canEditTile(t) && (
                         <span onClick={e => { e.stopPropagation(); setInfoTile(t.ref); }}
                           style={{ position: "absolute", top: -7, right: -7, width: 18, height: 18, fontSize: 15, cursor: "pointer", color: "rgba(255,255,255,0.85)", lineHeight: "18px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
                           title={t.codename ?? (isStarred ? "Starred tile — click for info" : "Tile info")}>{isStarred ? "★" : "ⓘ"}</span>
+                        )}
+                        {!canEditTile(t) && isStarred && <span style={{ position: "absolute", top: -7, right: -7, width: 18, height: 18, fontSize: 13, color: "#fbbf24", lineHeight: "18px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", pointerEvents: "none" }} title="Starred tile">★</span>}
                         <MultLabel t={t} />
                         <TileBadge t={t} />
                       </div>
@@ -7691,7 +7774,6 @@ function App() {
                     const isThisOpen = openFolderKey === key;
                     const active = !eraser && sel === sensor.ref;
                     const preview = sensor.labelled.slice(0, 4);
-                    const hasWarn = sensor.warnings.length > 0 || sensor.unlabelled.length > 0;
                     const corner = { position: "absolute", top: -7, width: 18, height: 18, fontSize: 11, cursor: "pointer", lineHeight: "18px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" };
                     return (
                       <div key={key} data-sensor-card={sensor.ref}
@@ -7715,16 +7797,17 @@ function App() {
                           ))}
                           {Array.from({ length: Math.max(0, 4 - preview.length) }).map((_, i) => <div key={`e${i}`} style={{ background: C.panelDeep }} />)}
                         </div>
-                        <div style={{ position: "absolute", inset: 0, zIndex: 3, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
-                          <span style={{ fontSize: 22, lineHeight: 1, filter: "drop-shadow(0 1px 3px rgba(0,0,0,0.9))" }}>✨</span>
-                        </div>
                         <span data-sensor-unfold={sensor.ref} onClick={e => { e.stopPropagation(); toggleFolder(key, e); }}
                           style={{ ...corner, right: -7, color: isThisOpen ? SENSOR_YELLOW : "rgba(255,255,255,0.85)" }}
                           title={isThisOpen ? "Fold" : "Unfold variants"}>{isThisOpen ? "▼" : "▶"}</span>
-                        {hasWarn && (
-                          <span data-sensor-warn={sensor.ref} onClick={e => { e.stopPropagation(); setSensorWarnFolder(sensor); }}
-                            style={{ ...corner, right: 14, color: SENSOR_YELLOW }}
-                            title={sensor.warnings.length ? "The variants disagree on shared settings" : "Some tiles have no sensor code"}>⚠</span>
+                        {sensorFolders.get(sensor.ref)?.rerollable && (
+                          // Bottom-left, inside the card border (clear of the top-right ▶ and the selection outline). Visual size is small; the
+                          // hit area is 32px on mobile. It neither selects nor unfolds the card, is no undo step and does not touch the map data.
+                          <button data-sensor-reroll={sensor.ref} title="Reroll this folder's tied picks"
+                            onClick={e => { e.stopPropagation(); rerollFolder(sensor.ref); }}
+                            onMouseDown={e => e.stopPropagation()} onTouchStart={e => e.stopPropagation()} onTouchEnd={e => e.stopPropagation()}
+                            style={{ position: "absolute", left: 1, bottom: 1, width: isMobile ? 32 : 24, height: isMobile ? 32 : 24, padding: 0, display: "flex", alignItems: "center", justifyContent: "center",
+                              fontSize: isMobile ? 17 : 14, lineHeight: 1, cursor: "pointer", zIndex: 6, background: "rgba(0,0,0,0.6)", border: "none", borderRadius: 6, filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}>🎲</button>
                         )}
                       </div>
                     );
@@ -7791,8 +7874,8 @@ function App() {
                     return (
                       <div onClick={() => {
                         if (hlActive) {
-                          // Erase-from-highlight mode: toggle eraser without clearing the highlight
-                          setEraser(e => !e);
+                          // Deselect: toggle the eraser without clearing the highlight (turns Duplicate off)
+                          setDeselectMode(!eraser);
                         } else {
                           setEraser(true); setSel(null); setHandMode(false); setEyedropperMode(false); setDuplicateMode(false); setMagnetMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set();
                         }
@@ -8006,14 +8089,7 @@ function App() {
                     return (
                       <div onClick={() => {
                         if (!dupEnabled && !duplicateMode) return;
-                        const turningOn = !duplicateMode;
-                        setDuplicateMode(d => !d);
-                        if (turningOn) {
-                          setEraser(false); setHandMode(false); setEyedropperMode(false); setMagnetMode(false); setSel(null);
-                          if (!highlightMode) setHighlightMode(true);
-                        } else {
-                          setHighlightDragOffset(null); highlightDragOffsetRef.current = null; highlightDragAnchorCell.current = null;
-                        }
+                        setDuplicateOn(!duplicateMode);
                       }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: (dupEnabled || duplicateMode) ? "pointer" : "not-allowed",
                           border: `2px solid ${duplicateMode ? dupColor : dupHint ? "rgba(232,121,160,0.32)" : C.border}`,
@@ -8218,7 +8294,8 @@ function App() {
               };
               const hasSelected = selKey !== null && !selAlreadyStarred;
               // Only tile refs (tiles, space, warn) are shown in the left strip; tool keys are not refs
-              const starredTileIds = SensorUI.canonicalRefs(starredTiles.filter(s => typeof s === "string" && parseRef(s)), sensorOwners);
+              const starredTileIds = SensorUI.canonicalRefs(starredTiles.filter(s => typeof s === "string" && (parseRef(s) || SHORTCUT_TILES_BAR_TOOLS.has(s))), sensorOwners);
+              const shortcutDefsNow = shortcutDefs();
               // Recent tiles: exclude current selection, starred tiles, and tiles that are not in the loaded (contained) list
               const visibleRecent = SensorUI.canonicalRefs(recentTileIds, sensorOwners).filter(id => {
                 if (id === selKey || starredTiles.includes(id)) return false;
@@ -8250,6 +8327,17 @@ function App() {
                       <span style={{ fontSize: 13 }}>⚠️</span>
                     </div>
                   );
+                  if (SHORTCUT_TILES_BAR_TOOLS.has(sid)) { // essentials: Erase, Hand, Pick, Magnet, Highlight, Duplicate
+                    const on = !!shortcutDefsNow.toolActiveMap[sid], col = shortcutDefsNow.toolColorMap[sid] ?? C.accent;
+                    return (
+                      <div key={`tool-${sid}`} data-tiles-bar-tool={sid} onClick={shortcutDefsNow.toolActionMap[sid]}
+                        style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+                          border: `1px solid ${on ? col : C.border}`, background: on ? `${col}22` : "rgba(255,255,255,0.04)" }}
+                        title={sid}>
+                        <span style={{ fontSize: 14, lineHeight: 1 }}>{shortcutDefsNow.toolIconMap[sid]}</span>
+                      </div>
+                    );
+                  }
                   const st = getTile(sid);
                   if (!st || !st.src) return null;
                   if (st.folderKey) {
@@ -8395,7 +8483,7 @@ function App() {
                   row.map((id, c) => {
                     const t = getCellTile(id); if (!t) return null;
                     if (t.isSpace) return null;
-                    if (!isBottomTile(t) || isPriorityTile(t)) return null;
+                    if (!isBottomTile(cellSizeTile(t, r, c)) || isPriorityTile(cellSizeTile(t, r, c))) return null;
                     const mult   = getCellMultiplier(t, r, c);
                     const off    = getEffectiveOffset(t, r, c);
                     const sv = t.isSensor ? sensorVisual(t, r, c) : null; if (sv && sv.warn) return null;
@@ -8406,7 +8494,7 @@ function App() {
                     const tileImg = <img key={`bot${r}-${c}`} src={imgSrc} alt="" draggable={false} decoding="async"
                       style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%)${svCss}`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 1 }}
                     />;
-                    if (!isAutoShadowTile(t)) return tileImg;
+                    if (!isAutoShadowTile(cellSizeTile(t, r, c))) return tileImg;
                     return [
                       <img key={`sbot${r}-${c}`} src={imgSrc} alt="" draggable={false}
                         style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy + 0.3 * cellPx, width: cellPx * mult, height: "auto", transform: `translateY(-50%)${svCss}`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 0, filter: "brightness(0)", opacity: 0.2 }}
@@ -8420,8 +8508,8 @@ function App() {
                   row.map((id, c) => {
                     const t = getCellTile(id); if (!t) return null;
                     if (t.isSpace) return null;
-                    if (isPriorityTile(t)) return null;
-                    if (isBottomTile(t)) return null;
+                    if (isPriorityTile(cellSizeTile(t, r, c))) return null;
+                    if (isBottomTile(cellSizeTile(t, r, c))) return null;
                     const mult   = getCellMultiplier(t, r, c);
                     const off    = getEffectiveOffset(t, r, c);
                     const sv = t.isSensor ? sensorVisual(t, r, c) : null; if (sv && sv.warn) return null;
@@ -8432,7 +8520,7 @@ function App() {
                     const tileImg = <img key={`t${r}-${c}`} src={imgSrc} alt="" draggable={false} decoding="async"
                       style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%)${svCss}`, pointerEvents: "none", imageRendering: "pixelated", zIndex: r + 2 }}
                     />;
-                    if (!isAutoShadowTile(t)) return tileImg;
+                    if (!isAutoShadowTile(cellSizeTile(t, r, c))) return tileImg;
                     return [
                       <img key={`s${r}-${c}`} src={imgSrc} alt="" draggable={false}
                         style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy + 0.3 * cellPx, width: cellPx * mult, height: "auto", transform: `translateY(-50%)${svCss}`, pointerEvents: "none", imageRendering: "pixelated", zIndex: r + 1, filter: "brightness(0)", opacity: 0.2 }}
@@ -8446,7 +8534,7 @@ function App() {
                   row.map((id, c) => {
                     const t = getCellTile(id); if (!t) return null;
                     if (t.isSpace) return null;
-                    if (!isPriorityTile(t)) return null;
+                    if (!isPriorityTile(cellSizeTile(t, r, c))) return null;
                     const mult   = getCellMultiplier(t, r, c);
                     const off    = getEffectiveOffset(t, r, c);
                     const sv = t.isSensor ? sensorVisual(t, r, c) : null; if (sv && sv.warn) return null;
@@ -8457,7 +8545,7 @@ function App() {
                     const tileImg = <img key={`prio${r}-${c}`} src={imgSrc} alt="" draggable={false} decoding="async"
                       style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%)${svCss}`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 9999 }}
                     />;
-                    if (!isAutoShadowTile(t)) return tileImg;
+                    if (!isAutoShadowTile(cellSizeTile(t, r, c))) return tileImg;
                     return [
                       <img key={`sprio${r}-${c}`} src={imgSrc} alt="" draggable={false}
                         style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy + 0.3 * cellPx, width: cellPx * mult, height: "auto", transform: `translateY(-50%)${svCss}`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 9998, filter: "brightness(0)", opacity: 0.2 }}
@@ -8649,88 +8737,20 @@ function App() {
           <div style={{ width: 36, background: C.panelDeep, borderLeft: `1px solid ${C.border}`, display: "flex", flexDirection: "column", alignItems: "center", flexShrink: 0 }}>
             {/* Starred tool mini-cards when collapsed */}
             {!toolsOpen && (() => {
-              const toolIconMap = {
-                space: "🛸", erase: "🧼", hand: "👋", duplicate: "💞", tileCounter: "🧮",
-                selectionGroup: "🖌️", mirrorGroup: "🪞",
-                single: "S", line: "L", rect: "R", fill: "F",
-                mirrorV: "H", mirrorH: "V", mirrorD: "D",
-                guides: "🧭", offsetCenters: "🎯", replace: "♻️", overwrite: "🧱",
-                otg: "🧩",
-                eyedropper: "🧪", highlight: "🪄", magnet: "🧲",
-                convert: "🔄",
-              };
-              const toolActionMap = {
-                erase: () => { if (highlightedCells.size > 0) { setEraser(e => !e); return; } setEraser(true); setSel(null); setHandMode(false); setEyedropperMode(false); setDuplicateMode(false); setMagnetMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); },
-                hand: () => { if (handMode) return; setHandMode(true); setEraser(false); setSel(null); setEyedropperMode(false); setDuplicateMode(false); setMagnetMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); },
-                duplicate: () => {
-                  if (highlightedCells.size === 0 && !duplicateMode) return;
-                  const turningOn = !duplicateMode;
-                  setDuplicateMode(d => !d);
-                  if (turningOn) { setEraser(false); setHandMode(false); setEyedropperMode(false); setMagnetMode(false); setSel(null); if (!highlightMode) setHighlightMode(true); }
-                  else { setHighlightDragOffset(null); highlightDragOffsetRef.current = null; highlightDragAnchorCell.current = null; }
-                },
-                tileCounter: () => setTileCounterOpen(o => !o),
-                space: () => { setSel(SPACE_REF); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); },
-                single: () => setSelectionMode('single'),
-                line:   () => setSelectionMode('line'),
-                rect:   () => setSelectionMode('rect'),
-                fill:   () => setSelectionMode('fill'),
-                mirrorV: () => setMirrorV(v => !v),
-                mirrorH: () => setMirrorH(v => !v),
-                mirrorD: () => setMirrorD(v => !v),
-                guides: () => setShowGuides(v => !v),
-                offsetCenters: () => setShowOffsetCenters(v => !v),
-                replace: () => { setReplaceOpen(true); setReplaceStep(1); setReplaceA(null); setReplaceB(null); setReplaceMsg(""); },
-                overwrite: () => setMirrorSettings(p => ({ ...p, allowSwap: !p.allowSwap })),
-                otg: () => setShowOTG(v => !v),
-                eyedropper: () => { if (eyedropperMode) return; setEyedropperMode(true); setEraser(false); setHandMode(false); setHighlightMode(false); setMagnetMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); },
-                highlight: () => { const on = !highlightMode; setHighlightMode(h => !h); setEraser(false); setHandMode(false); setEyedropperMode(false); setMagnetMode(false); if (!on) { setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); } },
-                magnet: () => { if (magnetMode) { setMagnetMode(false); return; } setMagnetMode(true); setEraser(false); setHandMode(false); setHighlightMode(false); setEyedropperMode(false); setSel(null); },
-                convert: () => setConvertOpen(true),
-              };
-              const toolActiveMap = {
-                space: sel === SPACE_REF && !eraser,
-                erase: eraser, hand: handMode, duplicate: duplicateMode, tileCounter: tileCounterOpen,
-                single: selectionMode === 'single',
-                line: selectionMode === 'line',
-                rect: selectionMode === 'rect',
-                fill: selectionMode === 'fill',
-                mirrorV, mirrorH, mirrorD,
-                guides: showGuides,
-                offsetCenters: showOffsetCenters,
-                replace: false,
-                overwrite: mirrorSettings.allowSwap,
-                otg: showOTG,
-                eyedropper: eyedropperMode,
-                highlight: highlightMode,
-                magnet: magnetMode,
-                convert: false,
-              };
-              const toolColorMap = {
-                space: C.accentBright, erase: C.danger, hand: "#fbbf24", duplicate: "#e879a0", tileCounter: C.soft,
-                single: C.accent, line: C.accent, rect: C.accent, fill: C.accent,
-                mirrorV: C.pale, mirrorH: C.soft, mirrorD: C.accentBright,
-                guides: gColor, offsetCenters: ocColor, replace: C.soft, overwrite: owColor,
-                otg: C.danger,
-                eyedropper: "#39ff14", highlight: "#a78bfa", magnet: "#2563eb",
-                convert: C.soft,
-              };
+              const { toolIconMap, toolActionMap, toolActiveMap, toolColorMap } = shortcutDefs();
               // Only show tool-key starred items (not tile refs)
               // Individual selection/mirror tools collapse into their group cards
-              const _selTools = new Set(['single', 'line', 'rect', 'fill']);
-              const _mirTools = new Set(['mirrorV', 'mirrorH', 'mirrorD']);
               const _seen = new Set();
               // "space" / "warn" are tile refs (shown in the left strip), not tool shortcuts
-              const _barExclude = new Set(['single', 'line', 'rect', 'fill', 'mirrorV', 'mirrorH', 'mirrorD', 'space', 'warn']);
               const starredTools = starredTiles
-                .filter(s => typeof s === "string" && !_barExclude.has(s) && toolIconMap[s])
+                .filter(s => typeof s === "string" && SHORTCUT_TOOLS_BAR.includes(s) && (toolIconMap[s] || s === "selectionGroup" || s === "mirrorGroup"))
                 .filter(s => { if (_seen.has(s)) return false; _seen.add(s); return true; });
               if (!starredTools.length) return null;
               return (
                 <div style={{ display: "flex", flexDirection: "column", gap: 3, padding: "4px 2px", overflowY: "auto", scrollbarWidth: "none", msOverflowStyle: "none", width: "100%", position: "relative" }}>
                   {/* Mini panel for the selection-mode / mirroring group shortcuts: same options and layout as the Tools section */}
                   {shortcutPopover && (
-                    <div data-shortcut-panel={shortcutPopover} style={{ position: "fixed", zIndex: 300, background: C.panelDeep, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 12px 10px", boxShadow: "0 4px 18px rgba(0,0,0,0.5)", display: "flex", flexDirection: "column", gap: 7, width: isMobile ? 160 : 260, right: 44, top: 60 }}>
+                    <div data-shortcut-panel={shortcutPopover} style={{ position: "fixed", zIndex: 300, background: C.panelDeep, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 12px 10px", boxShadow: "0 4px 18px rgba(0,0,0,0.5)", display: "flex", flexDirection: "column", gap: 7, width: "max-content", maxWidth: "calc(100vw - 56px)", right: 44, top: 60 }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                         <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1 }}>{shortcutPopover === "selectionGroup" ? "Selection Mode" : "Mirroring"}</span>
                         <span onClick={() => setShortcutPopover(null)} style={{ cursor: "pointer", color: C.muted, fontSize: 14, lineHeight: 1, padding: "0 2px" }}>×</span>
@@ -8740,20 +8760,20 @@ function App() {
                           ? { single: ['#f472b6','rgba(244,114,182,0.18)'], line: ['#fb7185','rgba(251,113,133,0.16)'], rect: [C.accent,C.accentDim], fill: ['#f59e0b','rgba(245,158,11,0.18)'] }
                           : { single: ['#c084fc','rgba(192,132,252,0.18)'], line: ['#818cf8','rgba(129,140,248,0.18)'], rect: ['#60a5fa','rgba(96,165,250,0.18)'], fill: [C.accent,C.accentDim] };
                         return (
-                          <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}>
-                            <button style={btn(selectionMode === 'single', SC.single[0], SC.single[1])} onClick={() => setSelectionMode('single')} title="Freehand">Single</button>
-                            <button style={btn(selectionMode === 'line', SC.line[0], SC.line[1])} onClick={() => setSelectionMode('line')} title="Line draw">Line</button>
-                            <button style={btn(selectionMode === 'rect', SC.rect[0], SC.rect[1])} onClick={() => setSelectionMode('rect')} title="Rectangle fill">Rectangle</button>
-                            <button style={btn(selectionMode === 'fill', SC.fill[0], SC.fill[1])} onClick={() => setSelectionMode('fill')} title="Flood fill selection">Fill</button>
+                          <div style={{ display: "flex", gap: 5, flexWrap: "nowrap", whiteSpace: "nowrap", alignItems: "center" }}>
+                            <button style={btn(selectionMode === 'single', SC.single[0], SC.single[1])} onClick={() => setSelectionMode('single')} title="Freehand">✏️ Single</button>
+                            <button style={btn(selectionMode === 'line', SC.line[0], SC.line[1])} onClick={() => setSelectionMode('line')} title="Line draw">📏 Line</button>
+                            <button style={btn(selectionMode === 'rect', SC.rect[0], SC.rect[1])} onClick={() => setSelectionMode('rect')} title="Rectangle fill">⬜ Rectangle</button>
+                            <button style={btn(selectionMode === 'fill', SC.fill[0], SC.fill[1])} onClick={() => setSelectionMode('fill')} title="Flood fill selection">🪣 Fill</button>
                           </div>
                         );
                       })()}
                       {shortcutPopover === "mirrorGroup" && (() => { const mirrorLocked = highlightedCells.size > 0; return (
                         <div style={{ position: "relative" }}>
-                          <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center", opacity: mirrorLocked ? 0.55 : 1, pointerEvents: mirrorLocked ? "none" : "auto" }}>
-                            <button style={btn(mirrorV, C.pale, C.paleDim)} onClick={() => setMirrorV(v => !v)} title="Horizontal mirror (left ↔ right)">Horizontal</button>
-                            <button style={btn(mirrorH, C.soft, C.softDim)} onClick={() => setMirrorH(v => !v)} title="Vertical mirror (top ↔ bottom)">Vertical</button>
-                            <button style={btn(mirrorD, C.accentBright, C.accentDim)} onClick={() => setMirrorD(v => !v)} title="Diagonal mirror (180° rotation)">Diagonal</button>
+                          <div style={{ display: "flex", gap: 5, flexWrap: "nowrap", whiteSpace: "nowrap", alignItems: "center", opacity: mirrorLocked ? 0.55 : 1, pointerEvents: mirrorLocked ? "none" : "auto" }}>
+                            <button style={btn(mirrorV, C.pale, C.paleDim)} onClick={() => setMirrorV(v => !v)} title="Horizontal mirror (left ↔ right)">↔️ Horizontal</button>
+                            <button style={btn(mirrorH, C.soft, C.softDim)} onClick={() => setMirrorH(v => !v)} title="Vertical mirror (top ↔ bottom)">↕️ Vertical</button>
+                            <button style={btn(mirrorD, C.accentBright, C.accentDim)} onClick={() => setMirrorD(v => !v)} title="Diagonal mirror (180° rotation)">🌀 Diagonal</button>
                           </div>
                           {mirrorLocked && <div style={{ fontSize: 9, color: C.muted, marginTop: 3, lineHeight: 1.4 }}>Locked while cells are highlighted — prevents inconsistencies with Highlight/Duplicate tools.</div>}
                         </div>
@@ -8882,10 +8902,10 @@ function App() {
                     : { single: ['#c084fc','rgba(192,132,252,0.18)'], line: ['#818cf8','rgba(129,140,248,0.18)'], rect: ['#60a5fa','rgba(96,165,250,0.18)'], fill: [C.accent,C.accentDim] };
                   return (
                     <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}>
-                      <button style={btn(selectionMode === 'single', SC.single[0], SC.single[1])} onClick={() => setSelectionMode('single')} title="Freehand">Single</button>
-                      <button style={btn(selectionMode === 'line', SC.line[0], SC.line[1])} onClick={() => setSelectionMode('line')} title="Line draw">Line</button>
-                      <button style={btn(selectionMode === 'rect', SC.rect[0], SC.rect[1])} onClick={() => setSelectionMode('rect')} title="Rectangle fill">Rectangle</button>
-                      <button style={btn(selectionMode === 'fill', SC.fill[0], SC.fill[1])} onClick={() => setSelectionMode('fill')} title="Flood fill selection">Fill</button>
+                      <button style={btn(selectionMode === 'single', SC.single[0], SC.single[1])} onClick={() => setSelectionMode('single')} title="Freehand">✏️ Single</button>
+                      <button style={btn(selectionMode === 'line', SC.line[0], SC.line[1])} onClick={() => setSelectionMode('line')} title="Line draw">📏 Line</button>
+                      <button style={btn(selectionMode === 'rect', SC.rect[0], SC.rect[1])} onClick={() => setSelectionMode('rect')} title="Rectangle fill">⬜ Rectangle</button>
+                      <button style={btn(selectionMode === 'fill', SC.fill[0], SC.fill[1])} onClick={() => setSelectionMode('fill')} title="Flood fill selection">🪣 Fill</button>
                     </div>
                   );
                 })()}
@@ -8894,9 +8914,9 @@ function App() {
                 {(() => { const mirrorLocked = highlightedCells.size > 0; return (
                 <div style={{ position: "relative" }}>
                   <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center", opacity: mirrorLocked ? 0.55 : 1, pointerEvents: mirrorLocked ? "none" : "auto", transition: "opacity 0.15s" }}>
-                    <button style={btn(mirrorV, C.pale, C.paleDim)} onClick={() => setMirrorV(v => !v)} title="Horizontal mirror (left ↔ right)">Horizontal</button>
-                    <button style={btn(mirrorH, C.soft, C.softDim)} onClick={() => setMirrorH(v => !v)} title="Vertical mirror (top ↔ bottom)">Vertical</button>
-                    <button style={btn(mirrorD, C.accentBright, C.accentDim)} onClick={() => setMirrorD(v => !v)} title="Diagonal mirror (180° rotation)">Diagonal</button>
+                    <button style={btn(mirrorV, C.pale, C.paleDim)} onClick={() => setMirrorV(v => !v)} title="Horizontal mirror (left ↔ right)">↔️ Horizontal</button>
+                    <button style={btn(mirrorH, C.soft, C.softDim)} onClick={() => setMirrorH(v => !v)} title="Vertical mirror (top ↔ bottom)">↕️ Vertical</button>
+                    <button style={btn(mirrorD, C.accentBright, C.accentDim)} onClick={() => setMirrorD(v => !v)} title="Diagonal mirror (180° rotation)">🌀 Diagonal</button>
                   </div>
                   {mirrorLocked && (
                     <div style={{ fontSize: 9, color: C.muted, marginTop: 3, lineHeight: 1.4 }}>
@@ -8908,22 +8928,22 @@ function App() {
                 <div style={{ height: 1, background: C.border }} />
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                   <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
-                    <button style={btn(showGuides, gColor, gDim)} onClick={() => setShowGuides(v => !v)} title="Toggle mirror guide lines">Guides</button>
+                    <button style={btn(showGuides, gColor, gDim)} onClick={() => setShowGuides(v => !v)} title="Toggle mirror guide lines">🧭 Guides</button>
                     <span onClick={() => setInfoTool("guides")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
                   </div>
                   <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
-                    <button style={btn(mirrorSettings.allowSwap, owColor, owDim)} onClick={() => setMirrorSettings(p => ({ ...p, allowSwap: !p.allowSwap }))} title="When enabled, painting over occupied cells replaces them instead of picking them up [O]">Block Overwrite</button>
+                    <button style={btn(mirrorSettings.allowSwap, owColor, owDim)} onClick={() => setMirrorSettings(p => ({ ...p, allowSwap: !p.allowSwap }))} title="When enabled, painting over occupied cells replaces them instead of picking them up [O]">🧱 Block Overwrite</button>
                     <span onClick={() => setInfoTool("overwrite")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
                   </div>
                   <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
-                    <button style={btn(showOffsetCenters, ocColor, ocDim)} onClick={() => setShowOffsetCenters(v => !v)} title="Show a marker at the placement cell of tiles with non-zero offset">Offset Centers</button>
+                    <button style={btn(showOffsetCenters, ocColor, ocDim)} onClick={() => setShowOffsetCenters(v => !v)} title="Show a marker at the placement cell of tiles with non-zero offset">🎯 Offset Centers</button>
                     <span onClick={() => setInfoTool("offsetCenters")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
                   </div>
                   <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
                     <button style={btn(showOTG, C.danger, "rgba(239,68,68,0.18)")}
                       onClick={() => setShowOTG(v => !v)}
                       title="OTG detection">
-                      OTG Check
+                      🧩 OTG Check
                     </button>
                     <span onClick={() => setInfoTool("otg")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
                   </div>
@@ -8931,11 +8951,11 @@ function App() {
                 <div style={{ height: 1, background: C.border }} />
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                   <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
-                    <button style={btn(false, C.soft, C.softDim)} onClick={() => { setReplaceOpen(true); setReplaceStep(1); setReplaceA(null); setReplaceB(null); setReplaceMsg(""); }}>Replace</button>
+                    <button style={btn(false, C.soft, C.softDim)} onClick={() => { setReplaceOpen(true); setReplaceStep(1); setReplaceA(null); setReplaceB(null); setReplaceMsg(""); }}>♻️ Replace</button>
                     <span onClick={() => setInfoTool("replace")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
                   </div>
                   <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
-                    <button style={btn(false, C.soft, C.softDim)} onClick={() => setConvertOpen(true)} title="Remap tileset tiles on the board">Convert</button>
+                    <button style={btn(false, C.soft, C.softDim)} onClick={() => setConvertOpen(true)} title="Remap tileset tiles on the board">🔄 Convert</button>
                     <span onClick={() => setInfoTool("convert")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>{starredTiles.includes("convert") ? "★" : "ⓘ"}</span>
                   </div>
                   <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
@@ -8943,7 +8963,7 @@ function App() {
                     <span onClick={() => setInfoTool("tileCounter")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%" }} title="Info">ⓘ</span>
                   </div>
                   <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
-                    <button style={btn(false)} onClick={() => setHotkeysOpen(true)}>Hotkeys</button>
+                    <button style={btn(false)} onClick={() => setHotkeysOpen(true)}>⌨️ Hotkeys</button>
                     <span onClick={() => setInfoTool("hotkeys")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
                   </div>
                 </div>
@@ -8959,8 +8979,10 @@ function App() {
 
         {/* Row 1 (always visible): Undo | Zoom | Redo (together) | fold toggle */}
         <div style={{ display: "flex", alignItems: "center", padding: "5px 14px 3px", gap: 6 }}>
-          <div style={{ flex: 1, display: "flex", justifyContent: "center", alignItems: "center", gap: 6 }}>
+          {/* Mobile: Undo and Redo spread out to the edges, zoom in the middle. Desktop: they sit on either side of the zoom with a medium gap. */}
+          <div data-undo-zoom-row style={{ flex: 1, display: "flex", justifyContent: isMobile ? "space-between" : "center", alignItems: "center", gap: isMobile ? 6 : 28 }}>
             <button style={btn(histIdx > 0, C.accent, C.accentDim)} onClick={undo} disabled={histIdx <= 0} title="Undo (Ctrl+Z)">Undo</button>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <button style={{ ...btn(false), padding: "4px 9px", fontSize: 15, fontWeight: 700, lineHeight: 1 }} onClick={e => changeZoom(-ZOOM_STEP * (e.shiftKey ? 5 : 1))}>−</button>
             <span onClick={() => applyZoom(calcFitZoom(gridW, gridH))}
               style={{ minWidth: 52, textAlign: "center", display: "inline-block", fontSize: 13, fontFamily: "monospace", fontWeight: 700, color: C.text, background: "rgba(180,40,40,0.10)", borderRadius: 7, padding: "3px 6px", border: `1px solid ${C.border}`, cursor: "pointer", userSelect: "none" }}
@@ -8968,6 +8990,7 @@ function App() {
               {Math.round(zoom / ZOOM_STEP) * 10}%
             </span>
             <button style={{ ...btn(false), padding: "4px 9px", fontSize: 15, fontWeight: 700, lineHeight: 1 }} onClick={e => changeZoom(ZOOM_STEP * (e.shiftKey ? 5 : 1))}>+</button>
+            </div>
             <button style={btn(histIdx < history.length - 1, C.accent, C.accentDim)} onClick={redo} disabled={histIdx >= history.length - 1} title="Redo (Ctrl+Y)">Redo</button>
           </div>
           <button onClick={() => setBottomOpen(o => !o)}

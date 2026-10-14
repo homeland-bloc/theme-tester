@@ -10,11 +10,32 @@ const folder = (key, tiles, settings = {}) => ({ key, tiles, settings: { spin: f
 const at = (f, nb, x = 3, y = 4) => S.resolve(f, nb, { x, y, salt: f.key });
 const bits = names => S.BIT_NAMES.map(n => (names.includes(n) ? "1" : "0")).join("");
 
+test("FALLBACK_CODE is 10100101 and can never collide with a real neighbourhood", () => {
+  assert.strictEqual(S.FALLBACK_CODE, "10100101");
+  assert.ok(S.isFallback(S.FALLBACK_CODE) && S.isCode(S.FALLBACK_CODE));
+  let seen = 0;
+  for (let n = 0; n < 256; n++) {
+    const code = n.toString(2).padStart(8, "0");
+    // the neighbourhood normaliser (what resolve() applies to the map) never yields the sentinel, for all 256 codes
+    assert.notStrictEqual(S.normaliseNeighbourhood(code), S.FALLBACK_CODE, code);
+    // the public normalise() passes the sentinel itself through unchanged and never returns it for any other code
+    if (code === S.FALLBACK_CODE) assert.strictEqual(S.normalise(code), code);
+    else assert.notStrictEqual(S.normalise(code), S.FALLBACK_CODE, code);
+    seen++;
+  }
+  assert.strictEqual(seen, 256);
+  assert.ok(!S.ALL_CODES.includes(S.FALLBACK_CODE));
+  assert.strictEqual(S.normaliseNeighbourhood(S.FALLBACK_CODE), "00000000"); // a real neighbourhood shaped like it is just 00000000
+});
+
 test("normalise: exactly 47 distinct codes", () => {
   assert.strictEqual(S.ALL_CODES.length, 47);
   const set = new Set();
   for (let n = 0; n < 256; n++) set.add(S.normalise(n.toString(2).padStart(8, "0")));
+  assert.strictEqual(set.size, 48); // 47 + the fallback sentinel, which normalise() passes through
+  set.delete("10100101");
   assert.strictEqual(set.size, 47);
+  assert.strictEqual(S.normalise("10100101"), "10100101");
   assert.strictEqual(S.normalise("10000000"), "00000000");
   assert.strictEqual(S.normalise("11111111"), "11111111");
   assert.strictEqual(S.normalise("01010000"), "01010000");
@@ -315,3 +336,175 @@ test("coverage: fallback vs missing, cardinal-only detection", () => {
 });
 
 console.log(`\n${passed} passed`);
+
+// ── Phase 6: quadrant ranking, per-tile transforms, exact mode ────────────────────────────────────────
+const TF = (ref, code, rot, flp, extra = {}) => ({ ref, sensorCode: code, sensorRoll: 1, sortIndex: 0, rotatable: rot, flippable: flp, ...extra });
+const base6 = (rot = true, flp = true) => ["00001011", "01101011", "01111111", "11111111"].map(c => TF("t" + c, c, rot, flp));
+const rec = (f, code) => S.buildCandidates(f)[code].recipe;
+const src = (r, q) => `${r[q].sourceTileRef.slice(1)}${r[q].flip ? " flip" : ""}${r[q].spinSteps ? " spin" + r[q].spinSteps : ""}`;
+
+test("ranking: 01000010 left quadrants from 01101011 unflipped, right from its flip", () => {
+  const f = folder("w", base6());
+  const r = rec(f, "01000010");
+  assert.ok(r, "composed");
+  assert.strictEqual(src(r, 0), "01101011"); // TL
+  assert.strictEqual(src(r, 3), "01101011"); // BL
+  assert.strictEqual(src(r, 1), "01101011 flip"); // TR
+  assert.strictEqual(src(r, 2), "01101011 flip"); // BR
+  assert.strictEqual(r.majorityRef, "t01101011");
+});
+
+test("ranking: 01001011 bottom-right interior from 01101011 unflipped, top-right inner corner from the flipped inner-corner tile", () => {
+  const r = rec(folder("w", base6()), "01001011");
+  assert.strictEqual(r[2].type, "interior");
+  assert.strictEqual(src(r, 2), "01101011");
+  assert.strictEqual(r[1].type, "inner");
+  assert.strictEqual(src(r, 1), "01111111 flip");
+});
+
+test("ranking: 11011011 bottom-right interior from 11111111, not 00001011", () => {
+  const r = rec(folder("w", base6()), "11011011");
+  assert.strictEqual(r[2].type, "interior");
+  assert.strictEqual(src(r, 2), "11111111");
+});
+
+test("ranking: fewer transforms beat closer bits (none < flip < spin)", () => {
+  const costs = rec(folder("w", base6()), "01000010").map(e => (e.flip ? 1 : 0) + (e.spinSteps ? 2 : 0));
+  assert.deepStrictEqual(costs, [0, 1, 1, 0]);
+});
+
+test("per-tile flags: only tiles with rotatable/flippable derive or contribute", () => {
+  const tiles = [TF("a", "01111111", true, false), TF("b", "00001011", false, false)];
+  const f = folder("p", tiles, { spin: false, flip: false }); // folder-level settings are ignored when tiles carry flags
+  const c = S.buildCandidates(f);
+  assert.strictEqual(c["11011111"].status, "derived"); // spin of a
+  assert.ok(c["11011111"].pool.every(e => e.ref === "a"));
+  assert.ok(Object.values(c).every(x => x.status !== "derived" || x.pool.every(e => e.ref !== "b")));
+  for (const code of S.ALL_CODES) if (c[code].status === "composed") for (const e of c[code].recipe) if (e.sourceTileRef === "b") assert.ok(!e.flip && !e.spinSteps, "tile b cannot transform");
+  const rb = S.buildCandidates(folder("q", [TF("b", "00001011", false, false)]));
+  assert.ok(Object.values(rb).every(x => x.status === "explicit" || x.status === "missing"));
+});
+
+test("recipes record source tile, quadrant and transform; majority tile supplies size/flags", () => {
+  const r = rec(folder("w", base6()), "01000010");
+  for (const e of r) assert.ok(e.sourceTileRef && e.sourceQuadrant >= 0 && typeof e.flip === "boolean" && e.spinSteps >= 0);
+  const pool = S.buildCandidates(folder("w", base6()))["01000010"].pool[0];
+  assert.strictEqual(pool.majorityRef, "t01101011");
+  assert.strictEqual(pool.majorityTile.ref, "t01101011");
+  // tie: two quadrants from each of two tiles -> the best-ranked source wins
+  const f = folder("w2", [TF("x1", "01101011", true, true, { sortIndex: 5 }), TF("x2", "01101011", true, true, { sortIndex: 1 })]);
+  assert.strictEqual(S.buildCandidates(f)["01000010"].pool[0].majorityRef, "x2");
+});
+
+test("fallback sentinel 10100101: normalise passes it through, real neighbourhood is still normalised", () => {
+  assert.strictEqual(S.normalise("10100101"), "10100101");
+  assert.ok(S.isCode("10100101"));
+  const f = folder("x", [TF("z", "00000000", false, false), TF("se", "00001010", false, false)]);
+  assert.strictEqual(at(f, "10100101").code, "00000000"); // a neighbourhood shaped like the sentinel is normalised like any other (diagonals without orthogonals vanish)
+});
+
+test("exact mode: exact explicit match, derived by per-tile flags, else the 10100101 tile; no scoring", () => {
+  const f = folder("fence", [TF("c", "00000000", false, false), TF("h", "00011000", false, false), TF("v", "01000010", true, false), TF("fb", "10100101", false, false),
+    TF("L", "00001000", false, true)]);
+  assert.strictEqual(S.folderMode(f).kind, "exact");
+  assert.ok(!S.isFenceFolder(f));
+  assert.strictEqual(at(f, "00011000").ref, "h");
+  assert.strictEqual(at(f, "01000010").ref, "v");
+  assert.strictEqual(at(f, "00000000").ref, "c");
+  assert.strictEqual(at(f, "00010000").ref, "L"); // flip of L (E -> W), allowed by L's own flag
+  const spun = at(f, "01000010");
+  assert.strictEqual(spun.code, "01000010");
+  const hv = S.buildCandidates(f)["00011000"]; // explicit wins over spin of v
+  assert.strictEqual(hv.status, "explicit");
+  // anything else -> the fallback tile (no cardinal-only match, no scoring)
+  for (const nb of ["01011010", "11111111", "01001000", "00001010"]) {
+    const r = at(f, nb);
+    assert.strictEqual(r.ref, "fb", nb);
+    assert.strictEqual(r.code, "10100101");
+    assert.strictEqual(r.recipe, null);
+  }
+  // v can spin (rotatable) -> 00011000 is explicit anyway; a spin-only code such as a lone W or E is not made by v alone
+  assert.strictEqual(at(f, "00001000").ref, "L");
+});
+
+test("exact mode: nothing composed, coverage lists explicit/derived plus the fallback only", () => {
+  const tiles = [...base6(), TF("fb", "10100101", true, true)];
+  const f = folder("w", tiles);
+  const c = S.buildCandidates(f);
+  assert.ok(Object.values(c).every(x => x.status !== "composed"));
+  assert.ok(S.ALL_CODES.every(code => c[code].status !== "composed"));
+  const cov = S.coverage(f);
+  assert.ok(cov.every(r => ["explicit", "derived", "fallback-tile"].includes(r.status)));
+  assert.strictEqual(cov.filter(r => r.status === "fallback-tile").length, 1);
+  assert.strictEqual(cov[cov.length - 1].code, "10100101");
+  assert.ok(!cov.some(r => r.code !== "10100101" && !c[r.code].pool.length));
+  // sentinel never in the 47 and never a source
+  assert.ok(!S.ALL_CODES.includes("10100101"));
+  for (const r of cov) if (r.status === "derived") assert.ok(r.sources.every(s => s.code !== "10100101"));
+});
+
+test("exact mode needs roll > 0: a roll-0 sentinel tile leaves the old behaviour", () => {
+  const off = folder("fence", [T("f0", "00000000"), T("fh", "00011000"), T("fv", "01000010"), T("fb", "10100101", 0)]);
+  assert.strictEqual(S.folderMode(off).kind, "fence");
+  assert.strictEqual(at(off, "01011010").code, "00000000");
+  const on = folder("fence", [T("f0", "00000000"), T("fh", "00011000"), T("fv", "01000010"), T("fb", "10100101", 2)]);
+  assert.strictEqual(S.folderMode(on).kind, "exact");
+  assert.strictEqual(at(on, "01011010").ref, "fb");
+  assert.strictEqual(at(on, "01011010").code, "10100101");
+});
+
+test("exact mode: fallback pool honours rolls", () => {
+  const f = folder("e", [T("a", "00000000"), T("fb1", "10100101", 1), T("fb2", "10100101", 3)]);
+  const seen = {};
+  for (let x = 0; x < 400; x++) { const r = S.resolve(f, "11111111", { x, y: x * 3, salt: "e" }); seen[r.ref] = (seen[r.ref] || 0) + 1; }
+  assert.ok(seen.fb2 > seen.fb1 * 2, JSON.stringify(seen));
+});
+
+test("without a 10100101 tile: water still composes, rails still score, fence rule kept", () => {
+  assert.strictEqual(S.folderMode(folder("w", base6())).kind, "compose");
+  assert.strictEqual(S.folderMode(folder("r", [T("a", "00001010"), T("b", "00010010")])).kind, "connections");
+  assert.strictEqual(S.folderMode(folder("f", [T("f0", "00000000"), T("fh", "00011000"), T("fv", "01000010")])).kind, "fence");
+});
+
+// ── Reroll seed and hasRerollableTies ─────────────────────────────────────────────────────────────────
+test("hash2D: reroll seed 0 / omitted is the unseeded hash; other seeds reshuffle; same seed is stable", () => {
+  for (let i = 0; i < 50; i++) {
+    assert.strictEqual(S.hash2D(i, i * 3, 77), S.hash2D(i, i * 3, 77, 0));
+    assert.strictEqual(S.hash2D(i, i * 3, 77, 5), S.hash2D(i, i * 3, 77, 5));
+  }
+  let diff = 0; for (let i = 0; i < 200; i++) if (S.hash2D(i, 2 * i, 9, 0) !== S.hash2D(i, 2 * i, 9, 1)) diff++;
+  assert.ok(diff > 190);
+  const vals = []; for (let i = 0; i < 2000; i++) vals.push(S.hash2D(i, 7, 3, 123456));
+  assert.ok(vals.every(v => v >= 0 && v < 1)); // still in [0, 1)
+});
+
+test("resolve: ctx.reroll changes tied picks, same seed identical, default equals reroll 0", () => {
+  const f = folder("pool", [T("a", "11111111", 1), T("b", "11111111", 1), T("c", "11111111", 1)]);
+  const pick = (reroll, x, y) => S.resolve(f, "11111111", { x, y, salt: "pool", reroll }).ref;
+  let changed = 0;
+  for (let x = 0; x < 20; x++) for (let y = 0; y < 20; y++) {
+    assert.strictEqual(pick(undefined, x, y), pick(0, x, y));
+    assert.strictEqual(pick(42, x, y), pick(42, x, y));
+    if (pick(1, x, y) !== pick(2, x, y)) changed++;
+  }
+  assert.ok(changed > 100, "different seeds change many tied picks: " + changed);
+  // tie between different codes (rails) is also reseeded
+  const rails = folder("rails", [T("tl", "01010000"), T("tr", "01001000"), T("bl", "00010010"), T("br", "00001010")]);
+  let c2 = 0; for (let x = 0; x < 30; x++) if (S.resolve(rails, "01011010", { x, y: 5, salt: "r", reroll: 1 }).ref !== S.resolve(rails, "01011010", { x, y: 5, salt: "r", reroll: 2 }).ref) c2++;
+  assert.ok(c2 > 5, "rails tie reseeds: " + c2);
+});
+
+test("hasRerollableTies: shared-code pool, roll-0 excluded, rails tie, exact mode, plain explicit-only folder", () => {
+  assert.strictEqual(S.hasRerollableTies(folder("pool", [T("a", "11111111"), T("b", "11111111")])), true);
+  assert.strictEqual(S.hasRerollableTies(folder("one0", [T("a", "11111111"), T("b", "11111111", 0)])), false); // roll-0 variant excluded
+  assert.strictEqual(S.hasRerollableTies(folder("zeros", [T("a", "11111111", 0), T("b", "11111111", 0)])), false);
+  const rails = folder("rails", [T("tl", "01010000"), T("tr", "01001000"), T("bl", "00010010"), T("br", "00001010"), T("h", "00011000"), T("v", "01000010")]);
+  assert.strictEqual(S.hasRerollableTies(rails), true); // no 00000000: cross-code ties are hash decided
+  assert.strictEqual(S.hasRerollableTies(folder("rails0", [...rails.tiles, T("z", "00000000")])), false); // 00000000 wins ties
+  const exact = folder("fence", [T("h", "00011000"), T("v", "01000010"), T("fb", S.FALLBACK_CODE)]);
+  assert.strictEqual(S.hasRerollableTies(exact), false); // exact mode, no shared codes
+  assert.strictEqual(S.hasRerollableTies(folder("fence2", [T("h", "00011000"), T("fb1", S.FALLBACK_CODE), T("fb2", S.FALLBACK_CODE)])), true); // two fallback tiles share the code
+  const water = folder("water", ["00001011", "01101011", "01111111", "11111111"].map((c, i) => TF("w" + i, c, true, true)));
+  assert.strictEqual(S.hasRerollableTies(water), false); // explicit-only, composes: nothing for the hash to decide
+  assert.strictEqual(S.hasRerollableTies(folder("empty", [])), false);
+});

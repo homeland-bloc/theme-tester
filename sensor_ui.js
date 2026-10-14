@@ -76,9 +76,9 @@
   };
 
   // ── Group-level fields ────────────────────────────────────────────────────────────────────────────────
-  // These DB columns are shared by every row of a (tileset, folder_key) sensor group.
-  // Size and offsets are NOT group fields: they belong to each variant.
-  const GROUP_COLUMNS = ["symbol", "rotatable", "flippable", "otg_passable", "bottom_render", "priority", "auto_shadow", "mirror_offset"];
+  // Only the symbol is shared by every row of a (tileset, folder_key) sensor group. Size, offsets and all flags (priority, bottom_render,
+  // auto_shadow, otg_passable, mirror_offset, rotatable, flippable) belong to each variant.
+  const GROUP_COLUMNS = ["symbol"];
   const splitGroupPatch = patch => {
     const group = {}, own = {};
     for (const k of Object.keys(patch || {})) (GROUP_COLUMNS.includes(k) ? group : own)[k] = patch[k];
@@ -87,20 +87,24 @@
 
   // ── Folders ───────────────────────────────────────────────────────────────────────────────────────────
   const cmpSort = (a, b) => ((a.sortIndex ?? 0) - (b.sortIndex ?? 0)) || String(a.ref).localeCompare(String(b.ref));
-  // Fields compared for the warning button. sensor_code, image, codename, sort index, sensor_roll, filename, size and offsets never count.
+  // Fields compared for the folder's ⚖️ button. sensor_code, image, codename, sort index, sensor_roll and filename never count.
+  // Only a symbol mismatch is a real warning (it is the one group-synced field); flags, size and offsets are per variant by design,
+  // so their differences are informational.
   const DIVERGENCE_FIELDS = [
-    ["symbol", "Symbol"],
-    ["dbBottomRender", "Bottom render"], ["dbPriority", "Priority"], ["dbAutoShadow", "Auto shadow"], ["dbOtgPassable", "OTG passable"],
-    ["dbRotatable", "Rotatable"], ["dbFlippable", "Flippable"], ["dbMirrorOffset", "Mirror offset"],
+    ["symbol", "Symbol", "warning"],
+    ["dbBottomRender", "Bottom render", "info"], ["dbPriority", "Priority", "info"], ["dbAutoShadow", "Auto shadow", "info"], ["dbOtgPassable", "OTG passable", "info"],
+    ["dbRotatable", "Rotatable", "info"], ["dbFlippable", "Flippable", "info"], ["dbMirrorOffset", "Mirror offset", "info"],
+    ["dbSizeMultiplier", "Size", "info"], ["dbOffsetX", "Offset X", "info"], ["dbOffsetY", "Offset Y", "info"],
   ];
+  const DIVERGENCE_NOTE = "If these differences are intended, you can ignore this.";
   // DB numerics can arrive as strings ("1.5"); compare them as numbers.
   const norm = v => (v == null ? null : (typeof v === "string" && /^-?\d+(\.\d+)?$/.test(v)) ? Number(v) : v);
-  // -> [{ field, label, values: [{ value, tiles: [name] }] }] for fields where the labelled variants disagree.
+  // -> [{ field, label, level: "warning"|"info", values: [{ value, tiles: [name] }] }] for fields where the labelled variants disagree.
   const divergence = tiles => {
     const out = [];
     const list = tiles.filter(t => Sensor.isCode(t.sensorCode));
     if (list.length < 2) return out;
-    for (const [field, label] of DIVERGENCE_FIELDS) {
+    for (const [field, label, level] of DIVERGENCE_FIELDS) {
       const groups = new Map();
       for (const t of list) {
         const v = norm(t[field]);
@@ -108,7 +112,7 @@
         if (!groups.has(k)) groups.set(k, { value: v, tiles: [] });
         groups.get(k).tiles.push(t.codename || t.sensorCode || t.ref);
       }
-      if (groups.size > 1) out.push({ field, label, values: [...groups.values()] });
+      if (groups.size > 1) out.push({ field, label, level, values: [...groups.values()] });
     }
     return out;
   };
@@ -217,7 +221,9 @@
   // folders: Map(sensorRef -> { folder: engine folder, candidates }). Returns Map("r,c" -> result) with one entry per cell that
   // holds an s: entry. result is sensor.resolve()'s answer plus { nb, folderRef }, or { warn: true, nb, folderRef } when the
   // folder has no usable variant. Neighbours count only when they hold the SAME s: entry; the map edge counts as air.
-  const deriveLayer = ({ grid, refs, folders }) => {
+  // rerolls: Map | object of sensorRef -> integer reroll seed (missing = 0). The one seed map the screen and Download Map both read.
+  const rerollOf = (rerolls, ref) => { const v = rerolls ? (typeof rerolls.get === "function" ? rerolls.get(ref) : rerolls[ref]) : 0; return Number.isFinite(v) ? v | 0 : 0; };
+  const deriveLayer = ({ grid, refs, folders, rerolls }) => {
     const out = new Map();
     if (!folders || !folders.size || !grid) return out;
     for (let r = 0; r < grid.length; r++) {
@@ -230,7 +236,7 @@
         if (!f) continue;
         const isSame = (rr, cc) => rr >= 0 && rr < grid.length && cc >= 0 && cc < (grid[rr] || []).length && grid[rr][cc] != null && refs[grid[rr][cc]] === ref;
         const nb = Sensor.neighbourCode(r, c, isSame);
-        const res = Sensor.resolve(f.folder, nb, { x: c, y: r, salt: ref, candidates: f.candidates });
+        const res = Sensor.resolve(f.folder, nb, { x: c, y: r, salt: ref, reroll: rerollOf(rerolls, ref), candidates: f.candidates });
         out.set(`${r},${c}`, res ? { ...res, nb, folderRef: ref } : { warn: true, nb, folderRef: ref });
       }
     }
@@ -258,6 +264,15 @@
     return (recipe || []).map(e => ({ quadrant: e.quadrant, x: RECTS[e.quadrant][0], y: RECTS[e.quadrant][1], w: hw, h: hh, sourceTileRef: e.sourceTileRef, steps: e.spinSteps, flip: !!e.flip }));
   };
   const composeKey = (folderRef, code) => `${folderRef}#${code}`;
+  // "flip", "spin 2", "flip, spin 1" or "no transform" (flip happens first, then the spin).
+  const transformLabel = (flip, steps) => [flip && "flip", steps && `spin ${steps}`].filter(Boolean).join(", ") || "no transform";
+  // Breakdown of a composed variant, one line per quadrant (TL TR BR BL): "TL <- 01101011 (Water_01101011) (flip)".
+  // nameOf(ref) -> tile name (falls back to the ref). -> [{ quadrant, label, text }]
+  const recipeLines = (recipe, nameOf) => (recipe || []).map(e => ({
+    quadrant: e.quadrant, label: e.quadrantName,
+    text: `${e.quadrantName} <- ${e.sourceCode} (${(nameOf && nameOf(e.sourceTileRef)) ?? e.sourceTileRef}) (${transformLabel(e.flip, e.spinSteps)})`,
+  }));
+  const FALLBACK_LABEL = "Fallback tile: used whenever no tile matches the exact shape.";
 
   // ── Tileset switch ────────────────────────────────────────────────────────────────────────────────────
   // s: entries of the outgoing tileset are matched by folder key into sensor folders of the incoming one. Global s: entries stay.
@@ -283,14 +298,14 @@
   };
 
   return {
-    SCOPE_GLOBAL, GROUP_COLUMNS, DIVERGENCE_FIELDS,
+    SCOPE_GLOBAL, GROUP_COLUMNS, DIVERGENCE_FIELDS, DIVERGENCE_NOTE,
     sensorRef, parseSensorRef, isSensorRef,
     parseCodeInput, parseRollInput, codeFieldState, codeGridCells, toggleCodeBit, normalisedHint, parseSymbolInput, usedSymbols, suggestSymbol,
     splitGroupPatch, divergence, makeFolder, engineFolder,
     globalFolderFiles, globalFileName,
     preloadImages, progressLabel, imageOps, withFreshVersion,
     variantOwners, hideSensorVariants, canonicalRef, canonicalRefs, folderPreviewTiles,
-    deriveLayer, opsToCss, opsLabel, composePlan, composeKey,
+    deriveLayer, rerollOf, opsToCss, opsLabel, composePlan, composeKey, transformLabel, recipeLines, FALLBACK_LABEL,
     planSensorSwitch, resolveLoadedSensorRef,
   };
 });
