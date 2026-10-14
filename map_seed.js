@@ -359,6 +359,7 @@
         const s = symbolOf(ref);
         if (s == null || s === "") kind = "noSymbol";
         else if (!isValidSymbol(s)) kind = "badSymbol";
+        else if ((s === SPECIAL_SYMBOLS.warn && ref !== "warn") || (s === SPECIAL_SYMBOLS.space && ref !== "space")) kind = "badSymbol"; // 6 / 7 belong to warn / space
         else out = s;
       }
       const v = { out, kind };
