@@ -299,4 +299,26 @@ test("global Rails folder: six explicit codenames, order BR BL TR TL Fence Ver, 
   assert.strictEqual(U.globalFileName("1.png", m.sensor.water), null);
 });
 
+test("recipeLines: four lines with code, tile name and transform", () => {
+  const f = U.makeFolder({ scope: "t", folderKey: "W", cfg: {}, tiles: ["00001011", "01101011", "01111111", "11111111"].map((c, i) => T("g:" + c, c, { sortIndex: i, codename: "N" + c, dbRotatable: true, dbFlippable: true })) });
+  const ef = U.engineFolder(f), r = S.buildCandidates(ef)["01000010"].recipe;
+  const lines = U.recipeLines(r, ref => f.tiles.find(t => t.ref === ref).codename);
+  assert.deepStrictEqual(lines.map(l => l.label), ["TL", "TR", "BR", "BL"]);
+  assert.strictEqual(lines[0].text, "TL <- 01101011 (N01101011) (no transform)");
+  assert.strictEqual(lines[1].text, "TR <- 01101011 (N01101011) (flip)");
+  assert.strictEqual(U.transformLabel(true, 2), "flip, spin 2");
+  assert.strictEqual(U.transformLabel(false, 0), "no transform");
+  assert.ok(/exact shape/.test(U.FALLBACK_LABEL));
+  assert.strictEqual(U.parseCodeInput("10101010").value, "10101010");
+  assert.strictEqual(U.normalisedHint("10101010"), null); // the fallback sentinel never "acts as" anything
+});
+
+test("engineFolder passes per-variant flags: a tile without rotatable cannot derive", () => {
+  const f = U.makeFolder({ scope: "t", folderKey: "W", cfg: {}, tiles: [T("a", "01111111", { dbRotatable: true }), T("b", "00001011", { dbRotatable: false })] });
+  const c = S.buildCandidates(U.engineFolder(f));
+  assert.strictEqual(c["11011111"].status, "derived");
+  assert.ok(c["11011111"].pool.every(e => e.ref === "a"));
+  assert.strictEqual(c["00010110"].status === "derived", false); // spin of b would be 00010110, b may not spin
+});
+
 console.log(`${passed} passed`);

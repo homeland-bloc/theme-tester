@@ -713,15 +713,16 @@ function SensorOptionalFields({ code, onCode, roll, onRoll }) {
   return (
     <div data-sensor-optional style={{ display: "flex", flexDirection: "column", gap: 8 }}>
       <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-        <span style={{ fontSize: 11, color: C.muted }}>Sensor code (optional)</span>
+        <span style={{ fontSize: 11, color: C.muted }}>Sensor code (optional, 8 digits of 0/1; empty = not a sensor tile; 10101010 = fallback tile)</span>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <input data-add-sensor-code value={code} maxLength={8} spellCheck={false} onChange={e => onCode(e.target.value.replace(/[^01]/g, ''))}
-            placeholder="8 digits of 0/1, empty = not a sensor tile" style={inp(cp.ok)} />
+            placeholder="none" style={{ ...inp(cp.ok), width: 98, boxSizing: "border-box", letterSpacing: 2 }} />
           <SensorCodeGrid code={cp.ok ? cp.value : null} color={cp.ok ? "#f97316" : C.danger} onToggle={bit => onCode(SensorUI.toggleCodeBit(code, bit))} />
         </div>
         {SensorUI.normalisedHint(code) && <span data-normalised-hint style={{ fontSize: 10, color: C.muted }}>acts as {SensorUI.normalisedHint(code)}</span>}
+        {cp.ok && cp.value === SensorEngine.FALLBACK && <span data-fallback-label style={{ fontSize: 10, color: FALLBACK_TILE_COLOR }}>{SensorUI.FALLBACK_LABEL}</span>}
         {!cp.ok && <span style={{ fontSize: 10, color: C.danger }}>{cp.error}</span>}
-        <span style={{ fontSize: 10, color: C.muted }}>With a folder key, the image is named FolderKey_code. Group settings are copied from the folder's first variant.</span>
+        <span style={{ fontSize: 10, color: C.muted }}>With a folder key, the image is named FolderKey_code. The symbol is copied from the folder's first variant.</span>
       </label>
       <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
         <span style={{ fontSize: 11, color: C.muted }}>Sensor roll (optional, default 1, 0 = never picked)</span>
@@ -1318,7 +1319,8 @@ function InfoModalBody(props) {
     setFileNameInput(currentFileName);
   }, [t.dbId]);
   // Sensor fields: parsed values, edit state against the DB value, and whether this tile belongs to a sensor group
-  // (a folder where at least one row has a sensor code). Group fields saved from any variant go to every row of the folder.
+  // (a folder where at least one row has a sensor code). Only the symbol is group-synced: saving it from any variant updates every row
+  // of the folder. Size, offsets and all flags are per variant.
   const codeParsed = SensorUI.parseCodeInput(sensorCodeInput);
   const rollParsed = SensorUI.parseRollInput(sensorRollInput);
   const codeState = SensorUI.codeFieldState(sensorCodeInput, t.sensorCode);
@@ -1444,7 +1446,7 @@ function InfoModalBody(props) {
       return resp.ok;
     };
 
-    // One multi-row PATCH of the group-level columns onto every row of (tileset, folder_key).
+    // One multi-row PATCH of the group-level column (symbol only) onto every row of (tileset, folder_key).
     const patchGroup = async (folderKey, body) => {
       const token = await getValidToken();
       const url = `${WORKER_URL}/rest/v1/tiles?tileset_id=eq.${encodeURIComponent(t.tilesetId)}&folder_key=eq.${encodeURIComponent(folderKey)}`;
@@ -1517,7 +1519,7 @@ function InfoModalBody(props) {
         }
         try {
           if (inSensorGroup && body.folder_key) {
-            // Group columns go to every row of the folder in one PATCH; the rest stays per tile.
+            // Only the symbol goes to every row of the folder in one PATCH; everything else stays on this variant's row.
             const { group, own } = SensorUI.splitGroupPatch(body);
             ok = await patchTile(own);
             if (ok) ok = await patchGroup(body.folder_key, { ...group, last_updated_at: body.last_updated_at, last_updated_by: body.last_updated_by });
@@ -1772,12 +1774,13 @@ function InfoModalBody(props) {
                 <div style={{ display: "flex", flexDirection: "column", gap: 3, flex: 1 }}>
                   <input data-sensor-code value={sensorCodeInput} maxLength={8} readOnly={!canEditDb}
                     onChange={e => { if (canEditDb) { setSensorCodeInput(e.target.value.replace(/[^01]/g, '')); setSensorError(null); } }}
-                    placeholder="none (8 digits of 0/1)" spellCheck={false}
-                    style={{ background: !canEditDb ? "transparent" : "rgba(180,40,40,0.09)", border: `1px solid ${col}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none", letterSpacing: 2 }} />
+                    placeholder="none" spellCheck={false}
+                    style={{ width: 98, boxSizing: "border-box", background: !canEditDb ? "transparent" : "rgba(180,40,40,0.09)", border: `1px solid ${col}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none", letterSpacing: 2 }} />
                   <span style={{ fontSize: 9, color: col }}>
                     {codeState === "saved" ? (t.sensorCode == null ? "no sensor code (saved)" : "saved") : codeState === "edited" ? "edited, not saved" : "needs exactly 8 characters of 0 and 1"}
                   </span>
                   {SensorUI.normalisedHint(sensorCodeInput) && <span data-normalised-hint style={{ fontSize: 9, color: C.muted }}>acts as {SensorUI.normalisedHint(sensorCodeInput)}</span>}
+                  {codeParsed.ok && codeParsed.value === SensorEngine.FALLBACK && <span data-fallback-label style={{ fontSize: 9, color: FALLBACK_TILE_COLOR }}>{SensorUI.FALLBACK_LABEL}</span>}
                 </div>
                 <SensorCodeGrid code={codeParsed.ok ? codeParsed.value : null} color={col}
                   onToggle={canEditDb ? bit => { setSensorCodeInput(SensorUI.toggleCodeBit(sensorCodeInput, bit)); setSensorError(null); } : undefined} />
@@ -1806,7 +1809,7 @@ function InfoModalBody(props) {
 
         {/* Size multiplier */}
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Size multiplier (%)<FlagTip id="size_multiplier" />{groupNote}</span>
+          <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Size multiplier (%)<FlagTip id="size_multiplier" /></span>
           <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepMult(-0.05)}>−</button>
           <input type="number" value={multInput} step="0.05"
             onChange={e => setMultInput(e.target.value)}
@@ -1824,7 +1827,7 @@ function InfoModalBody(props) {
         <FlagDesc id="size_multiplier" />
 
         {/* Offsets */}
-        <span style={{ fontSize: 11, color: C.muted, fontWeight: 600 }}>Offsets (%) 📐{groupNote}</span>
+        <span style={{ fontSize: 11, color: C.muted, fontWeight: 600 }}>Offsets (%) 📐</span>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Horizontal<FlagTip id="offset_h" /></span>
           <button style={{ ...btn(false), padding: "3px 8px", fontSize: 14, lineHeight: 1 }} onClick={() => stepOx(-1)}>−</button>
@@ -1855,7 +1858,6 @@ function InfoModalBody(props) {
           <div style={{ padding: "4px 6px", background: "rgba(255,255,255,0.04)", borderRadius: 4, fontSize: 10, color: C.muted, lineHeight: 1.5 }}>{FLAG_TIPS[flagTooltip]}</div>
         )}
 
-        {inSensorGroup && <span style={{ fontSize: 10, color: SENSOR_YELLOW }}>Flags (rotatable, flippable, bottom, priority, shadow, OTG, mirror offset) apply to the whole folder.</span>}
         {/* Boolean flags — 2-column grid.
              Each pair of flag labels occupies one row; the inline tooltip description
              is placed as the NEXT grid item with gridColumn:"1/-1" so it spans both
@@ -2121,8 +2123,9 @@ function InfoModalBody(props) {
 
 // ── Sensor folder components (top level: not nested in App, so their state survives App re-renders) ──
 const SENSOR_YELLOW = "#f5c518";
-const STATUS_COLORS = { explicit: "#34d399", derived: "#60a5fa", composed: "#c084fc", fallback: "#fbbf24", missing: "#f87171" };
-const STATUS_HELP = { explicit: "has its own tile", derived: "spin/flip of a tile", composed: "built from quadrants", fallback: "uses the nearest variant or 00000000", missing: "should be composed but cannot be" };
+const FALLBACK_TILE_COLOR = "#f472b6"; // the 10101010 fallback tile of an exact-mode folder: its own colour
+const STATUS_COLORS = { explicit: "#34d399", derived: "#60a5fa", composed: "#c084fc", fallback: "#fbbf24", missing: "#f87171", "fallback-tile": FALLBACK_TILE_COLOR };
+const STATUS_HELP = { explicit: "has its own tile", derived: "spin/flip of a tile", composed: "built from quadrants", fallback: "uses the nearest variant or 00000000", missing: "should be composed but cannot be", "fallback-tile": "the 10101010 fallback tile" };
 const sensorBtnStyle = (color = C.accent) => ({ background: "rgba(255,255,255,0.04)", border: `1px solid ${color}`, borderRadius: 6, color, cursor: "pointer", fontSize: 11, padding: "3px 10px", fontFamily: "'Inter', sans-serif" });
 const tileUrl = t => (t ? (t.blobSrc ?? t.src) : null);
 const fromLabel = e => (e.derivedFrom ? `from ${e.derivedFrom.tile.codename ?? e.derivedFrom.code} (${SensorUI.opsLabel(e.ops)})` : null);
@@ -2142,13 +2145,17 @@ function sensorEntryVisual(entry, code, status, recipe, folderRef, candidates, r
 
 // 3x3 view of a sensor code: neighbour cells "1" filled, "0" outlined, centre an X. Colour = state (green saved, orange edited).
 function SensorCodeGrid({ code, color, onToggle }) {
+  if (code === SensorEngine.FALLBACK) { // the sentinel has no 3x3 shape
+    return <div data-sensor-grid data-fallback-grid style={{ flexShrink: 0, border: `1.5px solid ${FALLBACK_TILE_COLOR}`, borderRadius: 4, color: FALLBACK_TILE_COLOR, fontSize: 11, fontWeight: 700, padding: "6px 8px", textAlign: "center" }} title={SensorUI.FALLBACK_LABEL}>Fallback tile</div>;
+  }
   const cells = SensorUI.codeGridCells(code);
+  const px = isMobileDevice() ? 28 : 24; // finger-sized on mobile
   return (
-    <div data-sensor-grid style={{ display: "grid", gridTemplateColumns: "repeat(3, 14px)", gap: 2, flexShrink: 0 }} title={code ? `Neighbours: ${code}` : "No sensor code"}>
+    <div data-sensor-grid style={{ display: "grid", gridTemplateColumns: `repeat(3, ${px}px)`, gap: 3, flexShrink: 0 }} title={code ? `Neighbours: ${code}` : "No sensor code"}>
       {cells.map((c, i) => (
         <div key={i} data-cell={c.centre ? "x" : c.filled ? "1" : "0"} data-bit={c.centre ? undefined : SensorEngine.BIT_NAMES[c.bit]}
           onClick={onToggle && !c.centre ? () => onToggle(c.bit) : undefined}
-          style={{ cursor: onToggle && !c.centre ? "pointer" : undefined, width: 14, height: 14, boxSizing: "border-box", borderRadius: 3, border: `1.5px solid ${color}`, background: c.filled ? color : "transparent", color, fontSize: 10, lineHeight: "11px", textAlign: "center", fontWeight: 700 }}>{c.centre ? "✕" : ""}</div>
+          style={{ cursor: onToggle && !c.centre ? "pointer" : undefined, width: px, height: px, boxSizing: "border-box", borderRadius: 4, border: `1.5px solid ${color}`, background: c.filled ? color : "transparent", color, fontSize: 13, lineHeight: `${px - 3}px`, textAlign: "center", fontWeight: 700 }}>{c.centre ? "✕" : ""}</div>
       ))}
     </div>
   );
@@ -2270,24 +2277,33 @@ function SpinFlipImageModal({ tile, getValidToken, workerFetch, currentUser, btn
 
 function SensorWarningModal({ folder, onClose }) {
   const fmt = v => (v === null || v === undefined ? "(not set)" : String(v));
+  const real = folder.warnings.filter(w => w.level === "warning"), info = folder.warnings.filter(w => w.level !== "warning");
+  const diffRow = w => (
+    <div key={w.field} style={{ fontSize: 12, color: C.text }}>
+      <b>{w.label}</b>
+      {w.values.map((v, i) => (
+        <div key={i} style={{ fontSize: 11, color: C.muted, marginLeft: 8 }}>{fmt(v.value)} — {v.tiles.join(", ")}</div>
+      ))}
+    </div>
+  );
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal-box" onClick={e => e.stopPropagation()} style={{ maxWidth: 420, maxHeight: "80vh", overflowY: "auto" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <span style={{ fontSize: 13, fontWeight: 700, color: SENSOR_YELLOW }}>⚠ {folder.label}: {folder.warnings.length ? "settings differ" : "tiles without a sensor code"}</span>
+          <span style={{ fontSize: 13, fontWeight: 700, color: SENSOR_YELLOW }}>⚖️ {folder.label}: {folder.warnings.length ? (folder.warnings.some(w => w.level === "warning") ? "symbol differs" : "variants differ") : "tiles without a sensor code"}</span>
           <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
         </div>
-        {folder.warnings.length > 0 && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            <span style={{ fontSize: 11, color: C.muted }}>These settings are shared by the whole folder, but the variants disagree. The first variant is used.</span>
-            {folder.warnings.map(w => (
-              <div key={w.field} style={{ fontSize: 12, color: C.text }}>
-                <b>{w.label}</b>
-                {w.values.map((v, i) => (
-                  <div key={i} style={{ fontSize: 11, color: C.muted, marginLeft: 8 }}>{fmt(v.value)} — {v.tiles.join(", ")}</div>
-                ))}
-              </div>
-            ))}
+        {real.length > 0 && (
+          <div data-warn-real style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <span style={{ fontSize: 11, color: C.muted }}>The symbol is shared by the whole folder, but the variants disagree. Saving the symbol from any variant fixes it.</span>
+            {real.map(diffRow)}
+          </div>
+        )}
+        {info.length > 0 && (
+          <div data-warn-info style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <span style={{ fontSize: 11, color: C.muted }}>Flags, size and offsets are set per variant. These differ between variants:</span>
+            {info.map(diffRow)}
+            <span style={{ fontSize: 11, color: C.muted }}>{SensorUI.DIVERGENCE_NOTE}</span>
           </div>
         )}
         {folder.unlabelled.length > 0 && (
@@ -2307,18 +2323,30 @@ function SensorWarningModal({ folder, onClose }) {
 function SensorSimulationPanel({ folder, candidates, requestComposed, onClose }) {
   const [bits, setBits] = useState(() => Array(8).fill(false));
   const [seed, setSeed] = useState(0);
+  const [hoverQ, setHoverQ] = useState(null); // quadrant (0 TL, 1 TR, 2 BR, 3 BL) hovered in the composed breakdown
+  const [pickedFallback, setPickedFallback] = useState(false); // the 10101010 row of an exact-mode folder was clicked
   const engine = useMemo(() => SensorUI.engineFolder(folder), [folder]);
   const code = bits.map(b => (b ? "1" : "0")).join("");
-  const res = SensorEngine.resolve(engine, code, { x: seed, y: seed * 7 + 1, salt: folder.ref, candidates });
+  const fbCand = candidates[SensorEngine.FALLBACK];
+  const res = pickedFallback && fbCand
+    ? (() => { const entry = SensorEngine.weightedPick(fbCand.pool, e => e.roll, SensorEngine.hash2D(seed, seed * 7 + 1, SensorEngine.stringToInt(folder.ref))); return entry && { code: SensorEngine.FALLBACK, status: "explicit", fallback: true, ref: entry.ref, tile: entry.tile, ops: entry.ops, derivedFrom: null, recipe: null, entry }; })()
+    : SensorEngine.resolve(engine, code, { x: seed, y: seed * 7 + 1, salt: folder.ref, candidates });
+  const isFb = !!(res && res.code === SensorEngine.FALLBACK);
+  const nameOfRef = ref => { const t = folder.tiles.find(x => x.ref === ref); return t ? (t.codename ?? t.sensorCode ?? String(ref)) : String(ref); };
+  const lines = res && res.recipe ? SensorUI.recipeLines(res.recipe, nameOfRef) : [];
   const cov = useMemo(() => SensorEngine.coverage(engine), [engine]);
   const required = useMemo(() => SensorEngine.computeRequiredBase(engine), [engine]);
   const mode = useMemo(() => SensorEngine.folderMode(engine), [engine]);
-  const shownCov = useMemo(() => (mode.cardinalOnly ? cov.filter(x => SensorEngine.CARDINAL_CODES.includes(x.code)) : cov), [cov, mode]);
+  const shownCov = useMemo(() => (mode.cardinalOnly ? cov.filter(x => SensorEngine.CARDINAL_CODES.includes(x.code) || x.code === SensorEngine.FALLBACK) : cov), [cov, mode]);
   const pool = res ? candidates[res.code].pool : [];
   const pct = SensorEngine.pickPercentages(pool);
   const vis = res ? sensorEntryVisual(res.entry, res.code, res.status, res.recipe, folder.ref, candidates, requestComposed) : null;
   const cellBox = { width: 44, height: 44, borderRadius: 6, boxSizing: "border-box" };
-  const setFromCode = c => { setBits(c.split("").map(ch => ch === "1")); };
+  const setFromCode = c => {
+    if (c === SensorEngine.FALLBACK) { setPickedFallback(true); return; } // the sentinel is a tile, not a neighbourhood
+    setPickedFallback(false);
+    setBits(c.split("").map(ch => ch === "1"));
+  };
   const order = [0, 1, 2, 3, null, 4, 5, 6, 7];
   return (
     <div className="modal-backdrop" onClick={onClose} style={{ zIndex: 3000 }}>
@@ -2333,7 +2361,7 @@ function SensorSimulationPanel({ folder, candidates, requestComposed, onClose })
             {order.map((bit, i) => bit === null ? (
               <div key={i} style={{ ...cellBox, display: "flex", alignItems: "center", justifyContent: "center", background: SENSOR_YELLOW, color: "#000", fontWeight: 800, fontSize: 18 }} title="Centre cell (the tile itself)">✨</div>
             ) : (
-              <button key={i} data-bit={SensorEngine.BIT_NAMES[bit]} onClick={() => setBits(b => b.map((v, j) => (j === bit ? !v : v)))}
+              <button key={i} data-bit={SensorEngine.BIT_NAMES[bit]} onClick={() => { setPickedFallback(false); setBits(b => b.map((v, j) => (j === bit ? !v : v))); }}
                 title={`${SensorEngine.BIT_NAMES[bit]}: ${bits[bit] ? "same folder" : "empty"}`}
                 style={{ ...cellBox, cursor: "pointer", border: `2px solid ${bits[bit] ? SENSOR_YELLOW : C.border}`, background: bits[bit] ? "rgba(245,197,24,0.35)" : "transparent", color: C.muted, fontSize: 9 }}>
                 {SensorEngine.BIT_NAMES[bit]}
@@ -2341,18 +2369,28 @@ function SensorSimulationPanel({ folder, candidates, requestComposed, onClose })
             ))}
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 150 }}>
-            <div data-testid="sim-chosen" style={{ width: 96, height: 96, borderRadius: 8, background: C.panelDeep, border: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
+            <div data-testid="sim-chosen" style={{ position: "relative", width: 96, height: 96, borderRadius: 8, background: C.panelDeep, border: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
               {vis && vis.src ? <img src={vis.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", transform: vis.css || undefined }} /> : <span style={{ fontSize: 22 }}>{res ? "…" : "⚠️"}</span>}
+              {hoverQ != null && <div data-quad-highlight={SensorEngine.QUAD_NAMES[hoverQ]} style={{ position: "absolute", width: "50%", height: "50%", left: hoverQ === 1 || hoverQ === 2 ? "50%" : 0, top: hoverQ >= 2 ? "50%" : 0, border: `2px solid ${SENSOR_YELLOW}`, background: "rgba(245,197,24,0.28)", boxSizing: "border-box", pointerEvents: "none" }} />}
             </div>
             <div style={{ fontSize: 11, color: C.text }}>
               <b>Chosen variant:</b>{" "}
               {res ? <span data-testid="sim-code" style={{ fontFamily: "monospace" }}>{res.code}</span> : "none usable"}
             </div>
             {res && <div style={{ fontSize: 10, color: C.muted }}>
-              {res.status}{res.tile ? ` · ${res.tile.codename ?? res.tile.ref}` : ""}{res.derivedFrom ? ` · ${fromLabel(res.entry)}` : ""}
+              {isFb ? "fallback tile" : res.status}{res.tile ? ` · ${res.tile.codename ?? res.tile.ref}` : ""}{res.derivedFrom ? ` · ${fromLabel(res.entry)}` : ""}
               {vis && vis.state === "pending" ? " · composing…" : ""}{vis && vis.state === "failed" ? " · composing failed, showing 00000000" : ""}
             </div>}
-            <div style={{ fontSize: 10, color: C.muted }}>Neighbours: <span style={{ fontFamily: "monospace" }}>{code}</span></div>
+            {isFb && <div data-testid="sim-fallback-label" style={{ fontSize: 10, color: FALLBACK_TILE_COLOR, maxWidth: 200 }}>{SensorUI.FALLBACK_LABEL}</div>}
+            {lines.length > 0 && (
+              <div data-testid="sim-breakdown" style={{ display: "flex", flexDirection: "column", gap: 2, maxWidth: 260 }}>
+                {lines.map(l => (
+                  <div key={l.quadrant} data-quad-line={l.label} onMouseEnter={() => setHoverQ(l.quadrant)} onMouseLeave={() => setHoverQ(null)} onClick={() => setHoverQ(q => (q === l.quadrant ? null : l.quadrant))}
+                    style={{ fontSize: 10, fontFamily: "monospace", color: hoverQ === l.quadrant ? SENSOR_YELLOW : C.muted, cursor: "default", padding: "1px 3px", borderRadius: 3, background: hoverQ === l.quadrant ? "rgba(245,197,24,0.12)" : "transparent" }}>{l.text}</div>
+                ))}
+              </div>
+            )}
+            <div style={{ fontSize: 10, color: C.muted }}>Neighbours: <span style={{ fontFamily: "monospace" }}>{isFb ? "(any other shape)" : code}</span></div>
             <button style={sensorBtnStyle()} onClick={() => setSeed(s => s + 1)} title="Rolls depend on the cell position; try another position">Roll again</button>
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 160, flex: 1 }}>
@@ -2364,7 +2402,7 @@ function SensorSimulationPanel({ folder, candidates, requestComposed, onClose })
                 <div key={String(p.ref)} data-testid="sim-pool-row" style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: C.text }}>
                   <span style={{ width: 42, textAlign: "right", fontFamily: "monospace" }}>{(p.probability * 100).toFixed(p.probability * 100 % 1 === 0 ? 0 : 1)}%</span>
                   <span style={{ color: C.muted }}>roll {p.roll}</span>
-                  <span>{e.composed ? "composed" : (e.tile?.codename ?? String(p.ref))}</span>
+                  <span>{e.composed ? `composed (majority: ${nameOfRef(e.majorityRef)})` : (e.tile?.codename ?? String(p.ref))}</span>
                 </div>
               );
             })}
@@ -2373,7 +2411,7 @@ function SensorSimulationPanel({ folder, candidates, requestComposed, onClose })
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           <span style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: 0.8 }}>{`Coverage of the ${shownCov.length} ${mode.cardinalOnly ? "cardinal " : ""}codes (click one to load it)`}</span>
           <div style={{ display: "flex", gap: 10, fontSize: 10, color: C.muted, flexWrap: "wrap" }}>
-            {Object.entries(STATUS_COLORS).map(([k, col]) => <span key={k} title={STATUS_HELP[k]}><span style={{ display: "inline-block", width: 9, height: 9, background: col, borderRadius: 2, marginRight: 4 }} />{k} ({shownCov.filter(x => x.status === k).length})</span>)}
+            {Object.entries(STATUS_COLORS).filter(([k]) => mode.kind !== "exact" ? k !== "fallback-tile" : (k === "explicit" || k === "derived" || k === "fallback-tile")).map(([k, col]) => <span key={k} title={STATUS_HELP[k]}><span style={{ display: "inline-block", width: 9, height: 9, background: col, borderRadius: 2, marginRight: 4 }} />{k} ({shownCov.filter(x => x.status === k).length})</span>)}
           </div>
           <div data-testid="sim-coverage" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(78px, 1fr))", gap: 3 }}>
             {shownCov.map(x => (
@@ -2382,7 +2420,9 @@ function SensorSimulationPanel({ folder, candidates, requestComposed, onClose })
             ))}
           </div>
           <div data-testid="sim-required" style={{ fontSize: 11, color: required.length ? C.danger : C.muted }}>
-            {mode.kind === "fence"
+            {mode.kind === "exact"
+              ? "Exact mode (this folder has a 10101010 fallback tile): the neighbours are normalised, an exact match among its tiles or their spin/flip (per tile) wins, anything else shows the fallback tile. Nothing is composed or scored."
+              : mode.kind === "fence"
               ? "Simple fence rule: only the four cardinal neighbours count. An exact match among the three variants wins, anything else shows 00000000."
               : mode.kind === "compose"
                 ? `${[mode.spin && "Spin", mode.flip && "Flip"].filter(Boolean).join(" and ")} on: codes without a tile are derived or built from tile quadrants (rotated${mode.flip ? "/mirrored" : ""} as allowed).`
@@ -3184,14 +3224,14 @@ function App() {
     if (over !== undefined) return over;
     return getTileOffset(cellSizeTile(t, r, c));
   };
-  // Size and offsets are per variant: a sensor cell uses the CHOSEN variant's values (derived variants: their source tile;
-  // composed variants: the source tile of their first quadrant). Plain cells use their own tile.
+  // Size, offsets and ALL flags are per variant: a sensor cell uses the CHOSEN variant's values (derived variants: their source
+  // tile; composed variants: the majority-source tile, ties to the best-ranked source). Plain cells use their own tile.
   const cellSizeTile = (t, r, c) => {
     if (!t || !t.isSensor) return t;
     const d = sensorLayerRef.current.get(`${r},${c}`);
     if (!d || d.warn) return t;
     if (d.status === "composed") {
-      const ref = d.recipe && d.recipe[0] && d.recipe[0].sourceTileRef;
+      const ref = (d.entry && d.entry.majorityRef) ?? (d.recipe && d.recipe[0] && d.recipe[0].sourceTileRef);
       return sensorFolders.get(d.folderRef)?.ui.tiles.find(x => x.ref === ref) ?? t;
     }
     return d.tile ?? t;
@@ -3284,8 +3324,10 @@ function App() {
       if (id == null) return false;
       const t = tilesByRef.get(refAt(palette, id));
       if (!t || t.isSpace) return false;
+      const vt = cellSizeTile(t, r, c); // OTG passable is per variant; a folder-level override (Tools panel) covers variants without their own
+      if (otgWallOverrides[vt.ref] !== undefined) return otgWallOverrides[vt.ref];
       if (otgWallOverrides[t.ref] !== undefined) return otgWallOverrides[t.ref];
-      return isDefaultOTGWall(t);
+      return isDefaultOTGWall(vt);
     };
     const isEmpty = (r, c) => r >= 0 && r < gridH && c >= 0 && c < gridW && !isWall(r, c);
     const result = new Set();
@@ -3438,7 +3480,7 @@ function App() {
       const isStarred = starredTiles.includes(t.ref);
       return (
         <div key={t.ref} data-sensor-variant={t.ref} title={`${t.codename ?? ""} ${t.sensorCode ?? "(no code)"}`.trim()}
-          style={{ width: cardSz, height: cardSz, borderRadius: 8, border: `2px solid ${failed ? C.danger : C.border}`, position: "relative", overflow: "visible", opacity: failed ? 0.55 : 1 }}>
+          style={{ width: cardSz, height: cardSz, borderRadius: 8, border: `2px solid ${failed ? C.danger : t.sensorCode === SensorEngine.FALLBACK ? FALLBACK_TILE_COLOR : C.border}`, position: "relative", overflow: "visible", opacity: failed ? 0.55 : 1 }}>
           <div style={{ position: "absolute", inset: 0, borderRadius: 6, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", background: C.panelDeep }}>
             {failed ? <span style={{ fontSize: 18 }}>⚠️</span>
               : <img src={t.blobSrc ?? t.src} alt="" onError={() => markFailed(t.ref)} className={tileCardLightBg ? "tile-img-checker" : undefined} style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated" }} />}
@@ -3458,7 +3500,7 @@ function App() {
         <div style={{ padding: "5px 8px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0, gap: 6 }}>
           <span style={{ fontSize: 10, fontWeight: 700, color: SENSOR_YELLOW, letterSpacing: 0.5 }}>✨ {entry.label}</span>
           <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            {hasWarn && <button onClick={() => setSensorWarnFolder(sensor)} style={{ ...sensorBtnStyle(SENSOR_YELLOW), padding: "0 6px", fontSize: 12 }} title="Shared settings differ / tiles without a code">⚠</button>}
+            {hasWarn && <button data-sensor-warn={sensor.ref} onClick={() => setSensorWarnFolder(sensor)} style={{ ...sensorBtnStyle(SENSOR_YELLOW), padding: "0 6px", fontSize: 12 }} title={sensor.warnings.some(w => w.level === "warning") ? "The variants disagree on the symbol" : sensor.warnings.length ? "Variants differ in flags, size or offsets" : "Some tiles have no sensor code"}>⚖️</button>}
             <button onClick={() => setOpenFolderKey(null)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 15, lineHeight: 1, padding: "0 2px" }}>×</button>
           </span>
         </div>
@@ -5827,7 +5869,7 @@ function App() {
       if (t.isSpace) { spaceCells.push({ r, c }); return; }
       const sv = t.isSensor ? sensorVisual(t, r, c) : null;
       if (sv && sv.warn) return;
-      draws.push({ ref: t.ref, z: isPriorityTile(t) ? 2 : (isBottomTile(t) ? 0 : 1), src: sv ? sv.src : (t.blobSrc ?? t.src), ops: sv ? (sv.ops || []) : null, r, c, mult: getCellMultiplier(t, r, c), off: getEffectiveOffset(t, r, c) });
+      draws.push({ ref: t.ref, z: isPriorityTile(cellSizeTile(t, r, c)) ? 2 : (isBottomTile(cellSizeTile(t, r, c)) ? 0 : 1), src: sv ? sv.src : (t.blobSrc ?? t.src), ops: sv ? (sv.ops || []) : null, r, c, mult: getCellMultiplier(t, r, c), off: getEffectiveOffset(t, r, c) });
     }));
     const filename = (mapName.trim() || "ophelia-map") + ".png";
     const finish = () => {
@@ -6899,7 +6941,7 @@ function App() {
       const nameErr = checkFileName(baseName);
       if (nameErr) throw new Error(`Cannot use "${baseName}" as the image file name: ${nameErr}.`);
       const existing = await ensureTilesetLoaded(addTileTsId);
-      // A new variant joins its folder with the group settings of the folder's first coded variant.
+      // A new variant joins its folder with the symbol of the folder's first coded variant (the only group-synced field).
       const sibling = addCode.value && addTileFolderKey.trim()
         ? sortedRows(dbTilesByTsIdRef.current[addTileTsId]).find(r => r.folder_key === addTileFolderKey.trim() && r.sensor_code != null) : null;
       const groupCopy = sibling ? Object.fromEntries(SensorUI.GROUP_COLUMNS.filter(k => sibling[k] !== undefined).map(k => [k, sibling[k]])) : {};
@@ -7691,7 +7733,6 @@ function App() {
                     const isThisOpen = openFolderKey === key;
                     const active = !eraser && sel === sensor.ref;
                     const preview = sensor.labelled.slice(0, 4);
-                    const hasWarn = sensor.warnings.length > 0 || sensor.unlabelled.length > 0;
                     const corner = { position: "absolute", top: -7, width: 18, height: 18, fontSize: 11, cursor: "pointer", lineHeight: "18px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" };
                     return (
                       <div key={key} data-sensor-card={sensor.ref}
@@ -7715,17 +7756,9 @@ function App() {
                           ))}
                           {Array.from({ length: Math.max(0, 4 - preview.length) }).map((_, i) => <div key={`e${i}`} style={{ background: C.panelDeep }} />)}
                         </div>
-                        <div style={{ position: "absolute", inset: 0, zIndex: 3, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
-                          <span style={{ fontSize: 22, lineHeight: 1, filter: "drop-shadow(0 1px 3px rgba(0,0,0,0.9))" }}>✨</span>
-                        </div>
                         <span data-sensor-unfold={sensor.ref} onClick={e => { e.stopPropagation(); toggleFolder(key, e); }}
                           style={{ ...corner, right: -7, color: isThisOpen ? SENSOR_YELLOW : "rgba(255,255,255,0.85)" }}
                           title={isThisOpen ? "Fold" : "Unfold variants"}>{isThisOpen ? "▼" : "▶"}</span>
-                        {hasWarn && (
-                          <span data-sensor-warn={sensor.ref} onClick={e => { e.stopPropagation(); setSensorWarnFolder(sensor); }}
-                            style={{ ...corner, right: 14, color: SENSOR_YELLOW }}
-                            title={sensor.warnings.length ? "The variants disagree on shared settings" : "Some tiles have no sensor code"}>⚠</span>
-                        )}
                       </div>
                     );
                   };
@@ -8395,7 +8428,7 @@ function App() {
                   row.map((id, c) => {
                     const t = getCellTile(id); if (!t) return null;
                     if (t.isSpace) return null;
-                    if (!isBottomTile(t) || isPriorityTile(t)) return null;
+                    if (!isBottomTile(cellSizeTile(t, r, c)) || isPriorityTile(cellSizeTile(t, r, c))) return null;
                     const mult   = getCellMultiplier(t, r, c);
                     const off    = getEffectiveOffset(t, r, c);
                     const sv = t.isSensor ? sensorVisual(t, r, c) : null; if (sv && sv.warn) return null;
@@ -8406,7 +8439,7 @@ function App() {
                     const tileImg = <img key={`bot${r}-${c}`} src={imgSrc} alt="" draggable={false} decoding="async"
                       style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%)${svCss}`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 1 }}
                     />;
-                    if (!isAutoShadowTile(t)) return tileImg;
+                    if (!isAutoShadowTile(cellSizeTile(t, r, c))) return tileImg;
                     return [
                       <img key={`sbot${r}-${c}`} src={imgSrc} alt="" draggable={false}
                         style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy + 0.3 * cellPx, width: cellPx * mult, height: "auto", transform: `translateY(-50%)${svCss}`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 0, filter: "brightness(0)", opacity: 0.2 }}
@@ -8420,8 +8453,8 @@ function App() {
                   row.map((id, c) => {
                     const t = getCellTile(id); if (!t) return null;
                     if (t.isSpace) return null;
-                    if (isPriorityTile(t)) return null;
-                    if (isBottomTile(t)) return null;
+                    if (isPriorityTile(cellSizeTile(t, r, c))) return null;
+                    if (isBottomTile(cellSizeTile(t, r, c))) return null;
                     const mult   = getCellMultiplier(t, r, c);
                     const off    = getEffectiveOffset(t, r, c);
                     const sv = t.isSensor ? sensorVisual(t, r, c) : null; if (sv && sv.warn) return null;
@@ -8432,7 +8465,7 @@ function App() {
                     const tileImg = <img key={`t${r}-${c}`} src={imgSrc} alt="" draggable={false} decoding="async"
                       style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%)${svCss}`, pointerEvents: "none", imageRendering: "pixelated", zIndex: r + 2 }}
                     />;
-                    if (!isAutoShadowTile(t)) return tileImg;
+                    if (!isAutoShadowTile(cellSizeTile(t, r, c))) return tileImg;
                     return [
                       <img key={`s${r}-${c}`} src={imgSrc} alt="" draggable={false}
                         style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy + 0.3 * cellPx, width: cellPx * mult, height: "auto", transform: `translateY(-50%)${svCss}`, pointerEvents: "none", imageRendering: "pixelated", zIndex: r + 1, filter: "brightness(0)", opacity: 0.2 }}
@@ -8446,7 +8479,7 @@ function App() {
                   row.map((id, c) => {
                     const t = getCellTile(id); if (!t) return null;
                     if (t.isSpace) return null;
-                    if (!isPriorityTile(t)) return null;
+                    if (!isPriorityTile(cellSizeTile(t, r, c))) return null;
                     const mult   = getCellMultiplier(t, r, c);
                     const off    = getEffectiveOffset(t, r, c);
                     const sv = t.isSensor ? sensorVisual(t, r, c) : null; if (sv && sv.warn) return null;
@@ -8457,7 +8490,7 @@ function App() {
                     const tileImg = <img key={`prio${r}-${c}`} src={imgSrc} alt="" draggable={false} decoding="async"
                       style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%)${svCss}`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 9999 }}
                     />;
-                    if (!isAutoShadowTile(t)) return tileImg;
+                    if (!isAutoShadowTile(cellSizeTile(t, r, c))) return tileImg;
                     return [
                       <img key={`sprio${r}-${c}`} src={imgSrc} alt="" draggable={false}
                         style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy + 0.3 * cellPx, width: cellPx * mult, height: "auto", transform: `translateY(-50%)${svCss}`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 9998, filter: "brightness(0)", opacity: 0.2 }}

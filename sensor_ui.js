@@ -262,6 +262,15 @@
     return (recipe || []).map(e => ({ quadrant: e.quadrant, x: RECTS[e.quadrant][0], y: RECTS[e.quadrant][1], w: hw, h: hh, sourceTileRef: e.sourceTileRef, steps: e.spinSteps, flip: !!e.flip }));
   };
   const composeKey = (folderRef, code) => `${folderRef}#${code}`;
+  // "flip", "spin 2", "flip, spin 1" or "no transform" (flip happens first, then the spin).
+  const transformLabel = (flip, steps) => [flip && "flip", steps && `spin ${steps}`].filter(Boolean).join(", ") || "no transform";
+  // Breakdown of a composed variant, one line per quadrant (TL TR BR BL): "TL <- 01101011 (Water_01101011) (flip)".
+  // nameOf(ref) -> tile name (falls back to the ref). -> [{ quadrant, label, text }]
+  const recipeLines = (recipe, nameOf) => (recipe || []).map(e => ({
+    quadrant: e.quadrant, label: e.quadrantName,
+    text: `${e.quadrantName} <- ${e.sourceCode} (${(nameOf && nameOf(e.sourceTileRef)) ?? e.sourceTileRef}) (${transformLabel(e.flip, e.spinSteps)})`,
+  }));
+  const FALLBACK_LABEL = "Fallback tile: used whenever no tile matches the exact shape.";
 
   // ── Tileset switch ────────────────────────────────────────────────────────────────────────────────────
   // s: entries of the outgoing tileset are matched by folder key into sensor folders of the incoming one. Global s: entries stay.
@@ -294,7 +303,7 @@
     globalFolderFiles, globalFileName,
     preloadImages, progressLabel, imageOps, withFreshVersion,
     variantOwners, hideSensorVariants, canonicalRef, canonicalRefs, folderPreviewTiles,
-    deriveLayer, opsToCss, opsLabel, composePlan, composeKey,
+    deriveLayer, opsToCss, opsLabel, composePlan, composeKey, transformLabel, recipeLines, FALLBACK_LABEL,
     planSensorSwitch, resolveLoadedSensorRef,
   };
 });
