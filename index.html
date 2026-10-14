@@ -2815,7 +2815,7 @@ function App() {
       if (!raw) return;
       sessionStorage.removeItem('oph_return');
       const { hash = '', search = '' } = JSON.parse(raw);
-      if (hash || search) history.replaceState(null, '', window.location.pathname + search + hash);
+      if (hash || search) window.history.replaceState(null, '', window.location.pathname + search + hash);
     } catch {}
   }, [sessionState]);
 
@@ -5921,7 +5921,7 @@ function App() {
     const m = /^#seed=/.exec(window.location.hash);
     if (!m) return;
     const frag = window.location.hash;
-    try { history.replaceState(null, "", window.location.pathname + window.location.search); } catch {}
+    try { window.history.replaceState(null, "", window.location.pathname + window.location.search); } catch {}
     startSeedImport(frag);
   }, [isAuthenticated, tilesLoading, dbTilesets, manifest, grid, seedLinkTick]); // eslint-disable-line
   useEffect(() => {
