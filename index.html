@@ -9023,8 +9023,10 @@ function App() {
 
         {/* Row 1 (always visible): Undo | Zoom | Redo (together) | fold toggle */}
         <div style={{ display: "flex", alignItems: "center", padding: "5px 14px 3px", gap: 6 }}>
-          <div style={{ flex: 1, display: "flex", justifyContent: "center", alignItems: "center", gap: 6 }}>
+          {/* Mobile: Undo and Redo spread out to the edges, zoom in the middle. Desktop: they sit on either side of the zoom with a medium gap. */}
+          <div data-undo-zoom-row style={{ flex: 1, display: "flex", justifyContent: isMobile ? "space-between" : "center", alignItems: "center", gap: isMobile ? 6 : 28 }}>
             <button style={btn(histIdx > 0, C.accent, C.accentDim)} onClick={undo} disabled={histIdx <= 0} title="Undo (Ctrl+Z)">Undo</button>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <button style={{ ...btn(false), padding: "4px 9px", fontSize: 15, fontWeight: 700, lineHeight: 1 }} onClick={e => changeZoom(-ZOOM_STEP * (e.shiftKey ? 5 : 1))}>−</button>
             <span onClick={() => applyZoom(calcFitZoom(gridW, gridH))}
               style={{ minWidth: 52, textAlign: "center", display: "inline-block", fontSize: 13, fontFamily: "monospace", fontWeight: 700, color: C.text, background: "rgba(180,40,40,0.10)", borderRadius: 7, padding: "3px 6px", border: `1px solid ${C.border}`, cursor: "pointer", userSelect: "none" }}
@@ -9032,6 +9034,7 @@ function App() {
               {Math.round(zoom / ZOOM_STEP) * 10}%
             </span>
             <button style={{ ...btn(false), padding: "4px 9px", fontSize: 15, fontWeight: 700, lineHeight: 1 }} onClick={e => changeZoom(ZOOM_STEP * (e.shiftKey ? 5 : 1))}>+</button>
+            </div>
             <button style={btn(histIdx < history.length - 1, C.accent, C.accentDim)} onClick={redo} disabled={histIdx >= history.length - 1} title="Redo (Ctrl+Y)">Redo</button>
           </div>
           <button onClick={() => setBottomOpen(o => !o)}
