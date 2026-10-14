@@ -333,9 +333,10 @@
     return h | 0;
   };
 
-  // -> [0, 1). x, y integers; salt int.
-  const hash2D = (x, y, salt) => {
-    let h = (Math.imul(x | 0, 0x27d4eb2d) + Math.imul(y | 0, 0x165667b1) + Math.imul(salt | 0, 0x9e3779b1)) | 0;
+  // -> [0, 1). x, y integers; salt int; rerollSeed int (default 0 = the unseeded hash). The reroll seed is mixed in before the finaliser, so a
+  // different seed reshuffles every hash-decided pick of a folder while the same seed always gives the same picks.
+  const hash2D = (x, y, salt, rerollSeed) => {
+    let h = (Math.imul(x | 0, 0x27d4eb2d) + Math.imul(y | 0, 0x165667b1) + Math.imul(salt | 0, 0x9e3779b1) + Math.imul(rerollSeed | 0, 0x2c1b3c6d)) | 0;
     h ^= h >>> 16; h = Math.imul(h, 0x85ebca6b);
     h ^= h >>> 13; h = Math.imul(h, 0xc2b2ae35);
     h ^= h >>> 16;
@@ -395,48 +396,65 @@
   const poolTotal = pool => pool.reduce((a, e) => a + e.roll, 0);
   const count = (cand, nb, cv, nv) => { let n = 0; for (let i = 0; i < 8; i++) if (cand[i] === cv && nb[i] === nv) n++; return n; };
 
-  // ctx: { x, y, salt, candidates? }. Returns { code, status, ref, tile, ops, derivedFrom, recipe, entry } or null.
+  // The codes tied for best by connection scoring (matched neighbours, then fewest dangling connections); `avail` = usable codes.
+  const scoreWinners = (avail, nb) => {
+    if (avail.includes(nb)) return [nb]; // exact match wins outright
+    const score = avail.map(code => ({ code, matched: count(code, nb, "1", "1"), dangling: count(code, nb, "1", "0") }));
+    const maxM = Math.max(...score.map(s => s.matched));
+    const top = score.filter(s => s.matched === maxM);
+    const minD = Math.min(...top.map(s => s.dangling));
+    return top.filter(s => s.dangling === minD).map(s => s.code);
+  };
+
+  // ctx: { x, y, salt, reroll?, candidates? }. `reroll` is the per-folder reroll seed (integer, default 0). Returns { code, status, ref, tile, ops, derivedFrom, recipe, entry } or null.
   const resolve = (folder, neighbourCodeIn, ctx) => {
     const c = ctx || {};
     const nb = normaliseBits(neighbourCodeIn);
     const cands = c.candidates || buildCandidates(folder);
     const avail = ALL_CODES.filter(code => cands[code].status !== "missing" && cands[code].pool.length > 0);
     if (!avail.length) return null;
-    const salt = saltToInt(c.salt != null ? c.salt : folder.key);
+    const salt = saltToInt(c.salt != null ? c.salt : folder.key), rr = c.reroll | 0;
 
     if (cands._exact) { // exact mode: exact match among explicit / derived tiles, else the 10100101 tile. No composition, no scoring.
       const hit = cands[nb] && cands[nb].pool.length ? cands[nb] : null, cand = hit || cands[FALLBACK_CODE];
-      const entry = weightedPick(cand.pool, e => e.roll, hash2D(c.x | 0, c.y | 0, salt));
+      const entry = weightedPick(cand.pool, e => e.roll, hash2D(c.x | 0, c.y | 0, salt, rr));
       if (!entry) return null;
       return { code: cand.code, status: cand.status, fallback: !hit, ref: entry.ref, tile: entry.tile, ops: entry.ops, derivedFrom: entry.derivedFrom, recipe: null, entry };
     }
     if (cands._fence) { // simple fence: cardinal bits only, exact match among the three variants, else 00000000
       const card = cardinalOnly(nb), code = avail.includes(card) ? card : "00000000";
       const cand = cands[code];
-      const entry = weightedPick(cand.pool, e => e.roll, hash2D(c.x | 0, c.y | 0, salt));
+      const entry = weightedPick(cand.pool, e => e.roll, hash2D(c.x | 0, c.y | 0, salt, rr));
       if (!entry) return null;
       return { code, status: cand.status, ref: entry.ref, tile: entry.tile, ops: entry.ops, derivedFrom: entry.derivedFrom, recipe: null, entry };
     }
 
-    let winners;
-    if (avail.includes(nb)) winners = [nb]; // exact match wins outright
-    else {
-      const score = avail.map(code => ({ code, matched: count(code, nb, "1", "1"), dangling: count(code, nb, "1", "0") }));
-      const maxM = Math.max(...score.map(s => s.matched));
-      const top = score.filter(s => s.matched === maxM);
-      const minD = Math.min(...top.map(s => s.dangling));
-      winners = top.filter(s => s.dangling === minD).map(s => s.code);
-    }
+    const winners = scoreWinners(avail, nb);
 
     let code;
     if (winners.length === 1) code = winners[0];
     else if (cands["00000000"].status !== "missing" && cands["00000000"].pool.length) code = "00000000";
-    else code = weightedPick(winners, w => poolTotal(cands[w].pool), hash2D(c.x | 0, c.y | 0, (salt + 0x7f4a7c15) | 0));
+    else code = weightedPick(winners, w => poolTotal(cands[w].pool), hash2D(c.x | 0, c.y | 0, (salt + 0x7f4a7c15) | 0, rr));
 
     const cand = cands[code];
-    const entry = weightedPick(cand.pool, e => e.roll, hash2D(c.x | 0, c.y | 0, salt));
+    const entry = weightedPick(cand.pool, e => e.roll, hash2D(c.x | 0, c.y | 0, salt, rr));
     if (!entry) return null;
     return { code, status: cand.status, ref: entry.ref, tile: entry.tile, ops: entry.ops, derivedFrom: entry.derivedFrom, recipe: cand.recipe || null, entry };
+  };
+
+  // Does the folder have a pick that only the hash decides, i.e. would a reroll seed change anything? True when
+  //  - a sensor code is shared by two or more explicit variants with roll > 0 (their pool is a weighted random pick), or
+  //  - some neighbourhood ties between different codes (connection scoring) and the folder has neither a 00000000 tile (which wins ties)
+  //    nor a fallback tile (exact mode never scores). Roll-0 variants never count. `candidates` may be passed to reuse buildCandidates.
+  const hasRerollableTies = (folder, _cands) => {
+    const { pools, fallback } = explicitPools(folder);
+    if (Object.values(pools).some(p => p.length >= 2) || fallback.length >= 2) return true;
+    if (fallback.length) return false; // exact mode: no scoring, so no cross-code ties
+    const cands = _cands || buildCandidates(folder);
+    if (cands._fence || (cands["00000000"].status !== "missing" && cands["00000000"].pool.length)) return false; // ties go to 00000000
+    const avail = ALL_CODES.filter(code => cands[code].status !== "missing" && cands[code].pool.length > 0);
+    if (avail.length < 2) return false;
+    return ALL_CODES.some(nb => scoreWinners(avail, nb).length > 1);
   };
 
   return {
@@ -446,6 +464,6 @@
     isCode, normalise, spin, flipH, neighbourCode,
     buildCandidates, coverage, computeRequiredBase, compositionRecipe, composeQuadrants,
     quadrantBits, quadrantType, quadrantLibrary, missingSlots, slotLabel, folderMode, isFenceFolder, cardinalOnly, usesOnlyCardinals,
-    resolve, hash2D, stringToInt, weightedPick, pickPercentages,
+    resolve, hasRerollableTies, hash2D, stringToInt, weightedPick, pickPercentages,
   };
 });

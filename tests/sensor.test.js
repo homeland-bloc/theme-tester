@@ -465,3 +465,46 @@ test("without a 10100101 tile: water still composes, rails still score, fence ru
   assert.strictEqual(S.folderMode(folder("r", [T("a", "00001010"), T("b", "00010010")])).kind, "connections");
   assert.strictEqual(S.folderMode(folder("f", [T("f0", "00000000"), T("fh", "00011000"), T("fv", "01000010")])).kind, "fence");
 });
+
+// ── Reroll seed and hasRerollableTies ─────────────────────────────────────────────────────────────────
+test("hash2D: reroll seed 0 / omitted is the unseeded hash; other seeds reshuffle; same seed is stable", () => {
+  for (let i = 0; i < 50; i++) {
+    assert.strictEqual(S.hash2D(i, i * 3, 77), S.hash2D(i, i * 3, 77, 0));
+    assert.strictEqual(S.hash2D(i, i * 3, 77, 5), S.hash2D(i, i * 3, 77, 5));
+  }
+  let diff = 0; for (let i = 0; i < 200; i++) if (S.hash2D(i, 2 * i, 9, 0) !== S.hash2D(i, 2 * i, 9, 1)) diff++;
+  assert.ok(diff > 190);
+  const vals = []; for (let i = 0; i < 2000; i++) vals.push(S.hash2D(i, 7, 3, 123456));
+  assert.ok(vals.every(v => v >= 0 && v < 1)); // still in [0, 1)
+});
+
+test("resolve: ctx.reroll changes tied picks, same seed identical, default equals reroll 0", () => {
+  const f = folder("pool", [T("a", "11111111", 1), T("b", "11111111", 1), T("c", "11111111", 1)]);
+  const pick = (reroll, x, y) => S.resolve(f, "11111111", { x, y, salt: "pool", reroll }).ref;
+  let changed = 0;
+  for (let x = 0; x < 20; x++) for (let y = 0; y < 20; y++) {
+    assert.strictEqual(pick(undefined, x, y), pick(0, x, y));
+    assert.strictEqual(pick(42, x, y), pick(42, x, y));
+    if (pick(1, x, y) !== pick(2, x, y)) changed++;
+  }
+  assert.ok(changed > 100, "different seeds change many tied picks: " + changed);
+  // tie between different codes (rails) is also reseeded
+  const rails = folder("rails", [T("tl", "01010000"), T("tr", "01001000"), T("bl", "00010010"), T("br", "00001010")]);
+  let c2 = 0; for (let x = 0; x < 30; x++) if (S.resolve(rails, "01011010", { x, y: 5, salt: "r", reroll: 1 }).ref !== S.resolve(rails, "01011010", { x, y: 5, salt: "r", reroll: 2 }).ref) c2++;
+  assert.ok(c2 > 5, "rails tie reseeds: " + c2);
+});
+
+test("hasRerollableTies: shared-code pool, roll-0 excluded, rails tie, exact mode, plain explicit-only folder", () => {
+  assert.strictEqual(S.hasRerollableTies(folder("pool", [T("a", "11111111"), T("b", "11111111")])), true);
+  assert.strictEqual(S.hasRerollableTies(folder("one0", [T("a", "11111111"), T("b", "11111111", 0)])), false); // roll-0 variant excluded
+  assert.strictEqual(S.hasRerollableTies(folder("zeros", [T("a", "11111111", 0), T("b", "11111111", 0)])), false);
+  const rails = folder("rails", [T("tl", "01010000"), T("tr", "01001000"), T("bl", "00010010"), T("br", "00001010"), T("h", "00011000"), T("v", "01000010")]);
+  assert.strictEqual(S.hasRerollableTies(rails), true); // no 00000000: cross-code ties are hash decided
+  assert.strictEqual(S.hasRerollableTies(folder("rails0", [...rails.tiles, T("z", "00000000")])), false); // 00000000 wins ties
+  const exact = folder("fence", [T("h", "00011000"), T("v", "01000010"), T("fb", S.FALLBACK_CODE)]);
+  assert.strictEqual(S.hasRerollableTies(exact), false); // exact mode, no shared codes
+  assert.strictEqual(S.hasRerollableTies(folder("fence2", [T("h", "00011000"), T("fb1", S.FALLBACK_CODE), T("fb2", S.FALLBACK_CODE)])), true); // two fallback tiles share the code
+  const water = folder("water", ["00001011", "01101011", "01111111", "11111111"].map((c, i) => TF("w" + i, c, true, true)));
+  assert.strictEqual(S.hasRerollableTies(water), false); // explicit-only, composes: nothing for the hash to decide
+  assert.strictEqual(S.hasRerollableTies(folder("empty", [])), false);
+});

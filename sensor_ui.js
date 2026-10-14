@@ -221,7 +221,9 @@
   // folders: Map(sensorRef -> { folder: engine folder, candidates }). Returns Map("r,c" -> result) with one entry per cell that
   // holds an s: entry. result is sensor.resolve()'s answer plus { nb, folderRef }, or { warn: true, nb, folderRef } when the
   // folder has no usable variant. Neighbours count only when they hold the SAME s: entry; the map edge counts as air.
-  const deriveLayer = ({ grid, refs, folders }) => {
+  // rerolls: Map | object of sensorRef -> integer reroll seed (missing = 0). The one seed map the screen and Download Map both read.
+  const rerollOf = (rerolls, ref) => { const v = rerolls ? (typeof rerolls.get === "function" ? rerolls.get(ref) : rerolls[ref]) : 0; return Number.isFinite(v) ? v | 0 : 0; };
+  const deriveLayer = ({ grid, refs, folders, rerolls }) => {
     const out = new Map();
     if (!folders || !folders.size || !grid) return out;
     for (let r = 0; r < grid.length; r++) {
@@ -234,7 +236,7 @@
         if (!f) continue;
         const isSame = (rr, cc) => rr >= 0 && rr < grid.length && cc >= 0 && cc < (grid[rr] || []).length && grid[rr][cc] != null && refs[grid[rr][cc]] === ref;
         const nb = Sensor.neighbourCode(r, c, isSame);
-        const res = Sensor.resolve(f.folder, nb, { x: c, y: r, salt: ref, candidates: f.candidates });
+        const res = Sensor.resolve(f.folder, nb, { x: c, y: r, salt: ref, reroll: rerollOf(rerolls, ref), candidates: f.candidates });
         out.set(`${r},${c}`, res ? { ...res, nb, folderRef: ref } : { warn: true, nb, folderRef: ref });
       }
     }
@@ -303,7 +305,7 @@
     globalFolderFiles, globalFileName,
     preloadImages, progressLabel, imageOps, withFreshVersion,
     variantOwners, hideSensorVariants, canonicalRef, canonicalRefs, folderPreviewTiles,
-    deriveLayer, opsToCss, opsLabel, composePlan, composeKey, transformLabel, recipeLines, FALLBACK_LABEL,
+    deriveLayer, rerollOf, opsToCss, opsLabel, composePlan, composeKey, transformLabel, recipeLines, FALLBACK_LABEL,
     planSensorSwitch, resolveLoadedSensorRef,
   };
 });

@@ -321,4 +321,23 @@ test("engineFolder passes per-variant flags: a tile without rotatable cannot der
   assert.strictEqual(c["00010110"].status === "derived", false); // spin of b would be 00010110, b may not spin
 });
 
+test("deriveLayer: render and export read one seed map; same grid+seeds identical, different seeds change tied picks", () => {
+  const tiles = ["a", "b", "c"].map((n, i) => T("p" + n, "11111111", { sortIndex: i }));
+  const f = U.makeFolder({ scope: "global", folderKey: "pool", tiles, cfg: {} });
+  const ef = U.engineFolder(f), folders = new Map([[f.ref, { folder: ef, candidates: S.buildCandidates(ef) }]]);
+  const grid = Array.from({ length: 12 }, () => Array(12).fill(0));
+  const refs = [f.ref];
+  const layer = rerolls => U.deriveLayer({ grid, refs, folders, rerolls });
+  const picks = L => [...L.entries()].map(([k, v]) => k + ":" + v.ref).join("|");
+  const seeds = new Map([[f.ref, 1234]]);
+  const screen = layer(seeds), exported = layer(new Map([[f.ref, 1234]])), asObject = layer({ [f.ref]: 1234 });
+  assert.strictEqual(picks(screen), picks(exported)); // render and Download Map: identical resolution
+  assert.strictEqual(picks(screen), picks(asObject));
+  assert.strictEqual(picks(layer(undefined)), picks(layer(new Map([[f.ref, 0]])))); // default seed 0
+  const other = layer(new Map([[f.ref, 99]]));
+  let changed = 0; for (const [k, v] of screen) if (other.get(k).ref !== v.ref) changed++;
+  assert.ok(changed > 30, "different seed changes tied picks: " + changed);
+  assert.strictEqual(U.rerollOf(seeds, "s:other|x"), 0);
+});
+
 console.log(`${passed} passed`);

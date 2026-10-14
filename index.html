@@ -2390,17 +2390,17 @@ function SensorWarningModal({ folder, onClose }) {
 }
 
 // Simulator: 3x3 grid, centre fixed, eight neighbours toggleable. Shows what sensor.resolve() returns. Edits nothing.
-function SensorSimulationPanel({ folder, candidates, requestComposed, onClose }) {
+function SensorSimulationPanel({ folder, candidates, requestComposed, reroll = 0, onReroll, onClose }) {
   const [bits, setBits] = useState(() => Array(8).fill(false));
-  const [seed, setSeed] = useState(0);
+  const seed = 0; // fixed preview position; "Roll again" changes the folder's reroll seed, the same one the map uses
   const [hoverQ, setHoverQ] = useState(null); // quadrant (0 TL, 1 TR, 2 BR, 3 BL) hovered in the composed breakdown
   const [pickedFallback, setPickedFallback] = useState(false); // the fallback row of an exact-mode folder was clicked
   const engine = useMemo(() => SensorUI.engineFolder(folder), [folder]);
   const code = bits.map(b => (b ? "1" : "0")).join("");
   const fbCand = candidates[SensorEngine.FALLBACK_CODE];
   const res = pickedFallback && fbCand
-    ? (() => { const entry = SensorEngine.weightedPick(fbCand.pool, e => e.roll, SensorEngine.hash2D(seed, seed * 7 + 1, SensorEngine.stringToInt(folder.ref))); return entry && { code: SensorEngine.FALLBACK_CODE, status: "explicit", fallback: true, ref: entry.ref, tile: entry.tile, ops: entry.ops, derivedFrom: null, recipe: null, entry }; })()
-    : SensorEngine.resolve(engine, code, { x: seed, y: seed * 7 + 1, salt: folder.ref, candidates });
+    ? (() => { const entry = SensorEngine.weightedPick(fbCand.pool, e => e.roll, SensorEngine.hash2D(seed, seed * 7 + 1, SensorEngine.stringToInt(folder.ref), reroll)); return entry && { code: SensorEngine.FALLBACK_CODE, status: "explicit", fallback: true, ref: entry.ref, tile: entry.tile, ops: entry.ops, derivedFrom: null, recipe: null, entry }; })()
+    : SensorEngine.resolve(engine, code, { x: seed, y: seed * 7 + 1, salt: folder.ref, reroll, candidates });
   const isFb = !!(res && res.code === SensorEngine.FALLBACK_CODE);
   const nameOfRef = ref => { const t = folder.tiles.find(x => x.ref === ref); return t ? (t.codename ?? t.sensorCode ?? String(ref)) : String(ref); };
   const lines = res && res.recipe ? SensorUI.recipeLines(res.recipe, nameOfRef) : [];
@@ -2461,7 +2461,7 @@ function SensorSimulationPanel({ folder, candidates, requestComposed, onClose })
               </div>
             )}
             <div style={{ fontSize: 10, color: C.muted }}>Neighbours: <span style={{ fontFamily: "monospace" }}>{isFb ? "(any other shape)" : code}</span></div>
-            <button style={sensorBtnStyle()} onClick={() => setSeed(s => s + 1)} title="Rolls depend on the cell position; try another position">Roll again</button>
+            <button data-sim-roll style={sensorBtnStyle()} onClick={() => onReroll && onReroll()} title="New random seed for this folder: the map re-rolls its tied picks too">🎲 Roll again</button>
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 160, flex: 1 }}>
             <span style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: 0.8 }}>Pool of {res ? res.code : "-"}</span>
@@ -3606,6 +3606,7 @@ function App() {
         <div style={{ padding: "5px 8px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0, gap: 6 }}>
           <span style={{ fontSize: 10, fontWeight: 700, color: SENSOR_YELLOW, letterSpacing: 0.5 }}>✨ {entry.label}</span>
           <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            {sensorFolders.get(sensor.ref)?.rerollable && <button data-sensor-reroll-panel={sensor.ref} onClick={() => rerollFolder(sensor.ref)} style={{ ...sensorBtnStyle(SENSOR_YELLOW), padding: "0 6px", fontSize: 12 }} title="Reroll this folder's tied picks (not an undo step)">🎲</button>}
             {hasWarn && <button data-sensor-warn={sensor.ref} onClick={() => setSensorWarnFolder(sensor)} style={{ ...sensorBtnStyle(SENSOR_YELLOW), padding: "0 6px", fontSize: 12 }} title={sensor.warnings.some(w => w.level === "warning") ? "The variants disagree on the symbol" : sensor.warnings.length ? "Variants differ in flags, size or offsets" : "Some tiles have no sensor code"}>⚖️</button>}
             <button onClick={() => setOpenFolderKey(null)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 15, lineHeight: 1, padding: "0 2px" }}>×</button>
           </span>
@@ -3748,11 +3749,23 @@ function App() {
     [...tilesetEntries, ...globalEntries].forEach(e => {
       if (e.type !== 'folder' || !e.sensor) return;
       const folder = SensorUI.engineFolder(e.sensor);
-      m.set(e.sensor.ref, { ui: e.sensor, folder, candidates: SensorEngine.buildCandidates(folder) });
+      const candidates = SensorEngine.buildCandidates(folder);
+      m.set(e.sensor.ref, { ui: e.sensor, folder, candidates, rerollable: SensorEngine.hasRerollableTies(folder, candidates) });
     });
     return m;
   }, [tilesetEntries, globalEntries]);
-  const sensorLayer = useMemo(() => SensorUI.deriveLayer({ grid, refs: palette.refs, folders: sensorFolders }), [grid, palette, sensorFolders]);
+  // Reroll seeds: one integer per sensor folder (key = its s: ref, global folders included). Random at page load, changed only by the 🎲 buttons.
+  // Deliberately NOT persisted anywhere: not in localStorage, saved maps, undo snapshots or the seed format. The screen and Download Map both
+  // read the layer derived from this one map, so the export always matches what is shown.
+  const pageSeedRef = useRef(Math.floor(Math.random() * 0x7fffffff));
+  const [rerollSeeds, setRerollSeeds] = useState({}); // ref -> seed chosen by a 🎲 click this session
+  const rerollSeedMap = useMemo(() => {
+    const m = new Map();
+    sensorFolders.forEach((_, ref) => m.set(ref, rerollSeeds[ref] ?? ((SensorEngine.stringToInt(ref) ^ pageSeedRef.current) | 0)));
+    return m;
+  }, [sensorFolders, rerollSeeds]);
+  const rerollFolder = ref => setRerollSeeds(prev => ({ ...prev, [ref]: Math.floor(Math.random() * 0x7fffffff) }));
+  const sensorLayer = useMemo(() => SensorUI.deriveLayer({ grid, refs: palette.refs, folders: sensorFolders, rerolls: rerollSeedMap }), [grid, palette, sensorFolders, rerollSeedMap]);
   const sensorLayerRef = useRef(sensorLayer);
   sensorLayerRef.current = sensorLayer;
 
@@ -7131,7 +7144,7 @@ function App() {
       <FailedTileModal />
       {sensorWarnFolder && <SensorWarningModal folder={sensorWarnFolder} onClose={() => setSensorWarnFolder(null)} />}
       {sensorSimFolder && sensorFolders.get(sensorSimFolder) && (
-        <SensorSimulationPanel folder={sensorFolders.get(sensorSimFolder).ui} candidates={sensorFolders.get(sensorSimFolder).candidates} requestComposed={requestComposed} onClose={() => setSensorSimFolder(null)} />
+        <SensorSimulationPanel folder={sensorFolders.get(sensorSimFolder).ui} candidates={sensorFolders.get(sensorSimFolder).candidates} requestComposed={requestComposed} reroll={rerollSeedMap.get(sensorSimFolder) ?? 0} onReroll={() => rerollFolder(sensorSimFolder)} onClose={() => setSensorSimFolder(null)} />
       )}
       <ToolInfoModal />
       <MemoryModal />
@@ -7787,6 +7800,15 @@ function App() {
                         <span data-sensor-unfold={sensor.ref} onClick={e => { e.stopPropagation(); toggleFolder(key, e); }}
                           style={{ ...corner, right: -7, color: isThisOpen ? SENSOR_YELLOW : "rgba(255,255,255,0.85)" }}
                           title={isThisOpen ? "Fold" : "Unfold variants"}>{isThisOpen ? "▼" : "▶"}</span>
+                        {sensorFolders.get(sensor.ref)?.rerollable && (
+                          // Bottom-left, inside the card border (clear of the top-right ▶ and the selection outline). Visual size is small; the
+                          // hit area is 32px on mobile. It neither selects nor unfolds the card, is no undo step and does not touch the map data.
+                          <button data-sensor-reroll={sensor.ref} title="Reroll this folder's tied picks"
+                            onClick={e => { e.stopPropagation(); rerollFolder(sensor.ref); }}
+                            onMouseDown={e => e.stopPropagation()} onTouchStart={e => e.stopPropagation()} onTouchEnd={e => e.stopPropagation()}
+                            style={{ position: "absolute", left: 1, bottom: 1, width: isMobile ? 32 : 24, height: isMobile ? 32 : 24, padding: 0, display: "flex", alignItems: "center", justifyContent: "center",
+                              fontSize: isMobile ? 17 : 14, lineHeight: 1, cursor: "pointer", zIndex: 6, background: "rgba(0,0,0,0.6)", border: "none", borderRadius: 6, filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}>🎲</button>
+                        )}
                       </div>
                     );
                   };
