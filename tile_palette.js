@@ -104,23 +104,26 @@
   };
 
   // ── Symbols ───────────────────────────────────────────────────────────
-  // Single-character tile symbols (seeds come later; no encoder here). '6' is the warn tile and '7' the space tile: nothing else may
-  // use them and suggestions skip them. OFFICIAL_SYMBOLS is the part of the official table that is settled (codename stems);
-  // spawn / objective / springpad digits are not listed, so digits are never suggested.
-  const SYMBOL_WARN = "6", SYMBOL_SPACE = "7";
+  // Single-character tile symbols. 'A' is the warn tile and 'S' the space tile: nothing else may use them and suggestions skip them.
+  // (The digits 6 and 7 used to be reserved; they are ordinary spawn symbols now.) The full symbol table lives in map_seed.js; the part
+  // that is settled for tileset tiles (codename stems) is listed here so a suggestion never lands on it. Digits are never suggested.
+  const SYMBOL_WARN = "A", SYMBOL_SPACE = "S";
   const RESERVED_SYMBOLS = Object.freeze({ [SYMBOL_WARN]: WARN_REF, [SYMBOL_SPACE]: SPACE_REF });
   const OFFICIAL_SYMBOLS = Object.freeze({
-    M: "Wall1", X: "Wall2", Y: "Crate", C: "Barrel", F: "Bush", T: "Cactus", B: "Skull", N: "Fence", W: "Water", a: "Rope",
-    c: "Teleporter blue", d: "Teleporter green", e: "Teleporter red", f: "Teleporter yellow", w: "Fast", z: "Slow",
+    M: "Wall1", X: "Wall2", Y: "Crate", C: "Barrel", F: "Bush", T: "Cactus", B: "Skull", N: "Fence", n: "Fence 5v5", W: "Water", a: "Rope",
   });
+  // Seeds separate their fields with "," (and old seeds with "/"), so neither can be a tile symbol; whitespace and control characters cannot either.
+  const BANNED_SYMBOLS = Object.freeze([",", "/"]);
+  const isBannedSymbol = ch => typeof ch === "string" && (BANNED_SYMBOLS.includes(ch) || /[\s\p{C}]/u.test(ch));
   const isReservedSymbol = ch => Object.prototype.hasOwnProperty.call(RESERVED_SYMBOLS, ch);
   const symbolForSpecial = ref => (ref === WARN_REF ? SYMBOL_WARN : ref === SPACE_REF ? SYMBOL_SPACE : null);
   const specialForSymbol = ch => (isReservedSymbol(ch) ? RESERVED_SYMBOLS[ch] : null);
-  const SUGGESTION_POOL = "ABDEGHIJKLOPQRSUVZbghijklmnopqrstuvxy".split("").concat("!#$%&*+-=?@^~<>".split(""));
-  // First free character for a tileset-exclusive tile: not reserved, not official, not in `used`, never a digit. null when exhausted.
-  const suggestSymbol = used => {
-    const taken = new Set(used || []);
-    return SUGGESTION_POOL.find(ch => !taken.has(ch) && !isReservedSymbol(ch) && !(ch in OFFICIAL_SYMBOLS)) ?? null;
+  const SUGGESTION_POOL = "DEIJRVghijklmopqst!#$%&*+-=?@^~<>".split("");
+  // First free character for a tileset-exclusive tile: not reserved, not official, not in `used`, not in `alsoTaken` (the global
+  // table's symbols, passed by the caller), never a digit. null when exhausted.
+  const suggestSymbol = (used, alsoTaken) => {
+    const taken = new Set([...(used || []), ...(alsoTaken || [])]);
+    return SUGGESTION_POOL.find(ch => !taken.has(ch) && !isReservedSymbol(ch) && !isBannedSymbol(ch) && !(ch in OFFICIAL_SYMBOLS)) ?? null;
   };
 
   // ── Counting ──────────────────────────────────────────────────────────
@@ -211,7 +214,7 @@
     makeRef, parseRef, isRef, refKind,
     createPalette, clonePalette, indexOfRef, paletteIndexFor, refAt,
     usedIndexes, removeUnused, compactForExport, remapEntry, countRefs,
-    SYMBOL_WARN, SYMBOL_SPACE, RESERVED_SYMBOLS, OFFICIAL_SYMBOLS, isReservedSymbol, symbolForSpecial, specialForSymbol, suggestSymbol,
+    SYMBOL_WARN, SYMBOL_SPACE, RESERVED_SYMBOLS, OFFICIAL_SYMBOLS, BANNED_SYMBOLS, isBannedSymbol, isReservedSymbol, symbolForSpecial, specialForSymbol, suggestSymbol,
     encodeForStorage, decodeFromStorage,
     planSwitch, applySwitchPlan,
   };

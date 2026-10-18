@@ -1,10 +1,12 @@
-// Map seeds: a compact text form of a whole map.  size/magnet/mirror/tileset/palette/code
+// Map seeds: a compact text form of a whole map.  size,magnet,mirror,tileset,palette,code
 //
-// FORMAT (frozen: no version, no checksum, no map name; six positional fields separated by "/", "/" never occurs inside a field)
+// FORMAT (frozen: no version, no checksum, no map name; six positional fields separated by ",", "," never occurs inside a field)
+//   Older seeds used "/" as the separator and "col,row,size" for the magnet. They still DECODE (a seed that contains "/" is read as the old form,
+//   which always has exactly 6 "/"-separated parts); encoding only ever writes ",".
 //   size     "3v3" = 21x33, "SD" = 60x60, otherwise "WxH" (1-99 each). Decoding also accepts "21x33" / "60x60".
-//   magnet   "x" = the default centre; otherwise "col,row" (+ ",size" only when size is not 1). size is the app's customCenterSize:
+//   magnet   "x" = the default centre; otherwise "col.row" (+ ".size" only when size is not 1). size is the app's customCenterSize:
 //            2 = 2x2, 3 = 2x1 (two wide, one tall), 4 = 1x2 (one wide, two tall). col,row is the magnet cell (its top-left cell for
-//            sizes 2-4). A magnet whose effective centre equals the default centre is written "x".
+//            sizes 2-4). A magnet whose effective centre equals the default centre is written "x". (Old form: "col,row[,size]".)
 //   mirror   h  left<->right      (the app flag mirrorV, labelled "Horizontal")
 //            v  top<->bottom      (the app flag mirrorH, labelled "Vertical")
 //            d  180-degree central (the app flag mirrorD)
@@ -16,7 +18,8 @@
 //   tileset  decimal seed_id of the tileset the tile symbols belong to.
 //   palette  the tile symbols used on the map, one code point each, concatenated with no delimiter, most frequent first
 //            (cells counted over the FULL map), ties by code point. Cell index 0 is "empty"; palette entry i is index i + 1.
-//            A symbol is never "/", whitespace or a control character. Case-sensitive.
+//            A symbol is never ",", "/", whitespace or a control character ("," separates the fields; "/" is the old separator and stays
+//            banned so the two forms can never be confused). Case-sensitive. "." is a normal symbol.
 //   code     the cell indexes of the FUNDAMENTAL REGION, run-length encoded as a bit stream and written in base62 (0-9A-Za-z).
 //
 // FUNDAMENTAL REGION. Let (SR, SC) = (2*centreRow, 2*centreCol), both integers (see effectiveSums). The mirror images of (r, c) are
@@ -60,22 +63,27 @@
 
   // ── Global tile symbols ───────────────────────────────────────────────────────────────────────────────
   // ref -> symbol for tiles that live in Resources/manifest.json. Sensor folders are keyed by their folder ref (cells hold that ref).
-  // Gaps (no symbol, export blank): spawns 3-7 and 9, Unbreakable. ASSUMED, to be confirmed: the jumppad letters (H G L K P Z O U) were
-  // given as a set without a file mapping; they are assigned here in manifest order B BL BR L R T TL TR.
+  // Every manifest file must have a symbol (tests/map_seed.test.js reads the manifest and fails on a gap); two tiles never share one,
+  // except the objectives, which deliberately all share 8 (the importer then asks which game mode the map is for).
   const G = "g:Resources/Global/";
   const GLOBAL_SYMBOLS = Object.freeze({
     "s:global|water": "W",
     "s:global|rails": "Q",
-    [G + "Spawns/1.png"]: "1", [G + "Spawns/2.png"]: "2",
+    [G + "Spawns/1.png"]: "1", [G + "Spawns/2.png"]: "2", [G + "Spawns/3.png"]: "3", [G + "Spawns/4.png"]: "4",
+    [G + "Spawns/5.png"]: "5", [G + "Spawns/6.png"]: "6", [G + "Spawns/7.png"]: "7", [G + "Spawns/9.png"]: "9",
     [G + "Objectives/Bounty.png"]: "8", [G + "Objectives/Box.png"]: "8", [G + "Objectives/Gem_Grab.png"]: "8", [G + "Objectives/Heist.png"]: "8",
-    [G + "Objectives/Hot_Zone.png"]: "8", [G + "Objectives/Brawl_Ball.png"]: "8", [G + "Objectives/goalRed.png"]: "8", [G + "Objectives/goalBlue.png"]: "8",
-    [G + "Special Tiles/HealPad.png"]: "y", [G + "Special Tiles/SpeedTile.png"]: "w", [G + "Special Tiles/SlowTile.png"]: "z",
-    [G + "Special Tiles/Spikes.png"]: "v", [G + "Special Tiles/Smoke.png"]: "x",
+    [G + "Objectives/Hot_Zone.png"]: "8", [G + "Objectives/Brawl_Ball.png"]: "8",
+    [G + "Objectives/goalBlue.png"]: "b", [G + "Objectives/goalRed.png"]: "r",
+    [G + "Special Tiles/Unbreakable.png"]: "u", [G + "Special Tiles/HealPad.png"]: "y", [G + "Special Tiles/SlowTile.png"]: "z",
+    [G + "Special Tiles/SpeedTile.png"]: "w", [G + "Special Tiles/Smoke.png"]: "x", [G + "Special Tiles/Spikes.png"]: "v",
     [G + "Teleporters/Blue.png"]: "c", [G + "Teleporters/Green.png"]: "d", [G + "Teleporters/Red.png"]: "e", [G + "Teleporters/Yellow.png"]: "f",
-    [G + "Jumppads/B.png"]: "H", [G + "Jumppads/BL.png"]: "G", [G + "Jumppads/BR.png"]: "L", [G + "Jumppads/L.png"]: "K",
-    [G + "Jumppads/R.png"]: "P", [G + "Jumppads/T.png"]: "Z", [G + "Jumppads/TL.png"]: "O", [G + "Jumppads/TR.png"]: "U",
+    [G + "Jumppads/R.png"]: "H", [G + "Jumppads/L.png"]: "G", [G + "Jumppads/B.png"]: "L", [G + "Jumppads/T.png"]: "K",
+    [G + "Jumppads/BR.png"]: "P", [G + "Jumppads/TL.png"]: "Z", [G + "Jumppads/BL.png"]: "O", [G + "Jumppads/TR.png"]: "U",
   });
-  const SPECIAL_SYMBOLS = Object.freeze({ warn: "6", space: "7" });
+  // The warn and space tiles are bare refs, not manifest files.
+  const SPECIAL_SYMBOLS = Object.freeze({ warn: "A", space: "S" });
+  // Symbols that several tiles deliberately share (objectives).
+  const SHARED_SYMBOLS = Object.freeze(["8"]);
   // Symbol of a global / special ref, or null.
   const globalSymbol = ref => {
     if (Object.prototype.hasOwnProperty.call(SPECIAL_SYMBOLS, ref)) return SPECIAL_SYMBOLS[ref];
@@ -87,8 +95,185 @@
     return out.concat(Object.keys(GLOBAL_SYMBOLS).filter(r => GLOBAL_SYMBOLS[r] === symbol));
   };
 
+  // ── Team partners ─────────────────────────────────────────────────────────────────────────────────────
+  // Tiles that belong to one team swap with their partner when a mirror image reflects the ROWS (top<->bottom: mirror classes v, d and the
+  // v / d images of 4). A left-right image (class h) keeps the team. Spawns 5, 6, 7 and 9 have no partner.
+  const SWAP_REF_PAIRS = Object.freeze([
+    [G + "Spawns/1.png", G + "Spawns/2.png"],
+    [G + "Spawns/3.png", G + "Spawns/4.png"], // respawns
+    [G + "Objectives/goalBlue.png", G + "Objectives/goalRed.png"],
+  ]);
+  const PARTNER_REFS = (() => { const m = {}; for (const [a, b] of SWAP_REF_PAIRS) { m[a] = b; m[b] = a; } return Object.freeze(m); })();
+  const PARTNER_SYMBOLS = (() => { const m = {}; for (const [a, b] of SWAP_REF_PAIRS) { m[GLOBAL_SYMBOLS[a]] = GLOBAL_SYMBOLS[b]; m[GLOBAL_SYMBOLS[b]] = GLOBAL_SYMBOLS[a]; } return Object.freeze(m); })();
+  const partnerRef = ref => (Object.prototype.hasOwnProperty.call(PARTNER_REFS, ref) ? PARTNER_REFS[ref] : ref);
+  const partnerSymbol = sym => (sym != null && Object.prototype.hasOwnProperty.call(PARTNER_SYMBOLS, sym) ? PARTNER_SYMBOLS[sym] : sym);
+
+  // ── Mirror transform: team swap + jumppad direction ───────────────────────────────────────────────────
+  // A mirror image is described by the app's flags: fV = left-right image, fH = top-bottom image, fD = point reflection. Several flags COMPOSE
+  // (each is a transform; two reflections of one axis cancel), so the geometry is two booleans: x (columns reflect) and y (rows reflect).
+  //   x = fV xor fD        y = fH xor fD
+  // What an image holds, for the tile it copies:
+  //   team tiles (spawns 1<->2, respawns 3<->4, goals blue<->red)  swap with their partner when y (rows reflect), never on x alone
+  //   global jumppads point the mirrored way:   x: R<->L, TR<->TL, BR<->BL     y: T<->B, TL<->BL, TR<->BR     x and y: R<->L, T<->B, TL<->BR, TR<->BL
+  // Only the global jumppads (Resources/Global/Jumppads/<name>.png) take part. Every other tile is copied as it is.
+  const JUMPPAD_FILES = Object.freeze(["R", "L", "B", "T", "BR", "TL", "BL", "TR"]);
+  const JUMPPAD_X = Object.freeze({ R: "L", L: "R", TR: "TL", TL: "TR", BR: "BL", BL: "BR" });
+  const JUMPPAD_Y = Object.freeze({ T: "B", B: "T", TL: "BL", BL: "TL", TR: "BR", BR: "TR" });
+  const jumppadRef = file => G + "Jumppads/" + file + ".png";
+  const jumppadFileOf = ref => { const m = /^g:Resources\/Global\/Jumppads\/([A-Z]+)\.png$/.exec(String(ref)); return m && JUMPPAD_FILES.includes(m[1]) ? m[1] : null; };
+  const flipAxes = flags => { const f = flags || {}; return { x: !!f.fV !== !!f.fD, y: !!f.fH !== !!f.fD }; };
+  const mirrorJumppadFile = (file, axes) => {
+    let f = file;
+    if (axes.x && Object.prototype.hasOwnProperty.call(JUMPPAD_X, f)) f = JUMPPAD_X[f];
+    if (axes.y && Object.prototype.hasOwnProperty.call(JUMPPAD_Y, f)) f = JUMPPAD_Y[f];
+    return f;
+  };
+  // The ref an image holds. flags = { fV, fH, fD }; opts.teamSwap (default true) switches the team swap (the app's "Mirror Spawns").
+  const mirrorRef = (ref, flags, opts) => {
+    const axes = flipAxes(flags), teamSwap = !opts || opts.teamSwap !== false;
+    let out = ref;
+    if (axes.y && teamSwap) out = partnerRef(out);
+    const jp = jumppadFileOf(out);
+    return jp ? jumppadRef(mirrorJumppadFile(jp, axes)) : out;
+  };
+  // Same transform on a SEED symbol (axes = { x, y }); the seed always swaps teams. Symbols that are not team / jumppad symbols come back as they are.
+  const JUMPPAD_SYMBOL = (() => { const m = {}; for (const f of JUMPPAD_FILES) m[f] = GLOBAL_SYMBOLS[jumppadRef(f)]; return Object.freeze(m); })();
+  const JUMPPAD_FILE_OF_SYMBOL = (() => { const m = {}; for (const f of JUMPPAD_FILES) m[JUMPPAD_SYMBOL[f]] = f; return Object.freeze(m); })();
+  const mirrorSymbol = (sym, axes) => {
+    if (sym == null) return sym;
+    let out = sym;
+    if (axes.y) out = partnerSymbol(out);
+    if (Object.prototype.hasOwnProperty.call(JUMPPAD_FILE_OF_SYMBOL, out)) out = JUMPPAD_SYMBOL[mirrorJumppadFile(JUMPPAD_FILE_OF_SYMBOL[out], axes)];
+    return out;
+  };
+  // Mirror-offset tiles: the image's offset is the tile's offset negated on the axes that reflect, so the copy lines up.
+  // info = { mirrorOffset: boolean, base: { ox, oy } } of the tile the IMAGE holds (the swapped tile's own offset). -> { ox, oy } or undefined (no override).
+  const mirrorOffsetOverride = (info, flags) => {
+    if (!info || !info.mirrorOffset) return undefined;
+    const a = flipAxes(flags);
+    if (!a.x && !a.y) return undefined;
+    const b = info.base || { ox: 0, oy: 0 };
+    return { ox: a.x ? 0 - b.ox : b.ox, oy: a.y ? 0 - b.oy : b.oy };
+  };
+  // One placement with all its mirror images. meta = [{ pos: [r, c], fV, fH, fD }] (the app's getMirrorMeta), ref = the tile placed at the
+  // primary cell. -> [{ pos, fV, fH, fD, ref (what that cell holds), override (offset override or undefined) }]. offsetInfoOf(ref) -> info | null.
+  const planMirrorCopies = (meta, ref, opts) => (meta || []).map(m => {
+    const r2 = mirrorRef(ref, m, opts);
+    return { pos: m.pos, fV: !!m.fV, fH: !!m.fH, fD: !!m.fD, ref: r2, override: mirrorOffsetOverride(opts && opts.offsetInfoOf ? opts.offsetInfoOf(r2) : null, m) };
+  });
+
+  // ── Symbol registry ───────────────────────────────────────────────────────────────────────────────────
+  // The settled names of the official table (tileset tiles named like this carry the symbol in every tileset). "n" is the 5v5 fence.
+  const OFFICIAL_SYMBOL_NAMES = Object.freeze({ M: "Wall1", X: "Wall2", Y: "Crate", C: "Barrel", F: "Bush", T: "Cactus", B: "Skull", N: "Fence", n: "Fence 5v5", W: "Water", a: "Rope" });
+  // Every printable ASCII character except "," "/" (separators) and the space.
+  const BANNED_SYMBOLS = Object.freeze([",", "/"]);
+  const SYMBOL_UNIVERSE = Object.freeze(Array.from({ length: 94 }, (_, i) => String.fromCharCode(33 + i)).filter(ch => !BANNED_SYMBOLS.includes(ch)));
+  const fileStem = ref => { const m = /([^/]+?)(?:\.[a-z]+)?$/i.exec(String(ref)); return m ? m[1] : String(ref); };
+  const lowerKey = s => String(s == null ? "" : s).toLowerCase().replace(/[\s_-]+/g, "");
+  // Entries of the fixed tables: { symbol, codename, source: "official" | "global", ref?, folderKey?, tile? }.
+  const officialEntries = () => Object.keys(OFFICIAL_SYMBOL_NAMES).map(symbol => ({ symbol, codename: OFFICIAL_SYMBOL_NAMES[symbol], source: "official", ref: null, folderKey: OFFICIAL_SYMBOL_NAMES[symbol] }));
+  const globalEntries = () => Object.keys(SPECIAL_SYMBOLS).map(ref => ({ symbol: SPECIAL_SYMBOLS[ref], codename: ref === "warn" ? "Warn tile" : "Space tile", source: "global", ref, folderKey: ref }))
+    .concat(Object.keys(GLOBAL_SYMBOLS).map(ref => {
+      const sensor = ref.startsWith("s:global|");
+      const name = sensor ? ref.slice(9) : fileStem(ref);
+      const shown = sensor ? name : ref.includes("/Spawns/") ? "Spawn " + name : ref.includes("/Jumppads/") ? "Jumppad " + name : ref.includes("/Teleporters/") ? name + " teleporter" : name;
+      return { symbol: GLOBAL_SYMBOLS[ref], codename: shown, source: "global", ref, folderKey: sensor ? name : null };
+    }));
+  // entries (official + global + the loaded tilesets' tiles, each { symbol, codename, source, ref, folderKey?, tilesetName? }) -> registry.
+  const buildRegistry = entries => {
+    const bySymbol = new Map();
+    for (const e of entries || []) {
+      if (!e || !isValidSymbol(e.symbol)) continue;
+      if (!bySymbol.has(e.symbol)) bySymbol.set(e.symbol, []);
+      bySymbol.get(e.symbol).push(e);
+    }
+    return { bySymbol, entries: Array.from(bySymbol.values()).flat() };
+  };
+  // Symbols the fixed tables use (official + global + warn / space): suggestions never pick one of these.
+  const tableSymbols = () => Array.from(new Set(officialEntries().concat(globalEntries()).map(e => e.symbol)));
+  // manifest.global -> Map("g:Resources/<path>" -> folder ref "s:global|<key>") for every file that lives inside a global sensor folder.
+  const globalMemberFolders = manifest => {
+    const m = new Map();
+    if (!manifest) return m;
+    for (const key of Object.keys(manifest.sensor || {})) {
+      const codes = (manifest.sensor[key] && manifest.sensor[key].codes) || {};
+      for (const f of (manifest.folders && manifest.folders[key]) || Object.keys(codes)) m.set("g:Resources/" + manifest.folderPaths[key] + f, "s:global|" + key);
+    }
+    return m;
+  };
+  // Symbol of ANY global ref, a variant inside a global sensor folder included (it carries its folder's symbol). null when none.
+  const globalSymbolOfRef = (ref, manifest) => {
+    const own = globalSymbol(ref);
+    if (own != null) return own;
+    const folder = globalMemberFolders(manifest).get(ref);
+    return folder ? globalSymbol(folder) : null;
+  };
+  // ── Proposals for tiles without a symbol (report only: nothing is written) ──────────────────────────
+  // rows: DB tile rows { id, tileset_id, codename, folder_key, sensor_code, symbol, sort_index }; tilesets: [{ id, name }]. A sensor group
+  // (folder_key with at least one sensor_code) is ONE proposal covering all its rows. Rules, first match wins: official table by codename or
+  // folder key (Wall1 M, Wall2 X, Crate Y, Barrel C, Bush F, Cactus T, Skull B, Fence N, 5v5 Fence n, Water W, Rope a), objectives (Bounty, Box,
+  // Gem Grab, Heist, Hot Zone, Brawl Ball, Objective...) 8, otherwise the first free letter of the tileset ("free" = not in the tables and not
+  // used in that tileset). -> [{ tileset, tilesetId, folder, codenames, ids, symbol, rule }]
+  const OBJECTIVE_NAMES = /^(bounty|box|powercube|gem ?grab|heist|hot ?zone|brawl ?ball|objective)$/i;
+  const PROPOSAL_POOL = "DEIJRVghijklmopqst!#$%&*+-=?@^~<>".split("");
+  const proposeSymbols = (rows, tilesets) => {
+    const nameOf = new Map((tilesets || []).map(t => [t.id, t.name]));
+    const official = new Map(Object.entries(OFFICIAL_SYMBOL_NAMES).map(([sym, name]) => [lowerKey(name), sym]));
+    official.set("5v5fence", "n"); official.set("fence5v5", "n");
+    const table = new Set(tableSymbols());
+    const byTs = new Map();
+    for (const r of rows || []) { if (!byTs.has(r.tileset_id)) byTs.set(r.tileset_id, []); byTs.get(r.tileset_id).push(r); }
+    const out = [];
+    for (const [tsId, list] of byTs) {
+      const used = new Set(list.map(r => r.symbol).filter(Boolean));
+      const sorted = list.slice().sort((a, b) => (a.sort_index || 0) - (b.sort_index || 0));
+      const sensorKeys = new Set(sorted.filter(r => r.folder_key && r.sensor_code != null).map(r => r.folder_key));
+      const seen = new Set(), groups = [];
+      for (const r of sorted) {
+        if (r.folder_key && sensorKeys.has(r.folder_key)) {
+          if (seen.has(r.folder_key)) continue;
+          seen.add(r.folder_key);
+          groups.push({ folder: r.folder_key, key: r.folder_key, rows: sorted.filter(x => x.folder_key === r.folder_key) });
+        } else groups.push({ folder: r.folder_key || null, key: r.codename, rows: [r] });
+      }
+      for (const g of groups) {
+        if (g.rows.every(r => r.symbol)) continue; // already complete
+        if (g.rows.some(r => r.symbol)) continue; // partly set: a divergence to fix by hand, not a proposal
+        let symbol = official.get(lowerKey(g.key)) || null, rule = symbol ? "official table" : null;
+        if (!symbol && OBJECTIVE_NAMES.test(String(g.key).replace(/[_-]+/g, " ").trim())) { symbol = "8"; rule = "objective"; }
+        if (!symbol) {
+          symbol = PROPOSAL_POOL.find(ch => !used.has(ch) && !table.has(ch)) || null;
+          rule = symbol ? "first free letter" : "no free symbol";
+          if (symbol) used.add(symbol);
+        }
+        out.push({ tileset: nameOf.get(tsId) || String(tsId), tilesetId: tsId, folder: g.folder, codenames: g.rows.map(r => r.codename), ids: g.rows.map(r => r.id), symbol, rule });
+      }
+    }
+    return out;
+  };
+  const sqlString = v => "'" + String(v).replace(/'/g, "''") + "'";
+  // SQL for the proposals that have a symbol (one UPDATE per group; ids are the primary keys).
+  const proposalSql = proposals => proposals.filter(p => p.symbol).map(p =>
+    `UPDATE tiles SET symbol = ${sqlString(p.symbol)} WHERE symbol IS NULL AND id IN (${p.ids.map(sqlString).join(", ")}); -- ${p.tileset}${p.folder ? " / " + p.folder : ""}: ${p.codenames.join(", ")} (${p.rule})`).join("\n");
+
+  // Is entry `a` the same tile as (or a sibling of) `b`? Same ref, same folder key in the same source/tileset, or the same name (the
+  // standard symbol is shared by every tileset's Wall1, Water and so on).
+  const sameTile = (a, b) => {
+    if (a.ref != null && a.ref === b.ref) return true;
+    if (a.folderKey != null && b.folderKey != null && a.source === b.source && (a.tilesetName || null) === (b.tilesetName || null) && a.folderKey === b.folderKey) return true;
+    const ka = lowerKey(a.folderKey != null ? a.folderKey : a.codename), kb = lowerKey(b.folderKey != null ? b.folderKey : b.codename);
+    return ka !== "" && ka === kb;
+  };
+  // Entries other than `self` that hold `symbol`. Objectives (symbol 8) may share and never conflict. self: { ref?, codename?, folderKey?, source?, tilesetName? } or null.
+  const symbolConflicts = (registry, symbol, self) => {
+    if (SHARED_SYMBOLS.includes(symbol)) return [];
+    const list = (registry && registry.bySymbol.get(symbol)) || [];
+    return list.filter(e => !self || !sameTile(e, self));
+  };
+  const freeSymbols = registry => SYMBOL_UNIVERSE.filter(ch => !(registry && registry.bySymbol.has(ch)));
+
   // ── Symbols ───────────────────────────────────────────────────────────────────────────────────────────
-  const isValidSymbol = s => typeof s === "string" && Array.from(s).length === 1 && s !== "/" && !/[\s\p{C}]/u.test(s);
+  const isValidSymbol = s => typeof s === "string" && Array.from(s).length === 1 && !BANNED_SYMBOLS.includes(s) && !/[\s\p{C}]/u.test(s);
 
   // ── Geometry ──────────────────────────────────────────────────────────────────────────────────────────
   // magnet: { col, row, size } (size 1-4) or null. Mirrors the app's getEffectiveCenter, in doubled integer form.
@@ -125,6 +310,17 @@
     if (cls === "d" || cls === "4") add(sums.sumR - r, sums.sumC - c);
     return out;
   };
+  // Images with the team flag: { r, c, swap }. An image that reflects the rows (v, d) holds the PARTNER of the source tile (see SWAP_REF_PAIRS);
+  // a left-right image (h) holds the same tile. When two images land on one cell the first (h, v, d) wins, as in the app.
+  // Each image also carries its axes ({ fx: columns reflect, fy: rows reflect }; `swap` = fy), which decide what it holds (see mirrorRef).
+  const orbitOf = (r, c, cls, w, h, sums) => {
+    const out = [];
+    const add = (r2, c2, fx, fy) => { if (r2 >= 0 && r2 < h && c2 >= 0 && c2 < w && !(r2 === r && c2 === c) && !out.some(p => p.r === r2 && p.c === c2)) out.push({ r: r2, c: c2, swap: fy, fx, fy }); };
+    if (cls === "h" || cls === "4") add(r, sums.sumC - c, true, false);
+    if (cls === "v" || cls === "4") add(sums.sumR - r, c, false, true);
+    if (cls === "d" || cls === "4") add(sums.sumR - r, sums.sumC - c, true, true);
+    return out;
+  };
   const precedes = (r2, c2, r, c) => r2 < r || (r2 === r && c2 < c);
   // Region cells [[r, c], ...] in row-major order.
   const regionCells = (w, h, sums, cls) => {
@@ -134,19 +330,20 @@
     }
     return out;
   };
-  const holds = (grid, w, h, sums, cls) => {
+  // transformOf(value, axes) -> the value an image with those axes holds (default: none, every image copies the cell).
+  const holds = (grid, w, h, sums, cls, transformOf) => {
     for (let r = 0; r < h; r++) for (let c = 0; c < w; c++) {
-      for (const [r2, c2] of imagesOf(r, c, cls, w, h, sums)) if (grid[r2][c2] !== grid[r][c]) return false;
+      for (const im of orbitOf(r, c, cls, w, h, sums)) if (grid[im.r][im.c] !== (transformOf ? transformOf(grid[r][c], { x: im.fx, y: im.fy }) : grid[r][c])) return false;
     }
     return true;
   };
   // grid: rows of comparable cell values. -> the strongest class that holds exactly (see header).
-  const detectMirror = (grid, w, h, magnet) => {
+  const detectMirror = (grid, w, h, magnet, transformOf) => {
     const sums = effectiveSums(w, h, magnet);
     let best = "a", bestSize = w * h;
     for (const cls of CLASSES) {
       if (cls === "a") continue;
-      if (!holds(grid, w, h, sums, cls)) continue;
+      if (!holds(grid, w, h, sums, cls, transformOf)) continue;
       const n = regionCells(w, h, sums, cls).length;
       if (n < bestSize) { best = cls; bestSize = n; }
     }
@@ -166,11 +363,11 @@
     if (!m) return null;
     return { w: Number(m[1]), h: Number(m[2]) };
   };
-  const encodeMagnet = m => (m ? m.col + "," + m.row + (m.size && m.size !== 1 ? "," + m.size : "") : "x");
-  // -> null (default centre) | { col, row, size } | undefined (malformed)
-  const parseMagnet = (s, w, h) => {
+  const encodeMagnet = m => (m ? m.col + "." + m.row + (m.size && m.size !== 1 ? "." + m.size : "") : "x");
+  // -> null (default centre) | { col, row, size } | undefined (malformed). `legacy` reads the old "col,row[,size]" spelling.
+  const parseMagnet = (s, w, h, legacy) => {
     if (s === "x") return null;
-    const m = /^(0|[1-9]\d?),(0|[1-9]\d?)(?:,([234]))?$/.exec(s);
+    const m = (legacy ? /^(0|[1-9]\d?),(0|[1-9]\d?)(?:,([234]))?$/ : /^(0|[1-9]\d?)\.(0|[1-9]\d?)(?:\.([234]))?$/).exec(s);
     if (!m) return undefined;
     const col = Number(m[1]), row = Number(m[2]);
     if (col >= w || row >= h) return undefined;
@@ -232,7 +429,16 @@
     const sums0 = effectiveSums(w, h, null), sumsM = effectiveSums(w, h, magnet);
     const mag = magnet && !(sums0.sumR === sumsM.sumR && sums0.sumC === sumsM.sumC)
       ? { col: Math.max(0, Math.min(w - 1, magnet.col)), row: Math.max(0, Math.min(h - 1, magnet.row)), size: magnet.size || 1 } : null;
-    const mirror = detectMirror(idx, w, h, mag);
+    // Mirror-aware: an image holds the MIRRORED tile of its cell: team tiles swap with their partner when rows reflect (spawn 1 <-> 2, respawn 3 <-> 4,
+    // goal blue <-> red) and global jumppads point the mirrored way (see mirrorRef). A partner missing from the palette (-1) can never match.
+    const tIdx = new Map();
+    const transformIdx = (v, axes) => {
+      if (v === 0) return 0;
+      const key = v + "|" + (axes.x ? 1 : 0) + (axes.y ? 1 : 0);
+      if (!tIdx.has(key)) { const t = mirrorSymbol(palette[v - 1], axes); tIdx.set(key, t === palette[v - 1] ? v : (indexOf.has(t) ? indexOf.get(t) : -1)); }
+      return tIdx.get(key);
+    };
+    const mirror = detectMirror(idx, w, h, mag, transformIdx);
     const sums = effectiveSums(w, h, mag);
     const cells = regionCells(w, h, sums, mirror);
     const k = bitLength(palette.length);
@@ -246,26 +452,31 @@
       runs++; i = j;
     }
     const fields = { size: encodeSize(w, h), magnet: encodeMagnet(mag), mirror, tileset: String(tileset), palette: palette.join(""), code: bitsToBase62(bits) };
-    return { seed: [fields.size, fields.magnet, fields.mirror, fields.tileset, fields.palette, fields.code].join("/"), fields, mirror, palette, regionSize: cells.length, runs, magnet: mag };
+    return { seed: [fields.size, fields.magnet, fields.mirror, fields.tileset, fields.palette, fields.code].join(","), fields, mirror, palette, regionSize: cells.length, runs, magnet: mag };
   };
 
   // ── Decode ────────────────────────────────────────────────────────────────────────────────────────────
-  // Pulls the seed out of pasted text: a bare seed, "seed=<seed>", or a link with "#seed=<seed>" (percent-decoded). -> { text } | { error }
+  // Pulls the seed out of pasted text: a bare seed, "seed=<seed>", or a link with "#seed=<seed>". The seed in a link may be written plain
+  // ("#seed=7x5,x,h,0,MXY,abc", what the app writes) or percent-encoded (older links, "%2F" for "/"): it is decoded when it holds valid
+  // escapes and used as it is otherwise. -> { text } | { error }
   const extractSeed = input => {
     let t = String(input == null ? "" : input).trim();
     const hit = t.search(/[#?&]?seed=/);
     const linked = /^[a-z][a-z0-9+.-]*:\/\//i.test(t) || t.startsWith("#") || t.startsWith("seed=");
     if (linked && hit !== -1) {
       t = t.slice(t.indexOf("seed=", hit) + 5);
-      try { t = decodeURIComponent(t); } catch { return { error: "The link's seed has broken % escapes." }; }
+      try { t = decodeURIComponent(t); } catch { /* not percent-encoded (a bare "%" symbol): keep it as written */ }
     } else if (linked) return { error: "The link has no #seed= part." };
     return { text: t.trim() };
   };
+  // The text of a share link's fragment for a seed: written plain. Only "%" is escaped (a literal "%" would otherwise read as an escape);
+  // "," and "." are never encoded, and the browser itself escapes characters it cannot keep (non-ASCII symbols).
+  const seedFragment = seed => "#seed=" + String(seed).replace(/%/g, "%25");
 
   // Never throws. -> { ok, error, errorField, seed, size:{w,h}|null, magnet (null default | {col,row,size}) , mirror, tileset, palette:[symbols]|null,
   //   regionSize, runs, cellCount, grid (rows of symbol|null) } where fields before the failing one are filled in.
   const decode = input => {
-    const res = { ok: false, error: null, errorField: null, seed: null, size: null, magnet: undefined, mirror: null, tileset: null, palette: null, regionSize: null, runs: null, cellCount: null, grid: null };
+    const res = { ok: false, error: null, errorField: null, seed: null, size: null, magnet: undefined, mirror: null, tileset: null, palette: null, regionSize: null, runs: null, cellCount: null, grid: null, usedSymbols: null, legacy: false };
     const fail = (field, msg) => { res.error = msg; res.errorField = field; return res; };
     try {
       const ex = extractSeed(input);
@@ -275,14 +486,17 @@
       if (!text) return fail(null, "Paste a seed first.");
       if (text.length > MAX_SEED_CHARS) return fail(null, "That seed is too long.");
       if (/\s/.test(text)) return fail(null, "A seed has no spaces or line breaks.");
-      const f = text.split("/");
-      if (f.length !== 6) return fail(null, "A seed has 6 parts separated by \"/\" (size/magnet/mirror/tileset/palette/code), found " + f.length + ".");
+      // Old seeds separated the fields with "/" (and always contain it; "/" is not a symbol any more). New seeds use ",".
+      const legacy = text.includes("/");
+      res.legacy = legacy;
+      const f = text.split(legacy ? "/" : ",");
+      if (f.length !== 6) return fail(null, "A seed has 6 parts separated by \"" + (legacy ? "/" : ",") + "\" (size,magnet,mirror,tileset,palette,code), found " + f.length + ".");
       const [sizeS, magS, mirS, tsS, palS, codeS] = f;
       const size = parseSize(sizeS);
       if (!size) return fail("size", "Size \"" + sizeS + "\" is not valid (use 3v3, SD or WxH with 1-" + MAX_DIM + " each).");
       res.size = size;
-      const magnet = parseMagnet(magS, size.w, size.h);
-      if (magnet === undefined) return fail("magnet", "Magnet \"" + magS + "\" is not valid (x, or col,row with an optional ,2 / ,3 / ,4 inside the " + size.w + "x" + size.h + " grid).");
+      const magnet = parseMagnet(magS, size.w, size.h, legacy);
+      if (magnet === undefined) return fail("magnet", "Magnet \"" + magS + "\" is not valid (x, or col.row with an optional .2 / .3 / .4 inside the " + size.w + "x" + size.h + " grid).");
       res.magnet = magnet;
       if (!Object.prototype.hasOwnProperty.call(CLASS_FLAGS, mirS)) return fail("mirror", "Mirror \"" + mirS + "\" is not valid (use d, h, v, 4 or a).");
       res.mirror = mirS;
@@ -330,13 +544,14 @@
       cells.forEach(([r, c], i) => {
         const sym = values[i] === 0 ? null : palette[values[i] - 1];
         out[r][c] = sym;
-        for (const [r2, c2] of imagesOf(r, c, mirS, size.w, size.h, sums)) out[r2][c2] = sym;
+        for (const im of orbitOf(r, c, mirS, size.w, size.h, sums)) out[im.r][im.c] = mirrorSymbol(sym, { x: im.fx, y: im.fy });
       });
       let total = 0;
       for (const row of out) for (const s of row) { if (s === undefined) return fail("code", "Internal error: a cell was not filled."); total++; }
       if (total !== size.w * size.h) return fail("code", "The decoded cell count does not equal " + size.w * size.h + ".");
       res.cellCount = total;
       res.grid = out;
+      res.usedSymbols = Array.from(new Set(out.flat().filter(x => x != null)));
       res.ok = true;
       return res;
     } catch (e) {
@@ -359,7 +574,7 @@
         const s = symbolOf(ref);
         if (s == null || s === "") kind = "noSymbol";
         else if (!isValidSymbol(s)) kind = "badSymbol";
-        else if ((s === SPECIAL_SYMBOLS.warn && ref !== "warn") || (s === SPECIAL_SYMBOLS.space && ref !== "space")) kind = "badSymbol"; // 6 / 7 belong to warn / space
+        else if ((s === SPECIAL_SYMBOLS.warn && ref !== "warn") || (s === SPECIAL_SYMBOLS.space && ref !== "space")) kind = "badSymbol"; // A / S belong to warn / space
         else out = s;
       }
       const v = { out, kind };
@@ -395,16 +610,23 @@
     }
     return m;
   };
-  // Candidates per palette symbol: the seed's tileset first, then the global tileset (specials 6 / 7 are always the warn / space tile).
-  // tilesetIndex / globalIndex: Map(symbol -> [entry]). -> [{ symbol, candidates: [entry], source: "tileset"|"global"|null }]
+  // Candidates per palette symbol: EVERY tile of the seed's tileset and of the global tileset that carries the symbol (a sensor folder is
+  // one candidate, its variants never separate; several plain tiles of one plain folder are separate candidates). They come sorted by
+  // sortIndex (entries without one last, ties keep their order) so the first one is the natural default. The warn / space symbols (A / S)
+  // are always the special tiles.
+  //   0 candidates -> the cells stay blank (the importer says so)      1 candidate -> used silently      2 or more -> the importer asks
+  //   symbol 8 (game-mode objective) ALWAYS asks, even with a single candidate; its list holds the tileset's objectives and the global ones
+  //   (Bounty, Box = the powercube, Gem Grab, Heist, Hot Zone, Brawl Ball).
+  // tilesetIndex / globalIndex: Map(symbol -> [entry]). -> [{ symbol, candidates: [entry], source: "tileset"|"global"|null, ask: boolean, objective: boolean }]
   const resolveSymbols = (palette, tilesetIndex, globalIndex) => palette.map(symbol => {
     const sp = Object.keys(SPECIAL_SYMBOLS).find(r => SPECIAL_SYMBOLS[r] === symbol);
-    if (sp) return { symbol, candidates: [{ ref: sp, symbol }], source: "global" };
-    const t = tilesetIndex && tilesetIndex.get(symbol);
-    if (t && t.length) return { symbol, candidates: t, source: "tileset" };
-    const g = globalIndex && globalIndex.get(symbol);
-    if (g && g.length) return { symbol, candidates: g, source: "global" };
-    return { symbol, candidates: [], source: null };
+    if (sp) return { symbol, candidates: [{ ref: sp, symbol }], source: "global", ask: false, objective: false };
+    const t = (tilesetIndex && tilesetIndex.get(symbol)) || [], g = (globalIndex && globalIndex.get(symbol)) || [];
+    const seen = new Set();
+    const candidates = t.concat(g).filter(e => !seen.has(e.ref) && seen.add(e.ref))
+      .map((e, i) => ({ e, i })).sort((x, y) => ((x.e.sortIndex == null ? Infinity : x.e.sortIndex) - (y.e.sortIndex == null ? Infinity : y.e.sortIndex)) || (x.i - y.i)).map(x => x.e);
+    const objective = SHARED_SYMBOLS.includes(symbol) && candidates.length > 0;
+    return { symbol, candidates, source: t.length ? "tileset" : g.length ? "global" : null, ask: candidates.length > 1 || objective, objective };
   });
   // decoded symbol grid + chosen: Map(symbol -> ref|null) -> { grid (rows of ref|null), refs (palette refs in first-use order), missing: cells blanked }
   const gridToRefs = (symGrid, chosen) => {
@@ -421,10 +643,13 @@
   };
 
   return {
-    B62, MAX_DIM, CLASSES, CLASS_FLAGS, CLASS_NAMES, MAGNET_SIZE_NAMES, GLOBAL_SYMBOLS, SPECIAL_SYMBOLS,
+    B62, MAX_DIM, CLASSES, CLASS_FLAGS, CLASS_NAMES, MAGNET_SIZE_NAMES, GLOBAL_SYMBOLS, SPECIAL_SYMBOLS, SHARED_SYMBOLS,
+    SWAP_REF_PAIRS, PARTNER_REFS, PARTNER_SYMBOLS, partnerRef, partnerSymbol, orbitOf,
+    JUMPPAD_FILES, JUMPPAD_X, JUMPPAD_Y, jumppadRef, jumppadFileOf, flipAxes, mirrorJumppadFile, mirrorRef, mirrorSymbol, mirrorOffsetOverride, planMirrorCopies,
+    OFFICIAL_SYMBOL_NAMES, SYMBOL_UNIVERSE, officialEntries, globalEntries, buildRegistry, tableSymbols, proposeSymbols, proposalSql, globalMemberFolders, globalSymbolOfRef, sameTile, symbolConflicts, freeSymbols,
     globalSymbol, globalRefsForSymbol, isValidSymbol,
     effectiveSums, effectiveCenter, magnetFromApp, defaultMagnetSize, imagesOf, regionCells, detectMirror,
-    encodeSize, parseSize, encodeMagnet, parseMagnet, bitsToBase62, base62ToBits,
+    BANNED_SYMBOLS, seedFragment, encodeSize, parseSize, encodeMagnet, parseMagnet, bitsToBase62, base62ToBits,
     encode, decode, extractSeed, symbolizeGrid, blankSummary, indexBySymbol, resolveSymbols, gridToRefs,
   };
 });

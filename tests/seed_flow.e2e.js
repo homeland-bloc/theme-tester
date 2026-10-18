@@ -90,7 +90,7 @@ const test = async (name, fn) => {
       if (url.host === "www.gstatic.com" && url.pathname.includes("firebase")) return reply(200, url.pathname.includes("app-compat") ? FIREBASE_STUB : "", "text/javascript");
       if (url.host === "fonts.googleapis.com" || url.host === "fonts.gstatic.com") return reply(200, "", "text/css");
       if (url.host === "stub.invalid") return reply(200, PNG, "image/png");
-      if (url.host === "discord.com" && url.pathname === "/oauth2/authorize") return route.fulfill({ status: 302, headers: { location: ORIGIN + "/auth/callback.html?code=stub-code" } });
+      if (url.host === "discord.com" && url.pathname === "/oauth2/authorize") return route.fulfill({ status: 302, headers: { location: ORIGIN + "/auth/callback.html?code=stub-code" + (url.searchParams.get("state") ? "&state=" + encodeURIComponent(url.searchParams.get("state")) : "") } });
       if (url.host === WORKER) {
         const q = url.searchParams;
         if (url.pathname === "/rest/v1/tilesets") return reply(200, TILESETS);
@@ -126,7 +126,9 @@ const test = async (name, fn) => {
     await page.goto(ORIGIN + "/index.html" + hash);
     return { page, ctx, logs };
   };
-  const ready = async page => { await page.waitForSelector("[data-seed-row]", { timeout: 30000 }); await page.waitForFunction(() => document.querySelectorAll("[data-seed-row]").length > 0); };
+  // The seed UI is the "Map seed" modal: ready() waits for the app and opens it; box() reopens it after an import closed it.
+  const box = async page => { if (!(await page.locator("[data-seed-box]").count())) { await page.click("[data-map-seed-open]"); await page.waitForSelector("[data-seed-box]"); } };
+  const ready = async page => { await page.waitForSelector("[data-map-seed-open]", { timeout: 30000 }); await page.waitForTimeout(300); await box(page); };
   const saved = page => page.evaluate(() => ({ grid: JSON.parse(localStorage.getItem("oph_grid") || "null"), w: JSON.parse(localStorage.getItem("oph_gridW") || "null"), h: JSON.parse(localStorage.getItem("oph_gridH") || "null"), ts: JSON.parse(localStorage.getItem("oph_active_ts") || "null"), cc: JSON.parse(localStorage.getItem("oph_custom_center") || "null"), ccs: JSON.parse(localStorage.getItem("oph_custom_center_size") || "null"), mirror: JSON.parse(localStorage.getItem("oph_mirror") || "null") }));
   const settle = page => page.waitForTimeout(600);
   const symAt = (sv, r, c, tilesetRows) => { // palette entry (stored) at a cell, as a codename or ref
@@ -138,19 +140,19 @@ const test = async (name, fn) => {
   };
   const blank = (w, h) => Array.from({ length: h }, () => Array(w).fill(null));
   const encode = (w, h, cells, tileset, magnet) => { const g = blank(w, h); for (const [r, c, s] of cells) g[r][c] = s; return MapSeed.encode({ w, h, grid: g, tileset, magnet }).seed; };
-  const SEED_A = encode(7, 5, [[0, 0, "M"], [0, 6, "M"], [2, 3, "Y"], [4, 0, "M"], [4, 6, "M"], [1, 1, "X"], [3, 5, "W"], [3, 1, "6"], [2, 2, "7"]], 0);
-  const importViaField = async (page, seed) => { await page.fill("[data-seed-input]", seed); await page.waitForSelector("[data-seed-breakdown]"); await page.click("[data-seed-import]"); };
+  const SEED_A = encode(7, 5, [[0, 0, "M"], [0, 6, "M"], [2, 3, "Y"], [4, 0, "M"], [4, 6, "M"], [1, 1, "X"], [3, 5, "W"], [3, 1, "A"], [2, 2, "S"]], 0);
+  const importViaField = async (page, seed) => { await box(page); await page.fill("[data-seed-input]", seed); await page.waitForSelector("[data-seed-breakdown]"); await page.click("[data-seed-import]"); };
 
   await test("copy seed and share link on an empty map; export warns about tiles without symbols", async () => {
     const { page, ctx, logs } = await newPage();
     await ready(page);
     await page.click("[data-seed-copy]");
     await page.waitForSelector("[data-seed-status]");
-    assert.strictEqual(await page.evaluate(() => navigator.clipboard.readText()), "3v3/x/4/0//8ZX");
+    assert.strictEqual(await page.evaluate(() => navigator.clipboard.readText()), "3v3,x,4,0,,8ZX");
     await page.click("[data-seed-link]");
     await settle(page);
     const link = await page.evaluate(() => navigator.clipboard.readText());
-    assert.ok(link.startsWith(ORIGIN + "/index.html#seed=3v3%2Fx%2F4%2F0%2F%2F8ZX"), link);
+    assert.strictEqual(link, ORIGIN + "/index.html#seed=3v3,x,4,0,,8ZX", "the share link is written plain: no %2C, no %2F");
     assert.strictEqual(await page.locator("[data-seed-blank]").count(), 0);
     await ctx.close();
   });
@@ -181,7 +183,7 @@ const test = async (name, fn) => {
     const cls = MapSeed.decode(SEED_A).mirror;
     assert.deepStrictEqual([sv.mirror.v, sv.mirror.h, sv.mirror.d], [MapSeed.CLASS_FLAGS[cls].mirrorV, MapSeed.CLASS_FLAGS[cls].mirrorH, MapSeed.CLASS_FLAGS[cls].mirrorD]);
     // exporting the imported map gives the same seed back
-    await page.click("[data-seed-copy]"); await settle(page);
+    await box(page); await page.click("[data-seed-copy]"); await settle(page);
     assert.strictEqual(await page.evaluate(() => navigator.clipboard.readText()), SEED_A);
     assert.deepStrictEqual(logs.filter(l => !/Failed to load resource|\[BABEL\]/.test(l)), []);
     await ctx.close();
@@ -198,7 +200,7 @@ const test = async (name, fn) => {
     assert.ok(/replaces your current map/.test(await page.textContent("[data-seed-import-modal]")));
     await page.click("[data-seed-import-modal] >> text=Cancel"); await settle(page);
     assert.deepStrictEqual(await saved(page), before);
-    await page.click("[data-seed-import]");
+    await box(page); await page.click("[data-seed-import]");
     await page.click("[data-seed-confirm]"); await settle(page);
     let sv = await saved(page);
     assert.deepStrictEqual([sv.w, sv.h], [4, 4]);
@@ -221,8 +223,11 @@ const test = async (name, fn) => {
     await importViaField(page, seed);
     await page.waitForSelector("[data-seed-import-modal]");
     const cards = page.locator("[data-seed-choose='8'] [data-seed-card]");
-    assert.strictEqual(await cards.count(), 2);
-    assert.ok(await page.locator("[data-seed-confirm]").isDisabled());
+    assert.strictEqual(await cards.count(), 8, "the tileset's 2 objectives and the 6 global ones");
+    assert.ok(/Choose the game-mode objective for your map/.test(await page.textContent("[data-seed-choose-label]")));
+    assert.ok(await page.locator("[data-seed-confirm]").isEnabled(), "the lowest sortIndex is preselected");
+    assert.ok((await cards.nth(0).getAttribute("data-seed-card")).startsWith("d:a0000000"), "tileset tiles first, by sortIndex");
+    assert.ok(await page.locator("[data-seed-choose='8']").textContent().then(t => /Box \(powercube\)/.test(t)));
     await cards.nth(1).click();
     await page.click("[data-seed-confirm]"); await settle(page);
     const sv = await saved(page);
@@ -231,6 +236,17 @@ const test = async (name, fn) => {
     assert.strictEqual(symAt(sv, 2, 2), null); // "?" matched nothing: blank
     assert.strictEqual(symAt(sv, 0, 4), "Wall1");
     assert.ok(/1 symbol \(\?\) matched no tile, 1 cell left blank/.test(await page.textContent("body")));
+    await ctx.close();
+  });
+
+  await test("Enter accepts the preselected (lowest sortIndex) tile", async () => {
+    const { page, ctx } = await newPage();
+    await ready(page);
+    await importViaField(page, encode(3, 3, [[0, 0, "8"]], 0));
+    await page.waitForSelector("[data-seed-import-modal]");
+    await page.keyboard.press("Enter"); await settle(page);
+    assert.strictEqual(await page.locator("[data-seed-import-modal]").count(), 0);
+    assert.strictEqual(symAt(await saved(page), 0, 0), "ObjA");
     await ctx.close();
   });
 
@@ -244,7 +260,7 @@ const test = async (name, fn) => {
     const seed8 = encode(3, 3, [[1, 1, "8"]], 7);
     await importViaField(page, seed8);
     await page.waitForSelector("[data-seed-import-modal]");
-    assert.strictEqual(await page.locator("[data-seed-choose='8'] [data-seed-card]").count(), 8);
+    assert.strictEqual(await page.locator("[data-seed-choose='8'] [data-seed-card]").count(), 6);
     await ctx.close();
   });
 
@@ -283,8 +299,8 @@ const test = async (name, fn) => {
     const { page, ctx } = await newPage();
     await ready(page);
     const before = await saved(page);
-    const good = SEED_A, f = good.split("/");
-    const cases = [["junk", /6 parts/], [f.slice(0, 5).join("/"), /6 parts/], ["0x5/" + f.slice(1).join("/"), /Size/], [f[0] + "/9,9/" + f.slice(2).join("/"), /Magnet/], [f.slice(0, 5).join("/") + "/", /code is missing/], [f.slice(0, 5).join("/") + "/zzzzzzzzzz", /./]];
+    const good = SEED_A, f = good.split(",");
+    const cases = [["junk", /6 parts/], [f.slice(0, 5).join(","), /6 parts/], ["0x5," + f.slice(1).join(","), /Size/], [f[0] + ",9.9," + f.slice(2).join(","), /Magnet/], [f.slice(0, 5).join(",") + ",", /code is missing/], [f.slice(0, 5).join(",") + ",zzzzzzzzzz", /./]];
     for (const [text, re] of cases) {
       await page.fill("[data-seed-input]", text);
       await page.waitForSelector("[data-seed-breakdown]");
@@ -296,11 +312,14 @@ const test = async (name, fn) => {
     await ctx.close();
   });
 
-  await test("help button opens the explainer", async () => {
+  await test("the format help is part of the Map seed modal and lists the symbol dictionary", async () => {
     const { page, ctx } = await newPage();
     await ready(page);
-    await page.click("[data-seed-help]");
-    assert.ok(/size \/ magnet \/ mirror \/ tileset \/ palette \/ code/.test(await page.textContent("[data-seed-help-modal]")));
+    await page.click("[data-seed-help]"); // the summary of the inline format help
+    assert.ok(/size,magnet,mirror,tileset,palette,code/.test(await page.textContent("[data-seed-help-modal]")));
+    await page.click("[data-seed-help-dict] summary");
+    assert.ok(await page.locator("[data-seed-help-dict] [data-symbol-row='A']").isVisible() && await page.locator("[data-seed-help-dict] [data-symbol-free]").isVisible());
+    assert.ok(!/\b6 is the warn/.test(await page.textContent("[data-seed-help-modal]")));
     await ctx.close();
   });
 
@@ -356,6 +375,39 @@ const test = async (name, fn) => {
     await ctx.close();
   });
 
+  await test("old-format seeds ('/' separators, 'col,row,size' magnets) and plain or encoded share links all import the same map", async () => {
+    const withMagnet = MapSeed.encode({ w: 9, h: 9, grid: (() => { const g = blank(9, 9); g[0][0] = "M"; g[8][8] = "M"; g[2][3] = "Y"; g[6][5] = "Y"; return g; })(), magnet: { col: 3, row: 2, size: 2 }, tileset: 0 });
+    const toOld = seed => { const f = seed.split(","); f[1] = f[1].replace(/\./g, ","); return f.join("/"); };
+    const oldSeed = toOld(withMagnet.seed);
+    assert.ok(oldSeed.includes("/") && /,2$|,\d/.test(oldSeed.split("/")[1]) || oldSeed.split("/")[1].includes(","), oldSeed);
+    const results = [];
+    for (const how of ["field-new", "field-old", "link-plain", "link-encoded", "link-old"]) {
+      const { page, ctx } = await newPage({ hash: how === "link-plain" ? "#seed=" + withMagnet.seed : how === "link-encoded" ? "#seed=" + encodeURIComponent(withMagnet.seed) : how === "link-old" ? "#seed=" + encodeURIComponent(oldSeed) : "" });
+      await ready(page); await settle(page);
+      if (how === "field-new") { await importViaField(page, withMagnet.seed); await settle(page); }
+      if (how === "field-old") { await importViaField(page, oldSeed); await settle(page); }
+      if (how.startsWith("link")) { if (await page.locator("[data-seed-import-modal]").count()) await page.click("[data-seed-confirm]"); await settle(page); }
+      const sv = await saved(page);
+      results.push(JSON.stringify({ w: sv.w, h: sv.h, cc: sv.cc, ccs: sv.ccs, cells: [[0, 0], [8, 8], [2, 3], [6, 5]].map(([r, c]) => symAt(sv, r, c)) }));
+      await ctx.close();
+    }
+    assert.deepStrictEqual([...new Set(results)].length, 1, results.join("\n"));
+    const parsed = JSON.parse(results[0]);
+    assert.deepStrictEqual([parsed.w, parsed.h, parsed.cc, parsed.ccs], [9, 9, { r: 2, c: 3 }, 2]);
+    assert.deepStrictEqual(parsed.cells, ["Wall1", "Wall1", "Crate", "Crate"]);
+  });
+
+  await test("a share link with awkward symbols is written plain (only % is escaped) and reads back", async () => {
+    const { page, ctx } = await newPage();
+    await ready(page);
+    // a map whose tiles carry "." and "%" symbols is impossible to build from the fixtures; check the link text of the field-built seed instead
+    await importViaField(page, SEED_A); await settle(page);
+    await box(page); await page.click("[data-seed-link]"); await settle(page);
+    const link = await page.evaluate(() => navigator.clipboard.readText());
+    assert.ok(link.includes("#seed=") && link.includes(",") && !/%2[CcEeFf]/.test(link), link);
+    await ctx.close();
+  });
+
   await test("a broken share link shows the error and still clears the fragment", async () => {
     const { page, ctx } = await newPage({ hash: "#seed=3v3%2Fx%2F4" });
     await ready(page); await settle(page);
@@ -369,6 +421,7 @@ const test = async (name, fn) => {
     const storage = { oph_user_tiles: [{ id: 1, src: "data:image/png;base64," + PNG.toString("base64") }], oph_gridW: 3, oph_gridH: 3, oph_grid: { v: 2, palette: ["d:a0000000-0000-4000-8000-000000000005", "d:a0000000-0000-4000-8000-000000000001", "u:1"], grid: [[1, 2, null], [null, 1, 3], [null, null, 2]] } };
     const { page, ctx } = await newPage({ storage });
     await ready(page); await settle(page);
+    await box(page);
     const txt = await page.textContent("[data-seed-blank]");
     assert.ok(/3 cells use tiles without symbols or local uploads and will be blank/.test(txt) && /1 local upload/.test(txt) && /2 without a symbol/.test(txt), txt);
     await page.click("[data-seed-copy]"); await settle(page);

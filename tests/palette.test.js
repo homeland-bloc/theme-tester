@@ -186,14 +186,15 @@ test("countRefs: highest first, empty cells excluded, specials and sensor folder
   assert.deepStrictEqual(P.countRefs(pal, [[4]]), []); // a cell pointing at a free slot counts nothing
 });
 
-test("symbols: 6 = warn, 7 = space are reserved and never suggested", () => {
-  assert.strictEqual(P.symbolForSpecial("warn"), "6");
-  assert.strictEqual(P.symbolForSpecial("space"), "7");
+test("symbols: A = warn, S = space are reserved and never suggested; 6 and 7 are ordinary", () => {
+  assert.strictEqual(P.symbolForSpecial("warn"), "A");
+  assert.strictEqual(P.symbolForSpecial("space"), "S");
   assert.strictEqual(P.symbolForSpecial("d:x"), null);
-  assert.strictEqual(P.specialForSymbol("6"), "warn");
-  assert.strictEqual(P.specialForSymbol("7"), "space");
+  assert.strictEqual(P.specialForSymbol("A"), "warn");
+  assert.strictEqual(P.specialForSymbol("S"), "space");
   assert.strictEqual(P.specialForSymbol("8"), null);
-  assert.ok(P.isReservedSymbol("6") && P.isReservedSymbol("7") && !P.isReservedSymbol("M"));
+  assert.strictEqual(P.specialForSymbol("6"), null);
+  assert.ok(P.isReservedSymbol("A") && P.isReservedSymbol("S") && !P.isReservedSymbol("M") && !P.isReservedSymbol("6") && !P.isReservedSymbol("7"));
   const used = [];
   for (let i = 0; i < 80; i++) {
     const s = P.suggestSymbol(used);
@@ -202,8 +203,15 @@ test("symbols: 6 = warn, 7 = space are reserved and never suggested", () => {
     used.push(s);
   }
   assert.ok(used.length > 20);
-  assert.strictEqual(P.suggestSymbol([]), "A");
-  assert.strictEqual(P.suggestSymbol(["A"]), "D"); // B is the official Skull symbol
+  assert.strictEqual(P.suggestSymbol([]), "D");
+  assert.strictEqual(P.suggestSymbol(["D"]), "E");
+  // the global table's symbols are passed in and skipped
+  assert.strictEqual(P.suggestSymbol([], ["D", "E"]), "I");
+  // separators are never suggested and are banned as symbols
+  assert.deepStrictEqual([...P.BANNED_SYMBOLS].sort(), [",", "/"]);
+  for (const ch of [",", "/", " ", "\t", "\u0000"]) assert.strictEqual(P.isBannedSymbol(ch), true, JSON.stringify(ch));
+  for (const ch of [".", "a", "A", "6", "😀"]) assert.strictEqual(P.isBannedSymbol(ch), false, ch);
+  assert.ok(!used.includes(",") && !used.includes("/") && !used.includes("."));
 });
 
 console.log(`\n${passed} passed${process.exitCode ? ", FAILURES above" : ""}`);

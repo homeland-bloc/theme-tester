@@ -222,16 +222,23 @@ test("pickers: a sensor folder is one entry, variants hidden / canonicalised", (
   assert.deepStrictEqual(U.hideSensorVariants([v1, v2]).map(t => t.ref), ["d:1", "d:2"]); // no folder entry in the list: nothing hidden
 });
 
-test("parseSymbolInput: empty, last code point, 6 and 7 reserved; suggestions skip used symbols", () => {
+test("parseSymbolInput: empty, last code point, A and S reserved (6 and 7 are free); suggestions skip used symbols", () => {
   assert.deepStrictEqual(U.parseSymbolInput(""), { ok: true, value: null });
   assert.deepStrictEqual(U.parseSymbolInput("ab"), { ok: true, value: "b" });
-  assert.strictEqual(U.parseSymbolInput("6").ok, false);
-  assert.strictEqual(U.parseSymbolInput("7").ok, false);
-  assert.match(U.parseSymbolInput("6").error, /warn/);
-  assert.match(U.parseSymbolInput("7").error, /space/);
+  assert.strictEqual(U.parseSymbolInput("A").ok, false);
+  assert.strictEqual(U.parseSymbolInput("S").ok, false);
+  assert.match(U.parseSymbolInput("A").error, /warn/);
+  assert.match(U.parseSymbolInput("S").error, /space/);
+  for (const bad of [",", "/"]) { const r = U.parseSymbolInput(bad); assert.strictEqual(r.ok, false, bad); assert.match(r.error, /separator/); }
+  assert.strictEqual(U.parseSymbolInput("a,").ok, false, "the last typed character counts");
+  assert.deepStrictEqual(U.parseSymbolInput(",b"), { ok: true, value: "b" });
+  assert.strictEqual(U.parseSymbolInput(".").ok, true);
+  assert.strictEqual(U.parseSymbolInput("6").ok, true);
+  assert.strictEqual(U.parseSymbolInput("7").ok, true);
   assert.strictEqual(U.parseSymbolInput("8").ok, true);
   assert.deepStrictEqual(U.usedSymbols([{ symbol: "A" }, { symbol: null }, {}]), ["A"]);
-  assert.strictEqual(U.suggestSymbol([{ symbol: "A" }, { symbol: "B" }]), "D");
+  assert.strictEqual(U.suggestSymbol([{ symbol: "D" }, { symbol: "E" }]), "I");
+  assert.strictEqual(U.suggestSymbol([{ symbol: "D" }], ["E", "I"]), "J");
 });
 
 test("imageOps: dimensions and where pixels land", () => {

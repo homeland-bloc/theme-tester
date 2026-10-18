@@ -50,16 +50,17 @@
     return order.map(bit => (bit === null ? { bit: null, filled: false, centre: true } : { bit, filled: ok && code[bit] === "1", centre: false }));
   };
 
-  // Symbol field: "" -> null; otherwise the last typed code point. '6' (warn tile) and '7' (space tile) are reserved for the special tiles.
+  // Symbol field: "" -> null; otherwise the last typed code point. 'A' (warn tile) and 'S' (space tile) are reserved for the special tiles.
   const parseSymbolInput = text => {
     const ch = [...String(text == null ? "" : text).trim()].slice(-1)[0];
     if (ch === undefined) return { ok: true, value: null };
+    if (TilePalette.isBannedSymbol(ch)) return { ok: false, value: null, error: ch === "," || ch === "/" ? `'${ch}' cannot be a tile symbol (seeds use it as a separator).` : "That character cannot be a tile symbol." };
     if (TilePalette.isReservedSymbol(ch)) return { ok: false, value: null, error: `'${ch}' is reserved for the ${ch === TilePalette.SYMBOL_WARN ? "warn" : "space"} tile.` };
     return { ok: true, value: ch };
   };
   // Symbols already used by a tileset's tiles / folders (for suggestions): array of single characters.
   const usedSymbols = tiles => (tiles || []).map(t => t && t.symbol).filter(Boolean);
-  const suggestSymbol = tiles => TilePalette.suggestSymbol(usedSymbols(tiles));
+  const suggestSymbol = (tiles, alsoTaken) => TilePalette.suggestSymbol(usedSymbols(tiles), alsoTaken);
 
   // Click on a bit of the 3x3 grid: flips that bit of the typed text (a short or empty text is padded with zeros first).
   const toggleCodeBit = (text, bit) => {
@@ -131,7 +132,9 @@
     return {
       ref, key: ref, scope, folderKey, label: label ?? folderKey,
       tiles: all, labelled, unlabelled, first,
-      settings: { spin: cfg ? !!cfg.spin : !!first.dbRotatable, flip: cfg ? !!cfg.flip : !!first.dbFlippable },
+      // tieBreak / reroll come from the manifest block of a global folder (cfg): see sensor.js (tieBreakOf, isRerollable)
+      settings: { spin: cfg ? !!cfg.spin : !!first.dbRotatable, flip: cfg ? !!cfg.flip : !!first.dbFlippable,
+        ...(cfg && Array.isArray(cfg.tieBreak) ? { tieBreak: cfg.tieBreak.slice() } : {}), ...(cfg && cfg.reroll === false ? { reroll: false } : {}) },
       symbol: cfg && cfg.symbol != null ? cfg.symbol : (first.symbol ?? null),
       warnings: divergence(all),
     };
@@ -223,7 +226,10 @@
   // folder has no usable variant. Neighbours count only when they hold the SAME s: entry; the map edge counts as air.
   // rerolls: Map | object of sensorRef -> integer reroll seed (missing = 0). The one seed map the screen and Download Map both read.
   const rerollOf = (rerolls, ref) => { const v = rerolls ? (typeof rerolls.get === "function" ? rerolls.get(ref) : rerolls[ref]) : 0; return Number.isFinite(v) ? v | 0 : 0; };
-  const deriveLayer = ({ grid, refs, folders, rerolls }) => {
+  // deterministic: Map | object of sensorRef -> true (reroll mode OFF: ties resolve without the hash); picks: Map | object of sensorRef -> { code: tile ref }
+  // (the "Choose variants" picks). Both are session state of the screen, never part of a map or a seed.
+  const lookup = (m, ref) => (m ? (typeof m.get === "function" ? m.get(ref) : m[ref]) : undefined);
+  const deriveLayer = ({ grid, refs, folders, rerolls, deterministic, picks }) => {
     const out = new Map();
     if (!folders || !folders.size || !grid) return out;
     for (let r = 0; r < grid.length; r++) {
@@ -236,7 +242,7 @@
         if (!f) continue;
         const isSame = (rr, cc) => rr >= 0 && rr < grid.length && cc >= 0 && cc < (grid[rr] || []).length && grid[rr][cc] != null && refs[grid[rr][cc]] === ref;
         const nb = Sensor.neighbourCode(r, c, isSame);
-        const res = Sensor.resolve(f.folder, nb, { x: c, y: r, salt: ref, reroll: rerollOf(rerolls, ref), candidates: f.candidates });
+        const res = Sensor.resolve(f.folder, nb, { x: c, y: r, salt: ref, reroll: rerollOf(rerolls, ref), candidates: f.candidates, deterministic: !!lookup(deterministic, ref), picks: lookup(picks, ref) });
         out.set(`${r},${c}`, res ? { ...res, nb, folderRef: ref } : { warn: true, nb, folderRef: ref });
       }
     }
@@ -290,6 +296,110 @@
     return { matched, mismatches, foreign };
   };
 
+  // ── Duplicate tile ────────────────────────────────────────────────────────────────────────────────────
+  // The copy of a DB tile joins the original's sensor pool (same folder_key and sensor_code) and keeps its flags, size, offsets and symbol.
+  const DUPLICATE_COLUMNS = ["folder_key", "sensor_code", "sensor_roll", "rotatable", "flippable", "otg_passable", "mirror_offset", "bottom_render", "priority", "auto_shadow", "size_multiplier", "offset_x", "offset_y", "symbol"];
+  // "<name>_copy", else "<name>_copy2", "_copy3" ... (taken: Set of the tileset's codenames).
+  const duplicateCodename = (codename, taken) => {
+    const base = `${codename}_copy`;
+    if (!taken.has(base)) return base;
+    for (let n = 2; ; n++) if (!taken.has(`${base}${n}`)) return `${base}${n}`;
+  };
+  // 1 + the highest sort_index of the tileset (0 for an empty one).
+  const nextSortIndex = rows => (rows || []).reduce((m, r) => Math.max(m, Number(r.sort_index) || 0), -1) + 1;
+  // Body of the INSERT for the copy: the original's DUPLICATE_COLUMNS (null kept as null), a NEW codename, image_url and sort_index.
+  const duplicateRowBody = ({ row, tilesetId, codename, imageUrl, sortIndex }) => {
+    const body = { tileset_id: tilesetId, codename, image_url: imageUrl, sort_index: sortIndex };
+    for (const k of DUPLICATE_COLUMNS) if (row[k] !== undefined) body[k] = row[k];
+    return body;
+  };
+  // Local uploads are kept in localStorage, so a copy is scaled down to fit this many px on its longer side.
+  const LOCAL_UPLOAD_MAX_PX = 256;
+  const localCopySize = (w, h) => { const k = Math.min(1, LOCAL_UPLOAD_MAX_PX / Math.max(w, h, 1)); return { w: Math.max(1, Math.round(w * k)), h: Math.max(1, Math.round(h * k)) }; };
+
+  // ── Panel order ───────────────────────────────────────────────────────────────────────────────────────
+  // Plain tiles and folders are listed TOGETHER by lowest sortIndex (a folder's is the lowest of its tiles). Ties: plain tile first, then
+  // folder, then name. entries: { type: "flat", tile } | { type: "folder", label, tiles }. -> a new sorted array.
+  const entrySortIndex = e => (e.type === "flat" ? (e.tile && e.tile.sortIndex) ?? 0 : Math.min(...((e.tiles || []).map(t => t.sortIndex ?? 0)), Infinity));
+  const entryName = e => String(e.type === "flat" ? ((e.tile && (e.tile.codename ?? e.tile.label)) ?? "") : (e.label ?? ""));
+  const orderEntries = entries => (entries || []).map((e, i) => ({ e, i, k: entrySortIndex(e) }))
+    .sort((a, b) => ((a.k === Infinity ? 1e15 : a.k) - (b.k === Infinity ? 1e15 : b.k)) || ((a.e.type === "flat" ? 0 : 1) - (b.e.type === "flat" ? 0 : 1)) || entryName(a.e).localeCompare(entryName(b.e)) || (a.i - b.i))
+    .map(x => x.e);
+
+  // ── Plain <-> sensor folder resolution (tileset switch, saved map load) ──────────────────────────────
+  // A palette entry of one tileset finds its stand-in in another, across the plain / sensor divide:
+  //   plain tile    -> 1. a plain tile with the same codename   2. a sensor folder whose folder key equals the codename   3. the same symbol
+  //   sensor folder -> 1. a sensor folder with the same key     2. a plain tile whose codename equals the folder key       3. the same symbol
+  // Only when all three fail is the entry a mismatch (the compat modal). "Same symbol" picks the lowest sortIndex (then ref).
+  // rows are DB rows { id, codename, folder_key, sensor_code, symbol, sort_index }. A sensor folder = rows sharing a folder_key where at least one
+  // has a sensor_code; its rows with a code are the folder, its rows without one are plain (unlabelled) tiles.
+  const groupRows = (rows, tsId) => {
+    const list = (rows || []).slice().sort((a, b) => ((a.sort_index ?? 0) - (b.sort_index ?? 0)) || String(a.id).localeCompare(String(b.id)));
+    const sensorKeys = new Set(list.filter(r => r.folder_key && Sensor.isCode(r.sensor_code)).map(r => r.folder_key));
+    const plain = [], folders = new Map();
+    for (const r of list) {
+      if (r.folder_key && sensorKeys.has(r.folder_key) && Sensor.isCode(r.sensor_code)) {
+        if (!folders.has(r.folder_key)) folders.set(r.folder_key, { ref: sensorRef(tsId, r.folder_key), folderKey: r.folder_key, symbol: r.symbol ?? null, sortIndex: r.sort_index ?? 0 });
+        const f = folders.get(r.folder_key);
+        if (f.symbol == null && r.symbol != null) f.symbol = r.symbol;
+        f.sortIndex = Math.min(f.sortIndex, r.sort_index ?? 0);
+      } else plain.push({ ref: TilePalette.makeRef("d", r.id), codename: r.codename ?? null, symbol: r.symbol ?? null, sortIndex: r.sort_index ?? 0 });
+    }
+    return { plain, folders: [...folders.values()] };
+  };
+  const targetIndex = (rows, tsId) => {
+    const g = groupRows(rows, tsId);
+    const bySymbol = new Map();
+    [...g.plain, ...g.folders].forEach(e => { if (e.symbol) { if (!bySymbol.has(e.symbol)) bySymbol.set(e.symbol, []); bySymbol.get(e.symbol).push(e); } });
+    bySymbol.forEach(list => list.sort((a, b) => (a.sortIndex - b.sortIndex) || String(a.ref).localeCompare(String(b.ref))));
+    return {
+      plainByName: new Map(g.plain.filter(e => e.codename).map(e => [e.codename, e])),
+      folderByKey: new Map(g.folders.map(e => [e.folderKey, e])),
+      bySymbol,
+    };
+  };
+  // source: { kind: "plain", codename, symbol } | { kind: "sensor", folderKey, symbol }; index = targetIndex(...) -> a ref or null.
+  const resolveAcross = (source, index) => {
+    if (!source || !index) return null;
+    const name = source.kind === "sensor" ? source.folderKey : source.codename;
+    const first = source.kind === "sensor" ? index.folderByKey : index.plainByName, second = source.kind === "sensor" ? index.plainByName : index.folderByKey;
+    if (name != null) {
+      if (first.has(name)) return first.get(name).ref;
+      if (second.has(name)) return second.get(name).ref;
+    }
+    const bySym = source.symbol ? index.bySymbol.get(source.symbol) : null;
+    return bySym && bySym.length ? bySym[0].ref : null;
+  };
+  // The whole palette: d: entries of the outgoing tileset and its s: entries. Shape as TilePalette.planSwitch / planSensorSwitch:
+  // { matched: [{from, to}], mismatches: [{ref, codename}], foreign: [ref] }. Global s: / g: / u: entries are left alone; an entry that
+  // belongs to any other tileset is foreign.
+  const planSwitchResolved = ({ refs, oldRows, oldTsId, newRows, newTsId }) => {
+    const matched = [], mismatches = [], foreign = [];
+    const oldByUuid = new Map((oldRows || []).map(r => [r.id, r]));
+    const oldGroups = groupRows(oldRows, oldTsId);
+    const oldFolders = new Map(oldGroups.folders.map(f => [f.folderKey, f]));
+    const idx = newTsId != null ? targetIndex(newRows, newTsId) : null;
+    (refs || []).forEach(ref => {
+      if (!ref) return;
+      const sp = parseSensorRef(ref);
+      if (sp) {
+        if (sp.scope === SCOPE_GLOBAL) return;
+        if (sp.scope !== oldTsId) { foreign.push(ref); return; }
+        const f = oldFolders.get(sp.folderKey);
+        const to = resolveAcross({ kind: "sensor", folderKey: sp.folderKey, symbol: f ? f.symbol : null }, idx);
+        if (to) matched.push({ from: ref, to }); else mismatches.push({ ref, codename: `Sensor folder: ${sp.folderKey}` });
+        return;
+      }
+      const p = TilePalette.parseRef(ref);
+      if (!p || p.kind !== "d") return;
+      const row = oldByUuid.get(p.key);
+      if (!row) { foreign.push(ref); return; }
+      const to = resolveAcross({ kind: "plain", codename: row.codename ?? null, symbol: row.symbol ?? null }, idx);
+      if (to) matched.push({ from: ref, to }); else mismatches.push({ ref, codename: row.codename ?? null });
+    });
+    return { matched, mismatches, foreign };
+  };
+
   // Saved map load: where does an s: ref that is not among the loaded tiles go? -> a ref in the active tileset, or null.
   const resolveLoadedSensorRef = (ref, activeTsId, activeFolderKeys) => {
     const p = parseSensorRef(ref);
@@ -306,6 +416,6 @@
     preloadImages, progressLabel, imageOps, withFreshVersion,
     variantOwners, hideSensorVariants, canonicalRef, canonicalRefs, folderPreviewTiles,
     deriveLayer, rerollOf, opsToCss, opsLabel, composePlan, composeKey, transformLabel, recipeLines, FALLBACK_LABEL,
-    planSensorSwitch, resolveLoadedSensorRef,
+    planSensorSwitch, resolveLoadedSensorRef, groupRows, targetIndex, resolveAcross, planSwitchResolved, orderEntries, DUPLICATE_COLUMNS, duplicateCodename, nextSortIndex, duplicateRowBody, LOCAL_UPLOAD_MAX_PX, localCopySize,
   };
 });
