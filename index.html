@@ -5929,18 +5929,21 @@ function App() {
     const out = [], groups = new Map();
     sortedRows(rows).map(row => buildDbTile(row, tsDef)).forEach(t => {
       if (t.folderLabel) { if (!groups.has(t.folderLabel)) groups.set(t.folderLabel, []); groups.get(t.folderLabel).push(t); }
-      else out.push({ ref: t.ref, symbol: t.symbol, name: t.codename ?? t.ref, tile: t });
+      else out.push({ ref: t.ref, symbol: t.symbol, name: t.codename ?? t.ref, tile: t, sortIndex: t.sortIndex ?? 0 });
     });
     groups.forEach((tiles, key) => {
       const sensor = SensorUI.makeFolder({ scope: tsDef.id, folderKey: key, label: key, tiles });
-      if (sensor) out.push({ ref: sensor.ref, symbol: sensor.symbol, name: `${key} (sensor folder)`, tile: buildSensorTile(sensor) });
-      tiles.filter(t => !sensor || !SensorEngine.isCode(t.sensorCode)).forEach(t => out.push({ ref: t.ref, symbol: t.symbol, name: t.codename ?? t.ref, tile: t }));
+      if (sensor) out.push({ ref: sensor.ref, symbol: sensor.symbol, name: `${key} (sensor folder)`, tile: buildSensorTile(sensor), sortIndex: Math.min(...tiles.map(t => t.sortIndex ?? 0)) });
+      tiles.filter(t => !sensor || !SensorEngine.isCode(t.sensorCode)).forEach(t => out.push({ ref: t.ref, symbol: t.symbol, name: t.codename ?? t.ref, tile: t, sortIndex: t.sortIndex ?? 0 }));
     });
     return out;
   };
-  const seedGlobalEntries = () => Object.keys(MapSeed.GLOBAL_SYMBOLS).map(ref => {
+  // Global candidates come after every tileset tile (sortIndex 1e6 + table order). Box is the powercube.
+  const seedGlobalEntries = () => Object.keys(MapSeed.GLOBAL_SYMBOLS).map((ref, i) => {
     const tile = tilesByRefRef.current.get(ref);
-    return tile ? { ref, symbol: MapSeed.GLOBAL_SYMBOLS[ref], name: tile.isSensor ? `${tile.folderLabel} (sensor folder)` : (tile.codename ?? ref), tile } : null;
+    if (!tile) return null;
+    const name = tile.isSensor ? `${tile.folderLabel} (sensor folder)` : ref.endsWith("/Objectives/Box.png") ? "Box (powercube)" : (tile.codename ?? ref);
+    return { ref, symbol: MapSeed.GLOBAL_SYMBOLS[ref], name, tile, sortIndex: 1e6 + i, global: true };
   }).filter(Boolean);
   // -> { target (tileset to use or null), fallback (seed_id unknown), loaded (its tiles are cached), resolved: [{ symbol, candidates, source }] }
   const seedResolve = dec => {
@@ -5948,7 +5951,7 @@ function App() {
     const target = exact ?? dbTilesets.find(ts => ts.seed_id === 0) ?? null;
     const rows = target ? dbTilesByTsIdRef.current[target.id] : undefined;
     const tsIndex = rows ? MapSeed.indexBySymbol(seedTilesetEntries(target, rows)) : new Map();
-    const resolved = MapSeed.resolveSymbols(dec.palette ?? [], tsIndex, MapSeed.indexBySymbol(seedGlobalEntries()))
+    const resolved = MapSeed.resolveSymbols(dec.usedSymbols ?? dec.palette ?? [], tsIndex, MapSeed.indexBySymbol(seedGlobalEntries()))
       .map(x => ({ ...x, candidates: x.candidates.map(c => (c.name ? c : seedSpecialEntry(c))) }));
     return { target, fallback: !exact && !!target, loaded: !!rows, resolved };
   };
@@ -5963,7 +5966,7 @@ function App() {
   // the global tileset and the two special tiles can end up in the palette (never two tilesets).
   const applySeed = (dec, r, choices) => {
     const chosen = new Map();
-    r.resolved.forEach(x => chosen.set(x.symbol, x.candidates.length === 1 ? x.candidates[0].ref : x.candidates.length > 1 ? (choices[x.symbol] ?? null) : null));
+    r.resolved.forEach(x => chosen.set(x.symbol, !x.candidates.length ? null : !x.ask ? x.candidates[0].ref : (choices[x.symbol] ?? x.candidates[0].ref)));
     const { grid: g, refs, missing } = MapSeed.gridToRefs(dec.grid, chosen);
     const pal = { refs };
     const w = dec.size.w, h = dec.size.h;
@@ -6008,10 +6011,11 @@ function App() {
     let r = seedResolve(dec);
     if (!r.target) { const m = "Seed not imported: no tileset is available."; setSeedStatus({ ok: false, text: m }); setInfoNotice(m); return; }
     if (!r.loaded) { await ensureTilesetLoaded(r.target.id); r = seedResolve(dec); }
-    const ambiguous = r.resolved.filter(x => x.candidates.length > 1);
+    const ambiguous = r.resolved.filter(x => x.ask);
     const nonEmpty = gridRef.current.some(row => row.some(c => c != null));
     if (!ambiguous.length && !nonEmpty) { applySeed(dec, r, {}); return; }
-    setSeedModal({ dec, r, choices: {}, nonEmpty });
+    // the lowest sortIndex is preselected, so Enter accepts
+    setSeedModal({ dec, r, choices: Object.fromEntries(ambiguous.map(x => [x.symbol, x.candidates[0].ref])), nonEmpty });
   };
   // Share link: read #seed=... once signed in, tilesets loaded and a saved map (if any) resolved; then clear the fragment.
   useEffect(() => {
@@ -7506,7 +7510,7 @@ function App() {
                 {row("Tileset", tsText, d.errorField === "tileset")}
                 {row("Palette", d.palette ? (d.palette.length === 0 ? "(empty map)" : (pv ? pv.resolved : d.palette.map(s => ({ symbol: s, candidates: [], source: null }))).map(x => (
                   <span key={x.symbol} style={{ display: "inline-block", marginRight: 10 }}>
-                    <b style={{ fontFamily: "monospace" }}>{x.symbol}</b> {x.candidates.length === 0 ? <i style={{ color: pv && pv.loaded ? "#fbbf24" : C.muted }}>{pv && pv.loaded ? "no tile (blank)" : "…"}</i> : x.candidates.length === 1 ? x.candidates[0].name : <i>{x.candidates.length} tiles, you choose</i>}
+                    <b style={{ fontFamily: "monospace" }}>{x.symbol}</b> {x.candidates.length === 0 ? <i style={{ color: pv && pv.loaded ? "#fbbf24" : C.muted }}>{pv && pv.loaded ? "no tile (blank)" : "…"}</i> : !x.ask ? x.candidates[0].name : <i>{x.objective ? "game-mode objective, you choose" : `${x.candidates.length} tiles, you choose`}</i>}
                   </span>
                 ))) : "-", d.errorField === "palette")}
                 {row("Cells", d.regionSize == null ? "-" : d.ok ? `${d.cellCount} = ${d.size.w} x ${d.size.h} OK${d.mirror !== "a" ? ` (${d.regionSize} stored, the rest mirrored)` : ""}` : `${d.cellCount ?? 0} read, ${d.regionSize} expected`, d.errorField === "code")}
@@ -7539,11 +7543,12 @@ function App() {
       )}
       {seedModal && (() => {
         const { dec, r, choices, nonEmpty } = seedModal;
-        const ambiguous = r.resolved.filter(x => x.candidates.length > 1);
+        const ambiguous = r.resolved.filter(x => x.ask);
         const ready = ambiguous.every(x => choices[x.symbol]);
         return (
           <div className="modal-backdrop" onClick={() => setSeedModal(null)}>
-            <div className="modal-box" data-seed-import-modal style={{ maxWidth: 520, maxHeight: "85vh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
+            <div className="modal-box" data-seed-import-modal style={{ maxWidth: 520, maxHeight: "85vh", overflowY: "auto" }} onClick={e => e.stopPropagation()}
+              onKeyDown={e => { if (e.key === "Enter" && ready) { e.preventDefault(); setSeedModal(null); applySeed(dec, r, choices); } else if (e.key === "Escape") setSeedModal(null); }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                 <span style={{ fontSize: 13, fontWeight: 700, color: C.accent }}>Import seed</span>
                 <button onClick={() => setSeedModal(null)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
@@ -7554,7 +7559,7 @@ function App() {
               </p>
               {ambiguous.map(x => (
                 <div key={x.symbol} data-seed-choose={x.symbol} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                  <span style={{ fontSize: 11, color: C.muted }}>Symbol <b style={{ fontFamily: "monospace", color: C.text }}>{x.symbol}</b> matches {x.candidates.length} tiles. Which one?</span>
+                  <span data-seed-choose-label style={{ fontSize: 11, color: C.muted }}>{x.objective ? <b style={{ color: C.text }}>Choose the game-mode objective for your map</b> : <>Symbol <b style={{ fontFamily: "monospace", color: C.text }}>{x.symbol}</b> matches {x.candidates.length} tiles. Which one?</>}</span>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                     {x.candidates.map(cd => {
                       const picked = choices[x.symbol] === cd.ref;
@@ -7574,7 +7579,7 @@ function App() {
               ))}
               <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
                 <button style={btn(false, C.muted, "rgba(255,255,255,0.06)")} onClick={() => setSeedModal(null)}>Cancel</button>
-                <button data-seed-confirm disabled={!ready} style={{ ...btn(true, C.accent, C.accentDim), opacity: ready ? 1 : 0.45, cursor: ready ? "pointer" : "not-allowed" }}
+                <button data-seed-confirm autoFocus disabled={!ready} style={{ ...btn(true, C.accent, C.accentDim), opacity: ready ? 1 : 0.45, cursor: ready ? "pointer" : "not-allowed" }}
                   onClick={() => { setSeedModal(null); applySeed(dec, r, choices); }}>Import</button>
               </div>
             </div>

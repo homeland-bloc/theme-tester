@@ -398,20 +398,36 @@ test("global symbol table", () => {
   for (const [f, sym] of Object.entries(jpWant)) assert.strictEqual(M.globalSymbol("g:Resources/Global/Jumppads/" + f + ".png"), sym, f);
 });
 
-test("import resolution: tileset first, then global; several matches are a choice; unknown symbols are reported", () => {
-  const ts = M.indexBySymbol([{ ref: "d:wall", symbol: "M" }, { ref: "s:7|Walls", symbol: "X" }, { ref: "d:obj1", symbol: "8" }, { ref: "d:obj2", symbol: "8" }, { ref: "d:nosym", symbol: null }, { ref: "d:bad", symbol: "/" }]);
-  const gl = M.indexBySymbol(Object.keys(M.GLOBAL_SYMBOLS).map(ref => ({ ref, symbol: M.GLOBAL_SYMBOLS[ref] })));
-  const r = M.resolveSymbols(["M", "X", "8", "W", "c", "A", "S", "?"], ts, gl);
-  assert.deepStrictEqual(r.map(x => [x.symbol, x.source, x.candidates.map(c => c.ref)]), [
-    ["M", "tileset", ["d:wall"]], ["X", "tileset", ["s:7|Walls"]], ["8", "tileset", ["d:obj1", "d:obj2"]],
-    ["W", "global", ["s:global|water"]], ["c", "global", ["g:Resources/Global/Teleporters/Blue.png"]],
-    ["A", "global", ["warn"]], ["S", "global", ["space"]], ["?", null, []],
-  ]);
-  // a tileset symbol hides the global tile that shares it (tileset first)
-  const shadow = M.resolveSymbols(["W"], M.indexBySymbol([{ ref: "d:lake", symbol: "W" }]), gl);
-  assert.deepStrictEqual(shadow[0].candidates.map(c => c.ref), ["d:lake"]);
-  // 8 with no tileset match falls to the 6 game-mode objectives of the global tileset
-  assert.strictEqual(M.resolveSymbols(["8"], new Map(), gl)[0].candidates.length, 6);
+test("import resolution: tileset + global candidates together, sorted by sortIndex; 1 silent, 2+ asks, 0 blank; 8 always asks", () => {
+  const ts = M.indexBySymbol([{ ref: "d:wall", symbol: "M", sortIndex: 1 }, { ref: "s:7|Walls", symbol: "X", sortIndex: 6 }, { ref: "d:obj2", symbol: "8", sortIndex: 9 }, { ref: "d:obj1", symbol: "8", sortIndex: 3 },
+    { ref: "d:nosym", symbol: null }, { ref: "d:bad", symbol: "/" }, { ref: "d:p1", symbol: "p", sortIndex: 5 }, { ref: "d:p0", symbol: "p", sortIndex: 2 }, { ref: "d:lake", symbol: "W", sortIndex: 4 }]);
+  const gl = M.indexBySymbol(Object.keys(M.GLOBAL_SYMBOLS).map((ref, i) => ({ ref, symbol: M.GLOBAL_SYMBOLS[ref], sortIndex: 1e6 + i })));
+  const r = M.resolveSymbols(["M", "X", "8", "W", "c", "A", "S", "?", "p"], ts, gl);
+  const by = Object.fromEntries(r.map(x => [x.symbol, x]));
+  assert.deepStrictEqual(by.M.candidates.map(c => c.ref), ["d:wall"]); assert.strictEqual(by.M.ask, false);
+  assert.deepStrictEqual(by.X.candidates.map(c => c.ref), ["s:7|Walls"]); assert.strictEqual(by.X.ask, false);
+  // 8: the tileset's objectives (by sortIndex) then the six global ones; always asks
+  assert.deepStrictEqual(by["8"].candidates.map(c => c.ref), ["d:obj1", "d:obj2", ...M.globalRefsForSymbol("8")]);
+  assert.ok(by["8"].ask && by["8"].objective && by["8"].candidates.some(c => c.ref.endsWith("Objectives/Box.png")), "powercube Box is listed");
+  // W: the tileset's lake AND the global water folder -> a choice, tileset first by sortIndex
+  assert.deepStrictEqual(by.W.candidates.map(c => c.ref), ["d:lake", "s:global|water"]); assert.ok(by.W.ask);
+  // c: only the global teleporter -> silent
+  assert.deepStrictEqual(by.c.candidates.map(c => c.ref), ["g:Resources/Global/Teleporters/Blue.png"]); assert.strictEqual(by.c.ask, false); assert.strictEqual(by.c.source, "global");
+  // warn / space: fixed
+  assert.deepStrictEqual([by.A.candidates[0].ref, by.A.ask, by.S.candidates[0].ref, by.S.ask], ["warn", false, "space", false]);
+  // unknown: no candidate, no question
+  assert.deepStrictEqual([by["?"].candidates.length, by["?"].ask, by["?"].source], [0, false, null]);
+  // several plain tiles sharing one symbol (e.g. in one plain folder) are separate candidates, lowest sortIndex first
+  assert.deepStrictEqual(by.p.candidates.map(c => c.ref), ["d:p0", "d:p1"]); assert.ok(by.p.ask);
+  // 8 with no tileset objective: the six global ones
+  const only = M.resolveSymbols(["8"], new Map(), gl)[0];
+  assert.strictEqual(only.candidates.length, 6); assert.ok(only.ask);
+  // 8 with nothing anywhere: nothing to ask
+  assert.deepStrictEqual([M.resolveSymbols(["8"], new Map(), new Map())[0].ask, M.resolveSymbols(["8"], null, null)[0].candidates.length], [false, 0]);
+  // a single objective candidate still asks
+  assert.ok(M.resolveSymbols(["8"], M.indexBySymbol([{ ref: "d:o", symbol: "8" }]), new Map())[0].ask);
+  // sensor folder + its variants: indexBySymbol is given FOLDER entries only, so one candidate
+  assert.strictEqual(M.resolveSymbols(["X"], M.indexBySymbol([{ ref: "s:1|Walls", symbol: "X", sortIndex: 1 }]), gl)[0].candidates.length, 1);
   // gridToRefs: chosen symbols -> palette refs in first-use order; unresolved symbols blank and counted
   const sym = [["M", "W", null], ["?", "M", "8"]];
   const out = M.gridToRefs(sym, new Map([["M", "d:wall"], ["W", "s:global|water"], ["8", "d:obj2"], ["?", null]]));

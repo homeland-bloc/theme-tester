@@ -536,16 +536,23 @@
     }
     return m;
   };
-  // Candidates per palette symbol: the seed's tileset first, then the global tileset (the specials A / S are always the warn / space tile).
-  // tilesetIndex / globalIndex: Map(symbol -> [entry]). -> [{ symbol, candidates: [entry], source: "tileset"|"global"|null }]
+  // Candidates per palette symbol: EVERY tile of the seed's tileset and of the global tileset that carries the symbol (a sensor folder is
+  // one candidate, its variants never separate; several plain tiles of one plain folder are separate candidates). They come sorted by
+  // sortIndex (entries without one last, ties keep their order) so the first one is the natural default. The warn / space symbols (A / S)
+  // are always the special tiles.
+  //   0 candidates -> the cells stay blank (the importer says so)      1 candidate -> used silently      2 or more -> the importer asks
+  //   symbol 8 (game-mode objective) ALWAYS asks, even with a single candidate; its list holds the tileset's objectives and the global ones
+  //   (Bounty, Box = the powercube, Gem Grab, Heist, Hot Zone, Brawl Ball).
+  // tilesetIndex / globalIndex: Map(symbol -> [entry]). -> [{ symbol, candidates: [entry], source: "tileset"|"global"|null, ask: boolean, objective: boolean }]
   const resolveSymbols = (palette, tilesetIndex, globalIndex) => palette.map(symbol => {
     const sp = Object.keys(SPECIAL_SYMBOLS).find(r => SPECIAL_SYMBOLS[r] === symbol);
-    if (sp) return { symbol, candidates: [{ ref: sp, symbol }], source: "global" };
-    const t = tilesetIndex && tilesetIndex.get(symbol);
-    if (t && t.length) return { symbol, candidates: t, source: "tileset" };
-    const g = globalIndex && globalIndex.get(symbol);
-    if (g && g.length) return { symbol, candidates: g, source: "global" };
-    return { symbol, candidates: [], source: null };
+    if (sp) return { symbol, candidates: [{ ref: sp, symbol }], source: "global", ask: false, objective: false };
+    const t = (tilesetIndex && tilesetIndex.get(symbol)) || [], g = (globalIndex && globalIndex.get(symbol)) || [];
+    const seen = new Set();
+    const candidates = t.concat(g).filter(e => !seen.has(e.ref) && seen.add(e.ref))
+      .map((e, i) => ({ e, i })).sort((x, y) => ((x.e.sortIndex == null ? Infinity : x.e.sortIndex) - (y.e.sortIndex == null ? Infinity : y.e.sortIndex)) || (x.i - y.i)).map(x => x.e);
+    const objective = SHARED_SYMBOLS.includes(symbol) && candidates.length > 0;
+    return { symbol, candidates, source: t.length ? "tileset" : g.length ? "global" : null, ask: candidates.length > 1 || objective, objective };
   });
   // decoded symbol grid + chosen: Map(symbol -> ref|null) -> { grid (rows of ref|null), refs (palette refs in first-use order), missing: cells blanked }
   const gridToRefs = (symGrid, chosen) => {

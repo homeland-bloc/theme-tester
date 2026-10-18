@@ -223,8 +223,11 @@ const test = async (name, fn) => {
     await importViaField(page, seed);
     await page.waitForSelector("[data-seed-import-modal]");
     const cards = page.locator("[data-seed-choose='8'] [data-seed-card]");
-    assert.strictEqual(await cards.count(), 2);
-    assert.ok(await page.locator("[data-seed-confirm]").isDisabled());
+    assert.strictEqual(await cards.count(), 8, "the tileset's 2 objectives and the 6 global ones");
+    assert.ok(/Choose the game-mode objective for your map/.test(await page.textContent("[data-seed-choose-label]")));
+    assert.ok(await page.locator("[data-seed-confirm]").isEnabled(), "the lowest sortIndex is preselected");
+    assert.ok((await cards.nth(0).getAttribute("data-seed-card")).startsWith("d:a0000000"), "tileset tiles first, by sortIndex");
+    assert.ok(await page.locator("[data-seed-choose='8']").textContent().then(t => /Box \(powercube\)/.test(t)));
     await cards.nth(1).click();
     await page.click("[data-seed-confirm]"); await settle(page);
     const sv = await saved(page);
@@ -233,6 +236,17 @@ const test = async (name, fn) => {
     assert.strictEqual(symAt(sv, 2, 2), null); // "?" matched nothing: blank
     assert.strictEqual(symAt(sv, 0, 4), "Wall1");
     assert.ok(/1 symbol \(\?\) matched no tile, 1 cell left blank/.test(await page.textContent("body")));
+    await ctx.close();
+  });
+
+  await test("Enter accepts the preselected (lowest sortIndex) tile", async () => {
+    const { page, ctx } = await newPage();
+    await ready(page);
+    await importViaField(page, encode(3, 3, [[0, 0, "8"]], 0));
+    await page.waitForSelector("[data-seed-import-modal]");
+    await page.keyboard.press("Enter"); await settle(page);
+    assert.strictEqual(await page.locator("[data-seed-import-modal]").count(), 0);
+    assert.strictEqual(symAt(await saved(page), 0, 0), "ObjA");
     await ctx.close();
   });
 
