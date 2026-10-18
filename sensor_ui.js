@@ -50,7 +50,7 @@
     return order.map(bit => (bit === null ? { bit: null, filled: false, centre: true } : { bit, filled: ok && code[bit] === "1", centre: false }));
   };
 
-  // Symbol field: "" -> null; otherwise the last typed code point. '6' (warn tile) and '7' (space tile) are reserved for the special tiles.
+  // Symbol field: "" -> null; otherwise the last typed code point. 'A' (warn tile) and 'S' (space tile) are reserved for the special tiles.
   const parseSymbolInput = text => {
     const ch = [...String(text == null ? "" : text).trim()].slice(-1)[0];
     if (ch === undefined) return { ok: true, value: null };
@@ -59,7 +59,7 @@
   };
   // Symbols already used by a tileset's tiles / folders (for suggestions): array of single characters.
   const usedSymbols = tiles => (tiles || []).map(t => t && t.symbol).filter(Boolean);
-  const suggestSymbol = tiles => TilePalette.suggestSymbol(usedSymbols(tiles));
+  const suggestSymbol = (tiles, alsoTaken) => TilePalette.suggestSymbol(usedSymbols(tiles), alsoTaken);
 
   // Click on a bit of the 3x3 grid: flips that bit of the typed text (a short or empty text is padded with zeros first).
   const toggleCodeBit = (text, bit) => {

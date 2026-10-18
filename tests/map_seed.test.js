@@ -7,7 +7,7 @@ const test = (name, fn) => { try { fn(); passed++; console.log("ok   " + name); 
 
 // Deterministic PRNG so failures reproduce.
 const rng = seed => () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
-const SYMS = ["M", "X", "Y", "W", "1", "8", "c", "6", "7", "é", "😀"];
+const SYMS = ["M", "X", "Y", "W", "1", "8", "c", "6", "7", "é", "😀", "2", "3", "4", "b", "r"];
 const blank = (w, h) => Array.from({ length: h }, () => Array(w).fill(null));
 const randomGrid = (w, h, rand, nsyms = 5, density = 0.6) => {
   const g = blank(w, h);
@@ -15,9 +15,9 @@ const randomGrid = (w, h, rand, nsyms = 5, density = 0.6) => {
   return g;
 };
 // Force the symmetry class about the effective centre of (w, h, magnet) by copying the region onto its orbits.
-const symmetrise = (g, w, h, magnet, cls) => {
+const symmetrise = (g, w, h, magnet, cls, partner = M.partnerSymbol) => {
   const sums = M.effectiveSums(w, h, magnet);
-  for (const [r, c] of M.regionCells(w, h, sums, cls)) for (const [r2, c2] of M.imagesOf(r, c, cls, w, h, sums)) g[r2][c2] = g[r][c];
+  for (const [r, c] of M.regionCells(w, h, sums, cls)) for (const im of M.orbitOf(r, c, cls, w, h, sums)) g[im.r][im.c] = im.swap ? partner(g[r][c]) : g[r][c];
   return g;
 };
 const flip = (g, h, w) => g.map(row => row.slice());
@@ -343,10 +343,10 @@ test("symbols: slash, whitespace, control characters and multi-character strings
 
 test("symbolizeGrid: symbols per palette ref, blanks counted by kind", () => {
   const refs = ["d:a", "d:b", "u:1", "s:global|water", "d:c", "d:slash", "space"];
-  const sym = { "d:a": "M", "d:b": null, "d:c": "", "d:slash": "/", "s:global|water": "W", space: "7" };
+  const sym = { "d:a": "M", "d:b": null, "d:c": "", "d:slash": "/", "s:global|water": "W", space: "S" };
   const grid = [[0, 1, 2, null], [3, 4, 5, 6], [1, 1, 2, 0]];
   const out = M.symbolizeGrid(grid, refs, ref => sym[ref] ?? null);
-  eqGrid(out.grid, [["M", null, null, null], ["W", null, null, "7"], [null, null, null, "M"]]);
+  eqGrid(out.grid, [["M", null, null, null], ["W", null, null, "S"], [null, null, null, "M"]]);
   assert.deepStrictEqual(out.blanks, { upload: 2, noSymbol: 4, badSymbol: 1 });
   assert.ok(/7 cells use tiles without symbols or local uploads and will be blank/.test(M.blankSummary(out.blanks)));
   assert.strictEqual(M.blankSummary({ upload: 0, noSymbol: 0, badSymbol: 0 }), null);
@@ -363,33 +363,55 @@ test("global symbol table", () => {
     for (const f of manifest.folders[key]) known.push("g:Resources/" + manifest.folderPaths[key] + f);
   }
   for (const ref of Object.keys(M.GLOBAL_SYMBOLS)) assert.ok(known.includes(ref), "table entry is not in the manifest: " + ref);
+  // every manifest file has a symbol; only the objectives share one (8)
   const gaps = known.filter(r => M.globalSymbol(r) == null);
-  assert.deepStrictEqual(gaps, ["g:Resources/Global/Spawns/3.png", "g:Resources/Global/Spawns/4.png", "g:Resources/Global/Spawns/5.png", "g:Resources/Global/Spawns/6.png", "g:Resources/Global/Spawns/7.png", "g:Resources/Global/Spawns/9.png", "g:Resources/Global/Special Tiles/Unbreakable.png"]);
-  assert.strictEqual(M.globalSymbol("warn"), "6");
-  assert.strictEqual(M.globalSymbol("space"), "7");
-  for (const s of Object.values(M.GLOBAL_SYMBOLS)) assert.ok(M.isValidSymbol(s) && s !== "6" && s !== "7");
-  assert.strictEqual(M.globalRefsForSymbol("8").length, 8);
+  assert.deepStrictEqual(gaps, [], "manifest files without a symbol");
+  const seen = new Map();
+  for (const ref of known) {
+    const sym = M.globalSymbol(ref);
+    if (sym === "8") { assert.ok(ref.includes("/Objectives/"), ref); continue; }
+    assert.ok(!seen.has(sym), `${ref} and ${seen.get(sym)} share "${sym}"`);
+    seen.set(sym, ref);
+  }
+  assert.strictEqual(M.globalSymbol("warn"), "A");
+  assert.strictEqual(M.globalSymbol("space"), "S");
+  assert.ok(!seen.has("A") && !seen.has("S"), "A / S belong to warn / space");
+  for (const s of Object.values(M.GLOBAL_SYMBOLS)) assert.ok(M.isValidSymbol(s) && s !== "A" && s !== "S");
+  const want = { "Spawns/1.png": "1", "Spawns/2.png": "2", "Spawns/3.png": "3", "Spawns/4.png": "4", "Spawns/5.png": "5", "Spawns/6.png": "6", "Spawns/7.png": "7", "Spawns/9.png": "9",
+    "Objectives/goalBlue.png": "b", "Objectives/goalRed.png": "r", "Special Tiles/Unbreakable.png": "u", "Special Tiles/HealPad.png": "y", "Special Tiles/SlowTile.png": "z",
+    "Special Tiles/SpeedTile.png": "w", "Special Tiles/Smoke.png": "x", "Special Tiles/Spikes.png": "v", "Teleporters/Blue.png": "c", "Teleporters/Green.png": "d",
+    "Teleporters/Red.png": "e", "Teleporters/Yellow.png": "f" };
+  for (const [f, sym] of Object.entries(want)) assert.strictEqual(M.globalSymbol("g:Resources/Global/" + f), sym, f);
+  assert.strictEqual(M.globalSymbol("s:global|water"), "W");
+  assert.strictEqual(M.globalSymbol("s:global|rails"), "Q");
+  // variants inside a global sensor folder carry the folder's symbol; every manifest file resolves to some symbol
+  assert.strictEqual(M.globalSymbolOfRef("g:Resources/Global/Water/00001011.png", manifest), "W");
+  assert.strictEqual(M.globalSymbolOfRef("g:Resources/Global/Rails/Ver.png", manifest), "Q");
+  for (const key of manifest.order) for (const f of manifest.folders[key]) assert.ok(M.globalSymbolOfRef("g:Resources/" + manifest.folderPaths[key] + f, manifest), key + "/" + f);
+  assert.ok(M.tableSymbols().includes("Q") && M.tableSymbols().includes("A") && M.tableSymbols().includes("n"));
+  assert.strictEqual(M.globalRefsForSymbol("8").length, 6); // Bounty Box Gem_Grab Heist Hot_Zone Brawl_Ball
   assert.deepStrictEqual(M.globalRefsForSymbol("c"), ["g:Resources/Global/Teleporters/Blue.png"]);
   // jumppad letters are 8 distinct letters, one per file
   const jp = Object.keys(M.GLOBAL_SYMBOLS).filter(r => r.includes("/Jumppads/")).map(r => M.GLOBAL_SYMBOLS[r]);
   assert.strictEqual(new Set(jp).size, 8);
-  assert.strictEqual(jp.join(""), "HGLKPZOU");
+  const jpWant = { R: "H", L: "G", B: "L", T: "K", BR: "P", TL: "Z", BL: "O", TR: "U" };
+  for (const [f, sym] of Object.entries(jpWant)) assert.strictEqual(M.globalSymbol("g:Resources/Global/Jumppads/" + f + ".png"), sym, f);
 });
 
 test("import resolution: tileset first, then global; several matches are a choice; unknown symbols are reported", () => {
   const ts = M.indexBySymbol([{ ref: "d:wall", symbol: "M" }, { ref: "s:7|Walls", symbol: "X" }, { ref: "d:obj1", symbol: "8" }, { ref: "d:obj2", symbol: "8" }, { ref: "d:nosym", symbol: null }, { ref: "d:bad", symbol: "/" }]);
   const gl = M.indexBySymbol(Object.keys(M.GLOBAL_SYMBOLS).map(ref => ({ ref, symbol: M.GLOBAL_SYMBOLS[ref] })));
-  const r = M.resolveSymbols(["M", "X", "8", "W", "c", "6", "7", "?"], ts, gl);
+  const r = M.resolveSymbols(["M", "X", "8", "W", "c", "A", "S", "?"], ts, gl);
   assert.deepStrictEqual(r.map(x => [x.symbol, x.source, x.candidates.map(c => c.ref)]), [
     ["M", "tileset", ["d:wall"]], ["X", "tileset", ["s:7|Walls"]], ["8", "tileset", ["d:obj1", "d:obj2"]],
     ["W", "global", ["s:global|water"]], ["c", "global", ["g:Resources/Global/Teleporters/Blue.png"]],
-    ["6", "global", ["warn"]], ["7", "global", ["space"]], ["?", null, []],
+    ["A", "global", ["warn"]], ["S", "global", ["space"]], ["?", null, []],
   ]);
   // a tileset symbol hides the global tile that shares it (tileset first)
   const shadow = M.resolveSymbols(["W"], M.indexBySymbol([{ ref: "d:lake", symbol: "W" }]), gl);
   assert.deepStrictEqual(shadow[0].candidates.map(c => c.ref), ["d:lake"]);
-  // 8 with no tileset match falls to the 8 objectives of the global tileset
-  assert.strictEqual(M.resolveSymbols(["8"], new Map(), gl)[0].candidates.length, 8);
+  // 8 with no tileset match falls to the 6 game-mode objectives of the global tileset
+  assert.strictEqual(M.resolveSymbols(["8"], new Map(), gl)[0].candidates.length, 6);
   // gridToRefs: chosen symbols -> palette refs in first-use order; unresolved symbols blank and counted
   const sym = [["M", "W", null], ["?", "M", "8"]];
   const out = M.gridToRefs(sym, new Map([["M", "d:wall"], ["W", "s:global|water"], ["8", "d:obj2"], ["?", null]]));
@@ -406,7 +428,7 @@ test("a map with sensor cells imports with the same logical grid (cells hold the
   const rand = rng(31);
   const w = 15, h = 11;
   const grid = blank(w, h).map(row => row.map(() => (rand() < 0.7 ? Math.floor(rand() * refs.length) : null)));
-  symmetrise(grid, w, h, null, "v");
+  symmetrise(grid, w, h, null, "v", x => x); // palette indexes here, no team tiles
   const { grid: sg, blanks } = M.symbolizeGrid(grid, refs, symOf);
   assert.deepStrictEqual(blanks, { upload: 0, noSymbol: 0, badSymbol: 0 });
   const e = M.encode({ w, h, grid: sg, tileset: 5 });
@@ -425,6 +447,92 @@ test("a map with sensor cells imports with the same logical grid (cells hold the
     assert.strictEqual(after, before, `cell ${r},${c}`);
   }
   assert.strictEqual(e.mirror === "v" || e.mirror === "4" || e.mirror === "d", true);
+});
+
+test("team-aware mirroring: spawns, respawns and goals swap with their partner on row-reflecting images (v, d, 4), not on h", () => {
+  assert.deepStrictEqual(M.PARTNER_SYMBOLS, { 1: "2", 2: "1", 3: "4", 4: "3", b: "r", r: "b" });
+  for (const s of ["5", "6", "7", "9", "M", "8"]) assert.strictEqual(M.partnerSymbol(s), s, s + " has no partner");
+  assert.strictEqual(M.partnerRef("g:Resources/Global/Spawns/1.png"), "g:Resources/Global/Spawns/2.png");
+  assert.strictEqual(M.partnerRef("g:Resources/Global/Spawns/4.png"), "g:Resources/Global/Spawns/3.png");
+  assert.strictEqual(M.partnerRef("g:Resources/Global/Objectives/goalRed.png"), "g:Resources/Global/Objectives/goalBlue.png");
+  assert.strictEqual(M.partnerRef("g:Resources/Global/Spawns/5.png"), "g:Resources/Global/Spawns/5.png");
+  const w = 7, h = 5;
+  // a team pair [a, b] at the cell (1, 1) and its image under each class; a neutral tile "M" at the same places is the reference.
+  const imageOf = { h: [1, 5], v: [3, 1], d: [3, 5] };
+  for (const [a, b] of [["1", "2"], ["3", "4"], ["b", "r"], ["2", "1"]]) {
+    for (const cls of ["h", "v", "d", "4"]) {
+      const team = blank(w, h), neutral = blank(w, h);
+      const put = (g, r, c, x) => { g[r][c] = x; };
+      const spots = cls === "4" ? [[1, 1, false], [1, 5, false], [3, 1, true], [3, 5, true]] : [[1, 1, false], [...imageOf[cls], cls !== "h"]];
+      for (const [r, c, swapped] of spots) { put(team, r, c, swapped ? b : a); put(neutral, r, c, "M"); }
+      const eT = M.encode({ w, h, grid: team, tileset: 0 }), eN = M.encode({ w, h, grid: neutral, tileset: 0 });
+      assert.strictEqual(eT.mirror, cls, `${a}/${b} ${cls}: same class as the neutral map`);
+      assert.strictEqual(eN.mirror, cls);
+      assert.strictEqual(eT.regionSize, eN.regionSize);
+      const d = M.decode(eT.seed);
+      assert.ok(d.ok, d.error);
+      eqGrid(d.grid, team);
+    }
+  }
+  // unswapped copies across rows are NOT symmetric any more: 1 above and 1 below is class h-or-a, never v
+  const same = blank(w, h); same[1][1] = "1"; same[3][1] = "1";
+  assert.notStrictEqual(M.encode({ w, h, grid: same, tileset: 0 }).mirror, "v");
+  assert.notStrictEqual(M.encode({ w, h, grid: same, tileset: 0 }).mirror, "4");
+  // left-right pairs keep the team
+  const lr = blank(w, h); lr[1][1] = "1"; lr[1][5] = "1";
+  assert.strictEqual(M.encode({ w, h, grid: lr, tileset: 0 }).mirror, "h");
+  const lrBad = blank(w, h); lrBad[1][1] = "1"; lrBad[1][5] = "2";
+  assert.strictEqual(M.encode({ w, h, grid: lrBad, tileset: 0 }).mirror, "a");
+  // a partner missing from the palette cannot be symmetric: 1 alone with a lone cell elsewhere
+  const lone = blank(w, h); lone[1][1] = "1";
+  assert.strictEqual(M.encode({ w, h, grid: lone, tileset: 0 }).mirror, "a");
+  // decode of a hand-made v seed: the palette holds only "1" but the lower half holds its partner "2" (usedSymbols lists both)
+  const dec = M.decode(M.encode({ w, h, grid: Object.assign(blank(w, h), { 1: [null, "1", null, null, null, null, null], 3: [null, "2", null, null, null, null, null] }), tileset: 0 }).seed);
+  assert.deepStrictEqual(dec.usedSymbols.sort(), ["1", "2"]);
+  // an off-centre magnet: images that fall outside the grid are unconstrained, the swap still applies to those inside
+  const mag = { col: 3, row: 1, size: 1 };
+  const m = blank(w, h); m[0][2] = "1"; m[2][2] = "2";
+  assert.strictEqual(M.encode({ w, h, grid: m, magnet: mag, tileset: 0 }).mirror, "v");
+  roundTrip(w, h, m, mag);
+});
+
+test("random team maps round trip in every class (swap on decode equals swap on encode)", () => {
+  const rand = rng(99);
+  for (const [w, h] of [[21, 33], [10, 9], [7, 5], [9, 10]]) for (const cls of ["h", "v", "d", "4"]) {
+    const g = symmetrise(randomGrid(w, h, rand, 16, 0.5), w, h, null, cls);
+    const e = roundTrip(w, h, g, null);
+    assert.ok(e.regionSize <= M.regionCells(w, h, M.effectiveSums(w, h, null), cls).length);
+  }
+});
+
+test("symbol registry: official + global + tilesets; conflicts ignore siblings and same-named tiles; free list", () => {
+  const ts = [
+    { symbol: "K", codename: "Mine", source: "tileset", tilesetName: "Desert", ref: "d:1", folderKey: null },
+    { symbol: "K", codename: "Doors_00000000", source: "tileset", tilesetName: "Desert", ref: "d:2", folderKey: "Doors" },
+    { symbol: "K", codename: "Doors_11111111", source: "tileset", tilesetName: "Desert", ref: "d:3", folderKey: "Doors" },
+    { symbol: "M", codename: "Wall1", source: "tileset", tilesetName: "Desert", ref: "d:4", folderKey: null },
+    { symbol: "W", codename: "Water", source: "tileset", tilesetName: "Desert", ref: "s:7|Water", folderKey: "Water" },
+  ];
+  const reg = M.buildRegistry(M.officialEntries().concat(M.globalEntries(), ts));
+  // a tile typing K that is not the one holding it: taken by the global jumppad and the tileset tiles
+  const names = M.symbolConflicts(reg, "K", { ref: "d:9", codename: "New", source: "tileset", tilesetName: "Desert" }).map(e => e.codename);
+  assert.ok(names.includes("Jumppad T") && names.includes("Mine") && names.includes("Doors_00000000"));
+  // a sibling of the Doors folder does not see its own folder, only the others
+  const sib = M.symbolConflicts(reg, "K", { ref: "d:3", codename: "Doors_11111111", folderKey: "Doors", source: "tileset", tilesetName: "Desert" }).map(e => e.codename);
+  assert.ok(!sib.includes("Doors_00000000") && !sib.includes("Doors_11111111") && sib.includes("Mine"));
+  // the standard symbols are not conflicts for the tile that carries them: Wall1 M, Water W
+  assert.deepStrictEqual(M.symbolConflicts(reg, "M", { ref: "d:4", codename: "Wall1", source: "tileset", tilesetName: "Desert" }), []);
+  assert.deepStrictEqual(M.symbolConflicts(reg, "W", { ref: "s:7|Water", codename: "Water", folderKey: "Water", source: "tileset", tilesetName: "Desert" }), []);
+  // objectives deliberately share 8
+  assert.deepStrictEqual(M.symbolConflicts(reg, "8", { ref: "d:x", codename: "Anything" }), []);
+  // A / S are the warn / space tiles
+  assert.deepStrictEqual(M.symbolConflicts(reg, "A", { ref: "d:y", codename: "Other" }).map(e => e.codename), ["Warn tile"]);
+  // free list: no table symbol, no "/", no space; includes the unused letters
+  const free = M.freeSymbols(reg);
+  for (const ch of "1234567 9MXYCFTBNnWaQAS/bruyzwxvcdefHGLKPZOU8".split("")) assert.ok(!free.includes(ch), ch);
+  assert.ok(free.includes("0") && free.includes("D") && free.includes("g") && free.includes("~"));
+  // official table: Rope a, Fence N, 5v5 Fence n
+  assert.strictEqual(M.OFFICIAL_SYMBOL_NAMES.a, "Rope"); assert.strictEqual(M.OFFICIAL_SYMBOL_NAMES.N, "Fence"); assert.strictEqual(M.OFFICIAL_SYMBOL_NAMES.n, "Fence 5v5");
 });
 
 test("compactness report", () => {

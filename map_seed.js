@@ -60,22 +60,27 @@
 
   // ── Global tile symbols ───────────────────────────────────────────────────────────────────────────────
   // ref -> symbol for tiles that live in Resources/manifest.json. Sensor folders are keyed by their folder ref (cells hold that ref).
-  // Gaps (no symbol, export blank): spawns 3-7 and 9, Unbreakable. ASSUMED, to be confirmed: the jumppad letters (H G L K P Z O U) were
-  // given as a set without a file mapping; they are assigned here in manifest order B BL BR L R T TL TR.
+  // Every manifest file must have a symbol (tests/map_seed.test.js reads the manifest and fails on a gap); two tiles never share one,
+  // except the objectives, which deliberately all share 8 (the importer then asks which game mode the map is for).
   const G = "g:Resources/Global/";
   const GLOBAL_SYMBOLS = Object.freeze({
     "s:global|water": "W",
     "s:global|rails": "Q",
-    [G + "Spawns/1.png"]: "1", [G + "Spawns/2.png"]: "2",
+    [G + "Spawns/1.png"]: "1", [G + "Spawns/2.png"]: "2", [G + "Spawns/3.png"]: "3", [G + "Spawns/4.png"]: "4",
+    [G + "Spawns/5.png"]: "5", [G + "Spawns/6.png"]: "6", [G + "Spawns/7.png"]: "7", [G + "Spawns/9.png"]: "9",
     [G + "Objectives/Bounty.png"]: "8", [G + "Objectives/Box.png"]: "8", [G + "Objectives/Gem_Grab.png"]: "8", [G + "Objectives/Heist.png"]: "8",
-    [G + "Objectives/Hot_Zone.png"]: "8", [G + "Objectives/Brawl_Ball.png"]: "8", [G + "Objectives/goalRed.png"]: "8", [G + "Objectives/goalBlue.png"]: "8",
-    [G + "Special Tiles/HealPad.png"]: "y", [G + "Special Tiles/SpeedTile.png"]: "w", [G + "Special Tiles/SlowTile.png"]: "z",
-    [G + "Special Tiles/Spikes.png"]: "v", [G + "Special Tiles/Smoke.png"]: "x",
+    [G + "Objectives/Hot_Zone.png"]: "8", [G + "Objectives/Brawl_Ball.png"]: "8",
+    [G + "Objectives/goalBlue.png"]: "b", [G + "Objectives/goalRed.png"]: "r",
+    [G + "Special Tiles/Unbreakable.png"]: "u", [G + "Special Tiles/HealPad.png"]: "y", [G + "Special Tiles/SlowTile.png"]: "z",
+    [G + "Special Tiles/SpeedTile.png"]: "w", [G + "Special Tiles/Smoke.png"]: "x", [G + "Special Tiles/Spikes.png"]: "v",
     [G + "Teleporters/Blue.png"]: "c", [G + "Teleporters/Green.png"]: "d", [G + "Teleporters/Red.png"]: "e", [G + "Teleporters/Yellow.png"]: "f",
-    [G + "Jumppads/B.png"]: "H", [G + "Jumppads/BL.png"]: "G", [G + "Jumppads/BR.png"]: "L", [G + "Jumppads/L.png"]: "K",
-    [G + "Jumppads/R.png"]: "P", [G + "Jumppads/T.png"]: "Z", [G + "Jumppads/TL.png"]: "O", [G + "Jumppads/TR.png"]: "U",
+    [G + "Jumppads/R.png"]: "H", [G + "Jumppads/L.png"]: "G", [G + "Jumppads/B.png"]: "L", [G + "Jumppads/T.png"]: "K",
+    [G + "Jumppads/BR.png"]: "P", [G + "Jumppads/TL.png"]: "Z", [G + "Jumppads/BL.png"]: "O", [G + "Jumppads/TR.png"]: "U",
   });
-  const SPECIAL_SYMBOLS = Object.freeze({ warn: "6", space: "7" });
+  // The warn and space tiles are bare refs, not manifest files.
+  const SPECIAL_SYMBOLS = Object.freeze({ warn: "A", space: "S" });
+  // Symbols that several tiles deliberately share (objectives).
+  const SHARED_SYMBOLS = Object.freeze(["8"]);
   // Symbol of a global / special ref, or null.
   const globalSymbol = ref => {
     if (Object.prototype.hasOwnProperty.call(SPECIAL_SYMBOLS, ref)) return SPECIAL_SYMBOLS[ref];
@@ -86,6 +91,80 @@
     const out = Object.keys(SPECIAL_SYMBOLS).filter(r => SPECIAL_SYMBOLS[r] === symbol);
     return out.concat(Object.keys(GLOBAL_SYMBOLS).filter(r => GLOBAL_SYMBOLS[r] === symbol));
   };
+
+  // ── Team partners ─────────────────────────────────────────────────────────────────────────────────────
+  // Tiles that belong to one team swap with their partner when a mirror image reflects the ROWS (top<->bottom: mirror classes v, d and the
+  // v / d images of 4). A left-right image (class h) keeps the team. Spawns 5, 6, 7 and 9 have no partner.
+  const SWAP_REF_PAIRS = Object.freeze([
+    [G + "Spawns/1.png", G + "Spawns/2.png"],
+    [G + "Spawns/3.png", G + "Spawns/4.png"], // respawns
+    [G + "Objectives/goalBlue.png", G + "Objectives/goalRed.png"],
+  ]);
+  const PARTNER_REFS = (() => { const m = {}; for (const [a, b] of SWAP_REF_PAIRS) { m[a] = b; m[b] = a; } return Object.freeze(m); })();
+  const PARTNER_SYMBOLS = (() => { const m = {}; for (const [a, b] of SWAP_REF_PAIRS) { m[GLOBAL_SYMBOLS[a]] = GLOBAL_SYMBOLS[b]; m[GLOBAL_SYMBOLS[b]] = GLOBAL_SYMBOLS[a]; } return Object.freeze(m); })();
+  const partnerRef = ref => (Object.prototype.hasOwnProperty.call(PARTNER_REFS, ref) ? PARTNER_REFS[ref] : ref);
+  const partnerSymbol = sym => (sym != null && Object.prototype.hasOwnProperty.call(PARTNER_SYMBOLS, sym) ? PARTNER_SYMBOLS[sym] : sym);
+
+  // ── Symbol registry ───────────────────────────────────────────────────────────────────────────────────
+  // The settled names of the official table (tileset tiles named like this carry the symbol in every tileset). "n" is the 5v5 fence.
+  const OFFICIAL_SYMBOL_NAMES = Object.freeze({ M: "Wall1", X: "Wall2", Y: "Crate", C: "Barrel", F: "Bush", T: "Cactus", B: "Skull", N: "Fence", n: "Fence 5v5", W: "Water", a: "Rope" });
+  // Every printable ASCII character except "/" and the space.
+  const SYMBOL_UNIVERSE = Object.freeze(Array.from({ length: 94 }, (_, i) => String.fromCharCode(33 + i)).filter(ch => ch !== "/"));
+  const fileStem = ref => { const m = /([^/]+?)(?:\.[a-z]+)?$/i.exec(String(ref)); return m ? m[1] : String(ref); };
+  const lowerKey = s => String(s == null ? "" : s).toLowerCase().replace(/[\s_-]+/g, "");
+  // Entries of the fixed tables: { symbol, codename, source: "official" | "global", ref?, folderKey?, tile? }.
+  const officialEntries = () => Object.keys(OFFICIAL_SYMBOL_NAMES).map(symbol => ({ symbol, codename: OFFICIAL_SYMBOL_NAMES[symbol], source: "official", ref: null, folderKey: OFFICIAL_SYMBOL_NAMES[symbol] }));
+  const globalEntries = () => Object.keys(SPECIAL_SYMBOLS).map(ref => ({ symbol: SPECIAL_SYMBOLS[ref], codename: ref === "warn" ? "Warn tile" : "Space tile", source: "global", ref, folderKey: ref }))
+    .concat(Object.keys(GLOBAL_SYMBOLS).map(ref => {
+      const sensor = ref.startsWith("s:global|");
+      const name = sensor ? ref.slice(9) : fileStem(ref);
+      const shown = sensor ? name : ref.includes("/Spawns/") ? "Spawn " + name : ref.includes("/Jumppads/") ? "Jumppad " + name : ref.includes("/Teleporters/") ? name + " teleporter" : name;
+      return { symbol: GLOBAL_SYMBOLS[ref], codename: shown, source: "global", ref, folderKey: sensor ? name : null };
+    }));
+  // entries (official + global + the loaded tilesets' tiles, each { symbol, codename, source, ref, folderKey?, tilesetName? }) -> registry.
+  const buildRegistry = entries => {
+    const bySymbol = new Map();
+    for (const e of entries || []) {
+      if (!e || !isValidSymbol(e.symbol)) continue;
+      if (!bySymbol.has(e.symbol)) bySymbol.set(e.symbol, []);
+      bySymbol.get(e.symbol).push(e);
+    }
+    return { bySymbol, entries: Array.from(bySymbol.values()).flat() };
+  };
+  // Symbols the fixed tables use (official + global + warn / space): suggestions never pick one of these.
+  const tableSymbols = () => Array.from(new Set(officialEntries().concat(globalEntries()).map(e => e.symbol)));
+  // manifest.global -> Map("g:Resources/<path>" -> folder ref "s:global|<key>") for every file that lives inside a global sensor folder.
+  const globalMemberFolders = manifest => {
+    const m = new Map();
+    if (!manifest) return m;
+    for (const key of Object.keys(manifest.sensor || {})) {
+      const codes = (manifest.sensor[key] && manifest.sensor[key].codes) || {};
+      for (const f of (manifest.folders && manifest.folders[key]) || Object.keys(codes)) m.set("g:Resources/" + manifest.folderPaths[key] + f, "s:global|" + key);
+    }
+    return m;
+  };
+  // Symbol of ANY global ref, a variant inside a global sensor folder included (it carries its folder's symbol). null when none.
+  const globalSymbolOfRef = (ref, manifest) => {
+    const own = globalSymbol(ref);
+    if (own != null) return own;
+    const folder = globalMemberFolders(manifest).get(ref);
+    return folder ? globalSymbol(folder) : null;
+  };
+  // Is entry `a` the same tile as (or a sibling of) `b`? Same ref, same folder key in the same source/tileset, or the same name (the
+  // standard symbol is shared by every tileset's Wall1, Water and so on).
+  const sameTile = (a, b) => {
+    if (a.ref != null && a.ref === b.ref) return true;
+    if (a.folderKey != null && b.folderKey != null && a.source === b.source && (a.tilesetName || null) === (b.tilesetName || null) && a.folderKey === b.folderKey) return true;
+    const ka = lowerKey(a.folderKey != null ? a.folderKey : a.codename), kb = lowerKey(b.folderKey != null ? b.folderKey : b.codename);
+    return ka !== "" && ka === kb;
+  };
+  // Entries other than `self` that hold `symbol`. Objectives (symbol 8) may share and never conflict. self: { ref?, codename?, folderKey?, source?, tilesetName? } or null.
+  const symbolConflicts = (registry, symbol, self) => {
+    if (SHARED_SYMBOLS.includes(symbol)) return [];
+    const list = (registry && registry.bySymbol.get(symbol)) || [];
+    return list.filter(e => !self || !sameTile(e, self));
+  };
+  const freeSymbols = registry => SYMBOL_UNIVERSE.filter(ch => !(registry && registry.bySymbol.has(ch)));
 
   // ── Symbols ───────────────────────────────────────────────────────────────────────────────────────────
   const isValidSymbol = s => typeof s === "string" && Array.from(s).length === 1 && s !== "/" && !/[\s\p{C}]/u.test(s);
@@ -125,6 +204,16 @@
     if (cls === "d" || cls === "4") add(sums.sumR - r, sums.sumC - c);
     return out;
   };
+  // Images with the team flag: { r, c, swap }. An image that reflects the rows (v, d) holds the PARTNER of the source tile (see SWAP_REF_PAIRS);
+  // a left-right image (h) holds the same tile. When two images land on one cell the first (h, v, d) wins, as in the app.
+  const orbitOf = (r, c, cls, w, h, sums) => {
+    const out = [];
+    const add = (r2, c2, swap) => { if (r2 >= 0 && r2 < h && c2 >= 0 && c2 < w && !(r2 === r && c2 === c) && !out.some(p => p.r === r2 && p.c === c2)) out.push({ r: r2, c: c2, swap }); };
+    if (cls === "h" || cls === "4") add(r, sums.sumC - c, false);
+    if (cls === "v" || cls === "4") add(sums.sumR - r, c, true);
+    if (cls === "d" || cls === "4") add(sums.sumR - r, sums.sumC - c, true);
+    return out;
+  };
   const precedes = (r2, c2, r, c) => r2 < r || (r2 === r && c2 < c);
   // Region cells [[r, c], ...] in row-major order.
   const regionCells = (w, h, sums, cls) => {
@@ -134,19 +223,20 @@
     }
     return out;
   };
-  const holds = (grid, w, h, sums, cls) => {
+  // partnerOf(value) -> the value a team-swapped image holds (default: none, every image copies the cell).
+  const holds = (grid, w, h, sums, cls, partnerOf) => {
     for (let r = 0; r < h; r++) for (let c = 0; c < w; c++) {
-      for (const [r2, c2] of imagesOf(r, c, cls, w, h, sums)) if (grid[r2][c2] !== grid[r][c]) return false;
+      for (const im of orbitOf(r, c, cls, w, h, sums)) if (grid[im.r][im.c] !== (im.swap && partnerOf ? partnerOf(grid[r][c]) : grid[r][c])) return false;
     }
     return true;
   };
   // grid: rows of comparable cell values. -> the strongest class that holds exactly (see header).
-  const detectMirror = (grid, w, h, magnet) => {
+  const detectMirror = (grid, w, h, magnet, partnerOf) => {
     const sums = effectiveSums(w, h, magnet);
     let best = "a", bestSize = w * h;
     for (const cls of CLASSES) {
       if (cls === "a") continue;
-      if (!holds(grid, w, h, sums, cls)) continue;
+      if (!holds(grid, w, h, sums, cls, partnerOf)) continue;
       const n = regionCells(w, h, sums, cls).length;
       if (n < bestSize) { best = cls; bestSize = n; }
     }
@@ -232,7 +322,9 @@
     const sums0 = effectiveSums(w, h, null), sumsM = effectiveSums(w, h, magnet);
     const mag = magnet && !(sums0.sumR === sumsM.sumR && sums0.sumC === sumsM.sumC)
       ? { col: Math.max(0, Math.min(w - 1, magnet.col)), row: Math.max(0, Math.min(h - 1, magnet.row)), size: magnet.size || 1 } : null;
-    const mirror = detectMirror(idx, w, h, mag);
+    // Team-aware: an image that reflects the rows must hold the partner of the cell's tile (spawn 1 <-> 2, respawn 3 <-> 4, goal blue <-> red).
+    const partnerIdx = new Map(palette.map((s, i) => [i + 1, partnerSymbol(s) === s ? i + 1 : (indexOf.has(partnerSymbol(s)) ? indexOf.get(partnerSymbol(s)) : -1)]));
+    const mirror = detectMirror(idx, w, h, mag, v => (v === 0 ? 0 : partnerIdx.get(v)));
     const sums = effectiveSums(w, h, mag);
     const cells = regionCells(w, h, sums, mirror);
     const k = bitLength(palette.length);
@@ -265,7 +357,7 @@
   // Never throws. -> { ok, error, errorField, seed, size:{w,h}|null, magnet (null default | {col,row,size}) , mirror, tileset, palette:[symbols]|null,
   //   regionSize, runs, cellCount, grid (rows of symbol|null) } where fields before the failing one are filled in.
   const decode = input => {
-    const res = { ok: false, error: null, errorField: null, seed: null, size: null, magnet: undefined, mirror: null, tileset: null, palette: null, regionSize: null, runs: null, cellCount: null, grid: null };
+    const res = { ok: false, error: null, errorField: null, seed: null, size: null, magnet: undefined, mirror: null, tileset: null, palette: null, regionSize: null, runs: null, cellCount: null, grid: null, usedSymbols: null };
     const fail = (field, msg) => { res.error = msg; res.errorField = field; return res; };
     try {
       const ex = extractSeed(input);
@@ -330,13 +422,14 @@
       cells.forEach(([r, c], i) => {
         const sym = values[i] === 0 ? null : palette[values[i] - 1];
         out[r][c] = sym;
-        for (const [r2, c2] of imagesOf(r, c, mirS, size.w, size.h, sums)) out[r2][c2] = sym;
+        for (const im of orbitOf(r, c, mirS, size.w, size.h, sums)) out[im.r][im.c] = im.swap ? partnerSymbol(sym) : sym;
       });
       let total = 0;
       for (const row of out) for (const s of row) { if (s === undefined) return fail("code", "Internal error: a cell was not filled."); total++; }
       if (total !== size.w * size.h) return fail("code", "The decoded cell count does not equal " + size.w * size.h + ".");
       res.cellCount = total;
       res.grid = out;
+      res.usedSymbols = Array.from(new Set(out.flat().filter(x => x != null)));
       res.ok = true;
       return res;
     } catch (e) {
@@ -359,7 +452,7 @@
         const s = symbolOf(ref);
         if (s == null || s === "") kind = "noSymbol";
         else if (!isValidSymbol(s)) kind = "badSymbol";
-        else if ((s === SPECIAL_SYMBOLS.warn && ref !== "warn") || (s === SPECIAL_SYMBOLS.space && ref !== "space")) kind = "badSymbol"; // 6 / 7 belong to warn / space
+        else if ((s === SPECIAL_SYMBOLS.warn && ref !== "warn") || (s === SPECIAL_SYMBOLS.space && ref !== "space")) kind = "badSymbol"; // A / S belong to warn / space
         else out = s;
       }
       const v = { out, kind };
@@ -395,7 +488,7 @@
     }
     return m;
   };
-  // Candidates per palette symbol: the seed's tileset first, then the global tileset (specials 6 / 7 are always the warn / space tile).
+  // Candidates per palette symbol: the seed's tileset first, then the global tileset (the specials A / S are always the warn / space tile).
   // tilesetIndex / globalIndex: Map(symbol -> [entry]). -> [{ symbol, candidates: [entry], source: "tileset"|"global"|null }]
   const resolveSymbols = (palette, tilesetIndex, globalIndex) => palette.map(symbol => {
     const sp = Object.keys(SPECIAL_SYMBOLS).find(r => SPECIAL_SYMBOLS[r] === symbol);
@@ -421,7 +514,9 @@
   };
 
   return {
-    B62, MAX_DIM, CLASSES, CLASS_FLAGS, CLASS_NAMES, MAGNET_SIZE_NAMES, GLOBAL_SYMBOLS, SPECIAL_SYMBOLS,
+    B62, MAX_DIM, CLASSES, CLASS_FLAGS, CLASS_NAMES, MAGNET_SIZE_NAMES, GLOBAL_SYMBOLS, SPECIAL_SYMBOLS, SHARED_SYMBOLS,
+    SWAP_REF_PAIRS, PARTNER_REFS, PARTNER_SYMBOLS, partnerRef, partnerSymbol, orbitOf,
+    OFFICIAL_SYMBOL_NAMES, SYMBOL_UNIVERSE, officialEntries, globalEntries, buildRegistry, tableSymbols, globalMemberFolders, globalSymbolOfRef, sameTile, symbolConflicts, freeSymbols,
     globalSymbol, globalRefsForSymbol, isValidSymbol,
     effectiveSums, effectiveCenter, magnetFromApp, defaultMagnetSize, imagesOf, regionCells, detectMirror,
     encodeSize, parseSize, encodeMagnet, parseMagnet, bitsToBase62, base62ToBits,
