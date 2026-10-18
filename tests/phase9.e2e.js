@@ -30,6 +30,7 @@ const TILES = {
 (async () => {
   const h = await H.start({ tilesets: TILESETS, tiles: TILES, role: "admin" });
   const { test, newPage, ready, settle, assert } = h;
+  const settle_ = settle;
   const clean = logs => logs.filter(l => !/Failed to load resource|\[BABEL\]/.test(l));
 
   await test("symbols: tile modal shows 'taken by', no 6/7 hint, dictionary opens; global tiles and warn/space show read-only symbols", async () => {
@@ -82,6 +83,28 @@ const TILES = {
       assert.strictEqual(await page.getAttribute("[data-symbol-readonly]", "readonly"), "");
       await page.click(".modal-box button >> text=×");
     }
+    await ctx.close();
+  });
+
+  await test("Map seed: one button opens a modal with box, Copy seed, Copy share link, Import, Clear, format help, breakdown and blank warning", async () => {
+    const { page, ctx, logs } = await newPage();
+    await page.waitForSelector("[data-map-seed-open]");
+    assert.strictEqual(await page.locator("[data-seed-row] button").count(), 1, "the crowded row is a single button");
+    assert.strictEqual(await page.locator("[data-seed-input]").count(), 0);
+    await page.click("[data-map-seed-open]");
+    for (const sel of ["[data-seed-input]", "[data-seed-copy]", "[data-seed-link]", "[data-seed-import]", "[data-seed-clear]", "[data-seed-help]"]) assert.ok(await page.locator(sel).isVisible(), sel);
+    await page.fill("[data-seed-input]", "3v3/x/4/0//8ZX");
+    await page.waitForSelector("[data-seed-breakdown]");
+    assert.ok(/21 x 33/.test(await page.textContent("[data-seed-breakdown]")));
+    await page.click("[data-seed-clear]");
+    assert.strictEqual(await page.inputValue("[data-seed-input]"), "");
+    assert.strictEqual(await page.locator("[data-seed-breakdown]").count(), 0);
+    assert.ok(await page.locator("[data-seed-import]").isDisabled());
+    await page.click("[data-seed-copy]"); await settle(page);
+    assert.strictEqual(await page.evaluate(() => navigator.clipboard.readText()), "3v3/x/4/0//8ZX");
+    await page.click("[data-seed-box-close]");
+    assert.strictEqual(await page.locator("[data-seed-box]").count(), 0);
+    assert.deepStrictEqual(clean(logs), []);
     await ctx.close();
   });
 

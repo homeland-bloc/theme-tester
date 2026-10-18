@@ -5888,7 +5888,7 @@ function App() {
   // ── Map seeds (format and rules: map_seed.js) ───────────────────────────────────────────────────────
   const [seedText, setSeedText] = useState("");           // import field
   const [seedStatus, setSeedStatus] = useState(null);     // { ok, text } feedback under the seed row
-  const [seedHelpOpen, setSeedHelpOpen] = useState(false);
+  const [seedBoxOpen, setSeedBoxOpen] = useState(false);   // the Map seed modal
   const [seedModal, setSeedModal] = useState(null);       // import dialog: replace confirmation and the "which tile?" chooser
   const [seedLinkTick, setSeedLinkTick] = useState(0);    // bumped by hashchange so a pasted share link is picked up
 
@@ -7474,13 +7474,49 @@ function App() {
           </div>
         </div>
       )}
-      {seedHelpOpen && (
-        <div className="modal-backdrop" onClick={() => setSeedHelpOpen(false)}>
-          <div className="modal-box" data-seed-help-modal style={{ maxWidth: 520, maxHeight: "85vh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
+      {seedBoxOpen && (
+        <div className="modal-backdrop" onClick={() => setSeedBoxOpen(false)}>
+          <div className="modal-box" data-seed-box style={{ maxWidth: 560, width: "100%", maxHeight: "88vh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-              <span style={{ fontSize: 13, fontWeight: 700, color: C.accent }}>Map seeds</span>
-              <button onClick={() => setSeedHelpOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
+              <span style={{ fontSize: 13, fontWeight: 700, color: C.accent }}>Map seed</span>
+              <button data-seed-box-close onClick={() => setSeedBoxOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
             </div>
+            <textarea data-seed-input rows={3} value={seedText} onChange={e => setSeedText(e.target.value)} placeholder="paste a seed or share link…"
+              style={{ width: "100%", boxSizing: "border-box", resize: "vertical", background: "rgba(180,40,40,0.09)", border: `1px solid ${seedParse && !seedParse.ok ? C.danger : C.border}`, borderRadius: 6, color: C.text, fontFamily: "monospace", fontSize: 11, padding: "6px 8px", outline: "none", wordBreak: "break-all" }}
+              spellCheck={false} />
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              <button data-seed-copy style={btn(true, C.accent, C.accentDim)} onClick={() => copySeed("seed")} title="Copy this map as a seed">Copy seed</button>
+              <button data-seed-link style={btn(true, C.accent, C.accentDim)} onClick={() => copySeed("link")} title="Copy a link that opens this map">Copy share link</button>
+              <button data-seed-import disabled={!(seedParse && seedParse.ok)} style={{ ...btn(true, C.soft, C.softDim), opacity: seedParse && seedParse.ok ? 1 : 0.45, cursor: seedParse && seedParse.ok ? "pointer" : "not-allowed" }}
+                onClick={() => { setSeedBoxOpen(false); startSeedImport(seedText); }} title="Replace the map with this seed">Import</button>
+              <button data-seed-clear style={btn(false, C.muted, "rgba(255,255,255,0.06)")} onClick={() => { setSeedText(""); setSeedStatus(null); }} title="Empty the box">Clear</button>
+            </div>
+            {seedBlankText && <div data-seed-blank style={{ fontSize: 11, color: "#fbbf24" }}>⚠️ {seedBlankText}</div>}
+            {seedStatus && <div data-seed-status style={{ fontSize: 11, color: seedStatus.ok ? "#4ade80" : C.danger, wordBreak: "break-all", userSelect: "text" }}>{seedStatus.text}</div>}
+            {seedParse && (() => {
+            const d = seedParse, pv = seedPreview;
+            const row = (k, v, bad) => <div key={k} style={{ display: "flex", gap: 6 }}><span style={{ width: 54, color: C.muted, flexShrink: 0 }}>{k}</span><span style={{ color: bad ? C.danger : C.text, wordBreak: "break-word" }}>{v}</span></div>;
+            const magnetText = d.magnet === undefined ? "-" : d.magnet === null ? "default centre" : `column ${d.magnet.col}, row ${d.magnet.row} (0-based), ${MapSeed.MAGNET_SIZE_NAMES[d.magnet.size]}`;
+            const tsText = d.tileset == null ? "-" : pv && pv.target ? (pv.fallback ? `seed_id ${d.tileset} not found, will show ${pv.target.name}` : `${pv.target.name} (seed_id ${d.tileset})`) : `seed_id ${d.tileset}`;
+            return (
+              <div data-seed-breakdown style={{ padding: "6px 10px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 11, lineHeight: 1.55, background: "rgba(255,255,255,0.03)" }}>
+                {row("Size", d.size ? `${d.size.w} x ${d.size.h}` : "-", d.errorField === "size")}
+                {row("Magnet", magnetText, d.errorField === "magnet")}
+                {row("Mirror", d.mirror ? `${d.mirror} - ${MapSeed.CLASS_NAMES[d.mirror]}` : "-", d.errorField === "mirror")}
+                {row("Tileset", tsText, d.errorField === "tileset")}
+                {row("Palette", d.palette ? (d.palette.length === 0 ? "(empty map)" : (pv ? pv.resolved : d.palette.map(s => ({ symbol: s, candidates: [], source: null }))).map(x => (
+                  <span key={x.symbol} style={{ display: "inline-block", marginRight: 10 }}>
+                    <b style={{ fontFamily: "monospace" }}>{x.symbol}</b> {x.candidates.length === 0 ? <i style={{ color: pv && pv.loaded ? "#fbbf24" : C.muted }}>{pv && pv.loaded ? "no tile (blank)" : "…"}</i> : x.candidates.length === 1 ? x.candidates[0].name : <i>{x.candidates.length} tiles, you choose</i>}
+                  </span>
+                ))) : "-", d.errorField === "palette")}
+                {row("Cells", d.regionSize == null ? "-" : d.ok ? `${d.cellCount} = ${d.size.w} x ${d.size.h} OK${d.mirror !== "a" ? ` (${d.regionSize} stored, the rest mirrored)` : ""}` : `${d.cellCount ?? 0} read, ${d.regionSize} expected`, d.errorField === "code")}
+                {d.error && <div data-seed-error style={{ color: C.danger, marginTop: 2 }}>{d.error}</div>}
+              </div>
+            );
+          })()}
+            <details data-seed-help-details>
+              <summary data-seed-help style={{ cursor: "pointer", fontWeight: 700, color: C.accent, fontSize: 12 }}>Format help</summary>
+              <div data-seed-help-modal style={{ marginTop: 6 }}>
             <div style={{ fontSize: 12, color: C.text, lineHeight: 1.6, display: "flex", flexDirection: "column", gap: 6 }}>
               <p style={{ margin: 0 }}>A seed is a short piece of text that holds a whole map. Copy it to share a map, paste it into <b>Import seed</b> to open one. A share link does the same: opening it signs you in if needed and then loads the map.</p>
               <p style={{ margin: 0, fontFamily: "monospace", fontSize: 11 }}>size / magnet / mirror / tileset / palette / code</p>
@@ -7496,9 +7532,8 @@ function App() {
               <p style={{ margin: 0, color: C.muted, fontSize: 11 }}>Example: <code>3v3/x/4/0//8ZX</code> is an empty 21x33 map on tileset 0.</p>
               <details data-seed-help-dict><summary style={{ cursor: "pointer", fontWeight: 700, color: C.accent }}>Symbol dictionary</summary><div style={{ marginTop: 6 }}><SymbolDictionaryList registry={symbolRegistry} /></div></details>
             </div>
-            <div style={{ display: "flex", justifyContent: "flex-end" }}>
-              <button style={btn(true, C.accent, C.accentDim)} onClick={() => setSeedHelpOpen(false)}>Close</button>
-            </div>
+              </div>
+            </details>
           </div>
         </div>
       )}
@@ -9373,41 +9408,10 @@ function App() {
             <button style={btn(true, C.soft, C.softDim)} onClick={() => setDownloadConfirmOpen(true)}>Download</button>
           </div>
 
-          {/* Row 2b: Map seeds */}
-          <div data-seed-row style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", alignItems: "center", gap: 6, padding: "3px 14px" }}>
-            <button data-seed-copy style={btn(true, C.accent, C.accentDim)} onClick={() => copySeed("seed")} title="Copy this map as a seed">Copy seed</button>
-            <button data-seed-link style={btn(true, C.accent, C.accentDim)} onClick={() => copySeed("link")} title="Copy a link that opens this map">Copy share link</button>
-            <input data-seed-input type="text" value={seedText} onChange={e => setSeedText(e.target.value)} placeholder="paste a seed or share link…"
-              style={{ width: 170, background: "rgba(180,40,40,0.09)", border: `1px solid ${seedParse && !seedParse.ok ? C.danger : C.border}`, borderRadius: 6, color: C.text, fontFamily: "'Inter', sans-serif", fontSize: 11, padding: "4px 8px", outline: "none" }}
-              spellCheck={false} />
-            <button data-seed-import disabled={!(seedParse && seedParse.ok)} style={{ ...btn(true, C.soft, C.softDim), opacity: seedParse && seedParse.ok ? 1 : 0.45, cursor: seedParse && seedParse.ok ? "pointer" : "not-allowed" }}
-              onClick={() => startSeedImport(seedText)} title="Replace the map with this seed">Import seed</button>
-            <button data-seed-help onClick={() => setSeedHelpOpen(true)} title="What is a seed?"
-              style={{ width: 20, height: 20, borderRadius: "50%", border: `1px solid ${C.border}`, background: "rgba(255,255,255,0.06)", color: C.muted, cursor: "pointer", fontSize: 11, fontWeight: 700, lineHeight: 1, padding: 0 }}>?</button>
+          {/* Row 2b: Map seed (one button; everything else lives in the modal) */}
+          <div data-seed-row style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 6, padding: "3px 14px" }}>
+            <button data-map-seed-open style={btn(true, C.accent, C.accentDim)} onClick={() => setSeedBoxOpen(true)} title="Copy, share or import this map as a seed">🌱 Map seed</button>
           </div>
-          {seedBlankText && <div data-seed-blank style={{ fontSize: 10, color: "#fbbf24", textAlign: "center", padding: "0 14px" }}>⚠️ {seedBlankText}</div>}
-          {seedStatus && <div data-seed-status style={{ fontSize: 10, color: seedStatus.ok ? "#4ade80" : C.danger, textAlign: "center", padding: "0 14px", wordBreak: "break-all", userSelect: "text" }}>{seedStatus.text}</div>}
-          {seedParse && (() => {
-            const d = seedParse, pv = seedPreview;
-            const row = (k, v, bad) => <div key={k} style={{ display: "flex", gap: 6 }}><span style={{ width: 54, color: C.muted, flexShrink: 0 }}>{k}</span><span style={{ color: bad ? C.danger : C.text, wordBreak: "break-word" }}>{v}</span></div>;
-            const magnetText = d.magnet === undefined ? "-" : d.magnet === null ? "default centre" : `column ${d.magnet.col}, row ${d.magnet.row} (0-based), ${MapSeed.MAGNET_SIZE_NAMES[d.magnet.size]}`;
-            const tsText = d.tileset == null ? "-" : pv && pv.target ? (pv.fallback ? `seed_id ${d.tileset} not found, will show ${pv.target.name}` : `${pv.target.name} (seed_id ${d.tileset})`) : `seed_id ${d.tileset}`;
-            return (
-              <div data-seed-breakdown style={{ margin: "2px auto", padding: "6px 10px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 10.5, lineHeight: 1.55, width: "min(440px, calc(100% - 28px))", background: "rgba(255,255,255,0.03)" }}>
-                {row("Size", d.size ? `${d.size.w} x ${d.size.h}` : "-", d.errorField === "size")}
-                {row("Magnet", magnetText, d.errorField === "magnet")}
-                {row("Mirror", d.mirror ? `${d.mirror} - ${MapSeed.CLASS_NAMES[d.mirror]}` : "-", d.errorField === "mirror")}
-                {row("Tileset", tsText, d.errorField === "tileset")}
-                {row("Palette", d.palette ? (d.palette.length === 0 ? "(empty map)" : (pv ? pv.resolved : d.palette.map(s => ({ symbol: s, candidates: [], source: null }))).map(x => (
-                  <span key={x.symbol} style={{ display: "inline-block", marginRight: 10 }}>
-                    <b style={{ fontFamily: "monospace" }}>{x.symbol}</b> {x.candidates.length === 0 ? <i style={{ color: pv && pv.loaded ? "#fbbf24" : C.muted }}>{pv && pv.loaded ? "no tile (blank)" : "…"}</i> : x.candidates.length === 1 ? x.candidates[0].name : <i>{x.candidates.length} tiles, you choose</i>}
-                  </span>
-                ))) : "-", d.errorField === "palette")}
-                {row("Cells", d.regionSize == null ? "-" : d.ok ? `${d.cellCount} = ${d.size.w} x ${d.size.h} OK${d.mirror !== "a" ? ` (${d.regionSize} stored, the rest mirrored)` : ""}` : `${d.cellCount ?? 0} read, ${d.regionSize} expected`, d.errorField === "code")}
-                {d.error && <div data-seed-error style={{ color: C.danger, marginTop: 2 }}>{d.error}</div>}
-              </div>
-            );
-          })()}
 
           {/* Row 3: Clear Map | History */}
           <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 8, padding: "3px 14px" }}>
