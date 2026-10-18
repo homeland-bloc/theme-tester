@@ -207,6 +207,11 @@ test("symbols: A = warn, S = space are reserved and never suggested; 6 and 7 are
   assert.strictEqual(P.suggestSymbol(["D"]), "E");
   // the global table's symbols are passed in and skipped
   assert.strictEqual(P.suggestSymbol([], ["D", "E"]), "I");
+  // separators are never suggested and are banned as symbols
+  assert.deepStrictEqual([...P.BANNED_SYMBOLS].sort(), [",", "/"]);
+  for (const ch of [",", "/", " ", "\t", "\u0000"]) assert.strictEqual(P.isBannedSymbol(ch), true, JSON.stringify(ch));
+  for (const ch of [".", "a", "A", "6", "😀"]) assert.strictEqual(P.isBannedSymbol(ch), false, ch);
+  assert.ok(!used.includes(",") && !used.includes("/") && !used.includes("."));
 });
 
 console.log(`\n${passed} passed${process.exitCode ? ", FAILURES above" : ""}`);

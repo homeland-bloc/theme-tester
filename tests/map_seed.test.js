@@ -113,18 +113,21 @@ test("symmetry is judged about the effective centre (magnet), not the grid centr
   assert.strictEqual(M.encode({ w, h, grid: g, magnet: mag, tileset: 0 }).mirror, "4");
   assert.notStrictEqual(M.encode({ w, h, grid: g, magnet: null, tileset: 0 }).mirror, "4");
   const e = roundTrip(w, h, g, mag);
-  assert.strictEqual(e.fields.magnet, "3,2");
+  assert.strictEqual(e.fields.magnet, "3.2");
 });
 
-test("magnet field: x for default, col,row, size only when not 1; default-equivalent magnets collapse to x", () => {
+test("magnet field: x for default, col.row, size only when not 1; default-equivalent magnets collapse to x", () => {
   const g = blank(10, 10);
   assert.strictEqual(M.encode({ w: 10, h: 10, grid: g, magnet: { col: 4, row: 4, size: 2 }, tileset: 0 }).fields.magnet, "x"); // 2x2 at 4,4 centres on (4.5,4.5)
-  assert.strictEqual(M.encode({ w: 10, h: 10, grid: g, magnet: { col: 2, row: 3, size: 1 }, tileset: 0 }).fields.magnet, "2,3");
-  assert.strictEqual(M.encode({ w: 10, h: 10, grid: g, magnet: { col: 2, row: 3, size: 3 }, tileset: 0 }).fields.magnet, "2,3,3");
+  assert.strictEqual(M.encode({ w: 10, h: 10, grid: g, magnet: { col: 2, row: 3, size: 1 }, tileset: 0 }).fields.magnet, "2.3");
+  assert.strictEqual(M.encode({ w: 10, h: 10, grid: g, magnet: { col: 2, row: 3, size: 3 }, tileset: 0 }).fields.magnet, "2.3.3");
   assert.strictEqual(M.encode({ w: 9, h: 9, grid: blank(9, 9), magnet: { col: 4, row: 4, size: 1 }, tileset: 0 }).fields.magnet, "x");
-  assert.deepStrictEqual(M.parseMagnet("2,3,4", 10, 10), { col: 2, row: 3, size: 4 });
+  assert.deepStrictEqual(M.parseMagnet("2.3.4", 10, 10), { col: 2, row: 3, size: 4 });
+  assert.deepStrictEqual(M.parseMagnet("2,3,4", 10, 10, true), { col: 2, row: 3, size: 4 }, "old spelling, legacy only");
+  assert.strictEqual(M.parseMagnet("2,3", 10, 10), undefined, "the comma spelling is not a new-format magnet");
+  assert.strictEqual(M.parseMagnet("2.3", 10, 10, true), undefined, "the dot spelling is not an old-format magnet");
   assert.strictEqual(M.parseMagnet("x", 10, 10), null);
-  for (const bad of ["", "2", "2,3,1", "2,3,5", "10,3", "2,10", "02,3", "2,3,", ",3", "a,b", "2,3,2,1", "-1,3"]) assert.strictEqual(M.parseMagnet(bad, 10, 10), undefined, bad);
+  for (const bad of ["", "2", "2.3.1", "2.3.5", "10.3", "2.10", "02.3", "2.3.", ".3", "a.b", "2.3.2.1", "-1.3", "2,3", "2..3"]) assert.strictEqual(M.parseMagnet(bad, 10, 10), undefined, bad);
 });
 
 test("effectiveCenter equals the app's getEffectiveCenter formula (clamping included)", () => {
@@ -216,25 +219,27 @@ test("sizes: 3v3 and SD aliases, WxH otherwise", () => {
   assert.deepStrictEqual(M.parseSize("3v3"), { w: 21, h: 33 });
   assert.deepStrictEqual(M.parseSize("SD"), { w: 60, h: 60 });
   assert.deepStrictEqual(M.parseSize("21x33"), { w: 21, h: 33 });
-  assert.ok(M.encode({ w: 21, h: 33, grid: blank(21, 33), tileset: 0 }).seed.startsWith("3v3/"));
-  assert.ok(M.encode({ w: 60, h: 60, grid: blank(60, 60), tileset: 0 }).seed.startsWith("SD/"));
+  assert.ok(M.encode({ w: 21, h: 33, grid: blank(21, 33), tileset: 0 }).seed.startsWith("3v3,"));
+  assert.ok(M.encode({ w: 60, h: 60, grid: blank(60, 60), tileset: 0 }).seed.startsWith("SD,"));
   for (const bad of ["", "0x5", "5x0", "100x5", "5x100", "5X5", "5x", "x5", "5", "3V3", "sd", "05x5", "5x5x5", "-1x5", "1.5x2"]) assert.strictEqual(M.parseSize(bad), null, bad);
 });
 
 test("malformed input is rejected with a clear error, never an exception", () => {
   const good = M.encode({ w: 5, h: 5, grid: symmetrise(randomGrid(5, 5, rng(3), 3), 5, 5, null, "4"), tileset: 2 }).seed;
-  const f = good.split("/");
-  const swap = (i, v) => f.map((x, j) => (j === i ? v : x)).join("/");
+  const f = good.split(",");
+  assert.strictEqual(f.length, 6);
+  const swap = (i, v) => f.map((x, j) => (j === i ? v : x)).join(",");
   const cases = {
     "empty": "",
     "spaces only": "   ",
-    "no slashes": "abc",
-    "five fields": f.slice(0, 5).join("/"),
-    "seven fields": good + "/x",
+    "no separators": "abc",
+    "five fields": f.slice(0, 5).join(","),
+    "seven fields": good + ",x",
     "bad size": swap(0, "0x5"),
     "bad size 2": swap(0, "abc"),
-    "bad magnet": swap(1, "9,9"),
-    "bad magnet 2": swap(1, "x,"),
+    "bad magnet": swap(1, "9.9"),
+    "bad magnet 2": swap(1, "x."),
+    "old magnet spelling in a new seed": swap(1, "2,2"),
     "bad mirror": swap(2, "z"),
     "empty mirror": swap(2, ""),
     "bad tileset": swap(3, "-1"),
@@ -246,7 +251,9 @@ test("malformed input is rejected with a clear error, never an exception", () =>
     "code not base62": swap(5, "ab-c"),
     "code leading zero": swap(5, "0abc"),
     "code with space": swap(5, "ab c"),
-    "inner whitespace": good.replace("/", "/ "),
+    "inner whitespace": good.replace(",", ", "),
+    "comma in a symbol position (extra field)": swap(4, "M,Y"),
+    "old form with the wrong number of parts": "5x5/x/4/0/M",
     "newline": good + "\nx",
     "control char in palette": swap(4, "M\u0001"),
   };
@@ -257,7 +264,7 @@ test("malformed input is rejected with a clear error, never an exception", () =>
     assert.ok(typeof d.error === "string" && d.error.length > 10, name + ": " + d.error);
     assert.strictEqual(d.grid, null);
   }
-  for (const junk of [null, undefined, 5, {}, [], "\u0000", "/////", "//////", "x".repeat(100000), "3v3/x/4/0/A/" + "z".repeat(40000), "/" .repeat(5000)]) {
+  for (const junk of [null, undefined, 5, {}, [], "\u0000", "/////", "//////", ",,,,,", ",,,,,,", "x".repeat(100000), "3v3,x,4,0,A," + "z".repeat(40000), "3v3/x/4/0/A/" + "z".repeat(40000), "," .repeat(5000), "/" .repeat(5000)]) {
     assert.doesNotThrow(() => M.decode(junk));
     assert.strictEqual(M.decode(junk).ok, false);
   }
@@ -330,15 +337,20 @@ test("extractSeed: bare seed, seed=, share link with percent escapes", () => {
   assert.strictEqual(M.extractSeed("seed=" + encodeURIComponent(e.seed)).text, e.seed);
   assert.ok(M.decode(link).ok);
   eqGrid(M.decode(link).grid, g);
-  assert.ok(M.extractSeed("https://example.test/#seed=%E0%A4%A").error);
+  // a fragment that is not valid percent-encoding is used as written (a bare "%" symbol), not an error
+  assert.strictEqual(M.extractSeed("https://example.test/#seed=5x5,x,a,0,%,1").text, "5x5,x,a,0,%,1");
   assert.ok(M.extractSeed("https://example.test/").error);
   assert.ok(!M.decode("https://example.test/#seed=%E0%A4%A").ok);
 });
 
-test("symbols: slash, whitespace, control characters and multi-character strings are not symbols", () => {
-  for (const s of ["/", " ", "\t", "\n", "\u0000", "", "ab", "​", null, 5]) assert.strictEqual(M.isValidSymbol(s), false, JSON.stringify(s));
+test("symbols: comma, slash, whitespace, control characters and multi-character strings are not symbols", () => {
+  for (const s of [",", "/", " ", "\t", "\n", "\u0000", "", "ab", "​", null, 5]) assert.strictEqual(M.isValidSymbol(s), false, JSON.stringify(s));
   for (const s of ["a", "A", "6", "7", "é", "😀", "~", "#", "%", "|"]) assert.strictEqual(M.isValidSymbol(s), true, s);
   assert.throws(() => M.encode({ w: 1, h: 1, grid: [["/"]], tileset: 0 }));
+  assert.throws(() => M.encode({ w: 1, h: 1, grid: [[","]], tileset: 0 }));
+  assert.deepStrictEqual([...M.BANNED_SYMBOLS].sort(), [",", "/"]);
+  for (const s of [".", ";", ":", "-", "_"]) assert.strictEqual(M.isValidSymbol(s), true, s);
+  assert.ok(!M.SYMBOL_UNIVERSE.includes(",") && !M.SYMBOL_UNIVERSE.includes("/") && M.SYMBOL_UNIVERSE.includes("."));
 });
 
 test("symbolizeGrid: symbols per palette ref, blanks counted by kind", () => {
@@ -352,6 +364,85 @@ test("symbolizeGrid: symbols per palette ref, blanks counted by kind", () => {
   assert.strictEqual(M.blankSummary({ upload: 0, noSymbol: 0, badSymbol: 0 }), null);
   // blank cells export as empty and so do not change the encoded map
   assert.strictEqual(M.encode({ w: 4, h: 3, grid: out.grid, tileset: 0 }).fields.palette.length, 3);
+});
+
+test("symbolizeGrid: a tile whose symbol is a separator (comma, slash) exports blank as an unusable symbol", () => {
+  const out = M.symbolizeGrid([[0, 1, 2]], ["d:a", "d:b", "d:c"], ref => ({ "d:a": ",", "d:b": "/", "d:c": "." })[ref]);
+  eqGrid(out.grid, [[null, null, "."]]);
+  assert.deepStrictEqual(out.blanks, { upload: 0, noSymbol: 0, badSymbol: 2 });
+});
+
+// ── Separator: "," between the fields, "col.row.size" magnets, old "/" seeds still decode ────────────────
+const toOld = seed => { // the old spelling of a new seed: "/" separators and "col,row,size" magnets
+  const f = seed.split(",");
+  f[1] = f[1].replace(/\./g, ",");
+  return f.join("/");
+};
+
+test("new format: six comma-separated fields, dotted magnet, never a slash; the empty map and presets", () => {
+  assert.strictEqual(M.encode({ w: 21, h: 33, grid: blank(21, 33), tileset: 0 }).seed, "3v3,x,4,0,,8ZX");
+  assert.strictEqual(M.decode("3v3,x,4,0,,8ZX").ok, true);
+  const g = symmetrise(randomGrid(11, 9, rng(8), 4, 0.7), 11, 9, { col: 3, row: 2, size: 3 }, "h");
+  const e = roundTrip(11, 9, g, { col: 3, row: 2, size: 3 }, 12);
+  assert.strictEqual(e.seed.split(",").length, 6);
+  assert.ok(!e.seed.includes("/") && /^11x9,3\.2\.3,/.test(e.seed), e.seed);
+  assert.strictEqual(e.fields.magnet, "3.2.3");
+  // a palette made of awkward symbols still splits into exactly six fields
+  const awk = blank(5, 5); [".", ";", ":", "|", "%", "#", "&", "=", "?", "😀", "é"].forEach((x, i) => { awk[Math.floor(i / 5)][i % 5] = x; });
+  const ea = roundTrip(5, 5, awk, null);
+  assert.strictEqual(ea.seed.split(",").length, 6);
+});
+
+test("old format still decodes (detected by its slashes); the result equals the new form's and re-encodes with commas", () => {
+  const cases = [];
+  const rand = rng(77);
+  for (const [w, h, mag] of [[21, 33, null], [7, 5, { col: 3, row: 2, size: 2 }], [10, 9, { col: 1, row: 3, size: 3 }], [9, 10, { col: 2, row: 0, size: 4 }], [5, 5, { col: 2, row: 1, size: 1 }]]) {
+    for (const cls of ["a", "h", "v", "d", "4"]) cases.push([w, h, mag, symmetrise(randomGrid(w, h, rand, 5, 0.6), w, h, mag, cls)]);
+  }
+  for (const [w, h, mag, g] of cases) {
+    const neu = M.encode({ w, h, grid: g, magnet: mag, tileset: 5 });
+    const old = toOld(neu.seed);
+    assert.ok(old.includes("/") && old.split("/").length === 6, old);
+    const d = M.decode(old);
+    assert.ok(d.ok, old + " " + d.error);
+    assert.strictEqual(d.legacy, true); assert.strictEqual(M.decode(neu.seed).legacy, false);
+    eqGrid(d.grid, g);
+    assert.deepStrictEqual(d.magnet, M.decode(neu.seed).magnet);
+    assert.strictEqual(M.encode({ w, h, grid: d.grid, magnet: d.magnet, tileset: d.tileset }).seed, neu.seed, "re-encoding writes the new form");
+  }
+  // concrete old seeds from before the change
+  assert.deepStrictEqual(M.decode("3v3/x/4/0//8ZX").size, { w: 21, h: 33 });
+  assert.deepStrictEqual(M.decode("7x5/3,2,2/4/3//2G").magnet, { col: 3, row: 2, size: 2 });
+  // wrong shapes of the old form are refused with the old separator named
+  assert.match(M.decode("5x5/x/4/0/M").error, /6 parts separated by "\/"/);
+  assert.match(M.decode("5x5,x,4,0,M").error, /6 parts separated by ","/);
+  // a "/" never appears in a new seed, so a "/" always means the old form even when the old magnet put commas into the text
+  assert.strictEqual(M.decode("7x5/3,2,2/4/3//2G").ok, true);
+});
+
+test("share-link fragment: written plain (no encoded , or .), read back from both the plain and the percent-encoded form", () => {
+  const g = blank(9, 7); g[0][1] = "."; g[2][2] = "%"; g[3][3] = "#"; g[4][4] = "😀"; g[1][1] = "&";
+  const e = M.encode({ w: 9, h: 7, grid: g, magnet: { col: 3, row: 2, size: 1 }, tileset: 4 });
+  const frag = M.seedFragment(e.seed);
+  assert.ok(frag.startsWith("#seed=7x5".replace("7x5", "9x7")) || frag.startsWith("#seed=9x7,"), frag);
+  assert.ok(!/%2C|%2c|%2E|%2e/.test(frag), "commas and dots are never percent-encoded: " + frag);
+  assert.ok(frag.includes(",") && frag.includes("3.2"), frag);
+  assert.strictEqual(frag.replace(/%25/g, "%"), "#seed=" + e.seed, "only % is escaped");
+  // reading: the fragment as the app writes it (the browser keeps ASCII as typed; it escapes non-ASCII itself), and fully encoded forms
+  const asBrowser = "#seed=" + e.seed.replace(/%/g, "%25").replace(/😀/g, encodeURIComponent("😀"));
+  for (const link of [frag, "https://x.test/ophelia/index.html" + frag, asBrowser, "https://x.test/index.html?a=1" + asBrowser, "#seed=" + encodeURIComponent(e.seed), "seed=" + encodeURIComponent(e.seed), "https://x.test/#seed=" + encodeURIComponent(e.seed)]) {
+    const t = M.extractSeed(link).text;
+    assert.strictEqual(t, e.seed, link);
+    const d = M.decode(link); assert.ok(d.ok, link + " " + d.error); eqGrid(d.grid, g);
+  }
+  // old links (encoded slashes) keep working
+  const oldLink = "https://x.test/#seed=" + encodeURIComponent("3v3/x/4/0//8ZX");
+  assert.strictEqual(M.decode(oldLink).ok, true);
+  assert.strictEqual(M.decode("#seed=3v3%2Fx%2F4%2F0%2F%2F8ZX").ok, true);
+  // a literal "%" symbol survives the round trip through the escaped fragment
+  const pct = blank(3, 3); pct[0][0] = "%"; pct[0][1] = "4"; pct[0][2] = "1";
+  const ep = M.encode({ w: 3, h: 3, grid: pct, tileset: 0 });
+  const back = M.decode("https://x.test/" + M.seedFragment(ep.seed)); assert.ok(back.ok, back.error); eqGrid(back.grid, pct);
 });
 
 test("global symbol table", () => {

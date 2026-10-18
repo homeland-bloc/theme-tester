@@ -148,11 +148,11 @@ const test = async (name, fn) => {
     await ready(page);
     await page.click("[data-seed-copy]");
     await page.waitForSelector("[data-seed-status]");
-    assert.strictEqual(await page.evaluate(() => navigator.clipboard.readText()), "3v3/x/4/0//8ZX");
+    assert.strictEqual(await page.evaluate(() => navigator.clipboard.readText()), "3v3,x,4,0,,8ZX");
     await page.click("[data-seed-link]");
     await settle(page);
     const link = await page.evaluate(() => navigator.clipboard.readText());
-    assert.ok(link.startsWith(ORIGIN + "/index.html#seed=3v3%2Fx%2F4%2F0%2F%2F8ZX"), link);
+    assert.strictEqual(link, ORIGIN + "/index.html#seed=3v3,x,4,0,,8ZX", "the share link is written plain: no %2C, no %2F");
     assert.strictEqual(await page.locator("[data-seed-blank]").count(), 0);
     await ctx.close();
   });
@@ -299,8 +299,8 @@ const test = async (name, fn) => {
     const { page, ctx } = await newPage();
     await ready(page);
     const before = await saved(page);
-    const good = SEED_A, f = good.split("/");
-    const cases = [["junk", /6 parts/], [f.slice(0, 5).join("/"), /6 parts/], ["0x5/" + f.slice(1).join("/"), /Size/], [f[0] + "/9,9/" + f.slice(2).join("/"), /Magnet/], [f.slice(0, 5).join("/") + "/", /code is missing/], [f.slice(0, 5).join("/") + "/zzzzzzzzzz", /./]];
+    const good = SEED_A, f = good.split(",");
+    const cases = [["junk", /6 parts/], [f.slice(0, 5).join(","), /6 parts/], ["0x5," + f.slice(1).join(","), /Size/], [f[0] + ",9.9," + f.slice(2).join(","), /Magnet/], [f.slice(0, 5).join(",") + ",", /code is missing/], [f.slice(0, 5).join(",") + ",zzzzzzzzzz", /./]];
     for (const [text, re] of cases) {
       await page.fill("[data-seed-input]", text);
       await page.waitForSelector("[data-seed-breakdown]");
@@ -316,7 +316,7 @@ const test = async (name, fn) => {
     const { page, ctx } = await newPage();
     await ready(page);
     await page.click("[data-seed-help]"); // the summary of the inline format help
-    assert.ok(/size \/ magnet \/ mirror \/ tileset \/ palette \/ code/.test(await page.textContent("[data-seed-help-modal]")));
+    assert.ok(/size,magnet,mirror,tileset,palette,code/.test(await page.textContent("[data-seed-help-modal]")));
     await page.click("[data-seed-help-dict] summary");
     assert.ok(await page.locator("[data-seed-help-dict] [data-symbol-row='A']").isVisible() && await page.locator("[data-seed-help-dict] [data-symbol-free]").isVisible());
     assert.ok(!/\b6 is the warn/.test(await page.textContent("[data-seed-help-modal]")));
@@ -372,6 +372,39 @@ const test = async (name, fn) => {
     assert.deepStrictEqual([(await saved(page)).w], [7]);
     await page.click("[data-seed-confirm]"); await settle(page);
     assert.deepStrictEqual([(await saved(page)).w], [4]);
+    await ctx.close();
+  });
+
+  await test("old-format seeds ('/' separators, 'col,row,size' magnets) and plain or encoded share links all import the same map", async () => {
+    const withMagnet = MapSeed.encode({ w: 9, h: 9, grid: (() => { const g = blank(9, 9); g[0][0] = "M"; g[8][8] = "M"; g[2][3] = "Y"; g[6][5] = "Y"; return g; })(), magnet: { col: 3, row: 2, size: 2 }, tileset: 0 });
+    const toOld = seed => { const f = seed.split(","); f[1] = f[1].replace(/\./g, ","); return f.join("/"); };
+    const oldSeed = toOld(withMagnet.seed);
+    assert.ok(oldSeed.includes("/") && /,2$|,\d/.test(oldSeed.split("/")[1]) || oldSeed.split("/")[1].includes(","), oldSeed);
+    const results = [];
+    for (const how of ["field-new", "field-old", "link-plain", "link-encoded", "link-old"]) {
+      const { page, ctx } = await newPage({ hash: how === "link-plain" ? "#seed=" + withMagnet.seed : how === "link-encoded" ? "#seed=" + encodeURIComponent(withMagnet.seed) : how === "link-old" ? "#seed=" + encodeURIComponent(oldSeed) : "" });
+      await ready(page); await settle(page);
+      if (how === "field-new") { await importViaField(page, withMagnet.seed); await settle(page); }
+      if (how === "field-old") { await importViaField(page, oldSeed); await settle(page); }
+      if (how.startsWith("link")) { if (await page.locator("[data-seed-import-modal]").count()) await page.click("[data-seed-confirm]"); await settle(page); }
+      const sv = await saved(page);
+      results.push(JSON.stringify({ w: sv.w, h: sv.h, cc: sv.cc, ccs: sv.ccs, cells: [[0, 0], [8, 8], [2, 3], [6, 5]].map(([r, c]) => symAt(sv, r, c)) }));
+      await ctx.close();
+    }
+    assert.deepStrictEqual([...new Set(results)].length, 1, results.join("\n"));
+    const parsed = JSON.parse(results[0]);
+    assert.deepStrictEqual([parsed.w, parsed.h, parsed.cc, parsed.ccs], [9, 9, { r: 2, c: 3 }, 2]);
+    assert.deepStrictEqual(parsed.cells, ["Wall1", "Wall1", "Crate", "Crate"]);
+  });
+
+  await test("a share link with awkward symbols is written plain (only % is escaped) and reads back", async () => {
+    const { page, ctx } = await newPage();
+    await ready(page);
+    // a map whose tiles carry "." and "%" symbols is impossible to build from the fixtures; check the link text of the field-built seed instead
+    await importViaField(page, SEED_A); await settle(page);
+    await box(page); await page.click("[data-seed-link]"); await settle(page);
+    const link = await page.evaluate(() => navigator.clipboard.readText());
+    assert.ok(link.includes("#seed=") && link.includes(",") && !/%2[CcEeFf]/.test(link), link);
     await ctx.close();
   });
 

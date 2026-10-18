@@ -1,10 +1,12 @@
-// Map seeds: a compact text form of a whole map.  size/magnet/mirror/tileset/palette/code
+// Map seeds: a compact text form of a whole map.  size,magnet,mirror,tileset,palette,code
 //
-// FORMAT (frozen: no version, no checksum, no map name; six positional fields separated by "/", "/" never occurs inside a field)
+// FORMAT (frozen: no version, no checksum, no map name; six positional fields separated by ",", "," never occurs inside a field)
+//   Older seeds used "/" as the separator and "col,row,size" for the magnet. They still DECODE (a seed that contains "/" is read as the old form,
+//   which always has exactly 6 "/"-separated parts); encoding only ever writes ",".
 //   size     "3v3" = 21x33, "SD" = 60x60, otherwise "WxH" (1-99 each). Decoding also accepts "21x33" / "60x60".
-//   magnet   "x" = the default centre; otherwise "col,row" (+ ",size" only when size is not 1). size is the app's customCenterSize:
+//   magnet   "x" = the default centre; otherwise "col.row" (+ ".size" only when size is not 1). size is the app's customCenterSize:
 //            2 = 2x2, 3 = 2x1 (two wide, one tall), 4 = 1x2 (one wide, two tall). col,row is the magnet cell (its top-left cell for
-//            sizes 2-4). A magnet whose effective centre equals the default centre is written "x".
+//            sizes 2-4). A magnet whose effective centre equals the default centre is written "x". (Old form: "col,row[,size]".)
 //   mirror   h  left<->right      (the app flag mirrorV, labelled "Horizontal")
 //            v  top<->bottom      (the app flag mirrorH, labelled "Vertical")
 //            d  180-degree central (the app flag mirrorD)
@@ -16,7 +18,8 @@
 //   tileset  decimal seed_id of the tileset the tile symbols belong to.
 //   palette  the tile symbols used on the map, one code point each, concatenated with no delimiter, most frequent first
 //            (cells counted over the FULL map), ties by code point. Cell index 0 is "empty"; palette entry i is index i + 1.
-//            A symbol is never "/", whitespace or a control character. Case-sensitive.
+//            A symbol is never ",", "/", whitespace or a control character ("," separates the fields; "/" is the old separator and stays
+//            banned so the two forms can never be confused). Case-sensitive. "." is a normal symbol.
 //   code     the cell indexes of the FUNDAMENTAL REGION, run-length encoded as a bit stream and written in base62 (0-9A-Za-z).
 //
 // FUNDAMENTAL REGION. Let (SR, SC) = (2*centreRow, 2*centreCol), both integers (see effectiveSums). The mirror images of (r, c) are
@@ -162,8 +165,9 @@
   // ── Symbol registry ───────────────────────────────────────────────────────────────────────────────────
   // The settled names of the official table (tileset tiles named like this carry the symbol in every tileset). "n" is the 5v5 fence.
   const OFFICIAL_SYMBOL_NAMES = Object.freeze({ M: "Wall1", X: "Wall2", Y: "Crate", C: "Barrel", F: "Bush", T: "Cactus", B: "Skull", N: "Fence", n: "Fence 5v5", W: "Water", a: "Rope" });
-  // Every printable ASCII character except "/" and the space.
-  const SYMBOL_UNIVERSE = Object.freeze(Array.from({ length: 94 }, (_, i) => String.fromCharCode(33 + i)).filter(ch => ch !== "/"));
+  // Every printable ASCII character except "," "/" (separators) and the space.
+  const BANNED_SYMBOLS = Object.freeze([",", "/"]);
+  const SYMBOL_UNIVERSE = Object.freeze(Array.from({ length: 94 }, (_, i) => String.fromCharCode(33 + i)).filter(ch => !BANNED_SYMBOLS.includes(ch)));
   const fileStem = ref => { const m = /([^/]+?)(?:\.[a-z]+)?$/i.exec(String(ref)); return m ? m[1] : String(ref); };
   const lowerKey = s => String(s == null ? "" : s).toLowerCase().replace(/[\s_-]+/g, "");
   // Entries of the fixed tables: { symbol, codename, source: "official" | "global", ref?, folderKey?, tile? }.
@@ -269,7 +273,7 @@
   const freeSymbols = registry => SYMBOL_UNIVERSE.filter(ch => !(registry && registry.bySymbol.has(ch)));
 
   // ── Symbols ───────────────────────────────────────────────────────────────────────────────────────────
-  const isValidSymbol = s => typeof s === "string" && Array.from(s).length === 1 && s !== "/" && !/[\s\p{C}]/u.test(s);
+  const isValidSymbol = s => typeof s === "string" && Array.from(s).length === 1 && !BANNED_SYMBOLS.includes(s) && !/[\s\p{C}]/u.test(s);
 
   // ── Geometry ──────────────────────────────────────────────────────────────────────────────────────────
   // magnet: { col, row, size } (size 1-4) or null. Mirrors the app's getEffectiveCenter, in doubled integer form.
@@ -359,11 +363,11 @@
     if (!m) return null;
     return { w: Number(m[1]), h: Number(m[2]) };
   };
-  const encodeMagnet = m => (m ? m.col + "," + m.row + (m.size && m.size !== 1 ? "," + m.size : "") : "x");
-  // -> null (default centre) | { col, row, size } | undefined (malformed)
-  const parseMagnet = (s, w, h) => {
+  const encodeMagnet = m => (m ? m.col + "." + m.row + (m.size && m.size !== 1 ? "." + m.size : "") : "x");
+  // -> null (default centre) | { col, row, size } | undefined (malformed). `legacy` reads the old "col,row[,size]" spelling.
+  const parseMagnet = (s, w, h, legacy) => {
     if (s === "x") return null;
-    const m = /^(0|[1-9]\d?),(0|[1-9]\d?)(?:,([234]))?$/.exec(s);
+    const m = (legacy ? /^(0|[1-9]\d?),(0|[1-9]\d?)(?:,([234]))?$/ : /^(0|[1-9]\d?)\.(0|[1-9]\d?)(?:\.([234]))?$/).exec(s);
     if (!m) return undefined;
     const col = Number(m[1]), row = Number(m[2]);
     if (col >= w || row >= h) return undefined;
@@ -448,26 +452,31 @@
       runs++; i = j;
     }
     const fields = { size: encodeSize(w, h), magnet: encodeMagnet(mag), mirror, tileset: String(tileset), palette: palette.join(""), code: bitsToBase62(bits) };
-    return { seed: [fields.size, fields.magnet, fields.mirror, fields.tileset, fields.palette, fields.code].join("/"), fields, mirror, palette, regionSize: cells.length, runs, magnet: mag };
+    return { seed: [fields.size, fields.magnet, fields.mirror, fields.tileset, fields.palette, fields.code].join(","), fields, mirror, palette, regionSize: cells.length, runs, magnet: mag };
   };
 
   // ── Decode ────────────────────────────────────────────────────────────────────────────────────────────
-  // Pulls the seed out of pasted text: a bare seed, "seed=<seed>", or a link with "#seed=<seed>" (percent-decoded). -> { text } | { error }
+  // Pulls the seed out of pasted text: a bare seed, "seed=<seed>", or a link with "#seed=<seed>". The seed in a link may be written plain
+  // ("#seed=7x5,x,h,0,MXY,abc", what the app writes) or percent-encoded (older links, "%2F" for "/"): it is decoded when it holds valid
+  // escapes and used as it is otherwise. -> { text } | { error }
   const extractSeed = input => {
     let t = String(input == null ? "" : input).trim();
     const hit = t.search(/[#?&]?seed=/);
     const linked = /^[a-z][a-z0-9+.-]*:\/\//i.test(t) || t.startsWith("#") || t.startsWith("seed=");
     if (linked && hit !== -1) {
       t = t.slice(t.indexOf("seed=", hit) + 5);
-      try { t = decodeURIComponent(t); } catch { return { error: "The link's seed has broken % escapes." }; }
+      try { t = decodeURIComponent(t); } catch { /* not percent-encoded (a bare "%" symbol): keep it as written */ }
     } else if (linked) return { error: "The link has no #seed= part." };
     return { text: t.trim() };
   };
+  // The text of a share link's fragment for a seed: written plain. Only "%" is escaped (a literal "%" would otherwise read as an escape);
+  // "," and "." are never encoded, and the browser itself escapes characters it cannot keep (non-ASCII symbols).
+  const seedFragment = seed => "#seed=" + String(seed).replace(/%/g, "%25");
 
   // Never throws. -> { ok, error, errorField, seed, size:{w,h}|null, magnet (null default | {col,row,size}) , mirror, tileset, palette:[symbols]|null,
   //   regionSize, runs, cellCount, grid (rows of symbol|null) } where fields before the failing one are filled in.
   const decode = input => {
-    const res = { ok: false, error: null, errorField: null, seed: null, size: null, magnet: undefined, mirror: null, tileset: null, palette: null, regionSize: null, runs: null, cellCount: null, grid: null, usedSymbols: null };
+    const res = { ok: false, error: null, errorField: null, seed: null, size: null, magnet: undefined, mirror: null, tileset: null, palette: null, regionSize: null, runs: null, cellCount: null, grid: null, usedSymbols: null, legacy: false };
     const fail = (field, msg) => { res.error = msg; res.errorField = field; return res; };
     try {
       const ex = extractSeed(input);
@@ -477,14 +486,17 @@
       if (!text) return fail(null, "Paste a seed first.");
       if (text.length > MAX_SEED_CHARS) return fail(null, "That seed is too long.");
       if (/\s/.test(text)) return fail(null, "A seed has no spaces or line breaks.");
-      const f = text.split("/");
-      if (f.length !== 6) return fail(null, "A seed has 6 parts separated by \"/\" (size/magnet/mirror/tileset/palette/code), found " + f.length + ".");
+      // Old seeds separated the fields with "/" (and always contain it; "/" is not a symbol any more). New seeds use ",".
+      const legacy = text.includes("/");
+      res.legacy = legacy;
+      const f = text.split(legacy ? "/" : ",");
+      if (f.length !== 6) return fail(null, "A seed has 6 parts separated by \"" + (legacy ? "/" : ",") + "\" (size,magnet,mirror,tileset,palette,code), found " + f.length + ".");
       const [sizeS, magS, mirS, tsS, palS, codeS] = f;
       const size = parseSize(sizeS);
       if (!size) return fail("size", "Size \"" + sizeS + "\" is not valid (use 3v3, SD or WxH with 1-" + MAX_DIM + " each).");
       res.size = size;
-      const magnet = parseMagnet(magS, size.w, size.h);
-      if (magnet === undefined) return fail("magnet", "Magnet \"" + magS + "\" is not valid (x, or col,row with an optional ,2 / ,3 / ,4 inside the " + size.w + "x" + size.h + " grid).");
+      const magnet = parseMagnet(magS, size.w, size.h, legacy);
+      if (magnet === undefined) return fail("magnet", "Magnet \"" + magS + "\" is not valid (x, or col.row with an optional .2 / .3 / .4 inside the " + size.w + "x" + size.h + " grid).");
       res.magnet = magnet;
       if (!Object.prototype.hasOwnProperty.call(CLASS_FLAGS, mirS)) return fail("mirror", "Mirror \"" + mirS + "\" is not valid (use d, h, v, 4 or a).");
       res.mirror = mirS;
@@ -637,7 +649,7 @@
     OFFICIAL_SYMBOL_NAMES, SYMBOL_UNIVERSE, officialEntries, globalEntries, buildRegistry, tableSymbols, proposeSymbols, proposalSql, globalMemberFolders, globalSymbolOfRef, sameTile, symbolConflicts, freeSymbols,
     globalSymbol, globalRefsForSymbol, isValidSymbol,
     effectiveSums, effectiveCenter, magnetFromApp, defaultMagnetSize, imagesOf, regionCells, detectMirror,
-    encodeSize, parseSize, encodeMagnet, parseMagnet, bitsToBase62, base62ToBits,
+    BANNED_SYMBOLS, seedFragment, encodeSize, parseSize, encodeMagnet, parseMagnet, bitsToBase62, base62ToBits,
     encode, decode, extractSeed, symbolizeGrid, blankSummary, indexBySymbol, resolveSymbols, gridToRefs,
   };
 });

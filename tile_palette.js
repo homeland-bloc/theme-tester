@@ -112,6 +112,9 @@
   const OFFICIAL_SYMBOLS = Object.freeze({
     M: "Wall1", X: "Wall2", Y: "Crate", C: "Barrel", F: "Bush", T: "Cactus", B: "Skull", N: "Fence", n: "Fence 5v5", W: "Water", a: "Rope",
   });
+  // Seeds separate their fields with "," (and old seeds with "/"), so neither can be a tile symbol; whitespace and control characters cannot either.
+  const BANNED_SYMBOLS = Object.freeze([",", "/"]);
+  const isBannedSymbol = ch => typeof ch === "string" && (BANNED_SYMBOLS.includes(ch) || /[\s\p{C}]/u.test(ch));
   const isReservedSymbol = ch => Object.prototype.hasOwnProperty.call(RESERVED_SYMBOLS, ch);
   const symbolForSpecial = ref => (ref === WARN_REF ? SYMBOL_WARN : ref === SPACE_REF ? SYMBOL_SPACE : null);
   const specialForSymbol = ch => (isReservedSymbol(ch) ? RESERVED_SYMBOLS[ch] : null);
@@ -120,7 +123,7 @@
   // table's symbols, passed by the caller), never a digit. null when exhausted.
   const suggestSymbol = (used, alsoTaken) => {
     const taken = new Set([...(used || []), ...(alsoTaken || [])]);
-    return SUGGESTION_POOL.find(ch => !taken.has(ch) && !isReservedSymbol(ch) && !(ch in OFFICIAL_SYMBOLS)) ?? null;
+    return SUGGESTION_POOL.find(ch => !taken.has(ch) && !isReservedSymbol(ch) && !isBannedSymbol(ch) && !(ch in OFFICIAL_SYMBOLS)) ?? null;
   };
 
   // ── Counting ──────────────────────────────────────────────────────────
@@ -211,7 +214,7 @@
     makeRef, parseRef, isRef, refKind,
     createPalette, clonePalette, indexOfRef, paletteIndexFor, refAt,
     usedIndexes, removeUnused, compactForExport, remapEntry, countRefs,
-    SYMBOL_WARN, SYMBOL_SPACE, RESERVED_SYMBOLS, OFFICIAL_SYMBOLS, isReservedSymbol, symbolForSpecial, specialForSymbol, suggestSymbol,
+    SYMBOL_WARN, SYMBOL_SPACE, RESERVED_SYMBOLS, OFFICIAL_SYMBOLS, BANNED_SYMBOLS, isBannedSymbol, isReservedSymbol, symbolForSpecial, specialForSymbol, suggestSymbol,
     encodeForStorage, decodeFromStorage,
     planSwitch, applySwitchPlan,
   };

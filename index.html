@@ -6008,7 +6008,7 @@ function App() {
       return { enc: MapSeed.encode({ w: gridW, h: gridH, grid: sym.grid, magnet, tileset: ts.seed_id }), blanks: sym.blanks };
     } catch (e) { return { error: "Could not build a seed: " + (e && e.message ? e.message : e) }; }
   };
-  const seedShareLink = seed => window.location.origin + window.location.pathname + window.location.search + "#seed=" + encodeURIComponent(seed);
+  const seedShareLink = seed => window.location.origin + window.location.pathname + window.location.search + MapSeed.seedFragment(seed); // written plain: "," and "." are never percent-encoded
   const copySeed = async kind => {
     const b = buildSeed();
     if (b.error) { setSeedStatus({ ok: false, text: b.error }); return; }
@@ -7627,17 +7627,17 @@ function App() {
               <div data-seed-help-modal style={{ marginTop: 6 }}>
             <div style={{ fontSize: 12, color: C.text, lineHeight: 1.6, display: "flex", flexDirection: "column", gap: 6 }}>
               <p style={{ margin: 0 }}>A seed is a short piece of text that holds a whole map. Copy it to share a map, paste it into <b>Import seed</b> to open one. A share link does the same: opening it signs you in if needed and then loads the map.</p>
-              <p style={{ margin: 0, fontFamily: "monospace", fontSize: 11 }}>size / magnet / mirror / tileset / palette / code</p>
+              <p style={{ margin: 0, fontFamily: "monospace", fontSize: 11 }}>size,magnet,mirror,tileset,palette,code</p>
               <ul style={{ margin: 0, paddingLeft: 18 }}>
                 <li><b>size</b>: <code>3v3</code> = 21x33, <code>SD</code> = 60x60, otherwise <code>WxH</code>.</li>
-                <li><b>magnet</b>: <code>x</code> = default centre, otherwise <code>col,row</code> (0-based), plus <code>,2</code> (2x2), <code>,3</code> (2x1) or <code>,4</code> (1x2) when the magnet is not 1x1.</li>
+                <li><b>magnet</b>: <code>x</code> = default centre, otherwise <code>col.row</code> (0-based), plus <code>.2</code> (2x2), <code>.3</code> (2x1) or <code>.4</code> (1x2) when the magnet is not 1x1.</li>
                 <li><b>mirror</b>: the strongest symmetry the map really has: <code>h</code> left-right, <code>v</code> top-bottom, <code>d</code> 180-degree central, <code>4</code> all three, <code>a</code> none. A symmetric map only stores one half or quarter.</li>
                 <li><b>tileset</b>: the number of the tileset the symbols belong to. An unknown number falls back to the default tileset.</li>
-                <li><b>palette</b>: the tile symbols used on the map, most used first (case matters). Every tile has one character; the dictionary below lists them all (the warn tile is <code>A</code>, the space tile <code>S</code>).</li>
+                <li><b>palette</b>: the tile symbols used on the map, most used first (case matters). Every tile has one character, never a comma or a slash; the dictionary below lists them all (the warn tile is <code>A</code>, the space tile <code>S</code>).</li>
                 <li><b>code</b>: the cells, as runs of the same tile, packed into letters and digits.</li>
               </ul>
               <p style={{ margin: 0 }}>Tiles without a symbol and local uploads cannot be shared: they become empty cells (the app tells you how many). Importing replaces the current map, size, magnet and mirroring in one undo step. If one symbol fits several tiles you are asked which one you mean.</p>
-              <p style={{ margin: 0, color: C.muted, fontSize: 11 }}>Example: <code>3v3/x/4/0//8ZX</code> is an empty 21x33 map on tileset 0.</p>
+              <p style={{ margin: 0, color: C.muted, fontSize: 11 }}>Example: <code>3v3,x,4,0,,8ZX</code> is an empty 21x33 map on tileset 0. Seeds from older versions (with <code>/</code> between the parts) still import.</p>
               <details data-seed-help-dict><summary style={{ cursor: "pointer", fontWeight: 700, color: C.accent }}>Symbol dictionary</summary><div style={{ marginTop: 6 }}><SymbolDictionaryList registry={symbolRegistry} /></div></details>
             </div>
               </div>

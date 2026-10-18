@@ -105,7 +105,7 @@ const TILES = {
     assert.strictEqual(await page.locator("[data-seed-input]").count(), 0);
     await page.click("[data-map-seed-open]");
     for (const sel of ["[data-seed-input]", "[data-seed-copy]", "[data-seed-link]", "[data-seed-import]", "[data-seed-clear]", "[data-seed-help]"]) assert.ok(await page.locator(sel).isVisible(), sel);
-    await page.fill("[data-seed-input]", "3v3/x/4/0//8ZX");
+    await page.fill("[data-seed-input]", "3v3,x,4,0,,8ZX");
     await page.waitForSelector("[data-seed-breakdown]");
     assert.ok(/21 x 33/.test(await page.textContent("[data-seed-breakdown]")));
     await page.click("[data-seed-clear]");
@@ -113,7 +113,7 @@ const TILES = {
     assert.strictEqual(await page.locator("[data-seed-breakdown]").count(), 0);
     assert.ok(await page.locator("[data-seed-import]").isDisabled());
     await page.click("[data-seed-copy]"); await settle(page);
-    assert.strictEqual(await page.evaluate(() => navigator.clipboard.readText()), "3v3/x/4/0//8ZX");
+    assert.strictEqual(await page.evaluate(() => navigator.clipboard.readText()), "3v3,x,4,0,,8ZX");
     await page.click("[data-seed-box-close]");
     assert.strictEqual(await page.locator("[data-seed-box]").count(), 0);
     assert.deepStrictEqual(clean(logs), []);
