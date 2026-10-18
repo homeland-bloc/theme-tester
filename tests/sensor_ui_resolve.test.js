@@ -65,4 +65,14 @@ test("resolveAcross is exact (case matters) and groupRows splits folder members 
   assert.deepStrictEqual(g.plain.map(e => e.codename).sort(), ["Pot_loose", "Wall1"]);
 });
 
+test("orderEntries: plain tiles and folders together by lowest sortIndex; ties plain, folder, name", () => {
+  const flat = (codename, sortIndex) => ({ type: "flat", tile: { codename, sortIndex } });
+  const folder = (label, ...idx) => ({ type: "folder", label, tiles: idx.map(sortIndex => ({ sortIndex })) });
+  const out = U.orderEntries([folder("Walls", 5, 3), flat("Zed", 1), folder("Alpha", 1), flat("Bee", 3), flat("Ace", 3), folder("Late", 9), flat("Mid", 4), folder("Empty")]);
+  assert.deepStrictEqual(out.map(e => e.type === "flat" ? e.tile.codename : "[" + e.label + "]"), ["Zed", "[Alpha]", "Ace", "Bee", "[Walls]", "Mid", "[Late]", "[Empty]"]);
+  // folders are no longer always after the plain tiles
+  assert.strictEqual(out.findIndex(e => e.type === "folder") < out.findIndex(e => e.type === "flat" && e.tile.codename === "Mid"), true);
+  assert.deepStrictEqual(U.orderEntries(null), []);
+});
+
 console.log(`${passed} passed`);

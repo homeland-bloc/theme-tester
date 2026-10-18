@@ -3376,6 +3376,7 @@ function App() {
 
   const getDefaultMultiplier = t => {
     if (t?.dbSizeMultiplier != null) return Number(t.dbSizeMultiplier);
+    if (t?.isDb || t?.isSensor) return 1.0; // DB and sensor tiles: the DB value is authoritative; null = 1. The path rules below are for global manifest tiles only.
     if (!t?.src || t.src.startsWith('data:')) return 1.0;
     const s = t.src;
     // Spawns
@@ -3407,6 +3408,7 @@ function App() {
   // Returns { ox, oy } in % (100 = one full cell width/height). Positive ox=right, positive oy=down.
   const getDefaultOffset = t => {
     if (t?.dbOffsetX != null && t?.dbOffsetY != null) return { ox: Number(t.dbOffsetX), oy: Number(t.dbOffsetY) };
+    if (t?.isDb || t?.isSensor) return { ox: 0, oy: 0 }; // DB and sensor tiles: no DB value = no offset; path rules are for global manifest tiles only
     if (!t?.src || t.src.startsWith('data:')) return { ox: 0, oy: 0 };
     const s = t.src;
     // Jumppads: +50% H, +66% V (sprite anchor is above center)
@@ -3716,7 +3718,7 @@ function App() {
           <span style={{ fontSize: 10, fontWeight: 700, color: SENSOR_YELLOW, letterSpacing: 0.5 }}>✨ {entry.label}</span>
           <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
             {sensorFolders.get(sensor.ref)?.rerollable && <button data-sensor-reroll-panel={sensor.ref} onClick={() => rerollFolder(sensor.ref)} style={{ ...sensorBtnStyle(SENSOR_YELLOW), padding: "0 6px", fontSize: 12 }} title="Reroll this folder's tied picks (not an undo step)">🎲</button>}
-            {hasWarn && <button data-sensor-warn={sensor.ref} onClick={() => setSensorWarnFolder(sensor)} style={{ ...sensorBtnStyle(SENSOR_YELLOW), padding: "0 6px", fontSize: 12 }} title={sensor.warnings.some(w => w.level === "warning") ? "The variants disagree on the symbol" : sensor.warnings.length ? "Variants differ in flags, size or offsets" : "Some tiles have no sensor code"}>⚖️</button>}
+            {hasWarn && canEditTile(tilesByRefRef.current.get(sensor.ref)) && <button data-sensor-warn={sensor.ref} onClick={() => setSensorWarnFolder(sensor)} style={{ ...sensorBtnStyle(SENSOR_YELLOW), padding: "0 6px", fontSize: 12 }} title={sensor.warnings.some(w => w.level === "warning") ? "The variants disagree on the symbol" : sensor.warnings.length ? "Variants differ in flags, size or offsets" : "Some tiles have no sensor code"}>⚖️</button>}
             <button onClick={() => setOpenFolderKey(null)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 15, lineHeight: 1, padding: "0 2px" }}>×</button>
           </span>
         </div>
@@ -3803,6 +3805,7 @@ function App() {
           if (sensor) flatTiles.push(buildSensorTile(sensor));
           entries.push({ type: 'folder', key: `${tsDef.name}/${key}`, label: key, tiles, sensor });
         });
+        entries.splice(0, entries.length, ...SensorUI.orderEntries(entries)); // plain tiles and folders together by lowest sortIndex
         const cnt = entries.reduce((n, e) => n + (e.tiles?.length ?? 1), 0);
         entriesPerTs.push({ name: tsDef.name, entries, count: cnt, tilesetId: tsDef.id, tilesetOwnerId: tsDef.owner_id });
         tsCount += cnt;

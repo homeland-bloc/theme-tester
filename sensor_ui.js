@@ -290,6 +290,15 @@
     return { matched, mismatches, foreign };
   };
 
+  // ── Panel order ───────────────────────────────────────────────────────────────────────────────────────
+  // Plain tiles and folders are listed TOGETHER by lowest sortIndex (a folder's is the lowest of its tiles). Ties: plain tile first, then
+  // folder, then name. entries: { type: "flat", tile } | { type: "folder", label, tiles }. -> a new sorted array.
+  const entrySortIndex = e => (e.type === "flat" ? (e.tile && e.tile.sortIndex) ?? 0 : Math.min(...((e.tiles || []).map(t => t.sortIndex ?? 0)), Infinity));
+  const entryName = e => String(e.type === "flat" ? ((e.tile && (e.tile.codename ?? e.tile.label)) ?? "") : (e.label ?? ""));
+  const orderEntries = entries => (entries || []).map((e, i) => ({ e, i, k: entrySortIndex(e) }))
+    .sort((a, b) => ((a.k === Infinity ? 1e15 : a.k) - (b.k === Infinity ? 1e15 : b.k)) || ((a.e.type === "flat" ? 0 : 1) - (b.e.type === "flat" ? 0 : 1)) || entryName(a.e).localeCompare(entryName(b.e)) || (a.i - b.i))
+    .map(x => x.e);
+
   // ── Plain <-> sensor folder resolution (tileset switch, saved map load) ──────────────────────────────
   // A palette entry of one tileset finds its stand-in in another, across the plain / sensor divide:
   //   plain tile    -> 1. a plain tile with the same codename   2. a sensor folder whose folder key equals the codename   3. the same symbol
@@ -380,6 +389,6 @@
     preloadImages, progressLabel, imageOps, withFreshVersion,
     variantOwners, hideSensorVariants, canonicalRef, canonicalRefs, folderPreviewTiles,
     deriveLayer, rerollOf, opsToCss, opsLabel, composePlan, composeKey, transformLabel, recipeLines, FALLBACK_LABEL,
-    planSensorSwitch, resolveLoadedSensorRef, groupRows, targetIndex, resolveAcross, planSwitchResolved,
+    planSensorSwitch, resolveLoadedSensorRef, groupRows, targetIndex, resolveAcross, planSwitchResolved, orderEntries,
   };
 });
