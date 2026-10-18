@@ -63,7 +63,18 @@
 
     <script>
         const WORKER_URL = 'https://oph.opheliapp.workers.dev';
-        const DISCORD_REDIRECT_URI = 'https://bicipikay.github.io/ophelia/auth/callback.html';
+
+        // <oauth-state-check>
+        // I-1: the "state" Discord sends back must equal the one this browser stored before the redirect (CSRF / login-fixation guard).
+        // Missing on either side, or any difference, fails. Constant-time compare over the full length.
+        function checkOAuthState(stored, returned) {
+            if (typeof stored !== 'string' || typeof returned !== 'string' || !stored || !returned) return false;
+            if (stored.length !== returned.length) return false;
+            let diff = 0;
+            for (let i = 0; i < stored.length; i++) diff |= stored.charCodeAt(i) ^ returned.charCodeAt(i);
+            return diff === 0;
+        }
+        // </oauth-state-check>
 
         async function handleCallback() {
             const params = new URLSearchParams(window.location.search);
@@ -86,6 +97,18 @@
                 return;
             }
 
+            // I-1: verify the state BEFORE anything else is done with the code. The stored values are single-use.
+            const storedState = sessionStorage.getItem('oph_oauth_state');
+            sessionStorage.removeItem('oph_oauth_state');
+            if (!checkOAuthState(storedState, params.get('state'))) {
+                sessionStorage.removeItem('pkce_verifier');
+                document.getElementById('status').textContent = 'Login aborted';
+                document.getElementById('message').textContent = 'The login response did not match this browser\'s login attempt (state mismatch), so it was rejected. Please start the login again from the app.';
+                document.getElementById('message').className = 'error';
+                setTimeout(() => window.location.href = '../index.html', 4000);
+                return;
+            }
+
             const codeVerifier = sessionStorage.getItem('pkce_verifier');
             if (!codeVerifier) {
                 document.getElementById('status').textContent = 'Login session expired';
@@ -102,8 +125,7 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         code,
-                        code_verifier: codeVerifier,
-                        redirect_uri: DISCORD_REDIRECT_URI
+                        code_verifier: codeVerifier
                     })
                 });
 

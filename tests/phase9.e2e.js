@@ -398,3 +398,46 @@ const assert = require("assert");
   });
   await hd.finish();
 })();
+
+// ── Security phase: OAuth state ──────────────────────────────────────────────────────────────────────
+(async () => {
+  const assertS = require("assert");
+  const hs = await H.start({ tilesets: TILESETS, tiles: TILES, role: "user" });
+  await hs.test("login: the authorize URL carries a random state that is also kept in sessionStorage next to the PKCE verifier", async () => {
+    const { page, ctx } = await hs.newPage({ user: null, hash: "#seed=3v3%2Fx%2F4%2F0%2F%2F8ZX" });
+    await page.waitForSelector("text=Login with Discord", { timeout: 30000 });
+    let seen = null;
+    await page.route("https://discord.com/oauth2/authorize*", r => { seen = new URL(r.request().url()); r.fulfill({ status: 302, headers: { location: hs.ORIGIN + "/index.html" } }); }); // back to the app so sessionStorage is readable
+    await page.click("text=Login with Discord");
+    await page.waitForFunction(() => sessionStorage.getItem("oph_oauth_state"));
+    await page.waitForTimeout(300);
+    const stored = await page.evaluate(() => ({ state: sessionStorage.getItem("oph_oauth_state"), verifier: sessionStorage.getItem("pkce_verifier"), ret: sessionStorage.getItem("oph_return") }));
+    assertS.ok(seen, "Discord authorize was requested");
+    assertS.strictEqual(seen.searchParams.get("state"), stored.state);
+    assertS.ok(/^[A-Za-z0-9_-]{20,}$/.test(stored.state), stored.state);
+    assertS.ok(stored.verifier && stored.verifier !== stored.state);
+    assertS.ok(/seed=/.test(stored.ret), "the deep-link stash is still written");
+    await ctx.close();
+  });
+  await hs.test("callback: a state that does not match aborts with a clear message before any token request; the verifier and state are discarded", async () => {
+    const { page, ctx } = await hs.newPage({ user: null });
+    await page.waitForSelector("text=Login with Discord", { timeout: 30000 });
+    await page.route("https://discord.com/oauth2/authorize*", r => r.fulfill({ status: 302, headers: { location: hs.ORIGIN + "/auth/callback.html?code=stolen&state=WRONG-STATE" } }));
+    hs.requests.length = 0;
+    await page.click("text=Login with Discord");
+    await page.waitForSelector("text=Login aborted", { timeout: 15000 });
+    assertS.ok(/state mismatch/.test(await page.textContent("body")));
+    assertS.ok(!hs.requests.some(r => r.path === "/discord-token"), "the code was never exchanged");
+    assertS.deepStrictEqual(await page.evaluate(() => [sessionStorage.getItem("pkce_verifier"), sessionStorage.getItem("oph_oauth_state")]), [null, null]);
+    await ctx.close();
+  });
+  await hs.test("callback: no state at all (an old or forged link) is refused too", async () => {
+    const { page, ctx } = await hs.newPage({ user: null });
+    await page.waitForSelector("text=Login with Discord", { timeout: 30000 });
+    await page.route("https://discord.com/oauth2/authorize*", r => r.fulfill({ status: 302, headers: { location: hs.ORIGIN + "/auth/callback.html?code=x" } }));
+    await page.click("text=Login with Discord");
+    await page.waitForSelector("text=Login aborted", { timeout: 15000 });
+    await ctx.close();
+  });
+  await hs.finish();
+})();

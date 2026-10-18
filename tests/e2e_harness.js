@@ -67,7 +67,7 @@ const start = async ({ tilesets, tiles, role = "user", onWorker } = {}) => {
       if (url.host === "www.gstatic.com" && url.pathname.includes("firebase")) return reply(200, url.pathname.includes("app-compat") ? FIREBASE_STUB : "", "text/javascript");
       if (url.host === "fonts.googleapis.com" || url.host === "fonts.gstatic.com") return reply(200, "", "text/css");
       if (url.host === "stub.invalid") return reply(200, PNG, "image/png");
-      if (url.host === "discord.com" && url.pathname === "/oauth2/authorize") return route.fulfill({ status: 302, headers: { location: ORIGIN + "/auth/callback.html?code=stub-code" } });
+      if (url.host === "discord.com" && url.pathname === "/oauth2/authorize") return route.fulfill({ status: 302, headers: { location: ORIGIN + "/auth/callback.html?code=stub-code" + (url.searchParams.get("state") ? "&state=" + encodeURIComponent(url.searchParams.get("state")) : "") } });
       if (url.host === WORKER) {
         const q = url.searchParams;
         requests.push({ method: route.request().method(), path: url.pathname, query: url.search, body: route.request().postData() });

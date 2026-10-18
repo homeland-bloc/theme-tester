@@ -90,7 +90,7 @@ const test = async (name, fn) => {
       if (url.host === "www.gstatic.com" && url.pathname.includes("firebase")) return reply(200, url.pathname.includes("app-compat") ? FIREBASE_STUB : "", "text/javascript");
       if (url.host === "fonts.googleapis.com" || url.host === "fonts.gstatic.com") return reply(200, "", "text/css");
       if (url.host === "stub.invalid") return reply(200, PNG, "image/png");
-      if (url.host === "discord.com" && url.pathname === "/oauth2/authorize") return route.fulfill({ status: 302, headers: { location: ORIGIN + "/auth/callback.html?code=stub-code" } });
+      if (url.host === "discord.com" && url.pathname === "/oauth2/authorize") return route.fulfill({ status: 302, headers: { location: ORIGIN + "/auth/callback.html?code=stub-code" + (url.searchParams.get("state") ? "&state=" + encodeURIComponent(url.searchParams.get("state")) : "") } });
       if (url.host === WORKER) {
         const q = url.searchParams;
         if (url.pathname === "/rest/v1/tilesets") return reply(200, TILESETS);
