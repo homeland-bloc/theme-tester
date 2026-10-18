@@ -250,7 +250,7 @@ const TILES = {
   await test("smoke: every Tools-section button can be clicked on a map with plain, sensor and global tiles without an error", async () => {
     const { page, ctx, logs } = await newPage({ storage: MIX });
     await ready(page); await settle(page);
-    const tools = ["Single", "Line", "Rectangle", "Fill", "Horizontal", "Vertical", "Diagonal", "Guides", "Block Overwrite", "Offset Centers", "OTG Check", "Replace", "Convert", "Tile Counter", "Hotkeys"];
+    const tools = ["Single", "Line", "Rectangle", "Fill", "Horizontal", "Vertical", "Diagonal", "Guides", "Mirror Spawns", "Block Overwrite", "Offset Centers", "OTG Check", "Replace", "Convert", "Tile Counter", "Hotkeys"];
     const failed = [];
     for (const label of tools) {
       try { await clickTool(page, label); await closeModal(page); } catch (e) { failed.push(label + ": " + String(e.message).split("\n")[0]); }
@@ -265,6 +265,47 @@ const TILES = {
     }
     const errs = clean(logs); if (errs.length) failed.push("end -> " + errs[0].split("\n")[0]);
     assert.deepStrictEqual(failed, []);
+    await ctx.close();
+  });
+
+  await test("Tools: no Tools Settings modal; Mirror Spawns is its own starrable toggle (on by default); Memory moved to the Tiles settings", async () => {
+    const { page, ctx, logs } = await newPage();
+    await ready(page);
+    assert.strictEqual(await page.locator("[title='Mirroring settings']").count(), 0, "the Tools gear is gone");
+    assert.strictEqual(await page.getAttribute("[data-mirror-spawns]", "aria-pressed"), "true");
+    await page.click("[data-mirror-spawns]");
+    assert.strictEqual(await page.getAttribute("[data-mirror-spawns]", "aria-pressed"), "false");
+    await page.click("[data-mirror-spawns]");
+    assert.strictEqual(await page.getAttribute("[data-mirror-spawns]", "aria-pressed"), "true");
+    // starrable through its info modal (a badge emoji is the shortcut)
+    await page.locator("[data-mirror-spawns] + span").click();
+    await page.waitForSelector(".modal-box >> text=Mirror Spawns");
+    await page.locator(".modal-box label:has-text('Starred shortcut') input").check();
+    await page.click(".modal-box button:has-text('×')");
+    assert.ok(await page.locator("[title^='Mirror Spawns'], button:has-text('🚩')").count() > 0, "the starred shortcut shows the 🚩 badge");
+    assert.ok(JSON.parse(await page.evaluate(() => localStorage.getItem("oph_starred") || "[]")).includes("mirrorSpawns"));
+    // Memory… is reachable from the Tiles settings modal
+    await page.click("[title='Tile panel settings']");
+    await page.click("[data-memory-open]");
+    await page.waitForSelector(".modal-box >> text=Storage Usage");
+    assert.deepStrictEqual(clean(logs), []);
+    await ctx.close();
+  });
+
+  await test("mobile: the tileset list extends over the tiles area (wider than the panel) and stays on screen", async () => {
+    const { page, ctx } = await newPage({ viewport: { width: 390, height: 800 } });
+    await page.waitForSelector("text=▶", { timeout: 30000 }); await settle(page);
+    await page.locator("text=▶").first().click();
+    await page.waitForSelector("[data-ts-toggle]");
+    const btnBox = await page.locator("[data-ts-toggle]").boundingBox();
+    await page.click("[data-ts-toggle]");
+    await page.waitForSelector("[data-ts-list]");
+    const list = await page.locator("[data-ts-list]").boundingBox();
+    assert.ok(list.width > btnBox.width + 20, `list ${list.width} wider than the button ${btnBox.width}`);
+    assert.ok(list.x >= 0 && list.x + list.width <= 390, "inside the screen");
+    const opt = await page.locator("[data-ts-option='Snowtel Gifts']").boundingBox();
+    const sw = await page.locator("[data-ts-option='Snowtel Gifts'] [data-ts-bg]").boundingBox();
+    assert.ok(sw.x + sw.width <= list.x + list.width && opt.width >= 200, "colour squares and name fit");
     await ctx.close();
   });
 
@@ -291,4 +332,69 @@ const TILES = {
     await ctx.close();
   });
   await ha.finish();
+})();
+
+// ── Duplicate tile ───────────────────────────────────────────────────────────────────────────────────
+const assert = require("assert");
+(async () => {
+  let failUpload = false;
+  const hd = await H.start({ tilesets: TILESETS, tiles: TILES, role: "admin", onWorker: async (route, url, reply) => {
+    const m = route.request().method();
+    if (url.pathname === "/rest/v1/tiles" && m === "POST") { reply(201, [{ id: "new-row-1" }]); return true; }
+    if (url.pathname === "/rest/v1/tiles" && m === "DELETE") { reply(204, ""); return true; }
+    if (url.pathname === "/github/upload") { if (failUpload) reply(500, { error: "boom" }); else reply(200, { ok: true }); return true; }
+    return false;
+  } });
+  const BARS = "s:ts-7|Bars";
+  const store = { oph_active_ts: JSON.stringify("Desert") };
+  const openVariantInfo = async page => {
+    await page.waitForSelector(`[data-sensor-unfold="${BARS}"]`);
+    await page.click(`[data-sensor-unfold="${BARS}"]`);
+    await page.click(`[data-tile-info="d:${U(5, "b")}"]`); // Bars_a
+    await page.waitForSelector("[data-duplicate]");
+  };
+  await hd.test("Duplicate tile > This tileset: DB row first (new codename, same pool, flags, symbol, next sortIndex), then its own image file via /github/upload", async () => {
+    const { page, ctx } = await hd.newPage({ storage: store });
+    await hd.ready(page); await hd.settle(page);
+    await openVariantInfo(page);
+    hd.requests.length = 0;
+    await page.click("[data-duplicate-tileset]");
+    await page.waitForFunction(() => /Created Bars_a_copy \(Bars_11111111\.png\)/.test(document.body.textContent));
+    const posts = hd.requests.filter(r => r.method === "POST" && (r.path === "/rest/v1/tiles" || r.path === "/github/upload"));
+    assert.deepStrictEqual(posts.map(r => r.path), ["/rest/v1/tiles", "/github/upload"], "row first, then the file");
+    const row = JSON.parse(posts[0].body), up = JSON.parse(posts[1].body);
+    assert.deepStrictEqual([row.tileset_id, row.codename, row.folder_key, row.sensor_code, row.symbol, row.sort_index], ["ts-7", "Bars_a_copy", "Bars", "11111111", "j", 13]);
+    assert.ok(row.image_url.includes("Bars_11111111.png") && !row.image_url.includes("stub.invalid"), row.image_url);
+    assert.strictEqual(up.filePath, "Resources/Desert/Bars_11111111.png");
+    assert.strictEqual(up.overwrite, false);
+    assert.ok(up.contentBase64 && up.contentBase64.length > 20, "the image bytes are sent");
+    await ctx.close();
+  });
+  await hd.test("Duplicate tile: a failed upload deletes the new row again and says so", async () => {
+    failUpload = true;
+    const { page, ctx } = await hd.newPage({ storage: store });
+    await hd.ready(page); await hd.settle(page);
+    await openVariantInfo(page);
+    hd.requests.length = 0;
+    await page.click("[data-duplicate-tileset]");
+    await page.waitForSelector("[data-duplicate-msg]");
+    assert.ok(/the copy was not created/.test(await page.textContent("[data-duplicate-msg]")), await page.textContent("[data-duplicate-msg]"));
+    assert.ok(hd.requests.some(r => r.method === "DELETE" && r.query.includes("id=eq.new-row-1")), "cleanup DELETE sent");
+    failUpload = false;
+    await ctx.close();
+  });
+  await hd.test("Duplicate tile > Local uploads: a new u:<n> tile appears (canvas copy, max 256px)", async () => {
+    const { page, ctx } = await hd.newPage({ storage: store });
+    await hd.ready(page); await hd.settle(page);
+    await openVariantInfo(page);
+    await page.click("[data-duplicate-local]");
+    await page.waitForSelector("[data-duplicate-msg]");
+    assert.ok(/Added to Local uploads \(1x1\)/.test(await page.textContent("[data-duplicate-msg]")), await page.textContent("[data-duplicate-msg]"));
+    await hd.settle(page);
+    const tiles = JSON.parse(await page.evaluate(() => localStorage.getItem("oph_user_tiles") || "[]"));
+    assert.strictEqual(tiles.length, 1);
+    assert.ok(/^data:image\/png/.test(tiles[0].src));
+    await ctx.close();
+  });
+  await hd.finish();
 })();

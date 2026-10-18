@@ -75,4 +75,18 @@ test("orderEntries: plain tiles and folders together by lowest sortIndex; ties p
   assert.deepStrictEqual(U.orderEntries(null), []);
 });
 
+test("duplicate: codename _copy, numeric suffix when taken; next sortIndex; the row body copies the pool, flags, size, offsets and symbol", () => {
+  assert.strictEqual(U.duplicateCodename("Crate", new Set(["Crate"])), "Crate_copy");
+  assert.strictEqual(U.duplicateCodename("Crate", new Set(["Crate_copy"])), "Crate_copy2");
+  assert.strictEqual(U.duplicateCodename("Crate", new Set(["Crate_copy", "Crate_copy2"])), "Crate_copy3");
+  assert.strictEqual(U.nextSortIndex([{ sort_index: 4 }, { sort_index: 9 }, { sort_index: null }]), 10);
+  assert.strictEqual(U.nextSortIndex([]), 0);
+  const orig = { id: "x", codename: "Bars_a", image_url: "https://raw/old.png", sort_index: 3, folder_key: "Bars", sensor_code: "11111111", sensor_roll: 2, rotatable: true, flippable: false, otg_passable: true, mirror_offset: false, bottom_render: true, priority: false, auto_shadow: true, size_multiplier: 1.5, offset_x: 3, offset_y: null, symbol: "j", last_updated_by: "u" };
+  const body = U.duplicateRowBody({ row: orig, tilesetId: "ts", codename: "Bars_a_copy", imageUrl: "https://raw/new.png", sortIndex: 11 });
+  assert.deepStrictEqual(body, { tileset_id: "ts", codename: "Bars_a_copy", image_url: "https://raw/new.png", sort_index: 11, folder_key: "Bars", sensor_code: "11111111", sensor_roll: 2, rotatable: true, flippable: false, otg_passable: true, mirror_offset: false, bottom_render: true, priority: false, auto_shadow: true, size_multiplier: 1.5, offset_x: 3, offset_y: null, symbol: "j" });
+  assert.ok(!("id" in body) && !("last_updated_by" in body), "no id or audit columns are copied");
+  assert.deepStrictEqual(U.localCopySize(512, 128), { w: 256, h: 64 });
+  assert.deepStrictEqual(U.localCopySize(100, 40), { w: 100, h: 40 });
+});
+
 console.log(`${passed} passed`);

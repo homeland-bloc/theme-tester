@@ -295,6 +295,27 @@
     return { matched, mismatches, foreign };
   };
 
+  // ── Duplicate tile ────────────────────────────────────────────────────────────────────────────────────
+  // The copy of a DB tile joins the original's sensor pool (same folder_key and sensor_code) and keeps its flags, size, offsets and symbol.
+  const DUPLICATE_COLUMNS = ["folder_key", "sensor_code", "sensor_roll", "rotatable", "flippable", "otg_passable", "mirror_offset", "bottom_render", "priority", "auto_shadow", "size_multiplier", "offset_x", "offset_y", "symbol"];
+  // "<name>_copy", else "<name>_copy2", "_copy3" ... (taken: Set of the tileset's codenames).
+  const duplicateCodename = (codename, taken) => {
+    const base = `${codename}_copy`;
+    if (!taken.has(base)) return base;
+    for (let n = 2; ; n++) if (!taken.has(`${base}${n}`)) return `${base}${n}`;
+  };
+  // 1 + the highest sort_index of the tileset (0 for an empty one).
+  const nextSortIndex = rows => (rows || []).reduce((m, r) => Math.max(m, Number(r.sort_index) || 0), -1) + 1;
+  // Body of the INSERT for the copy: the original's DUPLICATE_COLUMNS (null kept as null), a NEW codename, image_url and sort_index.
+  const duplicateRowBody = ({ row, tilesetId, codename, imageUrl, sortIndex }) => {
+    const body = { tileset_id: tilesetId, codename, image_url: imageUrl, sort_index: sortIndex };
+    for (const k of DUPLICATE_COLUMNS) if (row[k] !== undefined) body[k] = row[k];
+    return body;
+  };
+  // Local uploads are kept in localStorage, so a copy is scaled down to fit this many px on its longer side.
+  const LOCAL_UPLOAD_MAX_PX = 256;
+  const localCopySize = (w, h) => { const k = Math.min(1, LOCAL_UPLOAD_MAX_PX / Math.max(w, h, 1)); return { w: Math.max(1, Math.round(w * k)), h: Math.max(1, Math.round(h * k)) }; };
+
   // ── Panel order ───────────────────────────────────────────────────────────────────────────────────────
   // Plain tiles and folders are listed TOGETHER by lowest sortIndex (a folder's is the lowest of its tiles). Ties: plain tile first, then
   // folder, then name. entries: { type: "flat", tile } | { type: "folder", label, tiles }. -> a new sorted array.
@@ -394,6 +415,6 @@
     preloadImages, progressLabel, imageOps, withFreshVersion,
     variantOwners, hideSensorVariants, canonicalRef, canonicalRefs, folderPreviewTiles,
     deriveLayer, rerollOf, opsToCss, opsLabel, composePlan, composeKey, transformLabel, recipeLines, FALLBACK_LABEL,
-    planSensorSwitch, resolveLoadedSensorRef, groupRows, targetIndex, resolveAcross, planSwitchResolved, orderEntries,
+    planSensorSwitch, resolveLoadedSensorRef, groupRows, targetIndex, resolveAcross, planSwitchResolved, orderEntries, DUPLICATE_COLUMNS, duplicateCodename, nextSortIndex, duplicateRowBody, LOCAL_UPLOAD_MAX_PX, localCopySize,
   };
 });
