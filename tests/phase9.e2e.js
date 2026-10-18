@@ -8,6 +8,7 @@ const { row } = H;
 const TILESETS = [
   { id: "ts-0", name: "Snowtel Gifts", seed_id: 0, is_published: true, owner_id: "u1", folder_path: "Snow", profiles: { username: "tester" } },
   { id: "ts-7", name: "Desert", seed_id: 7, is_published: true, owner_id: null, folder_path: "Desert", profiles: null },
+  { id: "ts-9", name: "Ancient Hell", seed_id: 9, is_published: true, owner_id: null, folder_path: "Ancient", profiles: null },
 ];
 const U = (n, ts = "a") => `${ts}0000000-0000-4000-8000-0000000000${String(n).padStart(2, "0")}`;
 const TILES = {
@@ -24,6 +25,13 @@ const TILES = {
   "ts-7": [
     row(U(1, "b"), "ts-7", "Wall1", { symbol: "M", sort_index: 1 }),
     row(U(2, "b"), "ts-7", "Cactus", { symbol: "T", sort_index: 2 }),
+    row(U(3, "b"), "ts-7", "Crate", { symbol: "Y", sort_index: 3 }),
+  ],
+  // Ancient Hell keeps its Crate as a sensor folder
+  "ts-9": [
+    row(U(1, "c"), "ts-9", "Wall1", { symbol: "M", sort_index: 1 }),
+    row(U(2, "c"), "ts-9", "Crate_00000000", { folder_key: "Crate", sensor_code: "00000000", symbol: "Y", sort_index: 2 }),
+    row(U(3, "c"), "ts-9", "Crate_11111111", { folder_key: "Crate", sensor_code: "11111111", symbol: "Y", sort_index: 3 }),
   ],
 };
 
@@ -104,6 +112,26 @@ const TILES = {
     assert.strictEqual(await page.evaluate(() => navigator.clipboard.readText()), "3v3/x/4/0//8ZX");
     await page.click("[data-seed-box-close]");
     assert.strictEqual(await page.locator("[data-seed-box]").count(), 0);
+    assert.deepStrictEqual(clean(logs), []);
+    await ctx.close();
+  });
+
+  const palette = sv => sv.grid.palette;
+  const switchTo = async (page, name) => { await page.click("[data-ts-toggle]"); await page.click(`[data-ts-option="${name}"]`); await settle(page); };
+  const gridWith = refs => ({ oph_gridW: 3, oph_gridH: 3, oph_grid: { v: 2, palette: refs, grid: [[1, 1, null], [null, refs.length > 1 ? 2 : 1, null], [null, null, null]] } });
+
+  await test("tileset switch: a Crate from another tileset becomes the Crate sensor folder, and back to a plain Crate, with no compat modal", async () => {
+    const { page, ctx, logs } = await newPage({ storage: gridWith([`d:${U(2)}`]) });
+    await ready(page); await settle(page);
+    await switchTo(page, "Ancient Hell");
+    assert.strictEqual(await page.locator("[data-compat-modal]").count(), 0);
+    let sv = await h.saved(page);
+    assert.deepStrictEqual(palette(sv), ["s:ts-9|Crate"], JSON.stringify(sv.grid));
+    assert.strictEqual(sv.ts, "Ancient Hell");
+    await switchTo(page, "Desert");
+    assert.strictEqual(await page.locator("[data-compat-modal]").count(), 0);
+    sv = await h.saved(page);
+    assert.deepStrictEqual(palette(sv), [`d:${U(3, "b")}`], "back to the plain Crate of Desert");
     assert.deepStrictEqual(clean(logs), []);
     await ctx.close();
   });

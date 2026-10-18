@@ -4034,14 +4034,12 @@ function App() {
     return { src: d.tile.blobSrc ?? d.tile.src, css: SensorUI.opsToCss(d.ops), ops: d.ops };
   };
 
-  // Switch plan over the palette: d: entries by codename (planSwitch), s: entries by folder key (planSensorSwitch).
-  // Global s: entries stay. A sensor folder with no namesake in the new tileset goes through the compat flow like any unmatched tile.
-  const planSwitchAll = (oldTsDef, newTsDef, oldRows, newRows) => {
-    const base = planSwitch(paletteRef.current, oldRows, newRows);
-    const keys = new Set((newRows ?? []).filter(r => r.folder_key && r.sensor_code != null).map(r => r.folder_key));
-    const sp = SensorUI.planSensorSwitch(paletteRef.current.refs, oldTsDef?.id ?? null, newTsDef?.id ?? null, keys);
-    return { matched: [...base.matched, ...sp.matched], mismatches: [...base.mismatches, ...sp.mismatches], foreign: [...base.foreign, ...sp.foreign] };
-  };
+  // Switch plan over the palette (SensorUI.planSwitchResolved): a plain tile finds the same codename, else a sensor folder whose key is that
+  // codename, else the same symbol; a sensor folder finds the same key, else a plain tile named like it, else the same symbol. Global entries
+  // stay. Only an entry with no stand-in at all goes through the compat flow.
+  const planSwitchAll = (oldTsDef, newTsDef, oldRows, newRows) => SensorUI.planSwitchResolved({
+    refs: paletteRef.current.refs, oldRows, oldTsId: oldTsDef?.id ?? null, newRows, newTsId: newTsDef?.id ?? null,
+  });
 
   // Switch tileset — updates the tile panel and BG colours, and converts board tiles by codename.
   // Fetches the new tileset's tiles if not yet cached, then rewrites the matching PALETTE ENTRIES (cells stay untouched).
@@ -4460,8 +4458,7 @@ function App() {
     pendingGridLoadRef.current = null; // clear before the state writes so the save effect runs correctly
     const contained = new Map(flatDefaultTiles.map(t => [t.ref, t]));
     userTiles.forEach(t => contained.set(t.ref, t));
-    const activeByCodename = new Map(flatDefaultTiles.filter(t => t.isDb && t.codename).map(t => [t.codename, t]));
-    const activeSensorKeys = new Set(flatDefaultTiles.filter(t => t.isSensor && t.sensorFolder.scope !== SensorUI.SCOPE_GLOBAL).map(t => t.sensorFolder.folderKey));
+    const activeIdx = activeTsDefForLoad ? SensorUI.targetIndex(dbTilesByTsId[activeTsDefForLoad.id], activeTsDefForLoad.id) : null;
     const foreignRowByUuid = new Map();
     Object.entries(dbTilesByTsId).forEach(([tsId, rows]) => {
       if (tsId === activeTsDefForLoad?.id) return;
@@ -4473,13 +4470,15 @@ function App() {
       if (!ref || ref === SPACE_REF || ref === WARN_REF) return;
       if (contained.has(ref)) return;
       const p = parseRef(ref);
-      if (p?.kind === 'd') {
+      if (p?.kind === 'd') { // a tile of another tileset: plain -> plain by codename, else a sensor folder of that name, else the same symbol
         const row = foreignRowByUuid.get(p.key);
-        const target = row?.codename && activeByCodename.get(row.codename);
-        if (target) { const r = remapEntry(pal, ref, target.ref, g); pal = r.palette; g = r.grid; return; }
+        const to = row && SensorUI.resolveAcross({ kind: 'plain', codename: row.codename ?? null, symbol: row.symbol ?? null }, activeIdx);
+        if (to && contained.has(to)) { const r = remapEntry(pal, ref, to, g); pal = r.palette; g = r.grid; return; }
       }
-      if (p?.kind === 's') { // a sensor folder of another tileset: matched by folder key into the active tileset
-        const to = SensorUI.resolveLoadedSensorRef(ref, activeTsDefForLoad?.id ?? null, activeSensorKeys);
+      if (p?.kind === 's') { // a sensor folder of another tileset: same folder key, else a plain tile of that name, else the same symbol
+        const sp = SensorUI.parseSensorRef(ref);
+        const srcFolder = sp && sp.scope !== SensorUI.SCOPE_GLOBAL ? SensorUI.groupRows(dbTilesByTsId[sp.scope], sp.scope).folders.find(f => f.folderKey === sp.folderKey) : null;
+        const to = sp && sp.scope !== SensorUI.SCOPE_GLOBAL && SensorUI.resolveAcross({ kind: 'sensor', folderKey: sp.folderKey, symbol: srcFolder ? srcFolder.symbol : null }, activeIdx);
         if (to && contained.has(to)) { const r = remapEntry(pal, ref, to, g); pal = r.palette; g = r.grid; return; }
       }
       // unresolved: free the entry and empty its cells
@@ -6946,7 +6945,7 @@ function App() {
 
     return (
       <div className="modal-backdrop" onClick={() => setTilesetSwitchPending(null)}>
-        <div className="modal-box" style={{ maxWidth: 480, maxHeight: '80vh', display: 'flex', flexDirection: 'column' }} onClick={e => e.stopPropagation()}>
+        <div className="modal-box" data-compat-modal style={{ maxWidth: 480, maxHeight: '80vh', display: 'flex', flexDirection: 'column' }} onClick={e => e.stopPropagation()}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
             <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Tileset Compatibility</span>
             <button onClick={() => setTilesetSwitchPending(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.muted, fontSize: 18 }}>×</button>
@@ -8072,7 +8071,7 @@ function App() {
                 return (
                   <div style={{ borderBottom: `1px solid ${C.border}`, flexShrink: 0, position: "relative" }}>
                     <div style={{ padding: "0 8px 4px" }}>
-                    <button
+                    <button data-ts-toggle
                       onMouseDown={e => e.stopPropagation()}
                       onClick={() => setTilesetDropOpen(o => !o)}
                       style={{ width: "100%", background: C.panel, color: C.text, border: `1px solid ${C.border}`, borderRadius: 5, fontSize: 11, fontFamily: "'Inter', sans-serif", padding: "3px 6px", cursor: "pointer", outline: "none", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -8090,7 +8089,7 @@ function App() {
                             const nameColor = checked ? C.accentBright : C.text;
                             const ownerUsername = ts.profiles?.username;
                             return (
-                              <label key={ts.name} data-active-ts={checked ? "true" : undefined} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", cursor: "pointer", userSelect: "none" }}
+                              <label key={ts.name} data-ts-option={ts.name} data-active-ts={checked ? "true" : undefined} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", cursor: "pointer", userSelect: "none" }}
                                 onClick={e => { e.preventDefault(); switchTileset(ts.name); setTilesetDropOpen(false); }}>
                                 <input type="checkbox" readOnly checked={checked} style={{ accentColor: C.accent, cursor: "pointer", width: 13, height: 13, pointerEvents: "none" }} />
                                 {(() => { const p = tilesetBg(ts); return (<span data-ts-bg style={{ display: "inline-flex", gap: 2, flexShrink: 0 }}><span style={{ width: 10, height: 10, borderRadius: 2, background: p.bg1, border: `1px solid ${C.border}` }} title="Light background" /><span style={{ width: 10, height: 10, borderRadius: 2, background: p.bg2, border: `1px solid ${C.border}` }} title="Dark background" /></span>); })()}

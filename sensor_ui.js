@@ -290,6 +290,80 @@
     return { matched, mismatches, foreign };
   };
 
+  // ── Plain <-> sensor folder resolution (tileset switch, saved map load) ──────────────────────────────
+  // A palette entry of one tileset finds its stand-in in another, across the plain / sensor divide:
+  //   plain tile    -> 1. a plain tile with the same codename   2. a sensor folder whose folder key equals the codename   3. the same symbol
+  //   sensor folder -> 1. a sensor folder with the same key     2. a plain tile whose codename equals the folder key       3. the same symbol
+  // Only when all three fail is the entry a mismatch (the compat modal). "Same symbol" picks the lowest sortIndex (then ref).
+  // rows are DB rows { id, codename, folder_key, sensor_code, symbol, sort_index }. A sensor folder = rows sharing a folder_key where at least one
+  // has a sensor_code; its rows with a code are the folder, its rows without one are plain (unlabelled) tiles.
+  const groupRows = (rows, tsId) => {
+    const list = (rows || []).slice().sort((a, b) => ((a.sort_index ?? 0) - (b.sort_index ?? 0)) || String(a.id).localeCompare(String(b.id)));
+    const sensorKeys = new Set(list.filter(r => r.folder_key && Sensor.isCode(r.sensor_code)).map(r => r.folder_key));
+    const plain = [], folders = new Map();
+    for (const r of list) {
+      if (r.folder_key && sensorKeys.has(r.folder_key) && Sensor.isCode(r.sensor_code)) {
+        if (!folders.has(r.folder_key)) folders.set(r.folder_key, { ref: sensorRef(tsId, r.folder_key), folderKey: r.folder_key, symbol: r.symbol ?? null, sortIndex: r.sort_index ?? 0 });
+        const f = folders.get(r.folder_key);
+        if (f.symbol == null && r.symbol != null) f.symbol = r.symbol;
+        f.sortIndex = Math.min(f.sortIndex, r.sort_index ?? 0);
+      } else plain.push({ ref: TilePalette.makeRef("d", r.id), codename: r.codename ?? null, symbol: r.symbol ?? null, sortIndex: r.sort_index ?? 0 });
+    }
+    return { plain, folders: [...folders.values()] };
+  };
+  const targetIndex = (rows, tsId) => {
+    const g = groupRows(rows, tsId);
+    const bySymbol = new Map();
+    [...g.plain, ...g.folders].forEach(e => { if (e.symbol) { if (!bySymbol.has(e.symbol)) bySymbol.set(e.symbol, []); bySymbol.get(e.symbol).push(e); } });
+    bySymbol.forEach(list => list.sort((a, b) => (a.sortIndex - b.sortIndex) || String(a.ref).localeCompare(String(b.ref))));
+    return {
+      plainByName: new Map(g.plain.filter(e => e.codename).map(e => [e.codename, e])),
+      folderByKey: new Map(g.folders.map(e => [e.folderKey, e])),
+      bySymbol,
+    };
+  };
+  // source: { kind: "plain", codename, symbol } | { kind: "sensor", folderKey, symbol }; index = targetIndex(...) -> a ref or null.
+  const resolveAcross = (source, index) => {
+    if (!source || !index) return null;
+    const name = source.kind === "sensor" ? source.folderKey : source.codename;
+    const first = source.kind === "sensor" ? index.folderByKey : index.plainByName, second = source.kind === "sensor" ? index.plainByName : index.folderByKey;
+    if (name != null) {
+      if (first.has(name)) return first.get(name).ref;
+      if (second.has(name)) return second.get(name).ref;
+    }
+    const bySym = source.symbol ? index.bySymbol.get(source.symbol) : null;
+    return bySym && bySym.length ? bySym[0].ref : null;
+  };
+  // The whole palette: d: entries of the outgoing tileset and its s: entries. Shape as TilePalette.planSwitch / planSensorSwitch:
+  // { matched: [{from, to}], mismatches: [{ref, codename}], foreign: [ref] }. Global s: / g: / u: entries are left alone; an entry that
+  // belongs to any other tileset is foreign.
+  const planSwitchResolved = ({ refs, oldRows, oldTsId, newRows, newTsId }) => {
+    const matched = [], mismatches = [], foreign = [];
+    const oldByUuid = new Map((oldRows || []).map(r => [r.id, r]));
+    const oldGroups = groupRows(oldRows, oldTsId);
+    const oldFolders = new Map(oldGroups.folders.map(f => [f.folderKey, f]));
+    const idx = newTsId != null ? targetIndex(newRows, newTsId) : null;
+    (refs || []).forEach(ref => {
+      if (!ref) return;
+      const sp = parseSensorRef(ref);
+      if (sp) {
+        if (sp.scope === SCOPE_GLOBAL) return;
+        if (sp.scope !== oldTsId) { foreign.push(ref); return; }
+        const f = oldFolders.get(sp.folderKey);
+        const to = resolveAcross({ kind: "sensor", folderKey: sp.folderKey, symbol: f ? f.symbol : null }, idx);
+        if (to) matched.push({ from: ref, to }); else mismatches.push({ ref, codename: `Sensor folder: ${sp.folderKey}` });
+        return;
+      }
+      const p = TilePalette.parseRef(ref);
+      if (!p || p.kind !== "d") return;
+      const row = oldByUuid.get(p.key);
+      if (!row) { foreign.push(ref); return; }
+      const to = resolveAcross({ kind: "plain", codename: row.codename ?? null, symbol: row.symbol ?? null }, idx);
+      if (to) matched.push({ from: ref, to }); else mismatches.push({ ref, codename: row.codename ?? null });
+    });
+    return { matched, mismatches, foreign };
+  };
+
   // Saved map load: where does an s: ref that is not among the loaded tiles go? -> a ref in the active tileset, or null.
   const resolveLoadedSensorRef = (ref, activeTsId, activeFolderKeys) => {
     const p = parseSensorRef(ref);
@@ -306,6 +380,6 @@
     preloadImages, progressLabel, imageOps, withFreshVersion,
     variantOwners, hideSensorVariants, canonicalRef, canonicalRefs, folderPreviewTiles,
     deriveLayer, rerollOf, opsToCss, opsLabel, composePlan, composeKey, transformLabel, recipeLines, FALLBACK_LABEL,
-    planSensorSwitch, resolveLoadedSensorRef,
+    planSensorSwitch, resolveLoadedSensorRef, groupRows, targetIndex, resolveAcross, planSwitchResolved,
   };
 });
