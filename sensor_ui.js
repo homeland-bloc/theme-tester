@@ -131,7 +131,9 @@
     return {
       ref, key: ref, scope, folderKey, label: label ?? folderKey,
       tiles: all, labelled, unlabelled, first,
-      settings: { spin: cfg ? !!cfg.spin : !!first.dbRotatable, flip: cfg ? !!cfg.flip : !!first.dbFlippable },
+      // tieBreak / reroll come from the manifest block of a global folder (cfg): see sensor.js (tieBreakOf, isRerollable)
+      settings: { spin: cfg ? !!cfg.spin : !!first.dbRotatable, flip: cfg ? !!cfg.flip : !!first.dbFlippable,
+        ...(cfg && Array.isArray(cfg.tieBreak) ? { tieBreak: cfg.tieBreak.slice() } : {}), ...(cfg && cfg.reroll === false ? { reroll: false } : {}) },
       symbol: cfg && cfg.symbol != null ? cfg.symbol : (first.symbol ?? null),
       warnings: divergence(all),
     };
@@ -223,7 +225,10 @@
   // folder has no usable variant. Neighbours count only when they hold the SAME s: entry; the map edge counts as air.
   // rerolls: Map | object of sensorRef -> integer reroll seed (missing = 0). The one seed map the screen and Download Map both read.
   const rerollOf = (rerolls, ref) => { const v = rerolls ? (typeof rerolls.get === "function" ? rerolls.get(ref) : rerolls[ref]) : 0; return Number.isFinite(v) ? v | 0 : 0; };
-  const deriveLayer = ({ grid, refs, folders, rerolls }) => {
+  // deterministic: Map | object of sensorRef -> true (reroll mode OFF: ties resolve without the hash); picks: Map | object of sensorRef -> { code: tile ref }
+  // (the "Choose variants" picks). Both are session state of the screen, never part of a map or a seed.
+  const lookup = (m, ref) => (m ? (typeof m.get === "function" ? m.get(ref) : m[ref]) : undefined);
+  const deriveLayer = ({ grid, refs, folders, rerolls, deterministic, picks }) => {
     const out = new Map();
     if (!folders || !folders.size || !grid) return out;
     for (let r = 0; r < grid.length; r++) {
@@ -236,7 +241,7 @@
         if (!f) continue;
         const isSame = (rr, cc) => rr >= 0 && rr < grid.length && cc >= 0 && cc < (grid[rr] || []).length && grid[rr][cc] != null && refs[grid[rr][cc]] === ref;
         const nb = Sensor.neighbourCode(r, c, isSame);
-        const res = Sensor.resolve(f.folder, nb, { x: c, y: r, salt: ref, reroll: rerollOf(rerolls, ref), candidates: f.candidates });
+        const res = Sensor.resolve(f.folder, nb, { x: c, y: r, salt: ref, reroll: rerollOf(rerolls, ref), candidates: f.candidates, deterministic: !!lookup(deterministic, ref), picks: lookup(picks, ref) });
         out.set(`${r},${c}`, res ? { ...res, nb, folderRef: ref } : { warn: true, nb, folderRef: ref });
       }
     }

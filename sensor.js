@@ -406,7 +406,37 @@
     return top.filter(s => s.dangling === minD).map(s => s.code);
   };
 
-  // ctx: { x, y, salt, reroll?, candidates? }. `reroll` is the per-folder reroll seed (integer, default 0). Returns { code, status, ref, tile, ops, derivedFrom, recipe, entry } or null.
+  // ── Tie-break, deterministic mode, variant picks ──────────────────────────────────────────────────────
+  // folder.settings.tieBreak: [codes...] (manifest "tieBreak"): when several codes tie, the FIRST LISTED code that is among the tied ones wins;
+  //   if none is listed the normal rule applies. It applies in every mode.
+  // folder.settings.reroll === false (manifest "reroll": false): the folder is not rerollable (the UI hides its dice and ON/OFF toggle).
+  // ctx.deterministic (the per-folder reroll mode OFF): every tie resolves without the hash. A pool of variants sharing one code takes its
+  //   LOWEST sortIndex (or the variant picked in ctx.picks[code] = tile ref); tied codes resolve to the code whose first variant has the lowest
+  //   sortIndex (then the smaller code).
+  const tieBreakOf = folder => {
+    const t = folder && folder.settings && folder.settings.tieBreak;
+    return Array.isArray(t) ? t.filter(isCode).map(normalise) : [];
+  };
+  const isRerollable = folder => !(folder && folder.settings && folder.settings.reroll === false);
+  const firstSortIndex = cand => (cand.pool.length ? Math.min(...cand.pool.map(e => (e.tile && e.tile.sortIndex != null ? e.tile.sortIndex : Infinity))) : Infinity);
+  const lowestEntry = pool => pool.slice().sort((a, b) => ((a.tile ? a.tile.sortIndex ?? 0 : 0) - (b.tile ? b.tile.sortIndex ?? 0 : 0)) || String(a.ref).localeCompare(String(b.ref)))[0];
+  const pickEntry = (cand, c, salt, rr) => {
+    if (c.deterministic) {
+      const want = c.picks && c.picks[cand.code];
+      const chosen = want ? cand.pool.find(e => e.ref === want) : null;
+      return chosen || lowestEntry(cand.pool) || null;
+    }
+    return weightedPick(cand.pool, e => e.roll, hash2D(c.x | 0, c.y | 0, salt, rr));
+  };
+  // The tied codes `winners` narrowed by the manifest tie-break (one code when a listed code is among them), else unchanged.
+  const applyTieBreak = (folder, winners) => {
+    if (winners.length < 2) return winners;
+    const hit = tieBreakOf(folder).find(code => winners.includes(code));
+    return hit ? [hit] : winners;
+  };
+
+  // ctx: { x, y, salt, reroll?, candidates?, deterministic?, picks? }. `reroll` is the per-folder reroll seed (integer, default 0).
+  // Returns { code, status, ref, tile, ops, derivedFrom, recipe, entry } or null.
   const resolve = (folder, neighbourCodeIn, ctx) => {
     const c = ctx || {};
     const nb = normaliseBits(neighbourCodeIn);
@@ -417,36 +447,48 @@
 
     if (cands._exact) { // exact mode: exact match among explicit / derived tiles, else the 10100101 tile. No composition, no scoring.
       const hit = cands[nb] && cands[nb].pool.length ? cands[nb] : null, cand = hit || cands[FALLBACK_CODE];
-      const entry = weightedPick(cand.pool, e => e.roll, hash2D(c.x | 0, c.y | 0, salt, rr));
+      const entry = pickEntry(cand, c, salt, rr);
       if (!entry) return null;
       return { code: cand.code, status: cand.status, fallback: !hit, ref: entry.ref, tile: entry.tile, ops: entry.ops, derivedFrom: entry.derivedFrom, recipe: null, entry };
     }
     if (cands._fence) { // simple fence: cardinal bits only, exact match among the three variants, else 00000000
       const card = cardinalOnly(nb), code = avail.includes(card) ? card : "00000000";
       const cand = cands[code];
-      const entry = weightedPick(cand.pool, e => e.roll, hash2D(c.x | 0, c.y | 0, salt, rr));
+      const entry = pickEntry(cand, c, salt, rr);
       if (!entry) return null;
       return { code, status: cand.status, ref: entry.ref, tile: entry.tile, ops: entry.ops, derivedFrom: entry.derivedFrom, recipe: null, entry };
     }
 
-    const winners = scoreWinners(avail, nb);
+    const winners = applyTieBreak(folder, scoreWinners(avail, nb));
 
     let code;
     if (winners.length === 1) code = winners[0];
     else if (cands["00000000"].status !== "missing" && cands["00000000"].pool.length) code = "00000000";
+    else if (c.deterministic) code = winners.slice().sort((a, b) => (firstSortIndex(cands[a]) - firstSortIndex(cands[b])) || (a < b ? -1 : a > b ? 1 : 0))[0];
     else code = weightedPick(winners, w => poolTotal(cands[w].pool), hash2D(c.x | 0, c.y | 0, (salt + 0x7f4a7c15) | 0, rr));
 
     const cand = cands[code];
-    const entry = weightedPick(cand.pool, e => e.roll, hash2D(c.x | 0, c.y | 0, salt, rr));
+    const entry = pickEntry(cand, c, salt, rr);
     if (!entry) return null;
     return { code, status: cand.status, ref: entry.ref, tile: entry.tile, ops: entry.ops, derivedFrom: entry.derivedFrom, recipe: cand.recipe || null, entry };
+  };
+
+  // Pools of variants that share a code (explicit tiles with roll > 0): [{ code, entries: [entry], auto: entry }], `auto` = lowest sortIndex.
+  // The fallback tile (10100101) of an exact folder counts as a code too. Roll-0 variants never count.
+  const sharedPools = folder => {
+    const { pools, fallback } = explicitPools(folder);
+    const out = Object.keys(pools).sort().filter(code => pools[code].length >= 2).map(code => ({ code, entries: pools[code], auto: lowestEntry(pools[code]) }));
+    if (fallback.length >= 2) out.push({ code: FALLBACK_CODE, entries: fallback, auto: lowestEntry(fallback) });
+    return out;
   };
 
   // Does the folder have a pick that only the hash decides, i.e. would a reroll seed change anything? True when
   //  - a sensor code is shared by two or more explicit variants with roll > 0 (their pool is a weighted random pick), or
   //  - some neighbourhood ties between different codes (connection scoring) and the folder has neither a 00000000 tile (which wins ties)
   //    nor a fallback tile (exact mode never scores). Roll-0 variants never count. `candidates` may be passed to reuse buildCandidates.
+  // A folder with "reroll": false is never rerollable; a manifest tie-break that settles a tie takes it out of the hash's hands.
   const hasRerollableTies = (folder, _cands) => {
+    if (!isRerollable(folder)) return false;
     const { pools, fallback } = explicitPools(folder);
     if (Object.values(pools).some(p => p.length >= 2) || fallback.length >= 2) return true;
     if (fallback.length) return false; // exact mode: no scoring, so no cross-code ties
@@ -454,7 +496,7 @@
     if (cands._fence || (cands["00000000"].status !== "missing" && cands["00000000"].pool.length)) return false; // ties go to 00000000
     const avail = ALL_CODES.filter(code => cands[code].status !== "missing" && cands[code].pool.length > 0);
     if (avail.length < 2) return false;
-    return ALL_CODES.some(nb => scoreWinners(avail, nb).length > 1);
+    return ALL_CODES.some(nb => applyTieBreak(folder, scoreWinners(avail, nb)).length > 1);
   };
 
   return {
@@ -464,6 +506,6 @@
     isCode, normalise, spin, flipH, neighbourCode,
     buildCandidates, coverage, computeRequiredBase, compositionRecipe, composeQuadrants,
     quadrantBits, quadrantType, quadrantLibrary, missingSlots, slotLabel, folderMode, isFenceFolder, cardinalOnly, usesOnlyCardinals,
-    resolve, hasRerollableTies, hash2D, stringToInt, weightedPick, pickPercentages,
+    resolve, hasRerollableTies, sharedPools, tieBreakOf, isRerollable, hash2D, stringToInt, weightedPick, pickPercentages,
   };
 });

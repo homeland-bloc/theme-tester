@@ -26,6 +26,10 @@ const TILES = {
     row(U(1, "b"), "ts-7", "Wall1", { symbol: "M", sort_index: 1 }),
     row(U(2, "b"), "ts-7", "Cactus", { symbol: "T", sort_index: 2 }),
     row(U(3, "b"), "ts-7", "Crate", { symbol: "Y", sort_index: 3 }),
+    // a sensor folder with a shared-code pool (rerollable) and diverging symbols (the warning button)
+    row(U(4, "b"), "ts-7", "Bars_b", { folder_key: "Bars", sensor_code: "11111111", symbol: "k", sort_index: 11 }),
+    row(U(5, "b"), "ts-7", "Bars_a", { folder_key: "Bars", sensor_code: "11111111", symbol: "j", sort_index: 10 }),
+    row(U(6, "b"), "ts-7", "Bars_0", { folder_key: "Bars", sensor_code: "00000000", symbol: "j", sort_index: 12 }),
   ],
   // Ancient Hell keeps its Crate as a sensor folder
   "ts-9": [
@@ -136,5 +140,109 @@ const TILES = {
     await ctx.close();
   });
 
+  const BARS = "s:ts-7|Bars";
+  const desert = { oph_active_ts: JSON.stringify("Desert"), oph_gridW: 3, oph_gridH: 3, oph_grid: { v: 2, palette: [BARS], grid: [[1, 1, 1], [1, 1, 1], [null, null, null]] } };
+  const countImgs = (page, name) => page.locator(`img[src$="${name}.png"]`).count();
+
+  await test("reroll controls: ON/OFF toggle per folder, dice opens 'Choose variants' when OFF, picks and Auto change the map, ON restores random", async () => {
+    const { page, ctx, logs } = await newPage({ storage: desert });
+    await ready(page); await settle(page);
+    const sel = `[data-sensor-card="${BARS}"]`;
+    await page.waitForSelector(sel);
+    assert.strictEqual(await page.locator(`${sel} [data-sensor-reroll-mode]`).textContent().then(t => t.replace(/\s/g, "")), "ON");
+    assert.strictEqual(await page.locator(`${sel} [data-sensor-reroll]`).getAttribute("data-reroll-mode"), "on");
+    const baseA = await countImgs(page, "Bars_a"), baseB = await countImgs(page, "Bars_b");
+    await page.click(`${sel} [data-sensor-reroll-mode]`); // OFF
+    await settle(page);
+    assert.strictEqual(await page.locator(`${sel} [data-sensor-reroll-mode]`).textContent().then(t => t.replace(/\s/g, "")), "OFF");
+    // OFF + Auto: all six cells use the lowest sortIndex variant (Bars_a, 10); no card click side effects
+    const offA = await countImgs(page, "Bars_a"), offB = await countImgs(page, "Bars_b");
+    assert.strictEqual(offB, baseB - (baseB - offB), "sanity");
+    assert.ok(offA >= baseA && offB <= baseB, `OFF + Auto: every cell is Bars_a (a ${baseA}->${offA}, b ${baseB}->${offB})`);
+    await page.click(`${sel} [data-sensor-reroll]`); // dice while OFF -> the modal
+    await page.waitForSelector(`[data-variants-modal="${BARS}"]`);
+    assert.ok(await page.locator("[data-variants-pool='11111111']").count() === 1);
+    assert.ok(/Auto \(Bars_a\)/.test(await page.locator("[data-variants-select]").first().textContent()));
+    await page.selectOption("[data-variants-select='11111111']", `d:${U(4, "b")}`);
+    await page.click("[data-variants-close]"); await settle(page);
+    const pickedB = await countImgs(page, "Bars_b");
+    assert.strictEqual(pickedB - offB, 6, `the six cells now show Bars_b (${offB} -> ${pickedB})`);
+    await page.click(`${sel} [data-sensor-reroll]`);
+    await page.click("[data-variants-reset]");
+    await page.click("[data-variants-close]"); await settle(page);
+    assert.strictEqual(await countImgs(page, "Bars_b"), offB, "All Auto restores the lowest sortIndex");
+    // not persisted: nothing about rerolls in storage
+    const store = await page.evaluate(() => JSON.stringify(Object.assign({}, localStorage)));
+    assert.ok(!/reroll|variant/i.test(store), "reroll mode and picks are session only");
+    // the unfolded panel has the same controls plus the Variants button
+    await page.click(`[data-sensor-unfold="${BARS}"]`);
+    await page.waitForSelector(`[data-sensor-panel="${BARS}"]`);
+    assert.strictEqual(await page.locator(`[data-sensor-reroll-mode-panel="${BARS}"]`).textContent(), "OFF");
+    await page.click(`[data-sensor-variants-panel="${BARS}"]`);
+    await page.waitForSelector(`[data-variants-modal="${BARS}"]`);
+    await page.click("[data-variants-close]");
+    await page.click(`[data-sensor-reroll-mode-panel="${BARS}"]`); // back ON
+    assert.strictEqual(await page.locator(`[data-sensor-reroll-mode-panel="${BARS}"]`).textContent(), "ON");
+    assert.deepStrictEqual(clean(logs), []);
+    await ctx.close();
+  });
+
+  await test("reroll controls on mobile: ~24px visible, larger invisible tap area, clear of the corner button and the card border", async () => {
+    const { page, ctx } = await newPage({ storage: desert, viewport: { width: 390, height: 800 } });
+    await page.waitForSelector("text=▶", { timeout: 30000 });
+    await settle(page);
+    const sel = `[data-sensor-card="${BARS}"]`;
+    await page.locator("text=▶").first().click(); // the left rail's arrow opens the Tiles panel on a phone
+    await page.waitForSelector(sel);
+    const box = loc => page.locator(loc).first().boundingBox();
+    const card = await box(sel), dice = await box(`${sel} [data-sensor-reroll]`), tog = await box(`${sel} [data-sensor-reroll-mode]`), corner = await box(`${sel} [data-sensor-unfold]`);
+    assert.ok(dice.width <= 26 && dice.height <= 26 && dice.width >= 20, JSON.stringify(dice));
+    assert.ok(tog.width <= 26 && tog.height <= 26, JSON.stringify(tog));
+    const tap = await page.locator(`${sel} [data-sensor-reroll] span[aria-hidden]`).boundingBox();
+    assert.ok(tap.width >= 30 && tap.height >= 30, "invisible tap area is larger: " + JSON.stringify(tap));
+    const inside = b => b.x >= card.x && b.y >= card.y && b.x + b.width <= card.x + card.width && b.y + b.height <= card.y + card.height;
+    assert.ok(inside(dice) && inside(tog), "inside the card border");
+    const hit = (a, b) => a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+    assert.ok(!hit(dice, corner) && !hit(tog, corner), "clear of the corner button");
+    assert.ok(!hit(dice, tog), "dice and toggle do not overlap");
+    // the invisible area stays inside the card too (does not cover the selection outline)
+    assert.ok(tap.x >= card.x - 1 && tap.y + tap.height <= card.y + card.height + 1, JSON.stringify([tap, card]));
+    await ctx.close();
+  });
+
+  await test("the global Rails folder shows neither dice nor toggle (manifest reroll:false)", async () => {
+    const { page, ctx } = await newPage({ storage: desert });
+    await ready(page); await settle(page);
+    await page.waitForSelector("[data-sensor-card='s:global|rails']");
+    assert.strictEqual(await page.locator("[data-sensor-card='s:global|rails'] [data-sensor-reroll]").count(), 0);
+    assert.strictEqual(await page.locator("[data-sensor-card='s:global|rails'] [data-sensor-reroll-mode]").count(), 0);
+    await page.click("[data-sensor-unfold='s:global|rails']");
+    await page.waitForSelector("[data-sensor-panel='s:global|rails']");
+    assert.strictEqual(await page.locator("[data-sensor-reroll-mode-panel]").count(), 0);
+    await ctx.close();
+  });
+
   await h.finish();
+
+  // Effective role: the ⚖️ warning button is for editors only (a plain user does not see it; the owner/admin does)
+  const hu = await H.start({ tilesets: TILESETS, tiles: TILES, role: "user" });
+  await hu.test("the sensor folder warning button is hidden from non-editors and shown to admins", async () => {
+    const { page, ctx } = await hu.newPage({ storage: desert });
+    await hu.ready(page); await hu.settle(page);
+    await page.click(`[data-sensor-unfold="${BARS}"]`);
+    await page.waitForSelector(`[data-sensor-panel="${BARS}"]`);
+    assert.strictEqual(await page.locator("[data-sensor-warn]").count(), 0, "plain user");
+    await ctx.close();
+  });
+  await hu.finish();
+  const ha = await H.start({ tilesets: TILESETS, tiles: TILES, role: "admin" });
+  await ha.test("the sensor folder warning button is shown to admins", async () => {
+    const { page, ctx } = await ha.newPage({ storage: desert });
+    await ha.ready(page); await ha.settle(page);
+    await page.click(`[data-sensor-unfold="${BARS}"]`);
+    await page.waitForSelector(`[data-sensor-panel="${BARS}"]`);
+    assert.strictEqual(await page.locator("[data-sensor-warn]").count(), 1);
+    await ctx.close();
+  });
+  await ha.finish();
 })();

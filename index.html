@@ -3675,6 +3675,21 @@ function App() {
       }
     }
   };
+  // The dice and the ON/OFF toggle of a sensor folder (cards and the unfolded panel). `tap` = extra invisible hit area in px around each control.
+  const rerollControls = (ref, { tap = 0 } = {}) => {
+    const off = !!rerollOff[ref];
+    const stop = e => e.stopPropagation();
+    const hit = tap ? <span aria-hidden style={{ position: "absolute", top: -tap, right: -tap, bottom: -tap, left: -tap }} /> : null;
+    const base = { position: "relative", padding: 0, display: "flex", alignItems: "center", justifyContent: "center", lineHeight: 1, cursor: "pointer", border: "none", pointerEvents: "auto", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" };
+    return (<>
+      <button data-sensor-reroll={ref} data-reroll-mode={off ? "off" : "on"} title={off ? "Choose variants (reroll is OFF)" : "Reroll this folder's tied picks"}
+        onClick={e => { e.stopPropagation(); onDice(ref); }} onMouseDown={stop} onTouchStart={stop} onTouchEnd={stop}
+        style={{ ...base, width: 24, height: 24, fontSize: 14, borderRadius: 6, background: "rgba(0,0,0,0.6)", opacity: off ? 0.8 : 1 }}>{off ? "🎯" : "🎲"}{hit}</button>
+      <button data-sensor-reroll-mode={ref} aria-pressed={!off} title={off ? "Reroll OFF: ties resolve to the lowest sortIndex. Click to turn ON" : "Reroll ON: ties are random. Click to turn OFF"}
+        onClick={e => { e.stopPropagation(); toggleRerollMode(ref); }} onMouseDown={stop} onTouchStart={stop} onTouchEnd={stop}
+        style={{ ...base, width: 22, height: 16, fontSize: 8, fontWeight: 700, borderRadius: 8, color: off ? "#fff" : "#1a1a1a", background: off ? "rgba(239,68,68,0.85)" : "rgba(74,222,128,0.9)" }}>{off ? "OFF" : "ON"}{hit}</button>
+    </>);
+  };
   // Unfolded sensor folder: real variants (info button, clicking does NOT select), unlabelled tiles, then the derived variants
   // (generated, no info button) and the simulation button.
   const renderSensorPanel = entry => {
@@ -3717,7 +3732,11 @@ function App() {
         <div style={{ padding: "5px 8px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0, gap: 6 }}>
           <span style={{ fontSize: 10, fontWeight: 700, color: SENSOR_YELLOW, letterSpacing: 0.5 }}>✨ {entry.label}</span>
           <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            {sensorFolders.get(sensor.ref)?.rerollable && <button data-sensor-reroll-panel={sensor.ref} onClick={() => rerollFolder(sensor.ref)} style={{ ...sensorBtnStyle(SENSOR_YELLOW), padding: "0 6px", fontSize: 12 }} title="Reroll this folder's tied picks (not an undo step)">🎲</button>}
+            {sensorFolders.get(sensor.ref)?.rerollable && (<>
+              <button data-sensor-reroll-panel={sensor.ref} onClick={() => onDice(sensor.ref)} style={{ ...sensorBtnStyle(SENSOR_YELLOW), padding: "0 6px", fontSize: 12 }} title={rerollOff[sensor.ref] ? "Choose variants (reroll is OFF)" : "Reroll this folder's tied picks (not an undo step)"}>{rerollOff[sensor.ref] ? "🎯" : "🎲"}</button>
+              <button data-sensor-reroll-mode-panel={sensor.ref} onClick={() => toggleRerollMode(sensor.ref)} aria-pressed={!rerollOff[sensor.ref]} style={{ ...sensorBtnStyle(rerollOff[sensor.ref] ? C.danger : "#4ade80"), padding: "0 6px", fontSize: 10, fontWeight: 700 }} title={rerollOff[sensor.ref] ? "Reroll OFF: ties resolve to the lowest sortIndex. Click to turn ON" : "Reroll ON: ties are random. Click to turn OFF"}>{rerollOff[sensor.ref] ? "OFF" : "ON"}</button>
+              {sensorFolders.get(sensor.ref)?.pools.length > 0 && <button data-sensor-variants-panel={sensor.ref} onClick={() => setVariantsFolder(sensor.ref)} style={{ ...sensorBtnStyle(SENSOR_YELLOW), padding: "0 6px", fontSize: 10 }} title="Choose which variant a shared code uses (applies while reroll is OFF)">Variants</button>}
+            </>)}
             {hasWarn && canEditTile(tilesByRefRef.current.get(sensor.ref)) && <button data-sensor-warn={sensor.ref} onClick={() => setSensorWarnFolder(sensor)} style={{ ...sensorBtnStyle(SENSOR_YELLOW), padding: "0 6px", fontSize: 12 }} title={sensor.warnings.some(w => w.level === "warning") ? "The variants disagree on the symbol" : sensor.warnings.length ? "Variants differ in flags, size or offsets" : "Some tiles have no sensor code"}>⚖️</button>}
             <button onClick={() => setOpenFolderKey(null)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 15, lineHeight: 1, padding: "0 2px" }}>×</button>
           </span>
@@ -3755,6 +3774,7 @@ function App() {
   useEffect(() => {
     if (!openFolderKey) return;
     const handler = ev => {
+      if (ev.target && ev.target.closest && ev.target.closest(".modal-backdrop")) return; // a modal opened from the panel (Variants...) keeps it open
       if (folderPanelRef.current && !folderPanelRef.current.contains(ev.target)) {
         setOpenFolderKey(null);
       }
@@ -3863,7 +3883,7 @@ function App() {
       if (e.type !== 'folder' || !e.sensor) return;
       const folder = SensorUI.engineFolder(e.sensor);
       const candidates = SensorEngine.buildCandidates(folder);
-      m.set(e.sensor.ref, { ui: e.sensor, folder, candidates, rerollable: SensorEngine.hasRerollableTies(folder, candidates) });
+      m.set(e.sensor.ref, { ui: e.sensor, folder, candidates, rerollable: SensorEngine.hasRerollableTies(folder, candidates), pools: SensorEngine.sharedPools(folder) });
     });
     return m;
   }, [tilesetEntries, globalEntries]);
@@ -3907,7 +3927,15 @@ function App() {
     return m;
   }, [sensorFolders, rerollSeeds]);
   const rerollFolder = ref => setRerollSeeds(prev => ({ ...prev, [ref]: Math.floor(Math.random() * 0x7fffffff) }));
-  const sensorLayer = useMemo(() => SensorUI.deriveLayer({ grid, refs: palette.refs, folders: sensorFolders, rerolls: rerollSeedMap }), [grid, palette, sensorFolders, rerollSeedMap]);
+  // Per-folder reroll MODE (session only, like the seeds: not in seeds, saved maps or undo; Download Map reads the same layer). ON = the hash
+  // decides ties (the dice rerolls). OFF = every tie resolves deterministically (lowest sortIndex) and the dice opens "Choose variants", whose
+  // picks (code -> tile ref) are kept per folder. Folders with "reroll": false in the manifest show neither control.
+  const [rerollOff, setRerollOff] = useState({});          // ref -> true while OFF
+  const [variantPicks, setVariantPicks] = useState({});    // ref -> { code: tile ref }
+  const [variantsFolder, setVariantsFolder] = useState(null); // ref of the folder whose "Choose variants" modal is open
+  const toggleRerollMode = ref => setRerollOff(prev => { const n = { ...prev }; if (n[ref]) delete n[ref]; else n[ref] = true; return n; });
+  const onDice = ref => { if (rerollOff[ref]) setVariantsFolder(ref); else rerollFolder(ref); };
+  const sensorLayer = useMemo(() => SensorUI.deriveLayer({ grid, refs: palette.refs, folders: sensorFolders, rerolls: rerollSeedMap, deterministic: rerollOff, picks: variantPicks }), [grid, palette, sensorFolders, rerollSeedMap, rerollOff, variantPicks]);
   const sensorLayerRef = useRef(sensorLayer);
   sensorLayerRef.current = sensorLayer;
 
@@ -7588,6 +7616,58 @@ function App() {
           </div>
         );
       })()}
+      {variantsFolder && (() => {
+        const sf = sensorFolders.get(variantsFolder);
+        if (!sf) return null;
+        const picks = variantPicks[variantsFolder] || {};
+        const setPick = (code, ref) => setVariantPicks(prev => {
+          const cur = { ...(prev[variantsFolder] || {}) };
+          if (ref) cur[code] = ref; else delete cur[code];
+          return { ...prev, [variantsFolder]: cur };
+        });
+        const off = !!rerollOff[variantsFolder];
+        return (
+          <div className="modal-backdrop" onClick={() => setVariantsFolder(null)}>
+            <div className="modal-box" data-variants-modal={variantsFolder} style={{ maxWidth: 460, maxHeight: "85vh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: SENSOR_YELLOW }}>Choose variants: {sf.ui.label}</span>
+                <button onClick={() => setVariantsFolder(null)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
+              </div>
+              <p style={{ margin: 0, fontSize: 11, color: C.muted, lineHeight: 1.5 }}>
+                When two or more variants share a sensor code, one is used for every cell of that shape. <b style={{ color: C.text }}>Auto</b> = the lowest sortIndex.
+                {off ? " Reroll is OFF for this folder, so your picks are used." : " Your picks are used while reroll is OFF for this folder (the ON/OFF toggle)."} They are not saved with the map or the seed.
+              </p>
+              {!sf.pools.length && <p data-variants-empty style={{ margin: 0, fontSize: 12, color: C.text }}>No code in this folder has more than one variant. Tied shapes resolve to the lowest sortIndex.</p>}
+              {sf.pools.map(pool => {
+                const cur = pool.entries.find(e => e.ref === picks[pool.code]) || null;
+                const shown = cur || pool.auto;
+                const nameOf = e => (e.tile && (e.tile.codename ?? e.ref)) || e.ref;
+                return (
+                  <div key={pool.code} data-variants-pool={pool.code} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", borderBottom: `1px solid ${C.border}` }}>
+                    <SensorCodeGrid code={pool.code === SensorEngine.FALLBACK_CODE ? null : pool.code} color={SENSOR_YELLOW} />
+                    <div style={{ width: 36, height: 36, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", background: C.panelDeep, borderRadius: 6 }}>
+                      {shown.tile && <img src={shown.tile.blobSrc ?? shown.tile.src} alt="" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated" }} />}
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 2, flex: 1, minWidth: 0 }}>
+                      <span style={{ fontFamily: "monospace", fontSize: 10, color: C.muted }}>{pool.code === SensorEngine.FALLBACK_CODE ? "fallback tile" : pool.code}</span>
+                      <select data-variants-select={pool.code} value={cur ? cur.ref : ""} onChange={e => setPick(pool.code, e.target.value)}
+                        style={{ background: C.panel, color: C.text, border: `1px solid ${C.border}`, borderRadius: 5, fontSize: 11, padding: "3px 4px" }}>
+                        <option value="">Auto ({nameOf(pool.auto)})</option>
+                        {pool.entries.map(e => <option key={e.ref} value={e.ref}>{nameOf(e)} (sortIndex {e.tile?.sortIndex ?? 0})</option>)}
+                      </select>
+                    </div>
+                  </div>
+                );
+              })}
+              <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", flexWrap: "wrap" }}>
+                {sf.pools.length > 0 && <button data-variants-reset style={btn(false, C.muted, "rgba(255,255,255,0.06)")} onClick={() => setVariantPicks(prev => ({ ...prev, [variantsFolder]: {} }))}>All Auto</button>}
+                {!off && <button data-variants-off style={btn(true, SENSOR_YELLOW, "rgba(245,197,24,0.12)")} onClick={() => toggleRerollMode(variantsFolder)}>Turn reroll OFF</button>}
+                <button data-variants-close style={btn(true, C.accent, C.accentDim)} onClick={() => setVariantsFolder(null)}>Close</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
       {symbolDictOpen && <SymbolDictionaryModal registry={symbolRegistry} onClose={() => setSymbolDictOpen(false)} />}
       {createTilesetModal}
       <AddTileModal
@@ -8205,13 +8285,12 @@ function App() {
                           style={{ ...corner, right: -7, color: isThisOpen ? SENSOR_YELLOW : "rgba(255,255,255,0.85)" }}
                           title={isThisOpen ? "Fold" : "Unfold variants"}>{isThisOpen ? "▼" : "▶"}</span>
                         {sensorFolders.get(sensor.ref)?.rerollable && (
-                          // Bottom-left, inside the card border (clear of the top-right ▶ and the selection outline). Visual size is small; the
-                          // hit area is 32px on mobile. It neither selects nor unfolds the card, is no undo step and does not touch the map data.
-                          <button data-sensor-reroll={sensor.ref} title="Reroll this folder's tied picks"
-                            onClick={e => { e.stopPropagation(); rerollFolder(sensor.ref); }}
-                            onMouseDown={e => e.stopPropagation()} onTouchStart={e => e.stopPropagation()} onTouchEnd={e => e.stopPropagation()}
-                            style={{ position: "absolute", left: 1, bottom: 1, width: isMobile ? 32 : 24, height: isMobile ? 32 : 24, padding: 0, display: "flex", alignItems: "center", justifyContent: "center",
-                              fontSize: isMobile ? 17 : 14, lineHeight: 1, cursor: "pointer", zIndex: 6, background: "rgba(0,0,0,0.6)", border: "none", borderRadius: 6, filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}>🎲</button>
+                          // Bottom row, inside the card border (clear of the top-right ▶ and the selection outline): the dice at the left, the ON/OFF
+                          // toggle at the right. The visible controls are small (24px dice); on mobile an invisible padding enlarges the tap area. Neither
+                          // selects nor unfolds the card, is an undo step or touches the map data.
+                          <div style={{ position: "absolute", left: 3, right: 3, bottom: 3, display: "flex", justifyContent: "space-between", alignItems: "flex-end", pointerEvents: "none", zIndex: 6 }}>
+                            {rerollControls(sensor.ref, { tap: isMobile ? 4 : 0 })}
+                          </div>
                         )}
                       </div>
                     );
