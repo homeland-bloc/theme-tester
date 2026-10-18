@@ -1362,6 +1362,68 @@ function calcFitZoom(gw, gh) {
 // InfoModal guards and key-remounts per tile; InfoModalBody holds the hooks
 // unconditionally (no hooks after early returns).
 const MAX_MULT_ARROW = 7; // arrow buttons cap; text field has no cap
+// ── Symbol dictionary (one row per symbol, grouped by source; also embedded in the seed help) ──────────────
+// registry: MapSeed.buildRegistry(entries). Entries may carry `src` (example image) and `emoji`.
+const SymbolDictionaryList = ({ registry, free = true }) => {
+  const groups = new Map();
+  for (const e of registry.entries) {
+    const g = e.source === "official" ? "Official table" : e.source === "global" ? "Global tileset" : e.tilesetName;
+    if (!groups.has(g)) groups.set(g, new Map());
+    const bySym = groups.get(g);
+    if (!bySym.has(e.symbol)) bySym.set(e.symbol, []);
+    bySym.get(e.symbol).push(e);
+  }
+  const order = ["Official table", "Global tileset"];
+  const names = [...groups.keys()].sort((a, b) => (order.indexOf(a) === -1 ? 99 : order.indexOf(a)) - (order.indexOf(b) === -1 ? 99 : order.indexOf(b)) || String(a).localeCompare(String(b)));
+  return (
+    <div data-symbol-dict style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      {names.map(name => (
+        <div key={name} data-symbol-group={name}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.accent, marginBottom: 3 }}>{name}</div>
+          {[...groups.get(name).entries()].sort((a, b) => a[0].codePointAt(0) - b[0].codePointAt(0)).map(([sym, list]) => {
+            const shown = list.find(e => e.src) || list[0];
+            return (
+              <div key={sym} data-symbol-row={sym} style={{ display: "flex", alignItems: "center", gap: 8, padding: "2px 0", borderBottom: `1px solid ${C.border}` }}>
+                <b style={{ width: 22, textAlign: "center", fontFamily: "monospace", fontSize: 14, color: C.text }}>{sym}</b>
+                <div style={{ width: 28, height: 28, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  {shown.src ? <img src={shown.src} alt="" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated" }} /> : shown.emoji ? <span style={{ fontSize: 16 }}>{shown.emoji}</span> : null}
+                </div>
+                <span style={{ fontSize: 11, color: C.text, wordBreak: "break-word" }}>{[...new Set(list.map(e => e.codename))].join(", ")}</span>
+              </div>
+            );
+          })}
+        </div>
+      ))}
+      {free && (
+        <div data-symbol-free>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.accent, marginBottom: 3 }}>Free symbols</div>
+          <div style={{ fontFamily: "monospace", fontSize: 13, color: C.text, letterSpacing: 3, wordBreak: "break-all" }}>{MapSeed.freeSymbols(registry).join(" ")}</div>
+          <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>Only tilesets that are loaded are listed. Tileset tiles may reuse the standard symbols (Wall1 = M in every tileset).</div>
+        </div>
+      )}
+    </div>
+  );
+};
+function SymbolDictionaryModal({ registry, onClose }) {
+  return (
+    <div className="modal-backdrop" onClick={onClose} style={{ zIndex: 10001 }}>
+      <div className="modal-box" data-symbol-dict-modal style={{ maxWidth: 480, maxHeight: "85vh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Symbol dictionary</span>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
+        </div>
+        <SymbolDictionaryList registry={registry} />
+      </div>
+    </div>
+  );
+}
+// "taken by Mine (Desert), Jumppad T (global)" for the symbol typed in a tile modal, or null.
+const symbolTakenText = conflicts => {
+  if (!conflicts.length) return null;
+  const label = e => `${e.codename} (${e.source === "tileset" ? e.tilesetName : e.source})`;
+  return "taken by " + conflicts.slice(0, 3).map(label).join(", ") + (conflicts.length > 3 ? ` +${conflicts.length - 3} more` : "");
+};
+
 function InfoModal(props) {
   const { infoTile, getTile } = props;
   if (!infoTile) return null;
@@ -1371,7 +1433,7 @@ function InfoModal(props) {
 }
 function InfoModalBody(props) {
   const {
-    t, getDefaultMultiplier, getTileMultiplier, getDefaultOffset, getTileOffset, currentUser, userProfile, tileNames, isPriorityTile, isBottomTile, isAutoShadowTile, defaultPriorityTile, defaultBottomTile, defaultAutoShadowTile, setTileMultipliers, setTileOffsets, getValidToken, workerFetch, setTsFetchTrigger, setInfoTile, userTiles, tiles, setTileNames, btn, isTileRotatable, isDefaultRotatable, isFlipAllowed, isDefaultFlippable, isOTGWall, isDefaultOTGWall, otgWallOverrides, isMirrorOffset, isDefaultMirrorOffset, setRotatableMap, setAllowFlipMap, setOtgWallOverrides, setMirrorOffsetTiles, setBottomTiles, setPriorityTiles, setAutoShadowTiles, setDbTilesByTsId, starredTiles, toggleStar, dbTilesets, dbTilesByTsId, deleteTile,
+    t, getDefaultMultiplier, getTileMultiplier, getDefaultOffset, getTileOffset, currentUser, userProfile, tileNames, isPriorityTile, isBottomTile, isAutoShadowTile, defaultPriorityTile, defaultBottomTile, defaultAutoShadowTile, setTileMultipliers, setTileOffsets, getValidToken, workerFetch, setTsFetchTrigger, setInfoTile, userTiles, tiles, setTileNames, btn, isTileRotatable, isDefaultRotatable, isFlipAllowed, isDefaultFlippable, isOTGWall, isDefaultOTGWall, otgWallOverrides, isMirrorOffset, isDefaultMirrorOffset, setRotatableMap, setAllowFlipMap, setOtgWallOverrides, setMirrorOffsetTiles, setBottomTiles, setPriorityTiles, setAutoShadowTiles, setDbTilesByTsId, starredTiles, toggleStar, dbTilesets, dbTilesByTsId, deleteTile, symbolRegistry, openSymbolDict,
     infoTile, getTile,
   } = props;
   const defaultMult = getDefaultMultiplier(t);
@@ -1787,6 +1849,21 @@ function InfoModalBody(props) {
           ); })()}
         </div>
 
+          {/* Global (manifest) tiles: image file name and symbol, read-only */}
+          {t.isDefault && !t.isDb && t.src && (
+            <>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Image file name</span>
+                <input data-global-file readOnly value={fileNameOf(t.src.split("?")[0])} style={{ flex: 1, background: "transparent", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none" }} />
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>symbol</span>
+                <input data-global-symbol readOnly value={t.symbol ?? ""} placeholder="-" style={{ width: 40, textAlign: "center", background: "transparent", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none" }} />
+                <button data-symbol-dict-open onClick={openSymbolDict} title="Symbol dictionary" style={{ ...btn(false), padding: "2px 6px", fontSize: 12 }}>📖</button>
+                <span style={{ fontSize: 10, color: C.muted }}>{t.symbol == null ? "no symbol" : t.symbol === "8" ? "shared by all game-mode objectives" : "fixed (global tileset)"}</span>
+              </div>
+            </>
+          )}
           {/* Image file name — DB tiles the user can edit; renamed on Save via /github/move */}
           {t.isDb && canEditDb && (
             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
@@ -1890,9 +1967,14 @@ function InfoModalBody(props) {
                 <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>symbol{groupNote}</span>
                 <input data-symbol value={symbolInput} readOnly={!canEditDb} maxLength={2}
                   onChange={e => { if (canEditDb) setSymbolInput([...e.target.value].slice(-1)[0] ?? ''); }}
-                  placeholder={SensorUI.suggestSymbol(tiles.filter(x => x.tilesetId === t.tilesetId)) ?? "-"}
+                  placeholder={SensorUI.suggestSymbol(tiles.filter(x => x.tilesetId === t.tilesetId), MapSeed.tableSymbols()) ?? "-"}
                   style={{ width: 40, textAlign: "center", background: !canEditDb ? "transparent" : "rgba(180,40,40,0.09)", border: `1px solid ${!SensorUI.parseSymbolInput(symbolInput).ok ? C.danger : (symbolInput.trim() || null) === (t.symbol ?? null) ? "#4ade80" : "#f97316"}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none" }} />
-                <span style={{ fontSize: 10, color: SensorUI.parseSymbolInput(symbolInput).ok ? C.muted : C.danger }}>{SensorUI.parseSymbolInput(symbolInput).error ?? "one character, used by seeds (6 = warn, 7 = space are reserved)"}</span>
+                <button data-symbol-dict-open onClick={openSymbolDict} title="Symbol dictionary" style={{ ...btn(false), padding: "2px 6px", fontSize: 12 }}>📖</button>
+                {(() => {
+                  const p = SensorUI.parseSymbolInput(symbolInput);
+                  const taken = p.ok && p.value ? symbolTakenText(MapSeed.symbolConflicts(symbolRegistry, p.value, { ref: t.ref, codename: t.codename, folderKey: t.folderLabel ?? null, source: "tileset", tilesetName: t.tilesetName })) : null;
+                  return <span data-symbol-hint style={{ fontSize: 10, color: p.ok ? (taken ? "#fbbf24" : C.muted) : C.danger }}>{p.error ?? taken ?? "one character, used by seeds"}</span>;
+                })()}
               </div>
               {sensorError && <span style={{ fontSize: 11, color: C.danger }}>{sensorError}</span>}
             </div>
@@ -3375,26 +3457,12 @@ function App() {
   };
   const getCellMultiplier = (t, r, c) => getTileMultiplier(cellSizeTile(t, r, c));
 
-  // Spawn tile identification (src-based)
-  const isSpawn1 = t => !!(t?.src && t.src.includes("Spawns/1.png")); // red
-  const isSpawn2 = t => !!(t?.src && t.src.includes("Spawns/2.png")); // blue
-  const isRespawn1 = t => !!(t?.src && t.src.includes("Spawns/5.png")); // red respawn
-  const isRespawn2 = t => !!(t?.src && t.src.includes("Spawns/6.png")); // blue respawn
-  const isGoalRed  = t => !!(t?.src && t.src.includes("goalRed.png"));
-  const isGoalBlue = t => !!(t?.src && t.src.includes("goalBlue.png"));
-  // Counterpart of a spawn / respawn / goal tile (team swap on mirror), found by src. Takes and returns a tile ref.
+  // Counterpart of a team tile on a mirror (spawn 1 <-> 2, respawn 3 <-> 4, goalBlue <-> goalRed; the table lives in map_seed.js so seeds
+  // swap exactly the same pairs). Takes and returns a tile ref; any other tile, or a partner that is not loaded, comes back unchanged.
+  // The callers swap only when the mirror image reflects the ROWS (top<->bottom, flags fH / fD); a left-right image keeps the team.
   const swapSpawnRef = (ref) => {
-    const list = tilesListRef.current;
-    const t = tilesByRefRef.current.get(ref);
-    if (!t) return ref;
-    const other = pred => list.find(pred)?.ref ?? ref;
-    if (isSpawn1(t)) return other(isSpawn2);
-    if (isSpawn2(t)) return other(isSpawn1);
-    if (isRespawn1(t)) return other(isRespawn2);
-    if (isRespawn2(t)) return other(isRespawn1);
-    if (isGoalRed(t))  return other(isGoalBlue);
-    if (isGoalBlue(t)) return other(isGoalRed);
-    return ref;
+    const other = MapSeed.partnerRef(ref);
+    return other !== ref && tilesByRefRef.current.has(other) ? other : ref;
   };
 
   // Water tiles have rotation on by default
@@ -3632,7 +3700,7 @@ function App() {
           </div>
           <span style={{ position: "absolute", left: 2, bottom: 1, fontSize: 7, fontFamily: "monospace", color: "#fff", background: "rgba(0,0,0,0.65)", borderRadius: 3, padding: "0 2px", pointerEvents: "none" }}>{t.sensorCode ?? "no code"}</span>
           {canEditTile(t) && (
-            <span onClick={ev => { ev.stopPropagation(); setInfoTile(t.ref); }}
+            <span data-tile-info={t.ref} onClick={ev => { ev.stopPropagation(); setInfoTile(t.ref); }}
               style={{ position: "absolute", top: -7, right: -7, width: 18, height: 18, fontSize: 15, cursor: "pointer", color: isStarred ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "18px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%" }}
               title="Tile info">ⓘ</span>
           )}
@@ -3769,6 +3837,7 @@ function App() {
               t.sensorCode = sensorCfg.codes?.[fn] ?? null; t.sensorRoll = 1; t.sortIndex = i;
               t.dbRotatable = !!sensorCfg.spin; t.dbFlippable = !!sensorCfg.flip; t.symbol = sensorCfg.symbol ?? null;
             }
+            if (t.symbol == null) t.symbol = MapSeed.globalSymbolOfRef(t.ref, gDef); // table symbol (a variant carries its folder's)
             return t;
           });
         flatTiles.push(...folderTiles);
@@ -3795,6 +3864,35 @@ function App() {
     });
     return m;
   }, [tilesetEntries, globalEntries]);
+  // ── Symbol registry: official table + global tileset + every LOADED tileset's tiles (feeds the tile modal and the dictionary) ──
+  const [symbolDictOpen, setSymbolDictOpen] = useState(false);
+  const symbolRegistry = useMemo(() => {
+    const entries = [];
+    const activeSrc = new Map();
+    tiles.forEach(t => { if (t.isDb && !t.isSensor && t.codename) activeSrc.set(t.codename.toLowerCase().replace(/[\s_-]+/g, ""), t.src); if (t.isSensor && t.tilesetName) activeSrc.set(String(t.label).toLowerCase().replace(/[\s_-]+/g, ""), t.src); });
+    MapSeed.officialEntries().forEach(e => entries.push({ ...e, src: activeSrc.get(e.codename.toLowerCase().replace(/[\s_-]+/g, "")) ?? null }));
+    MapSeed.globalEntries().forEach(e => {
+      const tl = e.ref === "warn" || e.ref === "space" ? null : tilesByRef.get(e.ref);
+      entries.push({ ...e, src: tl ? (tl.blobSrc ?? tl.src) : null, emoji: e.ref === "warn" ? "⚠️" : e.ref === "space" ? "🛸" : null });
+    });
+    dbTilesets.forEach(ts => {
+      const rows = dbTilesByTsId[ts.id];
+      if (!rows) return;
+      const seenFolder = new Set();
+      sortedRows(rows).forEach(row => {
+        if (!row.symbol) return;
+        const sensor = !!(row.folder_key && rows.some(r => r.folder_key === row.folder_key && r.sensor_code != null));
+        if (sensor) {
+          const k = row.folder_key + "\u0000" + row.symbol;
+          if (seenFolder.has(k)) return;
+          seenFolder.add(k);
+          entries.push({ symbol: row.symbol, codename: row.folder_key, source: "tileset", tilesetName: ts.name, ref: SensorUI.sensorRef(ts.id, row.folder_key), folderKey: row.folder_key, src: row.image_url });
+        } else entries.push({ symbol: row.symbol, codename: row.codename, source: "tileset", tilesetName: ts.name, ref: makeRef("d", row.id), folderKey: row.folder_key || null, src: row.image_url });
+      });
+    });
+    return MapSeed.buildRegistry(entries);
+  }, [tiles, tilesByRef, dbTilesets, dbTilesByTsId]);
+
   // Reroll seeds: one integer per sensor folder (key = its s: ref, global folders included). Random at page load, changed only by the 🎲 buttons.
   // Deliberately NOT persisted anywhere: not in localStorage, saved maps, undo snapshots or the seed format. The screen and Download Map both
   // read the layer derived from this one map, so the export always matches what is shown.
@@ -6562,6 +6660,13 @@ function App() {
             <span style={{ fontSize: 11, color: C.text }}>Starred shortcut ⭐</span>
           </label>
           )}
+          {(infoTool === "warn" || infoTool === "space") && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>symbol</span>
+              <input data-symbol-readonly readOnly value={MapSeed.SPECIAL_SYMBOLS[infoTool]} style={{ width: 40, textAlign: "center", background: "transparent", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none" }} />
+              <span style={{ fontSize: 10, color: C.muted }}>fixed: {infoTool === "warn" ? "A is the warn tile" : "S is the space tile"}</span>
+            </div>
+          )}
           {infoTool === "otg" && (
             <button style={{ ...btn(false, C.soft, C.softDim), fontSize: 11 }}
               onClick={() => { setOtgOpen(true); setInfoTool(null); }}>
@@ -7312,7 +7417,7 @@ function App() {
           boxShadow: "0 4px 16px rgba(0,0,0,0.4)",
         }}>Reconnecting…</div>
       )}
-      <InfoModal infoTile={infoTile} getTile={getTile} getDefaultMultiplier={getDefaultMultiplier} getTileMultiplier={getTileMultiplier} getDefaultOffset={getDefaultOffset} getTileOffset={getTileOffset} currentUser={currentUser} userProfile={userProfile} tileNames={tileNames} isPriorityTile={isPriorityTile} isBottomTile={isBottomTile} isAutoShadowTile={isAutoShadowTile} defaultPriorityTile={defaultPriorityTile} defaultBottomTile={defaultBottomTile} defaultAutoShadowTile={defaultAutoShadowTile} setTileMultipliers={setTileMultipliers} setTileOffsets={setTileOffsets} getValidToken={getValidToken} workerFetch={workerFetch} setTsFetchTrigger={setTsFetchTrigger} setInfoTile={setInfoTile} userTiles={userTiles} tiles={tiles} setTileNames={setTileNames} btn={btn} isTileRotatable={isTileRotatable} isDefaultRotatable={isDefaultRotatable} isFlipAllowed={isFlipAllowed} isDefaultFlippable={isDefaultFlippable} isOTGWall={isOTGWall} isDefaultOTGWall={isDefaultOTGWall} otgWallOverrides={otgWallOverrides} isMirrorOffset={isMirrorOffset} isDefaultMirrorOffset={isDefaultMirrorOffset} setRotatableMap={setRotatableMap} setAllowFlipMap={setAllowFlipMap} setOtgWallOverrides={setOtgWallOverrides} setMirrorOffsetTiles={setMirrorOffsetTiles} setBottomTiles={setBottomTiles} setPriorityTiles={setPriorityTiles} setAutoShadowTiles={setAutoShadowTiles} setDbTilesByTsId={setDbTilesByTsId} starredTiles={starredTiles} toggleStar={toggleStar} dbTilesets={dbTilesets} dbTilesByTsId={dbTilesByTsId} deleteTile={deleteTile} />
+      <InfoModal infoTile={infoTile} getTile={getTile} getDefaultMultiplier={getDefaultMultiplier} getTileMultiplier={getTileMultiplier} getDefaultOffset={getDefaultOffset} getTileOffset={getTileOffset} currentUser={currentUser} userProfile={userProfile} tileNames={tileNames} isPriorityTile={isPriorityTile} isBottomTile={isBottomTile} isAutoShadowTile={isAutoShadowTile} defaultPriorityTile={defaultPriorityTile} defaultBottomTile={defaultBottomTile} defaultAutoShadowTile={defaultAutoShadowTile} setTileMultipliers={setTileMultipliers} setTileOffsets={setTileOffsets} getValidToken={getValidToken} workerFetch={workerFetch} setTsFetchTrigger={setTsFetchTrigger} setInfoTile={setInfoTile} userTiles={userTiles} tiles={tiles} setTileNames={setTileNames} btn={btn} isTileRotatable={isTileRotatable} isDefaultRotatable={isDefaultRotatable} isFlipAllowed={isFlipAllowed} isDefaultFlippable={isDefaultFlippable} isOTGWall={isOTGWall} isDefaultOTGWall={isDefaultOTGWall} otgWallOverrides={otgWallOverrides} isMirrorOffset={isMirrorOffset} isDefaultMirrorOffset={isDefaultMirrorOffset} setRotatableMap={setRotatableMap} setAllowFlipMap={setAllowFlipMap} setOtgWallOverrides={setOtgWallOverrides} setMirrorOffsetTiles={setMirrorOffsetTiles} setBottomTiles={setBottomTiles} setPriorityTiles={setPriorityTiles} setAutoShadowTiles={setAutoShadowTiles} setDbTilesByTsId={setDbTilesByTsId} starredTiles={starredTiles} toggleStar={toggleStar} dbTilesets={dbTilesets} dbTilesByTsId={dbTilesByTsId} deleteTile={deleteTile} symbolRegistry={symbolRegistry} openSymbolDict={() => setSymbolDictOpen(true)} />
       <ReplaceModal />
       <TileCounterModal />
       {gate && (
@@ -7384,11 +7489,12 @@ function App() {
                 <li><b>magnet</b>: <code>x</code> = default centre, otherwise <code>col,row</code> (0-based), plus <code>,2</code> (2x2), <code>,3</code> (2x1) or <code>,4</code> (1x2) when the magnet is not 1x1.</li>
                 <li><b>mirror</b>: the strongest symmetry the map really has: <code>h</code> left-right, <code>v</code> top-bottom, <code>d</code> 180-degree central, <code>4</code> all three, <code>a</code> none. A symmetric map only stores one half or quarter.</li>
                 <li><b>tileset</b>: the number of the tileset the symbols belong to. An unknown number falls back to the default tileset.</li>
-                <li><b>palette</b>: the tile symbols used on the map, most used first (case matters). Every tile has one character; <code>6</code> is the warn tile and <code>7</code> the space tile.</li>
+                <li><b>palette</b>: the tile symbols used on the map, most used first (case matters). Every tile has one character; the dictionary below lists them all (the warn tile is <code>A</code>, the space tile <code>S</code>).</li>
                 <li><b>code</b>: the cells, as runs of the same tile, packed into letters and digits.</li>
               </ul>
               <p style={{ margin: 0 }}>Tiles without a symbol and local uploads cannot be shared: they become empty cells (the app tells you how many). Importing replaces the current map, size, magnet and mirroring in one undo step. If one symbol fits several tiles you are asked which one you mean.</p>
               <p style={{ margin: 0, color: C.muted, fontSize: 11 }}>Example: <code>3v3/x/4/0//8ZX</code> is an empty 21x33 map on tileset 0.</p>
+              <details data-seed-help-dict><summary style={{ cursor: "pointer", fontWeight: 700, color: C.accent }}>Symbol dictionary</summary><div style={{ marginTop: 6 }}><SymbolDictionaryList registry={symbolRegistry} /></div></details>
             </div>
             <div style={{ display: "flex", justifyContent: "flex-end" }}>
               <button style={btn(true, C.accent, C.accentDim)} onClick={() => setSeedHelpOpen(false)}>Close</button>
@@ -7440,6 +7546,7 @@ function App() {
           </div>
         );
       })()}
+      {symbolDictOpen && <SymbolDictionaryModal registry={symbolRegistry} onClose={() => setSymbolDictOpen(false)} />}
       {createTilesetModal}
       <AddTileModal
         open={addTileOpen}
@@ -7768,7 +7875,7 @@ function App() {
                           : <img src={t.blobSrc ?? t.src} alt="" onError={() => markFailed(t.ref)} className={tileCardLightBg ? "tile-img-checker" : undefined} style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", }} />}
                       </div>
                       {canEditTile(t) && (
-                      <span onClick={ev => { ev.stopPropagation(); setInfoTile(t.ref); }}
+                      <span data-tile-info={t.ref} onClick={ev => { ev.stopPropagation(); setInfoTile(t.ref); }}
                         style={{ position: "absolute", top: -7, right: -7, width: 18, height: 18, fontSize: 15, cursor: "pointer", color: isStarredF ? "#fbbf24" : "rgba(255,255,255,0.85)", lineHeight: "18px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
                         title={isStarredF ? "Starred tile — click for info" : "Tile info"}>ⓘ</span>
                       )}
@@ -8011,7 +8118,7 @@ function App() {
                         </div>
                         {/* Info button: yellow if starred, white otherwise — top-right corner */}
                         {canEditTile(t) && (
-                        <span onClick={e => { e.stopPropagation(); setInfoTile(t.ref); }}
+                        <span data-tile-info={t.ref} onClick={e => { e.stopPropagation(); setInfoTile(t.ref); }}
                           style={{ position: "absolute", top: -7, right: -7, width: 18, height: 18, fontSize: 15, cursor: "pointer", color: "rgba(255,255,255,0.85)", lineHeight: "18px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
                           title={t.codename ?? (isStarred ? "Starred tile — click for info" : "Tile info")}>{isStarred ? "★" : "ⓘ"}</span>
                         )}
@@ -8075,7 +8182,7 @@ function App() {
                     const folderActive = !eraser && fTiles.some(t => t.ref === sel);
                     const previewTiles = fTiles.slice(0, 4);
                     return (
-                      <div key={key}
+                      <div key={key} data-folder-card={key}
                         onClick={e => toggleFolder(key, e)}
                         onMouseDown={e => e.stopPropagation()}
                         onTouchStart={e => e.stopPropagation()}
@@ -8165,7 +8272,7 @@ function App() {
                             <span style={{ fontSize: 20, lineHeight: 1, opacity: warnActive ? 1 : 0.55 }}>⚠️</span>
                           </div>
                         </div>
-                        <span onClick={e => { e.stopPropagation(); setInfoTool("warn"); }}
+                        <span data-tool-info="warn" onClick={e => { e.stopPropagation(); setInfoTool("warn"); }}
                           style={{ position: "absolute", top: -7, right: -7, width: 18, height: 18, fontSize: 15, cursor: "pointer", color: "rgba(255,255,255,0.85)", lineHeight: "18px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
                           title={isStarredWarn ? "Starred — click for info" : "Warn info"}>{isStarredWarn ? "★" : "ⓘ"}</span>
                       </div>
@@ -8230,7 +8337,7 @@ function App() {
                             <span style={{ fontSize: 20, lineHeight: 1 }}>🛸</span>
                           </div>
                         </div>
-                        <span onClick={e => { e.stopPropagation(); setInfoTool("space"); }}
+                        <span data-tool-info="space" onClick={e => { e.stopPropagation(); setInfoTool("space"); }}
                           style={{ position: "absolute", top: -7, right: -7, width: 18, height: 18, fontSize: 15, cursor: "pointer", color: "rgba(255,255,255,0.85)", lineHeight: "18px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))" }}
                           title={isStarredSpace ? "Starred — click for info" : "Space info"}>{isStarredSpace ? "★" : "ⓘ"}</span>
                       </div>

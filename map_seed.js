@@ -150,6 +150,54 @@
     const folder = globalMemberFolders(manifest).get(ref);
     return folder ? globalSymbol(folder) : null;
   };
+  // ── Proposals for tiles without a symbol (report only: nothing is written) ──────────────────────────
+  // rows: DB tile rows { id, tileset_id, codename, folder_key, sensor_code, symbol, sort_index }; tilesets: [{ id, name }]. A sensor group
+  // (folder_key with at least one sensor_code) is ONE proposal covering all its rows. Rules, first match wins: official table by codename or
+  // folder key (Wall1 M, Wall2 X, Crate Y, Barrel C, Bush F, Cactus T, Skull B, Fence N, 5v5 Fence n, Water W, Rope a), objectives (Bounty, Box,
+  // Gem Grab, Heist, Hot Zone, Brawl Ball, Objective...) 8, otherwise the first free letter of the tileset ("free" = not in the tables and not
+  // used in that tileset). -> [{ tileset, tilesetId, folder, codenames, ids, symbol, rule }]
+  const OBJECTIVE_NAMES = /^(bounty|box|powercube|gem ?grab|heist|hot ?zone|brawl ?ball|objective)$/i;
+  const PROPOSAL_POOL = "DEIJRVghijklmopqst!#$%&*+-=?@^~<>".split("");
+  const proposeSymbols = (rows, tilesets) => {
+    const nameOf = new Map((tilesets || []).map(t => [t.id, t.name]));
+    const official = new Map(Object.entries(OFFICIAL_SYMBOL_NAMES).map(([sym, name]) => [lowerKey(name), sym]));
+    official.set("5v5fence", "n"); official.set("fence5v5", "n");
+    const table = new Set(tableSymbols());
+    const byTs = new Map();
+    for (const r of rows || []) { if (!byTs.has(r.tileset_id)) byTs.set(r.tileset_id, []); byTs.get(r.tileset_id).push(r); }
+    const out = [];
+    for (const [tsId, list] of byTs) {
+      const used = new Set(list.map(r => r.symbol).filter(Boolean));
+      const sorted = list.slice().sort((a, b) => (a.sort_index || 0) - (b.sort_index || 0));
+      const sensorKeys = new Set(sorted.filter(r => r.folder_key && r.sensor_code != null).map(r => r.folder_key));
+      const seen = new Set(), groups = [];
+      for (const r of sorted) {
+        if (r.folder_key && sensorKeys.has(r.folder_key)) {
+          if (seen.has(r.folder_key)) continue;
+          seen.add(r.folder_key);
+          groups.push({ folder: r.folder_key, key: r.folder_key, rows: sorted.filter(x => x.folder_key === r.folder_key) });
+        } else groups.push({ folder: r.folder_key || null, key: r.codename, rows: [r] });
+      }
+      for (const g of groups) {
+        if (g.rows.every(r => r.symbol)) continue; // already complete
+        if (g.rows.some(r => r.symbol)) continue; // partly set: a divergence to fix by hand, not a proposal
+        let symbol = official.get(lowerKey(g.key)) || null, rule = symbol ? "official table" : null;
+        if (!symbol && OBJECTIVE_NAMES.test(String(g.key).replace(/[_-]+/g, " ").trim())) { symbol = "8"; rule = "objective"; }
+        if (!symbol) {
+          symbol = PROPOSAL_POOL.find(ch => !used.has(ch) && !table.has(ch)) || null;
+          rule = symbol ? "first free letter" : "no free symbol";
+          if (symbol) used.add(symbol);
+        }
+        out.push({ tileset: nameOf.get(tsId) || String(tsId), tilesetId: tsId, folder: g.folder, codenames: g.rows.map(r => r.codename), ids: g.rows.map(r => r.id), symbol, rule });
+      }
+    }
+    return out;
+  };
+  const sqlString = v => "'" + String(v).replace(/'/g, "''") + "'";
+  // SQL for the proposals that have a symbol (one UPDATE per group; ids are the primary keys).
+  const proposalSql = proposals => proposals.filter(p => p.symbol).map(p =>
+    `UPDATE tiles SET symbol = ${sqlString(p.symbol)} WHERE symbol IS NULL AND id IN (${p.ids.map(sqlString).join(", ")}); -- ${p.tileset}${p.folder ? " / " + p.folder : ""}: ${p.codenames.join(", ")} (${p.rule})`).join("\n");
+
   // Is entry `a` the same tile as (or a sibling of) `b`? Same ref, same folder key in the same source/tileset, or the same name (the
   // standard symbol is shared by every tileset's Wall1, Water and so on).
   const sameTile = (a, b) => {
@@ -516,7 +564,7 @@
   return {
     B62, MAX_DIM, CLASSES, CLASS_FLAGS, CLASS_NAMES, MAGNET_SIZE_NAMES, GLOBAL_SYMBOLS, SPECIAL_SYMBOLS, SHARED_SYMBOLS,
     SWAP_REF_PAIRS, PARTNER_REFS, PARTNER_SYMBOLS, partnerRef, partnerSymbol, orbitOf,
-    OFFICIAL_SYMBOL_NAMES, SYMBOL_UNIVERSE, officialEntries, globalEntries, buildRegistry, tableSymbols, globalMemberFolders, globalSymbolOfRef, sameTile, symbolConflicts, freeSymbols,
+    OFFICIAL_SYMBOL_NAMES, SYMBOL_UNIVERSE, officialEntries, globalEntries, buildRegistry, tableSymbols, proposeSymbols, proposalSql, globalMemberFolders, globalSymbolOfRef, sameTile, symbolConflicts, freeSymbols,
     globalSymbol, globalRefsForSymbol, isValidSymbol,
     effectiveSums, effectiveCenter, magnetFromApp, defaultMagnetSize, imagesOf, regionCells, detectMirror,
     encodeSize, parseSize, encodeMagnet, parseMagnet, bitsToBase62, base62ToBits,

@@ -138,7 +138,7 @@ const test = async (name, fn) => {
   };
   const blank = (w, h) => Array.from({ length: h }, () => Array(w).fill(null));
   const encode = (w, h, cells, tileset, magnet) => { const g = blank(w, h); for (const [r, c, s] of cells) g[r][c] = s; return MapSeed.encode({ w, h, grid: g, tileset, magnet }).seed; };
-  const SEED_A = encode(7, 5, [[0, 0, "M"], [0, 6, "M"], [2, 3, "Y"], [4, 0, "M"], [4, 6, "M"], [1, 1, "X"], [3, 5, "W"], [3, 1, "6"], [2, 2, "7"]], 0);
+  const SEED_A = encode(7, 5, [[0, 0, "M"], [0, 6, "M"], [2, 3, "Y"], [4, 0, "M"], [4, 6, "M"], [1, 1, "X"], [3, 5, "W"], [3, 1, "A"], [2, 2, "S"]], 0);
   const importViaField = async (page, seed) => { await page.fill("[data-seed-input]", seed); await page.waitForSelector("[data-seed-breakdown]"); await page.click("[data-seed-import]"); };
 
   await test("copy seed and share link on an empty map; export warns about tiles without symbols", async () => {
@@ -244,7 +244,7 @@ const test = async (name, fn) => {
     const seed8 = encode(3, 3, [[1, 1, "8"]], 7);
     await importViaField(page, seed8);
     await page.waitForSelector("[data-seed-import-modal]");
-    assert.strictEqual(await page.locator("[data-seed-choose='8'] [data-seed-card]").count(), 8);
+    assert.strictEqual(await page.locator("[data-seed-choose='8'] [data-seed-card]").count(), 6);
     await ctx.close();
   });
 

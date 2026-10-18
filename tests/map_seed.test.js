@@ -535,6 +535,37 @@ test("symbol registry: official + global + tilesets; conflicts ignore siblings a
   assert.strictEqual(M.OFFICIAL_SYMBOL_NAMES.a, "Rope"); assert.strictEqual(M.OFFICIAL_SYMBOL_NAMES.N, "Fence"); assert.strictEqual(M.OFFICIAL_SYMBOL_NAMES.n, "Fence 5v5");
 });
 
+test("proposeSymbols: standard rules, groups, objectives, free letters; SQL escapes", () => {
+  const tilesets = [{ id: "t1", name: "Desert" }, { id: "t2", name: "O'Neil" }];
+  const rows = [
+    { id: "1", tileset_id: "t1", codename: "Wall1", folder_key: null, sensor_code: null, symbol: null, sort_index: 1 },
+    { id: "2", tileset_id: "t1", codename: "Crate", folder_key: null, sensor_code: null, symbol: "Y", sort_index: 2 },
+    { id: "3", tileset_id: "t1", codename: "Water_00000000", folder_key: "Water", sensor_code: "00000000", symbol: null, sort_index: 3 },
+    { id: "4", tileset_id: "t1", codename: "Water_11111111", folder_key: "Water", sensor_code: "11111111", symbol: null, sort_index: 4 },
+    { id: "5", tileset_id: "t1", codename: "Rope_00011000", folder_key: "Rope", sensor_code: "00011000", symbol: null, sort_index: 5 },
+    { id: "6", tileset_id: "t1", codename: "Gem_Grab", folder_key: null, sensor_code: null, symbol: null, sort_index: 6 },
+    { id: "7", tileset_id: "t1", codename: "Pillar", folder_key: null, sensor_code: null, symbol: null, sort_index: 7 },
+    { id: "8", tileset_id: "t1", codename: "Pillar2", folder_key: null, sensor_code: null, symbol: null, sort_index: 8 },
+    { id: "9", tileset_id: "t1", codename: "Fence_00000000", folder_key: "Fence", sensor_code: "00000000", symbol: "N", sort_index: 9 },
+    { id: "10", tileset_id: "t1", codename: "Fence5v5_x", folder_key: "Fence5v5", sensor_code: "00011000", symbol: null, sort_index: 10 },
+    { id: "11", tileset_id: "t2", codename: "Shiny", folder_key: null, sensor_code: null, symbol: null, sort_index: 1 },
+  ];
+  const p = M.proposeSymbols(rows, tilesets);
+  const at = codename => p.find(x => x.codenames.includes(codename));
+  assert.strictEqual(at("Wall1").symbol, "M");
+  assert.strictEqual(at("Water_00000000").symbol, "W");
+  assert.deepStrictEqual(at("Water_00000000").ids, ["3", "4"]);
+  assert.strictEqual(at("Rope_00011000").symbol, "a");
+  assert.strictEqual(at("Gem_Grab").symbol, "8");
+  assert.strictEqual(at("Fence5v5_x").symbol, "n");
+  assert.ok(!at("Crate") && !at("Fence_00000000"), "tiles that already have a symbol are not listed");
+  assert.deepStrictEqual([at("Pillar").symbol, at("Pillar2").symbol], ["D", "E"]); // first free letters, none taken by the tables
+  assert.strictEqual(at("Shiny").symbol, "D"); // free letters restart per tileset
+  const sql = M.proposalSql(p);
+  assert.ok(/UPDATE tiles SET symbol = 'W' WHERE symbol IS NULL AND id IN \('3', '4'\);/.test(sql));
+  assert.ok(sql.includes("O'Neil"), "comments keep the name; values are quoted");
+});
+
 test("compactness report", () => {
   const rand = rng(2024);
   const rows = [];
