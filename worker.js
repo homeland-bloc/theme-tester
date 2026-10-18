@@ -29,6 +29,75 @@ const ADMIN_SENSITIVE_TABLES = new Set([
 ]);
 const RLS_DELETE_TABLES = new Set(['tilesets', 'tiles']);
 
+// <security-helpers>
+// Pure helpers (no I/O): unit-tested by tests/worker_security.test.js, which extracts this block.
+
+// M-1: the Supabase proxy forwards ONLY these three tables, and only the exact path /rest/v1/<table>. The caller's path is never forwarded as
+// typed: the proxy rebuilds it from the matched table name. -> table name or null (/rpc/, /storage/, the /rest/v1/ root, sub-paths, anything else).
+const PROXY_TABLES = ['profiles', 'tilesets', 'tiles'];
+function proxyTableFor(normalizedPath) {
+  const m = /^\/rest\/v1\/(profiles|tilesets|tiles)$/.exec(String(normalizedPath));
+  return m ? m[1] : null;
+}
+
+// H-2: POST / PATCH / PUT bodies must be JSON. "application/json" with optional parameters (charset) only.
+function isJsonContentType(value) {
+  return typeof value === 'string' && value.split(';')[0].trim().toLowerCase() === 'application/json';
+}
+// A JSON body the proxy can sanitise: an object, or a non-empty array of objects.
+function isSanitisableBody(body) {
+  const isObj = v => v !== null && typeof v === 'object' && !Array.isArray(v);
+  return Array.isArray(body) ? body.length > 0 && body.every(isObj) : isObj(body);
+}
+
+// L-2: magic bytes of an upload against its extension. ext includes the dot, any case.
+const IMAGE_SIGNATURES = {
+  '.png': [{ at: 0, bytes: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] }],
+  '.jpg': [{ at: 0, bytes: [0xff, 0xd8, 0xff] }],
+  '.jpeg': [{ at: 0, bytes: [0xff, 0xd8, 0xff] }],
+  '.gif': [{ at: 0, bytes: [0x47, 0x49, 0x46, 0x38, 0x37, 0x61] }, { at: 0, bytes: [0x47, 0x49, 0x46, 0x38, 0x39, 0x61] }], // GIF87a | GIF89a
+  '.webp': [{ at: 0, bytes: [0x52, 0x49, 0x46, 0x46], also: { at: 8, bytes: [0x57, 0x45, 0x42, 0x50] } }], // RIFF....WEBP
+};
+// First `n` bytes of a base64 string (null when the start is not valid base64). Only the head is decoded.
+function base64Head(b64, n = 16) {
+  if (typeof b64 !== 'string') return null;
+  const chars = Math.ceil(n / 3) * 4;
+  let head = b64.slice(0, chars + 64).replace(/\s/g, '').slice(0, chars);
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(head)) return null;
+  while (head.length % 4) head += '=';
+  try {
+    const bin = atob(head);
+    return Uint8Array.from(bin, c => c.charCodeAt(0)).slice(0, n);
+  } catch { return null; }
+}
+function imageMatchesExtension(ext, bytes) {
+  const sigs = IMAGE_SIGNATURES[String(ext).toLowerCase()];
+  if (!sigs || !bytes) return false;
+  const has = (at, want) => bytes.length >= at + want.length && want.every((b, i) => bytes[at + i] === b);
+  return sigs.some(s => has(s.at, s.bytes) && (!s.also || has(s.also.at, s.also.bytes)));
+}
+
+// M-2: a folder is owned by the caller only if EVERY tileset row with that folder_path (case-insensitive) has owner_id = the caller, and at
+// least one such row exists. rows: [{ folder_path, owner_id }] from any source (rows of other folders are ignored).
+function folderOwnership(rows, folder, uid) {
+  const want = String(folder).toLowerCase();
+  const same = (Array.isArray(rows) ? rows : []).filter(r => r && typeof r.folder_path === 'string' && r.folder_path.toLowerCase() === want);
+  if (same.length === 0) return { ok: false, error: `No tileset you can access uses folder "${folder}"` };
+  if (!uid || !same.every(r => r.owner_id && r.owner_id === uid)) return { ok: false, error: `You do not own the tileset for folder "${folder}"` };
+  return { ok: true };
+}
+
+// H-1: the answer of GET https://discord.com/api/oauth2/@me must belong to OUR application and carry a real user. -> the user object or null.
+function discordUserFromOAuthMe(data, clientId) {
+  if (!clientId || !data || typeof data !== 'object') return null;
+  const app = data.application;
+  if (!app || String(app.id) !== String(clientId)) return null;
+  const user = data.user;
+  if (!user || typeof user.id !== 'string' || !/^\d+$/.test(user.id)) return null;
+  return user;
+}
+// </security-helpers>
+
 // Populated on first use; re-fetched after 1 hour.
 let firebasePublicKeysCache = null;
 let firebasePublicKeysCacheTime = 0;
@@ -87,7 +156,7 @@ export default {
         return handleGithubDiag(request, env);
       }
 
-      if (path.startsWith('/rest/v1/') || path.startsWith('/storage/v1/')) {
+      if (path.startsWith('/rest/v1') || path.startsWith('/storage/v1')) {
         return handleSupabaseProxy(request, url, path, env);
       }
 
@@ -108,9 +177,10 @@ async function handleDiscordToken(request, env) {
   try { body = await request.json(); }
   catch { return corsResponse({ error: 'Invalid JSON body' }, 400); }
 
-  const { code, code_verifier, redirect_uri } = body;
-  if (!code || !code_verifier || !redirect_uri) {
-    return corsResponse({ error: 'Missing required fields: code, code_verifier, redirect_uri' }, 400);
+  // I-2: the redirect_uri is fixed in the Worker; a client-supplied value is ignored.
+  const { code, code_verifier } = body || {};
+  if (typeof code !== 'string' || typeof code_verifier !== 'string' || !code || !code_verifier) {
+    return corsResponse({ error: 'Missing required fields: code, code_verifier' }, 400);
   }
 
   const tokenRes = await fetch('https://discord.com/api/oauth2/token', {
@@ -121,7 +191,7 @@ async function handleDiscordToken(request, env) {
       client_secret: env.DISCORD_CLIENT_SECRET,
       grant_type: 'authorization_code',
       code,
-      redirect_uri,
+      redirect_uri: DISCORD_REDIRECT_URI,
       code_verifier
     })
   });
@@ -132,7 +202,7 @@ async function handleDiscordToken(request, env) {
     return corsResponse({ error: 'Token exchange failed' }, tokenRes.status);
   }
 
-  const discordUser = await fetchDiscordUser(tokens.access_token);
+  const discordUser = await fetchDiscordUser(tokens.access_token, env);
   if (!discordUser) {
     return corsResponse({ error: 'Failed to verify Discord user' }, 401);
   }
@@ -203,10 +273,10 @@ async function handleFirebaseRefresh(request, env) {
   try { body = await request.json(); }
   catch { return corsResponse({ error: 'Invalid JSON body' }, 400); }
 
-  const { access_token } = body;
-  if (!access_token) return corsResponse({ error: 'Missing required field: access_token' }, 400);
+  const { access_token } = body || {};
+  if (typeof access_token !== 'string' || !access_token) return corsResponse({ error: 'Missing required field: access_token' }, 400);
 
-  const discordUser = await fetchDiscordUser(access_token);
+  const discordUser = await fetchDiscordUser(access_token, env);
   if (!discordUser) {
     return corsResponse({ error: 'Invalid Discord access token' }, 401);
   }
@@ -226,7 +296,7 @@ async function getUserRole(firebaseUid, env, token = null) {
   try {
     const authHeader = token ? `Bearer ${token}` : `Bearer ${env.SUPABASE_ANON_KEY}`;
     const res = await fetch(
-      `${env.SUPABASE_URL}/rest/v1/profiles?id=eq.${firebaseUid}&select=role`,
+      `${env.SUPABASE_URL}/rest/v1/profiles?id=eq.${encodeURIComponent(firebaseUid)}&select=role`,
       {
         headers: {
           'apikey': env.SUPABASE_ANON_KEY,
@@ -310,30 +380,31 @@ async function authGithub(request, env, adminOnly = false) {
   return { auth: { uid: payload.sub, token, role, folderCache: new Map() } };
 }
 
-// Admin: any folder. Creator: only folders whose tileset(s) they own
-// (looked up with the caller's own token, so RLS limits visibility).
-// Global and unowned tilesets are admin-only.
+// Admin: any folder. Creator: only folders whose tileset rows are ALL theirs (see folderOwnership). Rows come from two reads, merged by id:
+// one with the caller's own token and one with the anon key, so a row another user owns cannot be hidden from the check by row-level security
+// on one side. Resources/Global and unowned folders are admin-only.
 async function canManageFolder(auth, env, folder) {
   if (auth.role === 'admin') return { ok: true };
   if (folder.toLowerCase() === 'global') return { ok: false, error: 'Resources/Global is admin-only' };
   if (auth.folderCache.has(folder)) return auth.folderCache.get(folder);
   let result;
   try {
-    const res = await fetch(
-      `${env.SUPABASE_URL}/rest/v1/tilesets?folder_path=eq.${encodeURIComponent(folder)}&select=id,owner_id`,
-      { headers: { apikey: env.SUPABASE_ANON_KEY, Authorization: `Bearer ${auth.token}` } }
-    );
-    if (!res.ok) {
-      result = { ok: false, error: `Ownership lookup failed (${res.status})` };
+    // ilike (case-insensitive); "_" is a LIKE wildcard, so rows are re-filtered exactly in folderOwnership.
+    const q = `${env.SUPABASE_URL}/rest/v1/tilesets?folder_path=ilike.${encodeURIComponent(folder)}&select=id,owner_id,folder_path`;
+    const [asUser, asAnon] = await Promise.all([
+      fetch(q, { headers: { apikey: env.SUPABASE_ANON_KEY, Authorization: `Bearer ${auth.token}` } }),
+      fetch(q, { headers: { apikey: env.SUPABASE_ANON_KEY, Authorization: `Bearer ${env.SUPABASE_ANON_KEY}` } }),
+    ]);
+    if (!asUser.ok) {
+      result = { ok: false, error: `Ownership lookup failed (${asUser.status})` };
     } else {
-      const rows = await res.json();
-      if (!Array.isArray(rows) || rows.length === 0) {
-        result = { ok: false, error: `No tileset you can access uses folder "${folder}"` };
-      } else if (rows.every(r => r.owner_id && r.owner_id === auth.uid)) {
-        result = { ok: true };
-      } else {
-        result = { ok: false, error: `You do not own the tileset for folder "${folder}"` };
+      const byId = new Map();
+      for (const res of [asUser, asAnon]) {
+        if (!res.ok) continue;
+        const rows = await res.json();
+        if (Array.isArray(rows)) for (const r of rows) if (r && r.id != null) byId.set(r.id, r);
       }
+      result = folderOwnership([...byId.values()], folder, auth.uid);
     }
   } catch {
     result = { ok: false, error: 'Ownership lookup failed' };
@@ -478,6 +549,14 @@ async function handleGithubUpload(request, env) {
   if (v.error) return corsResponse({ error: 'Invalid filePath: ' + v.error, code: 'invalid_path' }, 400);
   const own = await canManageFolder(auth, env, v.folder);
   if (!own.ok) return corsResponse({ error: 'Forbidden: ' + own.error, code: 'forbidden' }, 403);
+
+  // L-2: the content must really be the image type its extension claims.
+  const ext = v.name.slice(v.name.lastIndexOf('.')).toLowerCase();
+  const head = base64Head(contentBase64, 16);
+  if (!head) return corsResponse({ error: 'contentBase64 is not valid base64', code: 'bad_content' }, 400);
+  if (!imageMatchesExtension(ext, head)) {
+    return corsResponse({ error: `File content does not match its extension (${ext})`, code: 'bad_content' }, 400);
+  }
 
   const apiUrl = ghContentsUrl(v.path);
   const headers = ghHeaders(env);
@@ -713,13 +792,16 @@ async function handleGithubDiag(request, env) {
 async function handleSupabaseProxy(request, url, normalizedPath, env) {
   const method = request.method;
 
-  const segment = normalizedPath.startsWith('/rest/v1/')
-    ? normalizedPath.slice('/rest/v1/'.length)
-    : normalizedPath.slice('/storage/v1/'.length);
-  const table = segment.split('?')[0].split('/')[0];
+  // M-1: only /rest/v1/profiles, /rest/v1/tilesets and /rest/v1/tiles. Everything else (rpc, storage, the root, sub-paths) is 403.
+  const table = proxyTableFor(normalizedPath);
+  if (!table) {
+    console.warn('[proxy] path not allowed', method, normalizedPath);
+    return corsResponse({ error: 'Forbidden' }, 403);
+  }
 
   const authHeader = request.headers.get('Authorization');
   let firebaseUid = null;
+  let sanitisedBody = null; // the JSON string forwarded for POST / PATCH / PUT
 
   if (WRITE_METHODS.has(method)) {
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -727,7 +809,8 @@ async function handleSupabaseProxy(request, url, normalizedPath, env) {
       return corsResponse({ error: 'Authentication required' }, 401);
     }
 
-    const payload = decodeJwtPayload(authHeader.slice(7));
+    // L-4: the uid drives sanitising and admin checks, so the token is verified (signature, issuer, audience, expiry), not just decoded.
+    const payload = await verifyFirebaseJwt(authHeader.slice(7));
     if (!payload || !payload.sub) {
       console.warn('[auth] invalid token', method, table);
       return corsResponse({ error: 'Invalid token' }, 401);
@@ -748,22 +831,25 @@ async function handleSupabaseProxy(request, url, normalizedPath, env) {
     }
 
     if (method === 'POST' || method === 'PATCH' || method === 'PUT') {
-      const cloned = request.clone();
+      // H-2: JSON only, and a body that cannot be parsed or sanitised is rejected, never forwarded as it came.
+      if (!isJsonContentType(request.headers.get('Content-Type'))) {
+        return corsResponse({ error: 'Content-Type must be application/json' }, 415);
+      }
+      let sanitised;
       try {
         const bodyJson = await request.json();
-        const sanitised = await sanitiseBody(bodyJson, firebaseUid, env, authHeader.slice(7));
-        request = new Request(request.url, {
-          method,
-          headers: request.headers,
-          body: JSON.stringify(sanitised)
-        });
-      } catch {
-        request = cloned;
+        if (!isSanitisableBody(bodyJson)) throw new Error('body is not a JSON object or array of objects');
+        sanitised = await sanitiseBody(bodyJson, firebaseUid, env, authHeader.slice(7));
+      } catch (e) {
+        console.warn('[proxy] body rejected', method, table, e && e.message);
+        return corsResponse({ error: 'Invalid or unreadable JSON body' }, 400);
       }
+      sanitisedBody = JSON.stringify(sanitised);
     }
   }
 
-  const supabaseUrl = `${env.SUPABASE_URL}${url.pathname}${url.search}`;
+  // The path is rebuilt from the allowlisted table, never taken from the request as typed.
+  const supabaseUrl = `${env.SUPABASE_URL}/rest/v1/${table}${url.search}`;
   const headers = new Headers();
   headers.set('apikey', env.SUPABASE_ANON_KEY);
   if (authHeader) headers.set('Authorization', authHeader);
@@ -773,11 +859,9 @@ async function handleSupabaseProxy(request, url, normalizedPath, env) {
     if (val) headers.set(h, val);
   }
 
-  const supabaseResp = await fetch(new Request(supabaseUrl, {
-    method,
-    headers,
-    body: WRITE_METHODS.has(method) ? request.body : undefined
-  }));
+  let forwardBody;
+  if (WRITE_METHODS.has(method)) forwardBody = sanitisedBody !== null ? sanitisedBody : ((await request.text()) || undefined);
+  const supabaseResp = await fetch(supabaseUrl, { method, headers, body: forwardBody });
 
   const responseBody = await supabaseResp.text();
   const extraHeaders = {};
@@ -791,44 +875,26 @@ async function handleSupabaseProxy(request, url, normalizedPath, env) {
   );
 }
 
+// Admin check for the proxy: a VERIFIED Firebase ID token whose uid has role admin. (The legacy X-Discord-Token path is gone.)
 async function verifyAdmin(request, env) {
-  // Prefer Firebase JWT (consistent with GitHub routes, no extra Discord header needed)
   const authHeader = request.headers.get('Authorization');
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    const token = authHeader.slice(7);
-    const payload = decodeJwtPayload(token);
-    if (payload && payload.sub) {
-      const role = await getUserRole(payload.sub, env, token);
-      if (role === 'admin') return true;
-    }
-  }
-  // Fallback: legacy Discord token check
-  const discordToken = request.headers.get('X-Discord-Token');
-  if (!discordToken) return false;
-  const discordUser = await fetchDiscordUser(discordToken);
-  if (!discordUser) return false;
-  const res = await fetch(
-    `${env.SUPABASE_URL}/rest/v1/profiles?id=eq.${discordUser.id}&select=role`,
-    {
-      headers: {
-        'apikey': env.SUPABASE_ANON_KEY,
-        'Authorization': `Bearer ${env.SUPABASE_ANON_KEY}`
-      }
-    }
-  );
-  const rows = await res.json();
-  return Array.isArray(rows) && rows.length > 0 && rows[0].role === 'admin';
+  if (!authHeader || !authHeader.startsWith('Bearer ')) return false;
+  const token = authHeader.slice(7);
+  const payload = await verifyFirebaseJwt(token);
+  if (!payload || !payload.sub) return false;
+  return (await getUserRole(payload.sub, env, token)) === 'admin';
 }
 
-async function fetchDiscordUser(token) {
+// H-1: a Discord access token is accepted only if Discord says it was issued to OUR application (a token minted for any other Discord app
+// would otherwise log its owner in here). Fails closed: a missing client id, a network error or any mismatch is null -> the routes answer 401.
+async function fetchDiscordUser(token, env) {
   try {
-    const res = await fetch('https://discord.com/api/users/@me', {
+    if (typeof token !== 'string' || !token || !env || !env.DISCORD_CLIENT_ID) return null;
+    const res = await fetch('https://discord.com/api/oauth2/@me', {
       headers: { Authorization: `Bearer ${token}` }
     });
     if (!res.ok) return null;
-    const data = await res.json();
-    if (!data.id || !/^\d+$/.test(data.id)) return null;
-    return data;
+    return discordUserFromOAuthMe(await res.json(), env.DISCORD_CLIENT_ID);
   } catch {
     return null;
   }
@@ -946,16 +1012,6 @@ async function verifyFirebaseJwt(token) {
   }
 }
 
-function decodeJwtPayload(token) {
-  try {
-    const [, payloadB64] = token.split('.');
-    const padded = payloadB64.replace(/-/g, '+').replace(/_/g, '/');
-    return JSON.parse(atob(padded));
-  } catch {
-    return null;
-  }
-}
-
 async function mintFirebaseCustomToken(serviceAccount, uid) {
   const now = Math.floor(Date.now() / 1000);
   const headerB64 = base64UrlEncodeStr(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
@@ -1024,7 +1080,7 @@ function corsResponse(body, status, contentType = 'application/json', extraHeade
   const headers = {
     'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
     'Access-Control-Allow-Methods': 'GET, POST, PATCH, PUT, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization, apikey, X-Discord-Token, Prefer, X-Upsert, Cache-Control, Pragma, Expires, Range, Content-Range',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, apikey, Prefer, X-Upsert, Cache-Control, Pragma, Expires, Range, Content-Range',
     'Access-Control-Expose-Headers': 'Content-Range',
     'Access-Control-Max-Age': '86400',
     'Content-Type': contentType,
