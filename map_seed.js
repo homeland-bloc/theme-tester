@@ -105,6 +105,60 @@
   const partnerRef = ref => (Object.prototype.hasOwnProperty.call(PARTNER_REFS, ref) ? PARTNER_REFS[ref] : ref);
   const partnerSymbol = sym => (sym != null && Object.prototype.hasOwnProperty.call(PARTNER_SYMBOLS, sym) ? PARTNER_SYMBOLS[sym] : sym);
 
+  // ── Mirror transform: team swap + jumppad direction ───────────────────────────────────────────────────
+  // A mirror image is described by the app's flags: fV = left-right image, fH = top-bottom image, fD = point reflection. Several flags COMPOSE
+  // (each is a transform; two reflections of one axis cancel), so the geometry is two booleans: x (columns reflect) and y (rows reflect).
+  //   x = fV xor fD        y = fH xor fD
+  // What an image holds, for the tile it copies:
+  //   team tiles (spawns 1<->2, respawns 3<->4, goals blue<->red)  swap with their partner when y (rows reflect), never on x alone
+  //   global jumppads point the mirrored way:   x: R<->L, TR<->TL, BR<->BL     y: T<->B, TL<->BL, TR<->BR     x and y: R<->L, T<->B, TL<->BR, TR<->BL
+  // Only the global jumppads (Resources/Global/Jumppads/<name>.png) take part. Every other tile is copied as it is.
+  const JUMPPAD_FILES = Object.freeze(["R", "L", "B", "T", "BR", "TL", "BL", "TR"]);
+  const JUMPPAD_X = Object.freeze({ R: "L", L: "R", TR: "TL", TL: "TR", BR: "BL", BL: "BR" });
+  const JUMPPAD_Y = Object.freeze({ T: "B", B: "T", TL: "BL", BL: "TL", TR: "BR", BR: "TR" });
+  const jumppadRef = file => G + "Jumppads/" + file + ".png";
+  const jumppadFileOf = ref => { const m = /^g:Resources\/Global\/Jumppads\/([A-Z]+)\.png$/.exec(String(ref)); return m && JUMPPAD_FILES.includes(m[1]) ? m[1] : null; };
+  const flipAxes = flags => { const f = flags || {}; return { x: !!f.fV !== !!f.fD, y: !!f.fH !== !!f.fD }; };
+  const mirrorJumppadFile = (file, axes) => {
+    let f = file;
+    if (axes.x && Object.prototype.hasOwnProperty.call(JUMPPAD_X, f)) f = JUMPPAD_X[f];
+    if (axes.y && Object.prototype.hasOwnProperty.call(JUMPPAD_Y, f)) f = JUMPPAD_Y[f];
+    return f;
+  };
+  // The ref an image holds. flags = { fV, fH, fD }; opts.teamSwap (default true) switches the team swap (the app's "Mirror Spawns").
+  const mirrorRef = (ref, flags, opts) => {
+    const axes = flipAxes(flags), teamSwap = !opts || opts.teamSwap !== false;
+    let out = ref;
+    if (axes.y && teamSwap) out = partnerRef(out);
+    const jp = jumppadFileOf(out);
+    return jp ? jumppadRef(mirrorJumppadFile(jp, axes)) : out;
+  };
+  // Same transform on a SEED symbol (axes = { x, y }); the seed always swaps teams. Symbols that are not team / jumppad symbols come back as they are.
+  const JUMPPAD_SYMBOL = (() => { const m = {}; for (const f of JUMPPAD_FILES) m[f] = GLOBAL_SYMBOLS[jumppadRef(f)]; return Object.freeze(m); })();
+  const JUMPPAD_FILE_OF_SYMBOL = (() => { const m = {}; for (const f of JUMPPAD_FILES) m[JUMPPAD_SYMBOL[f]] = f; return Object.freeze(m); })();
+  const mirrorSymbol = (sym, axes) => {
+    if (sym == null) return sym;
+    let out = sym;
+    if (axes.y) out = partnerSymbol(out);
+    if (Object.prototype.hasOwnProperty.call(JUMPPAD_FILE_OF_SYMBOL, out)) out = JUMPPAD_SYMBOL[mirrorJumppadFile(JUMPPAD_FILE_OF_SYMBOL[out], axes)];
+    return out;
+  };
+  // Mirror-offset tiles: the image's offset is the tile's offset negated on the axes that reflect, so the copy lines up.
+  // info = { mirrorOffset: boolean, base: { ox, oy } } of the tile the IMAGE holds (the swapped tile's own offset). -> { ox, oy } or undefined (no override).
+  const mirrorOffsetOverride = (info, flags) => {
+    if (!info || !info.mirrorOffset) return undefined;
+    const a = flipAxes(flags);
+    if (!a.x && !a.y) return undefined;
+    const b = info.base || { ox: 0, oy: 0 };
+    return { ox: a.x ? 0 - b.ox : b.ox, oy: a.y ? 0 - b.oy : b.oy };
+  };
+  // One placement with all its mirror images. meta = [{ pos: [r, c], fV, fH, fD }] (the app's getMirrorMeta), ref = the tile placed at the
+  // primary cell. -> [{ pos, fV, fH, fD, ref (what that cell holds), override (offset override or undefined) }]. offsetInfoOf(ref) -> info | null.
+  const planMirrorCopies = (meta, ref, opts) => (meta || []).map(m => {
+    const r2 = mirrorRef(ref, m, opts);
+    return { pos: m.pos, fV: !!m.fV, fH: !!m.fH, fD: !!m.fD, ref: r2, override: mirrorOffsetOverride(opts && opts.offsetInfoOf ? opts.offsetInfoOf(r2) : null, m) };
+  });
+
   // ── Symbol registry ───────────────────────────────────────────────────────────────────────────────────
   // The settled names of the official table (tileset tiles named like this carry the symbol in every tileset). "n" is the 5v5 fence.
   const OFFICIAL_SYMBOL_NAMES = Object.freeze({ M: "Wall1", X: "Wall2", Y: "Crate", C: "Barrel", F: "Bush", T: "Cactus", B: "Skull", N: "Fence", n: "Fence 5v5", W: "Water", a: "Rope" });
@@ -254,12 +308,13 @@
   };
   // Images with the team flag: { r, c, swap }. An image that reflects the rows (v, d) holds the PARTNER of the source tile (see SWAP_REF_PAIRS);
   // a left-right image (h) holds the same tile. When two images land on one cell the first (h, v, d) wins, as in the app.
+  // Each image also carries its axes ({ fx: columns reflect, fy: rows reflect }; `swap` = fy), which decide what it holds (see mirrorRef).
   const orbitOf = (r, c, cls, w, h, sums) => {
     const out = [];
-    const add = (r2, c2, swap) => { if (r2 >= 0 && r2 < h && c2 >= 0 && c2 < w && !(r2 === r && c2 === c) && !out.some(p => p.r === r2 && p.c === c2)) out.push({ r: r2, c: c2, swap }); };
-    if (cls === "h" || cls === "4") add(r, sums.sumC - c, false);
-    if (cls === "v" || cls === "4") add(sums.sumR - r, c, true);
-    if (cls === "d" || cls === "4") add(sums.sumR - r, sums.sumC - c, true);
+    const add = (r2, c2, fx, fy) => { if (r2 >= 0 && r2 < h && c2 >= 0 && c2 < w && !(r2 === r && c2 === c) && !out.some(p => p.r === r2 && p.c === c2)) out.push({ r: r2, c: c2, swap: fy, fx, fy }); };
+    if (cls === "h" || cls === "4") add(r, sums.sumC - c, true, false);
+    if (cls === "v" || cls === "4") add(sums.sumR - r, c, false, true);
+    if (cls === "d" || cls === "4") add(sums.sumR - r, sums.sumC - c, true, true);
     return out;
   };
   const precedes = (r2, c2, r, c) => r2 < r || (r2 === r && c2 < c);
@@ -271,20 +326,20 @@
     }
     return out;
   };
-  // partnerOf(value) -> the value a team-swapped image holds (default: none, every image copies the cell).
-  const holds = (grid, w, h, sums, cls, partnerOf) => {
+  // transformOf(value, axes) -> the value an image with those axes holds (default: none, every image copies the cell).
+  const holds = (grid, w, h, sums, cls, transformOf) => {
     for (let r = 0; r < h; r++) for (let c = 0; c < w; c++) {
-      for (const im of orbitOf(r, c, cls, w, h, sums)) if (grid[im.r][im.c] !== (im.swap && partnerOf ? partnerOf(grid[r][c]) : grid[r][c])) return false;
+      for (const im of orbitOf(r, c, cls, w, h, sums)) if (grid[im.r][im.c] !== (transformOf ? transformOf(grid[r][c], { x: im.fx, y: im.fy }) : grid[r][c])) return false;
     }
     return true;
   };
   // grid: rows of comparable cell values. -> the strongest class that holds exactly (see header).
-  const detectMirror = (grid, w, h, magnet, partnerOf) => {
+  const detectMirror = (grid, w, h, magnet, transformOf) => {
     const sums = effectiveSums(w, h, magnet);
     let best = "a", bestSize = w * h;
     for (const cls of CLASSES) {
       if (cls === "a") continue;
-      if (!holds(grid, w, h, sums, cls, partnerOf)) continue;
+      if (!holds(grid, w, h, sums, cls, transformOf)) continue;
       const n = regionCells(w, h, sums, cls).length;
       if (n < bestSize) { best = cls; bestSize = n; }
     }
@@ -370,9 +425,16 @@
     const sums0 = effectiveSums(w, h, null), sumsM = effectiveSums(w, h, magnet);
     const mag = magnet && !(sums0.sumR === sumsM.sumR && sums0.sumC === sumsM.sumC)
       ? { col: Math.max(0, Math.min(w - 1, magnet.col)), row: Math.max(0, Math.min(h - 1, magnet.row)), size: magnet.size || 1 } : null;
-    // Team-aware: an image that reflects the rows must hold the partner of the cell's tile (spawn 1 <-> 2, respawn 3 <-> 4, goal blue <-> red).
-    const partnerIdx = new Map(palette.map((s, i) => [i + 1, partnerSymbol(s) === s ? i + 1 : (indexOf.has(partnerSymbol(s)) ? indexOf.get(partnerSymbol(s)) : -1)]));
-    const mirror = detectMirror(idx, w, h, mag, v => (v === 0 ? 0 : partnerIdx.get(v)));
+    // Mirror-aware: an image holds the MIRRORED tile of its cell: team tiles swap with their partner when rows reflect (spawn 1 <-> 2, respawn 3 <-> 4,
+    // goal blue <-> red) and global jumppads point the mirrored way (see mirrorRef). A partner missing from the palette (-1) can never match.
+    const tIdx = new Map();
+    const transformIdx = (v, axes) => {
+      if (v === 0) return 0;
+      const key = v + "|" + (axes.x ? 1 : 0) + (axes.y ? 1 : 0);
+      if (!tIdx.has(key)) { const t = mirrorSymbol(palette[v - 1], axes); tIdx.set(key, t === palette[v - 1] ? v : (indexOf.has(t) ? indexOf.get(t) : -1)); }
+      return tIdx.get(key);
+    };
+    const mirror = detectMirror(idx, w, h, mag, transformIdx);
     const sums = effectiveSums(w, h, mag);
     const cells = regionCells(w, h, sums, mirror);
     const k = bitLength(palette.length);
@@ -470,7 +532,7 @@
       cells.forEach(([r, c], i) => {
         const sym = values[i] === 0 ? null : palette[values[i] - 1];
         out[r][c] = sym;
-        for (const im of orbitOf(r, c, mirS, size.w, size.h, sums)) out[im.r][im.c] = im.swap ? partnerSymbol(sym) : sym;
+        for (const im of orbitOf(r, c, mirS, size.w, size.h, sums)) out[im.r][im.c] = mirrorSymbol(sym, { x: im.fx, y: im.fy });
       });
       let total = 0;
       for (const row of out) for (const s of row) { if (s === undefined) return fail("code", "Internal error: a cell was not filled."); total++; }
@@ -571,6 +633,7 @@
   return {
     B62, MAX_DIM, CLASSES, CLASS_FLAGS, CLASS_NAMES, MAGNET_SIZE_NAMES, GLOBAL_SYMBOLS, SPECIAL_SYMBOLS, SHARED_SYMBOLS,
     SWAP_REF_PAIRS, PARTNER_REFS, PARTNER_SYMBOLS, partnerRef, partnerSymbol, orbitOf,
+    JUMPPAD_FILES, JUMPPAD_X, JUMPPAD_Y, jumppadRef, jumppadFileOf, flipAxes, mirrorJumppadFile, mirrorRef, mirrorSymbol, mirrorOffsetOverride, planMirrorCopies,
     OFFICIAL_SYMBOL_NAMES, SYMBOL_UNIVERSE, officialEntries, globalEntries, buildRegistry, tableSymbols, proposeSymbols, proposalSql, globalMemberFolders, globalSymbolOfRef, sameTile, symbolConflicts, freeSymbols,
     globalSymbol, globalRefsForSymbol, isValidSymbol,
     effectiveSums, effectiveCenter, magnetFromApp, defaultMagnetSize, imagesOf, regionCells, detectMirror,

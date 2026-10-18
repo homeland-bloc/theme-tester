@@ -3524,14 +3524,6 @@ function App() {
   };
   const getCellMultiplier = (t, r, c) => getTileMultiplier(cellSizeTile(t, r, c));
 
-  // Counterpart of a team tile on a mirror (spawn 1 <-> 2, respawn 3 <-> 4, goalBlue <-> goalRed; the table lives in map_seed.js so seeds
-  // swap exactly the same pairs). Takes and returns a tile ref; any other tile, or a partner that is not loaded, comes back unchanged.
-  // The callers swap only when the mirror image reflects the ROWS (top<->bottom, flags fH / fD); a left-right image keeps the team.
-  const swapSpawnRef = (ref) => {
-    const other = MapSeed.partnerRef(ref);
-    return other !== ref && tilesByRefRef.current.has(other) ? other : ref;
-  };
-
   // Water tiles have rotation on by default
   const isDefaultRotatable = t => {
     if (t?.dbRotatable != null) return !!t.dbRotatable;
@@ -4886,6 +4878,7 @@ function App() {
     const getMirrorMetaFn = getMirrorMetaRef.current;
     const currentGrid = gridRef.current;
     const newG = currentGrid.map(row => [...row]);
+    const newOffsets = { ...gridOffsetsRef.current };
     const seenNew = new Set();
     oldCells.forEach(key => {
       const [r, c] = key.split(',').map(Number);
@@ -4894,27 +4887,23 @@ function App() {
       const srcRef = refAt(paletteRef.current, id);
       const newR = r + dr, newC = c + dc;
       if (newR < 0 || newR >= gridHRef.current || newC < 0 || newC >= gridWRef.current) return;
-      const placements = [];
-      const primaryKey = `${newR},${newC}`;
-      if (!seenNew.has(primaryKey)) {
-        seenNew.add(primaryKey);
-        placements.push({ newR, newC, id });
-      }
-      if (getMirrorMetaFn) {
-        getMirrorMetaFn(newR, newC).forEach(({ pos: [mr, mc], fV, fH, fD }) => {
-          const mKey = `${mr},${mc}`;
-          if (!seenNew.has(mKey)) {
-            seenNew.add(mKey);
-            const mirrorId = (srcRef && ms.mirrorSpawns && (fH || fD)) ? paletteIndexFor(paletteRef.current, swapSpawnRef(srcRef)) : id;
-            placements.push({ newR: mr, newC: mc, id: mirrorId });
-          }
-        });
-      }
-      placements.forEach(({ newR: nr, newC: nc, id: tid }) => { newG[nr][nc] = tid; });
+      const srcOv = gridOffsetsRef.current[`${r},${c}`]; // the source cell's own offset override, if it has one
+      const meta = getMirrorMetaFn ? getMirrorMetaFn(newR, newC) : [{ pos: [newR, newC], fV: false, fH: false, fD: false }];
+      // Same rule as drawing: each image holds the mirrored tile (team swap, jumppad direction) with its offset negated on the reflecting axes.
+      const plan = srcRef ? planMirror(meta, srcRef, ms, srcOv) : meta.map(m => ({ pos: m.pos, fV: m.fV, fH: m.fH, fD: m.fD, ref: srcRef, override: undefined }));
+      plan.forEach(p => {
+        const [mr, mc] = p.pos, mKey = `${mr},${mc}`;
+        if (seenNew.has(mKey)) return;
+        seenNew.add(mKey);
+        newG[mr][mc] = p.ref ? paletteIndexFor(paletteRef.current, p.ref) : id;
+        const ov = (!p.fV && !p.fH && !p.fD) ? srcOv : p.override; // the copy itself keeps the source's override; images get the mirrored one
+        if (ov !== undefined) newOffsets[mKey] = ov; else delete newOffsets[mKey];
+      });
     });
+    setGridOffsets(newOffsets);
     setGridStableRef.current(() => newG, true);
     gridRef.current = newG;
-    pushHistoryEntry(makeSnap("Duplicate Place", { grid: newG })); // one undo step, state AFTER the copy (palette may have grown)
+    pushHistoryEntry(makeSnap("Duplicate Place", { grid: newG, gridOffsets: newOffsets })); // one undo step, state AFTER the copy (palette may have grown)
     setHighlightDragOffset(null); highlightDragOffsetRef.current = null;
     highlightDragAnchorCell.current = null;
   }, [tiles]);
@@ -5072,14 +5061,11 @@ function App() {
     const meta   = (getMirrorMetaRef.current ?? getMirrorMeta)(r, c);
     const tileId = eraser ? null : (sel ?? null); // tile ref
     const ms     = mirrorSettingsRef.current;
+    const plan   = tileId ? planMirror(meta, tileId, ms) : [];
     setGrid(prev => {
       const g = prev.map(row => [...row]);
-      meta.forEach(({ pos: [pr, pc], fV, fH, fD }) => {
-        // Spawn swapping: applies when fH (top-bottom) or fD (diagonal) flips teams
-        let ref = tileId;
-        if (ref && ms.mirrorSpawns && (fH || fD)) ref = swapSpawnRef(ref);
-        g[pr][pc] = (eraser || !ref) ? null : paletteIndexFor(paletteRef.current, ref);
-      });
+      if (eraser || !tileId) meta.forEach(({ pos: [pr, pc] }) => { g[pr][pc] = null; });
+      else plan.forEach(({ pos: [pr, pc], ref }) => { g[pr][pc] = paletteIndexFor(paletteRef.current, ref); });
       return g;
     }, true);
     // Update per-cell offset overrides for mirror offset feature
@@ -5088,10 +5074,7 @@ function App() {
       if (eraser) {
         meta.forEach(({ pos: [pr, pc] }) => { delete n[`${pr},${pc}`]; });
       } else if (tileId) {
-        meta.forEach(({ pos: [pr, pc], fV, fH, fD }) => {
-          const over = computeMirrorOffsetOverride(tileId, fV, fH, fD);
-          if (over !== undefined) { n[`${pr},${pc}`] = over; } else { delete n[`${pr},${pc}`]; }
-        });
+        plan.forEach(({ pos: [pr, pc], override }) => { if (override !== undefined) n[`${pr},${pc}`] = override; else delete n[`${pr},${pc}`]; });
       }
       return n;
     });
@@ -5126,35 +5109,31 @@ function App() {
       }
     }
     const ms       = mirrorSettingsRef.current;
-    const placedMeta = [];
+    const metaFnC  = getMirrorMetaRef.current ?? getMirrorMeta;
+    // The writes are PLANNED here, synchronously, from the current grid. (They used to be collected inside the setGrid updater, which React runs
+    // later, so the offsets below always saw an empty list and no mirror offset was ever written.) First writer wins unless Block Overwrite is on.
+    const curGrid  = gridRef.current;
+    const taken    = new Set();
+    const writes   = []; // { pos, ref (null = empty), override }
+    cells.forEach(([r, c]) => {
+      const metaHere = metaFnC(r, c);
+      const plan = (!isEraser && tileId) ? planMirror(metaHere, tileId, ms) : null;
+      metaHere.forEach(({ pos: [pr, pc] }, i) => {
+        const key = `${pr},${pc}`;
+        if (!isEraser && (curGrid[pr]?.[pc] !== null || taken.has(key)) && !ms.allowSwap) return;
+        taken.add(key);
+        writes.push({ pos: [pr, pc], ref: plan ? plan[i].ref : null, override: plan ? plan[i].override : undefined });
+      });
+    });
     setGrid(prev => {
       const g = prev.map(row => [...row]);
-      const metaFnC = getMirrorMetaRef.current ?? getMirrorMeta;
-      cells.forEach(([r, c]) => {
-        metaFnC(r, c).forEach(({ pos: [pr, pc], fV, fH, fD }) => {
-          if (!isEraser && g[pr][pc] !== null && !ms.allowSwap) return;
-          let ref = isEraser ? null : (tileId ?? null);
-          if (ref && ms.mirrorSpawns && (fH || fD)) ref = swapSpawnRef(ref);
-          g[pr][pc] = ref ? paletteIndexFor(paletteRef.current, ref) : null;
-          if (!isEraser && tileId) placedMeta.push({ pos: [pr, pc], fV, fH, fD });
-        });
-      });
+      writes.forEach(({ pos: [pr, pc], ref }) => { g[pr][pc] = ref ? paletteIndexFor(paletteRef.current, ref) : null; });
       return g;
     });
-    // Per-cell offset overrides
+    // Per-cell offset overrides: set for a mirror-offset image, cleared for everything else that was written (and for erased cells)
     setGridOffsets(prev => {
       const n = { ...prev };
-      if (isEraser) {
-        const metaFnO = getMirrorMetaRef.current ?? getMirrorMeta;
-        cells.forEach(([r, c]) => {
-          metaFnO(r, c).forEach(({ pos: [pr, pc] }) => { delete n[`${pr},${pc}`]; });
-        });
-      } else if (tileId) {
-        placedMeta.forEach(({ pos: [pr, pc], fV, fH, fD }) => {
-          const over = computeMirrorOffsetOverride(tileId, fV, fH, fD);
-          if (over !== undefined) { n[`${pr},${pc}`] = over; } else { delete n[`${pr},${pc}`]; }
-        });
-      }
+      writes.forEach(({ pos: [pr, pc], override }) => { if (override !== undefined) n[`${pr},${pc}`] = override; else delete n[`${pr},${pc}`]; });
       return n;
     });
   }, [mirrorV, mirrorH, mirrorD, setGrid, tiles]);
@@ -5457,21 +5436,24 @@ function App() {
   // Tile object for a grid cell value (palette index).
   const getCellTile = idx => (idx == null ? undefined : getTile(refAt(paletteRef.current, idx)));
 
-  // Returns { ox, oy } override if the tile has mirror offset enabled and flags indicate a flip, else undefined.
-  const computeMirrorOffsetOverride = (tileRef, fV, fH, fD) => {
-    const tile = getTile(tileRef);
-    if (!tile || tile.isSensor) return undefined; // sensor cells take size and offsets from the chosen variant, per cell
-    const mo = mirrorOffsetTilesRef.current[tile.ref] !== undefined
-      ? mirrorOffsetTilesRef.current[tile.ref]
-      : isDefaultMirrorOffset(tile);
-    if (!mo) return undefined;
-    const base = tileOffsetsRef.current[tile.ref] !== undefined
-      ? tileOffsetsRef.current[tile.ref]
-      : getDefaultOffset(tile);
-    const flipX = fV || fD;
-    const flipY = fH || fD;
-    if (!flipX && !flipY) return undefined; // source cell — no override needed
-    return { ox: flipX ? -base.ox : base.ox, oy: flipY ? -base.oy : base.oy };
+  // ── Mirror placement (one pure rule, shared with seeds: MapSeed.planMirrorCopies) ─────────────────────────────
+  // An image of a placement holds the MIRRORED tile (team tiles swap when rows reflect, global jumppads point the mirrored way) and, for a
+  // mirror-offset tile, gets that tile's own offset negated on the reflecting axes (a per-cell gridOffsets override). The offset info is the tile
+  // the image HOLDS: the swapped jumppad's own offset, not the source's. srcOverride = the source cell's own override (duplicate): it is the base for
+  // images that hold the same tile.
+  const mirrorOffsetInfo = (ref, srcRef, srcOverride) => {
+    const tile = getTile(ref);
+    if (!tile || tile.isSensor) return null; // sensor cells take size and offsets from the chosen variant, per cell
+    const mo = mirrorOffsetTilesRef.current[tile.ref] !== undefined ? mirrorOffsetTilesRef.current[tile.ref] : isDefaultMirrorOffset(tile);
+    const base = (srcOverride && ref === srcRef) ? srcOverride : (tileOffsetsRef.current[tile.ref] !== undefined ? tileOffsetsRef.current[tile.ref] : getDefaultOffset(tile));
+    return { mirrorOffset: !!mo, base };
+  };
+  // -> [{ pos, fV, fH, fD, ref, override }] for a tile placed at the primary cell with its mirror images (meta = getMirrorMeta). An image whose
+  // mirrored tile is not loaded keeps the source tile. ms = the mirror settings (teamSwap = "Mirror Spawns").
+  const planMirror = (meta, ref, ms, srcOverride) => {
+    const info = r2 => mirrorOffsetInfo(r2, ref, srcOverride);
+    return MapSeed.planMirrorCopies(meta, ref, { teamSwap: ms.mirrorSpawns, offsetInfoOf: info })
+      .map(p => (p.ref === ref || tilesByRefRef.current.has(p.ref)) ? p : { ...p, ref, override: MapSeed.mirrorOffsetOverride(info(ref), p) });
   };
 
   // ── Zoom ──────────────────────────────────────────────────────────
@@ -5603,28 +5585,17 @@ function App() {
         const metaFn = getMirrorMetaRef.current;
         const meta = metaFn ? metaFn(r, c) : [{ pos: [r, c], fV: false, fH: false, fD: false }];
         const ms = mirrorSettingsRef.current;
-        const placedMeta = [];
-        setGridStableRef.current(prev => {
-          const anyEmpty = meta.some(({ pos: [pr, pc] }) => prev[pr]?.[pc] === null);
-          if (!anyEmpty) return prev;
-          const g = prev.map(row => [...row]);
-          meta.forEach(({ pos: [pr, pc], fV, fH, fD }) => {
-            if (g[pr]?.[pc] === null) {
-              let placeRef = id;
-              if (placeRef && ms.mirrorSpawns && (fH || fD)) placeRef = swapSpawnRef(placeRef);
-              g[pr][pc] = placeRef ? paletteIndexFor(paletteRef.current, placeRef) : null;
-              placedMeta.push({ pos: [pr, pc], fV, fH, fD });
-            }
+        // Planned synchronously from the current grid (a setGrid updater runs later, so nothing may be collected inside it): only EMPTY cells are filled.
+        const plan = id ? planMirror(meta, id, ms).filter(({ pos: [pr, pc] }) => gridRef.current?.[pr]?.[pc] === null) : [];
+        if (plan.length) {
+          setGridStableRef.current(prev => {
+            const g = prev.map(row => [...row]);
+            plan.forEach(({ pos: [pr, pc], ref }) => { if (g[pr]?.[pc] === null) g[pr][pc] = paletteIndexFor(paletteRef.current, ref); });
+            return g;
           });
-          return g;
-        });
-        if (placedMeta.length) {
           setGridOffsets(prev => {
             const n = { ...prev };
-            placedMeta.forEach(({ pos: [pr, pc], fV, fH, fD }) => {
-              const over = computeMirrorOffsetOverride(id, fV, fH, fD);
-              if (over !== undefined) { n[`${pr},${pc}`] = over; } else { delete n[`${pr},${pc}`]; }
-            });
+            plan.forEach(({ pos: [pr, pc], override }) => { if (override !== undefined) n[`${pr},${pc}`] = override; else delete n[`${pr},${pc}`]; });
             return n;
           });
         }
@@ -5917,27 +5888,16 @@ function App() {
             const [r, c] = cell;
             const metaFn = getMirrorMetaRef.current;
             const meta = metaFn ? metaFn(r, c) : [{ pos: [r, c], fV: false, fH: false, fD: false }];
-            const anyEmpty = meta.some(({ pos: [pr, pc] }) => gridRef.current?.[pr]?.[pc] === null);
-            if (anyEmpty) {
-              const placedMeta = [];
+            const plan = id ? planMirror(meta, id, ms).filter(({ pos: [pr, pc] }) => gridRef.current?.[pr]?.[pc] === null) : [];
+            if (plan.length) {
               commit(prev => {
                 const g = prev.map(row => [...row]);
-                meta.forEach(({ pos: [pr, pc], fV, fH, fD }) => {
-                  if (g[pr][pc] === null) {
-                    let placeRef = id;
-                    if (placeRef && ms.mirrorSpawns && (fH || fD)) placeRef = swapSpawnRef(placeRef);
-                    g[pr][pc] = placeRef ? paletteIndexFor(paletteRef.current, placeRef) : null;
-                    placedMeta.push({ pos: [pr, pc], fV, fH, fD });
-                  }
-                });
+                plan.forEach(({ pos: [pr, pc], ref }) => { if (g[pr][pc] === null) g[pr][pc] = paletteIndexFor(paletteRef.current, ref); });
                 return g;
               });
               setGridOffsets(prev => {
                 const n = { ...prev };
-                placedMeta.forEach(({ pos: [pr, pc], fV, fH, fD }) => {
-                  const over = computeMirrorOffsetOverride(id, fV, fH, fD);
-                  if (over !== undefined) { n[`${pr},${pc}`] = over; } else { delete n[`${pr},${pc}`]; }
-                });
+                plan.forEach(({ pos: [pr, pc], override }) => { if (override !== undefined) n[`${pr},${pc}`] = override; else delete n[`${pr},${pc}`]; });
                 return n;
               });
               setDragTile(null); dragTileRef.current = null; isDraggingRef.current = false;
@@ -8095,7 +8055,7 @@ function App() {
                   const failed = failedTiles.has(t.ref);
                   const isStarredF = starredTiles.includes(t.ref);
                   return (
-                    <div key={t.ref}
+                    <div key={t.ref} data-tile-card={t.ref}
                       onClick={() => {
                         if (failed) { setFailedWarning(true); return; }
                         setSel(t.ref); setEraser(false);
@@ -8339,7 +8299,7 @@ function App() {
                     const failed    = failedTiles.has(t.ref);
                     const isStarred = starredTiles.includes(t.ref);
                     return (
-                      <div key={t.ref}
+                      <div key={t.ref} data-tile-card={t.ref}
                         onClick={() => {
                           if (failed) { setFailedWarning(true); return; }
                           setSel(t.ref); setEraser(false);
@@ -9067,7 +9027,7 @@ function App() {
                 {/* Per-cell hit targets — always transparent so tile images above them receive pointer events correctly */}
                 {Array.from({ length: gridH }).map((_, r) =>
                   Array.from({ length: gridW }).map((__, c) => (
-                    <div key={`${r}-${c}`}
+                    <div key={`${r}-${c}`} data-cell={`${r},${c}`}
                       style={{ position: "absolute", left: c * CELL * zoom, top: (r + 1) * CELL * zoom, width: CELL * zoom, height: CELL * zoom, background: "transparent" }}
                       onMouseDown={e => onCell(r, c, e)}
                       onMouseMove={e => onCell(r, c, e)}

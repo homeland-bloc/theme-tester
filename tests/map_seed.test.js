@@ -15,9 +15,9 @@ const randomGrid = (w, h, rand, nsyms = 5, density = 0.6) => {
   return g;
 };
 // Force the symmetry class about the effective centre of (w, h, magnet) by copying the region onto its orbits.
-const symmetrise = (g, w, h, magnet, cls, partner = M.partnerSymbol) => {
+const symmetrise = (g, w, h, magnet, cls, partner = M.mirrorSymbol) => {
   const sums = M.effectiveSums(w, h, magnet);
-  for (const [r, c] of M.regionCells(w, h, sums, cls)) for (const im of M.orbitOf(r, c, cls, w, h, sums)) g[im.r][im.c] = im.swap ? partner(g[r][c]) : g[r][c];
+  for (const [r, c] of M.regionCells(w, h, sums, cls)) for (const im of M.orbitOf(r, c, cls, w, h, sums)) g[im.r][im.c] = partner(g[r][c], { x: im.fx, y: im.fy });
   return g;
 };
 const flip = (g, h, w) => g.map(row => row.slice());
@@ -199,10 +199,10 @@ test("palette order: frequency descending over the FULL map, ties by code point,
   assert.strictEqual(e.fields.palette, "abC😀"); // a,b count 2 (tie -> a < b), then C (67) < 😀
   roundTrip(6, 1, g, null);
   // frequency counts the full map, not the region: a mirrored pair counts twice
-  const m = blank(5, 3); m[0][0] = "Z"; m[0][4] = "Z"; m[0][2] = "A"; m[0][1] = "B"; m[0][3] = "B";
+  const m = blank(5, 3); m[0][0] = "Q"; m[0][4] = "Q"; m[0][2] = "A"; m[0][1] = "B"; m[0][3] = "B";
   const em = M.encode({ w: 5, h: 3, grid: m, tileset: 0 });
   assert.strictEqual(em.mirror, "h");
-  assert.strictEqual(em.fields.palette, "BZA"); // B 2, Z 2 (B < Z), A 1
+  assert.strictEqual(em.fields.palette, "BQA"); // B 2, Q 2 (B < Q), A 1
   // case-sensitive
   const cs = blank(2, 1); cs[0][0] = "a"; cs[0][1] = "A";
   assert.strictEqual(M.encode({ w: 2, h: 1, grid: cs, tileset: 0 }).fields.palette, "Aa");
@@ -510,6 +510,103 @@ test("team-aware mirroring: spawns, respawns and goals swap with their partner o
   const m = blank(w, h); m[0][2] = "1"; m[2][2] = "2";
   assert.strictEqual(M.encode({ w, h, grid: m, magnet: mag, tileset: 0 }).mirror, "v");
   roundTrip(w, h, m, mag);
+});
+
+// ── Jumppad pairing (mirror transform shared by the app and seeds) ──────────────────────────────────────
+const JP = f => M.jumppadRef(f);
+const PAIRS = { x: { R: "L", L: "R", TR: "TL", TL: "TR", BR: "BL", BL: "BR", T: "T", B: "B" }, y: { T: "B", B: "T", TL: "BL", BL: "TL", TR: "BR", BR: "TR", R: "R", L: "L" } };
+const FLAG = { V: { fV: true, fH: false, fD: false }, H: { fV: false, fH: true, fD: false }, D: { fV: false, fH: false, fD: true } };
+
+test("jumppad pairing table: fV R<->L TR<->TL BR<->BL; fH T<->B TL<->BL TR<->BR; fD both (R<->L T<->B TL<->BR TR<->BL)", () => {
+  const table = { V: { R: "L", L: "R", TR: "TL", TL: "TR", BR: "BL", BL: "BR", T: "T", B: "B" },
+    H: { T: "B", B: "T", TL: "BL", BL: "TL", TR: "BR", BR: "TR", R: "R", L: "L" },
+    D: { R: "L", L: "R", T: "B", B: "T", TL: "BR", BR: "TL", TR: "BL", BL: "TR" } };
+  for (const [flag, map] of Object.entries(table)) for (const f of M.JUMPPAD_FILES) assert.strictEqual(M.mirrorRef(JP(f), FLAG[flag]), JP(map[f]), `${flag} ${f}`);
+  assert.deepStrictEqual([...M.JUMPPAD_FILES].sort(), ["B", "BL", "BR", "L", "R", "T", "TL", "TR"]);
+  // no flag: unchanged. Combined flags COMPOSE: V + H = D, V + D = H, H + D = V, V + H + D = identity-by-axes (x = fV xor fD, y = fH xor fD)
+  for (const f of M.JUMPPAD_FILES) {
+    assert.strictEqual(M.mirrorRef(JP(f), {}), JP(f));
+    assert.strictEqual(M.mirrorRef(JP(f), { fV: true, fH: true }), M.mirrorRef(JP(f), FLAG.D), "V+H = D");
+    assert.strictEqual(M.mirrorRef(JP(f), { fV: true, fD: true }), M.mirrorRef(JP(f), FLAG.H), "V+D = H");
+    assert.strictEqual(M.mirrorRef(JP(f), { fH: true, fD: true }), M.mirrorRef(JP(f), FLAG.V), "H+D = V");
+    assert.strictEqual(M.mirrorRef(JP(f), { fV: true, fH: true, fD: true }), JP(f), "V+H+D");
+    // mirroring twice with the same flag returns the original (an involution)
+    for (const flag of ["V", "H", "D"]) assert.strictEqual(M.mirrorRef(M.mirrorRef(JP(f), FLAG[flag]), FLAG[flag]), JP(f));
+  }
+  assert.deepStrictEqual(M.flipAxes({ fV: true }), { x: true, y: false });
+  assert.deepStrictEqual(M.flipAxes({ fD: true }), { x: true, y: true });
+  assert.deepStrictEqual(M.flipAxes(null), { x: false, y: false });
+});
+
+test("mirrorRef: team swap only when rows reflect (and only when enabled); other tiles and non-global jumppad-like refs are copied as they are", () => {
+  const sp1 = "g:Resources/Global/Spawns/1.png", sp2 = "g:Resources/Global/Spawns/2.png", sp5 = "g:Resources/Global/Spawns/5.png";
+  assert.strictEqual(M.mirrorRef(sp1, FLAG.V), sp1, "left-right keeps the team");
+  assert.strictEqual(M.mirrorRef(sp1, FLAG.H), sp2); assert.strictEqual(M.mirrorRef(sp1, FLAG.D), sp2);
+  assert.strictEqual(M.mirrorRef(sp1, FLAG.H, { teamSwap: false }), sp1, "Mirror Spawns off");
+  assert.strictEqual(M.mirrorRef(sp5, FLAG.D), sp5, "spawn 5 has no partner");
+  assert.strictEqual(M.mirrorRef("g:Resources/Global/Objectives/goalRed.png", FLAG.H), "g:Resources/Global/Objectives/goalBlue.png");
+  // jumppads are NOT gated by the team switch
+  assert.strictEqual(M.mirrorRef(JP("R"), FLAG.V, { teamSwap: false }), JP("L"));
+  for (const ref of ["d:abc", "u:3", "s:global|water", "space", "warn", "g:Resources/Global/Teleporters/Blue.png", "g:Resources/Global/Jumppads/X.png", "g:Resources/Other/Jumppads/R.png", "d:Jumppads/R.png"]) {
+    for (const flag of ["V", "H", "D"]) assert.strictEqual(M.mirrorRef(ref, FLAG[flag]), ref, ref);
+  }
+  assert.strictEqual(M.jumppadFileOf(JP("TL")), "TL"); assert.strictEqual(M.jumppadFileOf("g:Resources/Global/Jumppads/Q.png"), null);
+});
+
+test("mirrorSymbol: seed symbols follow the same table (jumppad letters, team digits)", () => {
+  const sym = f => M.GLOBAL_SYMBOLS[JP(f)];
+  for (const [flag, axes] of [["V", { x: true, y: false }], ["H", { x: false, y: true }], ["D", { x: true, y: true }]]) for (const f of M.JUMPPAD_FILES) {
+    assert.strictEqual(M.mirrorSymbol(sym(f), axes), sym(M.mirrorRef(JP(f), FLAG[flag]).match(/Jumppads\/(\w+)\.png/)[1]), `${flag} ${f}`);
+  }
+  assert.strictEqual(M.mirrorSymbol("1", { x: false, y: true }), "2"); assert.strictEqual(M.mirrorSymbol("1", { x: true, y: false }), "1");
+  assert.strictEqual(M.mirrorSymbol("M", { x: true, y: true }), "M"); assert.strictEqual(M.mirrorSymbol(null, { x: true, y: true }), null);
+  assert.strictEqual(M.mirrorSymbol("H", { x: true, y: false }), "G", "R (H) <-> L (G)");
+});
+
+test("mirror offsets: negated on the reflecting axes using the IMAGE tile's own offset; none for the source cell or when mirror_offset is off", () => {
+  const info = { mirrorOffset: true, base: { ox: 50, oy: 66 } };
+  assert.deepStrictEqual(M.mirrorOffsetOverride(info, FLAG.V), { ox: -50, oy: 66 });
+  assert.deepStrictEqual(M.mirrorOffsetOverride(info, FLAG.H), { ox: 50, oy: -66 });
+  assert.deepStrictEqual(M.mirrorOffsetOverride(info, FLAG.D), { ox: -50, oy: -66 });
+  assert.deepStrictEqual(M.mirrorOffsetOverride(info, { fV: true, fD: true }), { ox: 50, oy: -66 }, "composed: V + D = H");
+  assert.strictEqual(M.mirrorOffsetOverride(info, {}), undefined);
+  assert.strictEqual(M.mirrorOffsetOverride({ mirrorOffset: false, base: { ox: 5, oy: 5 } }, FLAG.D), undefined);
+  assert.strictEqual(M.mirrorOffsetOverride(null, FLAG.D), undefined);
+  assert.ok(Object.is(M.mirrorOffsetOverride({ mirrorOffset: true, base: { ox: 0, oy: 4 } }, FLAG.V).ox, 0), "no -0");
+  // planMirrorCopies: the offset belongs to the tile the image holds (a swapped jumppad uses ITS offset, negated)
+  const offsets = { [JP("T")]: { mirrorOffset: true, base: { ox: 50, oy: 66 } }, [JP("B")]: { mirrorOffset: true, base: { ox: 10, oy: 20 } }, "d:wall": { mirrorOffset: false, base: { ox: 3, oy: 3 } } };
+  const meta = [{ pos: [1, 1], fV: false, fH: false, fD: false }, { pos: [1, 5], fV: true, fH: false, fD: false }, { pos: [5, 1], fV: false, fH: true, fD: false }, { pos: [5, 5], fV: false, fH: false, fD: true }];
+  const plan = M.planMirrorCopies(meta, JP("T"), { offsetInfoOf: ref => offsets[ref] || null });
+  assert.deepStrictEqual(plan.map(p => [p.pos.join(","), p.ref.match(/(\w+)\.png/)[1], p.override]), [
+    ["1,1", "T", undefined], ["1,5", "T", { ox: -50, oy: 66 }], ["5,1", "B", { ox: 10, oy: -20 }], ["5,5", "B", { ox: -10, oy: -20 }]]);
+  assert.deepStrictEqual(M.planMirrorCopies(meta, "d:wall", { offsetInfoOf: ref => offsets[ref] || null }).map(p => [p.ref, p.override]), [["d:wall", undefined], ["d:wall", undefined], ["d:wall", undefined], ["d:wall", undefined]]);
+});
+
+test("seeds: every jumppad keeps its symmetry class in h, v, d and 4, like a neutral tile, and decodes to the mirrored jumppads", () => {
+  const w = 9, h = 7;
+  const sym = f => M.GLOBAL_SYMBOLS[JP(f)];
+  for (const f of M.JUMPPAD_FILES) for (const cls of ["h", "v", "d", "4"]) {
+    const g = blank(w, h), neutral = blank(w, h);
+    const put = (r, c, x) => { g[r][c] = x; neutral[r][c] = "M"; };
+    const sums = M.effectiveSums(w, h, null);
+    put(1, 2, sym(f));
+    for (const im of M.orbitOf(1, 2, cls, w, h, sums)) { g[im.r][im.c] = M.mirrorSymbol(sym(f), { x: im.fx, y: im.fy }); neutral[im.r][im.c] = "M"; }
+    const eJ = M.encode({ w, h, grid: g, tileset: 0 }), eN = M.encode({ w, h, grid: neutral, tileset: 0 });
+    assert.strictEqual(eJ.mirror, cls, `${f} ${cls}`); assert.strictEqual(eN.mirror, cls);
+    assert.strictEqual(eJ.regionSize, eN.regionSize);
+    const d = M.decode(eJ.seed); assert.ok(d.ok, d.error); eqGrid(d.grid, g);
+    // the SAME orientation copied on every image (a plain copy) is no longer symmetric when the jumppad has a mirror
+    if (M.mirrorSymbol(sym(f), { x: true, y: true }) !== sym(f) || M.mirrorSymbol(sym(f), { x: true, y: false }) !== sym(f) || M.mirrorSymbol(sym(f), { x: false, y: true }) !== sym(f)) {
+      const copy = blank(w, h); copy[1][2] = sym(f);
+      for (const im of M.orbitOf(1, 2, cls, w, h, sums)) copy[im.r][im.c] = sym(f);
+      const wantsChange = M.orbitOf(1, 2, cls, w, h, sums).some(im => M.mirrorSymbol(sym(f), { x: im.fx, y: im.fy }) !== sym(f));
+      if (wantsChange) assert.notStrictEqual(M.encode({ w, h, grid: copy, tileset: 0 }).mirror, cls, `plain copies of ${f} are not ${cls}`);
+    }
+  }
+  // a map mixing team tiles and jumppads on a centred 4-way map
+  const mix = blank(w, h); const sums = M.effectiveSums(w, h, null);
+  for (const [r, c, s] of [[0, 1, "1"], [2, 3, sym("TR")], [1, 0, "3"], [3, 2, sym("R")], [0, 4, "b"]]) { mix[r][c] = s; for (const im of M.orbitOf(r, c, "4", w, h, sums)) mix[im.r][im.c] = M.mirrorSymbol(s, { x: im.fx, y: im.fy }); }
+  const em = M.encode({ w, h, grid: mix, tileset: 0 }); assert.strictEqual(em.mirror, "4"); eqGrid(M.decode(em.seed).grid, mix);
 });
 
 test("random team maps round trip in every class (swap on decode equals swap on encode)", () => {
