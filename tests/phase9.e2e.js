@@ -222,6 +222,52 @@ const TILES = {
     await ctx.close();
   });
 
+  // Plain (Wall1), sensor folder (Walls, with a composed/derived neighbourhood) and global tiles (spawn, water folder) on the map.
+  const MIX = { oph_gridW: 5, oph_gridH: 4, oph_grid: { v: 2, palette: [`d:${U(1)}`, "s:ts-0|Walls", "Resources/Global/Spawns/1.png", "s:global|water", "s:global|rails"], grid: [[1, 2, 2, 3, 4], [1, 2, 2, 3, 4], [5, null, 1, null, 5], [null, 1, null, 2, null]] } };
+  const clickTool = async (page, label) => { await page.getByText(label, { exact: label.length <= 4 && label !== "Fill" && label !== "Line" }).first().click({ timeout: 5000 }); await page.waitForTimeout(250); };
+  const closeModal = async page => {
+    for (let i = 0; i < 3 && await page.locator(".modal-backdrop").count(); i++) {
+      const x = page.locator(".modal-backdrop button:has-text('×')").first();
+      if (await x.count()) await x.click(); else await page.keyboard.press("Escape");
+      await page.waitForTimeout(150);
+    }
+  };
+
+  await test("OTG Check with plain, sensor and global tiles on the map does not throw (the 'reading current' crash)", async () => {
+    const { page, ctx, logs } = await newPage({ storage: MIX });
+    await ready(page); await settle(page);
+    await clickTool(page, "OTG Check");
+    await page.waitForTimeout(600);
+    assert.deepStrictEqual(clean(logs), [], "no render error");
+    assert.ok(await page.locator("[data-seed-row]").count() > 0, "the app is still rendered");
+    // it also survives a map edit and a sensor-layer change while OTG is on (reroll mode toggle, undo)
+    await page.keyboard.press("z"); await page.waitForTimeout(300);
+    await clickTool(page, "OTG Check"); // off again
+    assert.deepStrictEqual(clean(logs), []);
+    await ctx.close();
+  });
+
+  await test("smoke: every Tools-section button can be clicked on a map with plain, sensor and global tiles without an error", async () => {
+    const { page, ctx, logs } = await newPage({ storage: MIX });
+    await ready(page); await settle(page);
+    const tools = ["Single", "Line", "Rectangle", "Fill", "Horizontal", "Vertical", "Diagonal", "Guides", "Block Overwrite", "Offset Centers", "OTG Check", "Replace", "Convert", "Tile Counter", "Hotkeys"];
+    const failed = [];
+    for (const label of tools) {
+      try { await clickTool(page, label); await closeModal(page); } catch (e) { failed.push(label + ": " + String(e.message).split("\n")[0]); }
+      const errs = clean(logs); if (errs.length) { failed.push(label + " -> " + errs[0].split("\n")[0]); logs.length = 0; }
+    }
+    // toggle the toggles back off, plus undo / redo / zoom
+    for (const label of ["Horizontal", "Vertical", "Diagonal", "Guides", "Block Overwrite", "Offset Centers", "OTG Check"]) { try { await clickTool(page, label); } catch {} }
+    for (const label of ["Undo", "Redo", "+", "−"]) { // bottom bar: only an ENABLED button is clicked (Undo / Redo may be disabled)
+      const b = page.locator("button").filter({ hasText: label }).filter({ has: page.locator("xpath=self::*[normalize-space(.)=\"" + label + "\"]") }).first();
+      if (await b.count() && await b.isEnabled()) await b.click({ timeout: 5000 });
+      await page.waitForTimeout(200);
+    }
+    const errs = clean(logs); if (errs.length) failed.push("end -> " + errs[0].split("\n")[0]);
+    assert.deepStrictEqual(failed, []);
+    await ctx.close();
+  });
+
   await h.finish();
 
   // Effective role: the ⚖️ warning button is for editors only (a plain user does not see it; the owner/admin does)

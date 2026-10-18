@@ -3529,78 +3529,6 @@ function App() {
 
   // Cells hold palette indexes; refAt(palette, index) gives the tile ref, getCellTile(index) the tile object.
 
-  // Compute the set of OTG cells ("r,c" strings) — memoised so it only runs when the map/settings change
-  const otgCells = useMemo(() => {
-    if (!showOTG) return new Set();
-    // For OTG purposes, map edges always count as walls
-    const isWall = (r, c) => {
-      if (r < 0 || r >= gridH || c < 0 || c >= gridW) return true; // edge = wall
-      const id = grid[r]?.[c];
-      if (id == null) return false;
-      const t = tilesByRef.get(refAt(palette, id));
-      if (!t || t.isSpace) return false;
-      const vt = cellSizeTile(t, r, c); // OTG passable is per variant; a folder-level override (Tools panel) covers variants without their own
-      if (otgWallOverrides[vt.ref] !== undefined) return otgWallOverrides[vt.ref];
-      if (otgWallOverrides[t.ref] !== undefined) return otgWallOverrides[t.ref];
-      return isDefaultOTGWall(vt);
-    };
-    const isEmpty = (r, c) => r >= 0 && r < gridH && c >= 0 && c < gridW && !isWall(r, c);
-    const result = new Set();
-
-    // ── Check 1: opposing pair ────────────────────────────────────────
-    // Flag an empty tile if any of 4 axis pairs are both walls/edges:
-    // left+right, top+bottom, NW+SE, NE+SW  (edges count as walls)
-    for (let r = 0; r < gridH; r++) {
-      for (let c = 0; c < gridW; c++) {
-        if (!isEmpty(r, c)) continue;
-        if (isWall(r, c-1) && isWall(r, c+1)) { result.add(`${r},${c}`); continue; } // left+right
-        if (isWall(r-1, c) && isWall(r+1, c)) { result.add(`${r},${c}`); continue; } // top+bottom
-        if (isWall(r-1, c-1) && isWall(r+1, c+1) && !isWall(r, c-1) && !isWall(r-1, c)) { result.add(`${r},${c}`); continue; } // NW+SE
-        if (isWall(r-1, c+1) && isWall(r+1, c-1) && !isWall(r, c+1) && !isWall(r-1, c)) { result.add(`${r},${c}`); continue; } // NE+SW
-      }
-    }
-
-    // ── Check 2: 2×2 diagonal squeeze ────────────────────────────────
-    // Scan every 2×2 block. If two diagonally opposing cells are both walls
-    // and the other two are both empty, flag both empty cells.
-    for (let r = 0; r < gridH - 1; r++) {
-      for (let c = 0; c < gridW - 1; c++) {
-        const tl = isWall(r, c), tr = isWall(r, c+1);
-        const bl = isWall(r+1, c), br = isWall(r+1, c+1);
-        // TL+BR walls, TR+BL empty
-        if (tl && br && !tr && !bl) { result.add(`${r},${c+1}`); result.add(`${r+1},${c}`); }
-        // TR+BL walls, TL+BR empty
-        if (tr && bl && !tl && !br) { result.add(`${r},${c}`); result.add(`${r+1},${c+1}`); }
-      }
-    }
-
-    // ── Check 3: 2×3 / 3×2 corner squeeze ────────────────────────────
-    // 2×3 blocks (2 cols wide, 3 rows tall): opposite corners = walls, middles = empty → flag middles
-    for (let r = 0; r < gridH - 2; r++) {
-      for (let c = 0; c < gridW - 1; c++) {
-        const tl = isWall(r, c), tr = isWall(r, c+1);
-        const ml = isEmpty(r+1, c), mr = isEmpty(r+1, c+1);
-        const bl = isWall(r+2, c), br = isWall(r+2, c+1);
-        // top-left + bottom-right walls, both middle-row cells empty
-        if (tl && br && ml && mr) { result.add(`${r+1},${c}`); result.add(`${r+1},${c+1}`); }
-        // top-right + bottom-left walls, both middle-row cells empty
-        if (tr && bl && ml && mr) { result.add(`${r+1},${c}`); result.add(`${r+1},${c+1}`); }
-      }
-    }
-    // 3×2 blocks (3 cols wide, 2 rows tall): opposite corners = walls, middles = empty → flag middles
-    for (let r = 0; r < gridH - 1; r++) {
-      for (let c = 0; c < gridW - 2; c++) {
-        const tl = isWall(r, c), tr = isWall(r, c+2);
-        const ml = isEmpty(r, c+1), mr = isEmpty(r+1, c+1);
-        const bl = isWall(r+1, c), br = isWall(r+1, c+2);
-        // top-left + bottom-right walls, both middle-column cells empty
-        if (tl && br && ml && mr) { result.add(`${r},${c+1}`); result.add(`${r+1},${c+1}`); }
-        // top-right + bottom-left walls, both middle-column cells empty
-        if (tr && bl && ml && mr) { result.add(`${r},${c+1}`); result.add(`${r+1},${c+1}`); }
-      }
-    }
-    return result;
-  }, [showOTG, grid, palette, gridW, gridH, otgWallOverrides, tilesByRef]);
 
   // MultLabel: shows size multiplier at top-left when != 1.0
   const MultLabel = ({ t }) => {
@@ -3938,6 +3866,81 @@ function App() {
   const sensorLayer = useMemo(() => SensorUI.deriveLayer({ grid, refs: palette.refs, folders: sensorFolders, rerolls: rerollSeedMap, deterministic: rerollOff, picks: variantPicks }), [grid, palette, sensorFolders, rerollSeedMap, rerollOff, variantPicks]);
   const sensorLayerRef = useRef(sensorLayer);
   sensorLayerRef.current = sensorLayer;
+
+  // Compute the set of OTG cells ("r,c" strings) — memoised so it only runs when the map/settings change.
+  // Declared AFTER sensorFolders / sensorLayerRef: cellSizeTile reads both, and Babel turns const into var, so a use before the declaration is
+  // undefined at render time (that was the "reading 'current'" crash when OTG was switched on).
+  const otgCells = useMemo(() => {
+    if (!showOTG) return new Set();
+    // For OTG purposes, map edges always count as walls
+    const isWall = (r, c) => {
+      if (r < 0 || r >= gridH || c < 0 || c >= gridW) return true; // edge = wall
+      const id = grid[r]?.[c];
+      if (id == null) return false;
+      const t = tilesByRef.get(refAt(palette, id));
+      if (!t || t.isSpace) return false;
+      const vt = cellSizeTile(t, r, c); // OTG passable is per variant; a folder-level override (Tools panel) covers variants without their own
+      if (otgWallOverrides[vt.ref] !== undefined) return otgWallOverrides[vt.ref];
+      if (otgWallOverrides[t.ref] !== undefined) return otgWallOverrides[t.ref];
+      return isDefaultOTGWall(vt);
+    };
+    const isEmpty = (r, c) => r >= 0 && r < gridH && c >= 0 && c < gridW && !isWall(r, c);
+    const result = new Set();
+
+    // ── Check 1: opposing pair ────────────────────────────────────────
+    // Flag an empty tile if any of 4 axis pairs are both walls/edges:
+    // left+right, top+bottom, NW+SE, NE+SW  (edges count as walls)
+    for (let r = 0; r < gridH; r++) {
+      for (let c = 0; c < gridW; c++) {
+        if (!isEmpty(r, c)) continue;
+        if (isWall(r, c-1) && isWall(r, c+1)) { result.add(`${r},${c}`); continue; } // left+right
+        if (isWall(r-1, c) && isWall(r+1, c)) { result.add(`${r},${c}`); continue; } // top+bottom
+        if (isWall(r-1, c-1) && isWall(r+1, c+1) && !isWall(r, c-1) && !isWall(r-1, c)) { result.add(`${r},${c}`); continue; } // NW+SE
+        if (isWall(r-1, c+1) && isWall(r+1, c-1) && !isWall(r, c+1) && !isWall(r-1, c)) { result.add(`${r},${c}`); continue; } // NE+SW
+      }
+    }
+
+    // ── Check 2: 2×2 diagonal squeeze ────────────────────────────────
+    // Scan every 2×2 block. If two diagonally opposing cells are both walls
+    // and the other two are both empty, flag both empty cells.
+    for (let r = 0; r < gridH - 1; r++) {
+      for (let c = 0; c < gridW - 1; c++) {
+        const tl = isWall(r, c), tr = isWall(r, c+1);
+        const bl = isWall(r+1, c), br = isWall(r+1, c+1);
+        // TL+BR walls, TR+BL empty
+        if (tl && br && !tr && !bl) { result.add(`${r},${c+1}`); result.add(`${r+1},${c}`); }
+        // TR+BL walls, TL+BR empty
+        if (tr && bl && !tl && !br) { result.add(`${r},${c}`); result.add(`${r+1},${c+1}`); }
+      }
+    }
+
+    // ── Check 3: 2×3 / 3×2 corner squeeze ────────────────────────────
+    // 2×3 blocks (2 cols wide, 3 rows tall): opposite corners = walls, middles = empty → flag middles
+    for (let r = 0; r < gridH - 2; r++) {
+      for (let c = 0; c < gridW - 1; c++) {
+        const tl = isWall(r, c), tr = isWall(r, c+1);
+        const ml = isEmpty(r+1, c), mr = isEmpty(r+1, c+1);
+        const bl = isWall(r+2, c), br = isWall(r+2, c+1);
+        // top-left + bottom-right walls, both middle-row cells empty
+        if (tl && br && ml && mr) { result.add(`${r+1},${c}`); result.add(`${r+1},${c+1}`); }
+        // top-right + bottom-left walls, both middle-row cells empty
+        if (tr && bl && ml && mr) { result.add(`${r+1},${c}`); result.add(`${r+1},${c+1}`); }
+      }
+    }
+    // 3×2 blocks (3 cols wide, 2 rows tall): opposite corners = walls, middles = empty → flag middles
+    for (let r = 0; r < gridH - 1; r++) {
+      for (let c = 0; c < gridW - 2; c++) {
+        const tl = isWall(r, c), tr = isWall(r, c+2);
+        const ml = isEmpty(r, c+1), mr = isEmpty(r+1, c+1);
+        const bl = isWall(r+1, c), br = isWall(r+1, c+2);
+        // top-left + bottom-right walls, both middle-column cells empty
+        if (tl && br && ml && mr) { result.add(`${r},${c+1}`); result.add(`${r+1},${c+1}`); }
+        // top-right + bottom-left walls, both middle-column cells empty
+        if (tr && bl && ml && mr) { result.add(`${r},${c+1}`); result.add(`${r+1},${c+1}`); }
+      }
+    }
+    return result;
+  }, [showOTG, grid, palette, gridW, gridH, otgWallOverrides, tilesByRef, sensorLayer, sensorFolders]);
 
   // Composed variants (quadrants of the base tiles drawn on a canvas). Cache: key -> blob URL | "fail" | "pending".
   const composedRef = useRef(new Map());
