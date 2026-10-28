@@ -417,6 +417,8 @@ const THEMES = {
     soft: "#fcd34d", softDim: "rgba(252,211,77,0.16)",
     pale: "#fde68a", paleDim: "rgba(253,230,138,0.14)",
     text: "#fef3e2", muted: "rgba(254,243,226,0.45)", danger: "#f87171",
+    seedBtn: "#fcd34d", seedBtnDim: "rgba(252,211,77,0.16)",   // Map seed: gold
+    histBtn: "#f472b6", histBtnDim: "rgba(244,114,182,0.16)",  // View history: pink
   },
   cold: {
     bg: "#06101a", panel: "#0a1b2e", panelDeep: "#071320",
@@ -425,6 +427,8 @@ const THEMES = {
     soft: "#34d399", softDim: "rgba(52,211,153,0.16)",
     pale: "#a7f3d0", paleDim: "rgba(167,243,208,0.14)",
     text: "#e2f0fe", muted: "rgba(226,240,254,0.45)", danger: "#f87171",
+    seedBtn: "#34d399", seedBtnDim: "rgba(52,211,153,0.16)",   // Map seed: mint
+    histBtn: "#38bdf8", histBtnDim: "rgba(56,189,248,0.16)",   // View history: sky
   },
 };
 // C is mutable so App can update it on theme change; Sep/SectionHeader always read the current value
@@ -7008,6 +7012,10 @@ function App() {
             })}
           </div>
           <p style={{ fontSize: 10, color: C.muted, textAlign: "center", margin: "4px 0 0" }}>Click any entry to jump to that state (#0 = initial)</p>
+          <div data-history-danger style={{ marginTop: 8, paddingTop: 10, borderTop: `1px solid ${C.border}`, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+            <button data-clear-map style={btn(true, "#ef4444", "rgba(239,68,68,0.25)")} onClick={() => { close(); setClearMapConfirmOpen(true); }}>Clear map</button>
+            <span style={{ fontSize: 10, color: C.muted }}>Removes every tile from the map. Asks to confirm first.</span>
+          </div>
         </div>
       </div>
     );
@@ -9884,20 +9892,12 @@ function App() {
             <button style={btn(true, C.soft, C.softDim)} onClick={() => setDownloadConfirmOpen(true)}>Download</button>
           </div>
 
-          {/* Row 2b: Map seed (one button; everything else lives in the modal) */}
-          <div data-seed-row style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 6, padding: "3px 14px" }}>
-            <button data-map-seed-open style={btn(true, C.accent, C.accentDim)} onClick={() => setSeedBoxOpen(true)} title="Copy, share or import this map as a seed">🌱 Map seed</button>
-          </div>
-
-          {/* Row 3: Clear Map | History */}
-          <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 8, padding: "3px 14px" }}>
-            <button style={btn(true, "#ef4444", "rgba(239,68,68,0.25)")}
-              onClick={() => setClearMapConfirmOpen(true)}>
-              Clear Map
-            </button>
-            <button style={btn(true, C.accent, C.accentDim)}
+          {/* Row 2b: Map seed | View history (two theme accents; Clear map lives in the history modal) */}
+          <div data-seed-row style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 8, padding: "3px 14px" }}>
+            <button data-map-seed-open style={btn(true, C.seedBtn, C.seedBtnDim)} onClick={() => setSeedBoxOpen(true)} title="Copy, share or import this map as a seed">🌱 Map seed</button>
+            <button data-history-open style={btn(true, C.histBtn, C.histBtnDim)}
               title={`History (${histIdx + 1}/${history.length})`}
-              onClick={() => setHistoryModalOpen(true)}>🕘 Show History</button>
+              onClick={() => setHistoryModalOpen(true)}>🕘 View history</button>
           </div>
 
           {/* Row 3: Background colour selector */}
