@@ -54,7 +54,7 @@
   const parseSymbolInput = text => {
     const ch = [...String(text == null ? "" : text).trim()].slice(-1)[0];
     if (ch === undefined) return { ok: true, value: null };
-    if (TilePalette.isBannedSymbol(ch)) return { ok: false, value: null, error: ch === "," || ch === "/" ? `'${ch}' cannot be a tile symbol (seeds use it as a separator).` : "That character cannot be a tile symbol." };
+    if (TilePalette.isBannedSymbol(ch)) return { ok: false, value: null, error: ch === "," || ch === "/" || ch === "." || ch === "?" ? `'${ch}' cannot be a tile symbol (seeds use it as a separator or selector marker).` : "That character cannot be a tile symbol." };
     if (TilePalette.isReservedSymbol(ch)) return { ok: false, value: null, error: `'${ch}' is reserved for the ${ch === TilePalette.SYMBOL_WARN ? "warn" : "space"} tile.` };
     return { ok: true, value: ch };
   };

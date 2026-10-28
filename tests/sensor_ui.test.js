@@ -229,11 +229,10 @@ test("parseSymbolInput: empty, last code point, A and S reserved (6 and 7 are fr
   assert.strictEqual(U.parseSymbolInput("S").ok, false);
   assert.match(U.parseSymbolInput("A").error, /warn/);
   assert.match(U.parseSymbolInput("S").error, /space/);
-  for (const bad of [",", "/"]) { const r = U.parseSymbolInput(bad); assert.strictEqual(r.ok, false, bad); assert.match(r.error, /separator/); }
+  for (const bad of [",", "/", ".", "?"]) { const r = U.parseSymbolInput(bad); assert.strictEqual(r.ok, false, bad); assert.match(r.error, /separator/); }
   assert.strictEqual(U.parseSymbolInput("a,").ok, false, "the last typed character counts");
   assert.deepStrictEqual(U.parseSymbolInput(",b"), { ok: true, value: "b" });
-  assert.strictEqual(U.parseSymbolInput(".").ok, true);
-  assert.strictEqual(U.parseSymbolInput("6").ok, true);
+    assert.strictEqual(U.parseSymbolInput("6").ok, true);
   assert.strictEqual(U.parseSymbolInput("7").ok, true);
   assert.strictEqual(U.parseSymbolInput("8").ok, true);
   assert.deepStrictEqual(U.usedSymbols([{ symbol: "A" }, { symbol: null }, {}]), ["A"]);

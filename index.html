@@ -912,6 +912,7 @@ function TilesetGearModal({
   const [profilesList,          setProfilesList]          = React.useState([]);
   const [profilesLoading,       setProfilesLoading]       = React.useState(false);
   const [linkRefresh,           setLinkRefresh]           = React.useState(null); // null | { busy, ok, text }
+  const [backfill,              setBackfill]              = React.useState(null); // null | { busy, plan?, ok?, text? }
 
   const tsData = (open && tsId) ? dbTilesets.find(ts => ts.id === tsId) : null;
 
@@ -947,6 +948,42 @@ function TilesetGearModal({
     } catch (e) {
       setLinkRefresh({ busy: false, ok: false, text: 'Failed: ' + e.message });
     }
+  };
+
+  // Backfill symbols: preview first (read-only), then apply. Only EMPTY symbols are ever written (the PATCH itself also filters symbol=is.null),
+  // sensor folders in one multi-row PATCH per (tileset, folder), plain tiles one PATCH per symbol and chunk of ids.
+  const previewBackfill = async () => {
+    if (!tsData) return;
+    setBackfill({ busy: true, text: 'Reading tiles…' });
+    try {
+      const token = await getValidToken();
+      const r = await workerFetch(`${WORKER_URL}/rest/v1/tiles?tileset_id=eq.${tsData.id}&select=id,tileset_id,codename,folder_key,sensor_code,symbol,sort_index`, { headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' } });
+      if (!r.ok) throw new Error('could not read the tiles');
+      setBackfill({ plan: MapSeed.planBackfill(await r.json()) });
+    } catch (e) { setBackfill({ ok: false, text: 'Failed: ' + e.message }); }
+  };
+  const applyBackfill = async () => {
+    const plan = backfill?.plan;
+    if (!plan || !plan.set.length) return;
+    setBackfill({ plan, busy: true, text: 'Writing…' });
+    try {
+      const token = await getValidToken();
+      const hdr = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' };
+      const stamp = { last_updated_at: new Date().toISOString(), last_updated_by: currentUser.id };
+      const calls = [], plainBySymbol = new Map();
+      for (const u of plan.set) {
+        if (u.sensor) calls.push({ q: `tileset_id=eq.${encodeURIComponent(u.tilesetId)}&folder_key=eq.${encodeURIComponent(u.folder)}&symbol=is.null`, symbol: u.symbol });
+        else { if (!plainBySymbol.has(u.symbol)) plainBySymbol.set(u.symbol, []); plainBySymbol.get(u.symbol).push(...u.ids); }
+      }
+      for (const [symbol, ids] of plainBySymbol) for (let i = 0; i < ids.length; i += 40) calls.push({ q: `id=in.(${ids.slice(i, i + 40).join(',')})&symbol=is.null`, symbol });
+      let failed = 0;
+      for (const c of calls) {
+        const pr = await workerFetch(`${WORKER_URL}/rest/v1/tiles?${c.q}`, { method: 'PATCH', headers: hdr, body: JSON.stringify({ symbol: c.symbol, ...stamp }) });
+        if (!pr.ok) failed++;
+      }
+      if (onTsFetchTrigger) onTsFetchTrigger();
+      setBackfill({ ok: failed === 0, text: failed ? `${failed} of ${calls.length} updates failed` : `✓ ${plan.set.length} symbol${plan.set.length === 1 ? '' : 's'} set` });
+    } catch (e) { setBackfill({ ok: false, text: 'Failed: ' + e.message }); }
   };
 
   // Tile count for the delete button: from the loaded cache, else one id-only read (no cascade delete exists).
@@ -1307,6 +1344,26 @@ function TilesetGearModal({
               {linkRefresh && <span style={{ fontSize: 10, color: linkRefresh.busy ? C.muted : linkRefresh.ok ? '#4ade80' : C.danger }}>{linkRefresh.text}</span>}
             </div>
           )}
+          {/* Backfill symbols from codenames — owners/admins; only empty symbols, never overwrites */}
+          {canManage && (
+            <div data-backfill style={{ borderTop: `1px solid ${C.border}`, paddingTop: 8, display: "flex", flexDirection: "column", gap: 4 }}>
+              <button data-backfill-symbols disabled={!!backfill?.busy}
+                title="Fills the empty symbols from the codenames (and sensor folder names). Symbols that are already set are never changed."
+                style={{ ...btn(false, '#fbbf24', 'rgba(251,191,36,0.1)'), justifyContent: "center", fontSize: 11, width: "100%" }}
+                onClick={previewBackfill}>
+                🔤 Backfill symbols
+              </button>
+              {backfill?.text && <span style={{ fontSize: 10, color: backfill.busy ? C.muted : backfill.ok ? '#4ade80' : C.danger }}>{backfill.text}</span>}
+              {backfill?.plan && (
+                <div data-backfill-preview style={{ fontSize: 11, color: C.text, display: "flex", flexDirection: "column", gap: 4 }}>
+                  <span data-backfill-summary>will set {backfill.plan.set.reduce((n, u) => n + u.ids.length, 0)}, cannot decide {backfill.plan.undecided.reduce((n, u) => n + u.ids.length, 0)}{backfill.plan.kept ? ` (${backfill.plan.kept} already have a symbol)` : ''}</span>
+                  {backfill.plan.set.length > 0 && <div style={{ fontSize: 10, color: C.muted, maxHeight: 90, overflowY: "auto" }}>{backfill.plan.set.map(u => `${u.folder ?? u.codenames[0]} → ${u.symbol}`).join(', ')}</div>}
+                  {backfill.plan.undecided.length > 0 && <div data-backfill-undecided style={{ fontSize: 10, color: '#fbbf24', maxHeight: 90, overflowY: "auto" }}>Cannot decide: {backfill.plan.undecided.map(u => u.folder ?? u.codenames[0]).join(', ')}</div>}
+                  <button data-backfill-apply disabled={!backfill.plan.set.length || !!backfill.busy} style={{ ...btn(true, C.accent, C.accentDim), justifyContent: "center", fontSize: 11, opacity: backfill.plan.set.length ? 1 : 0.45 }} onClick={applyBackfill}>Apply</button>
+                </div>
+              )}
+            </div>
+          )}
           {bulkOpen && canManage && (
             <BulkRenameModal tsData={tsData} dbTilesByTsId={dbTilesByTsId || {}} currentUser={currentUser}
               getValidToken={getValidToken} workerFetch={workerFetch}
@@ -1451,6 +1508,7 @@ function InfoModalBody(props) {
   const [sensorCodeInput,   setSensorCodeInput]   = React.useState(t.sensorCode ?? '');
   const [sensorRollInput,   setSensorRollInput]   = React.useState(t.sensorRoll != null ? String(t.sensorRoll) : '1');
   const [symbolInput,       setSymbolInput]       = React.useState(t.symbol ?? '');
+  const [symbolTouched,     setSymbolTouched]     = React.useState(false); // the user typed in the symbol field: the codename autofill never runs
   const [sensorError,       setSensorError]       = React.useState(null);
     // Raw DB row for this tile (image_url, sensor_code ...). The file name is parsed from image_url before the '?'.
     const dbRow = t.isDb ? (dbTilesByTsId[t.tilesetId] ?? []).find(r => r.id === t.dbId) : null;
@@ -1470,6 +1528,7 @@ function InfoModalBody(props) {
     setSensorCodeInput(t.sensorCode ?? '');
     setSensorRollInput(t.sensorRoll != null ? String(t.sensorRoll) : '1');
     setSymbolInput(t.symbol ?? '');
+    setSymbolTouched(false);
     setFileNameInput(currentFileName);
   }, [t.dbId]);
   // Sensor fields: parsed values, edit state against the DB value, and whether this tile belongs to a sensor group
@@ -1701,10 +1760,11 @@ function InfoModalBody(props) {
           sort_index: sortIndexInput !== '' ? parseInt(sortIndexInput, 10) : null,
           sensor_code: codeParsed.value,
           sensor_roll: rollParsed.value ?? 1,
-          symbol: symParsed.value,
+          symbol: symParsed.value ?? MapSeed.autoSymbol(inSensorGroup && folderKeyInput.trim() ? folderKeyInput.trim() : (codenameInput.trim() || t.codename), symbolInput, symbolTouched),
           last_updated_at: new Date().toISOString(),
           last_updated_by: currentUser.id,
         };
+        if (body.symbol && !symParsed.value) setSymbolInput(body.symbol);
         let moved = null;
         if (currentPath && fileNameInput !== currentFileName) {
           // Validate and refuse collisions before touching anything.
@@ -1900,7 +1960,11 @@ function InfoModalBody(props) {
             readOnly={t.isDb && !canEditDb}
             onChange={e => { if (!t.isDb) setCodenameInput(e.target.value); else if (canEditDb) setCodenameInput(e.target.value); }}
             onBlur={() => {
-              if (t.isDb) return;
+              if (t.isDb) { // empty, untouched symbol field: take the symbol the codename (or, in a sensor folder, the folder name) stands for
+                const auto = canEditDb ? MapSeed.autoSymbol(inSensorGroup && folderKeyInput.trim() ? folderKeyInput.trim() : codenameInput.trim(), symbolInput, symbolTouched) : null;
+                if (auto) setSymbolInput(auto);
+                return;
+              }
               if (codenameInput === '') {
                 setTileNames(prev => { const n = { ...prev }; delete n[t.ref]; return n; });
               } else {
@@ -2032,7 +2096,7 @@ function InfoModalBody(props) {
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>symbol{groupNote}</span>
                 <input data-symbol value={symbolInput} readOnly={!canEditDb} maxLength={2}
-                  onChange={e => { if (canEditDb) setSymbolInput([...e.target.value].slice(-1)[0] ?? ''); }}
+                  onChange={e => { if (canEditDb) { setSymbolTouched(true); setSymbolInput([...e.target.value].slice(-1)[0] ?? ''); } }}
                   placeholder={SensorUI.suggestSymbol(tiles.filter(x => x.tilesetId === t.tilesetId), MapSeed.tableSymbols()) ?? "-"}
                   style={{ width: 40, textAlign: "center", background: !canEditDb ? "transparent" : "rgba(180,40,40,0.09)", border: `1px solid ${!SensorUI.parseSymbolInput(symbolInput).ok ? C.danger : (symbolInput.trim() || null) === (t.symbol ?? null) ? "#4ade80" : "#f97316"}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none" }} />
                 <button data-symbol-dict-open onClick={openSymbolDict} title="Symbol dictionary" style={{ ...btn(false), padding: "2px 6px", fontSize: 12 }}>📖</button>
@@ -6002,7 +6066,17 @@ function App() {
   const buildSeed = () => {
     const ts = dbTilesets.find(t => t.name === activeTileset);
     if (!ts || !Number.isInteger(ts.seed_id)) return { error: "Seeds need a loaded tileset with a seed_id." };
-    const sym = MapSeed.symbolizeGrid(grid, palette.refs, seedSymbolOf);
+    // Tie-pick selector: when a symbol had more than one candidate (the chooser's list: this tileset's tiles, then the global ones), the
+    // entry records which one the map uses (map_seed.js, "S.x"). Candidates are computed once per symbol.
+    const rows = dbTilesByTsIdRef.current[ts.id];
+    const tsIndex = rows ? MapSeed.indexBySymbol(seedTilesetEntries(ts, rows)) : new Map(), glIndex = MapSeed.indexBySymbol(seedGlobalEntries());
+    const candCache = new Map();
+    const selectorOf = (ref, symbol) => {
+      if (ref === WARN_REF || ref === SPACE_REF) return null;
+      if (!candCache.has(symbol)) candCache.set(symbol, MapSeed.resolveSymbols([symbol], tsIndex, glIndex)[0].candidates);
+      return MapSeed.selectorFor(candCache.get(symbol), ref);
+    };
+    const sym = MapSeed.symbolizeGrid(grid, palette.refs, seedSymbolOf, selectorOf);
     try {
       const magnet = MapSeed.magnetFromApp(gridW, gridH, customCenter, customCenterSize);
       return { enc: MapSeed.encode({ w: gridW, h: gridH, grid: sym.grid, magnet, tileset: ts.seed_id }), blanks: sym.blanks };
@@ -6068,7 +6142,7 @@ function App() {
   // the global tileset and the two special tiles can end up in the palette (never two tilesets).
   const applySeed = (dec, r, choices) => {
     const chosen = new Map();
-    r.resolved.forEach(x => chosen.set(x.symbol, !x.candidates.length ? null : !x.ask ? x.candidates[0].ref : (choices[x.symbol] ?? x.candidates[0].ref)));
+    r.resolved.forEach(x => chosen.set(x.key, !x.candidates.length ? null : x.pick ? x.pick.ref : !x.ask ? x.candidates[0].ref : (choices[x.key] ?? x.candidates[0].ref)));
     const { grid: g, refs, missing } = MapSeed.gridToRefs(dec.grid, chosen);
     const pal = { refs };
     const w = dec.size.w, h = dec.size.h;
@@ -6098,7 +6172,7 @@ function App() {
     setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set();
     setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set();
     applyZoom(calcFitZoom(w, h));
-    const unknown = r.resolved.filter(x => !x.candidates.length).map(x => x.symbol);
+    const unknown = r.resolved.filter(x => !x.candidates.length).map(x => x.key);
     const parts = [];
     if (r.fallback) parts.push(`tileset not found, showing ${r.target.name}`);
     if (unknown.length) parts.push(`${unknown.length} symbol${unknown.length > 1 ? "s" : ""} (${unknown.join(" ")}) matched no tile, ${missing} cell${missing === 1 ? "" : "s"} left blank`);
@@ -6117,7 +6191,7 @@ function App() {
     const nonEmpty = gridRef.current.some(row => row.some(c => c != null));
     if (!ambiguous.length && !nonEmpty) { applySeed(dec, r, {}); return; }
     // the lowest sortIndex is preselected, so Enter accepts
-    setSeedModal({ dec, r, choices: Object.fromEntries(ambiguous.map(x => [x.symbol, x.candidates[0].ref])), nonEmpty });
+    setSeedModal({ dec, r, choices: Object.fromEntries(ambiguous.map(x => [x.key, x.candidates[0].ref])), nonEmpty });
   };
   // Share link: read #seed=... once signed in, tilesets loaded and a saved map (if any) resolved; then clear the fragment.
   useEffect(() => {
@@ -6736,7 +6810,7 @@ function App() {
       convert: { label: "Convert", icon: "🔄", color: C.soft, desc: "Remaps tiles on the board from one tileset to another by matching tile names. Tiles with no equivalent in the target tileset are left as-is.", iconColor: null },
       magnet: { label: "Magnet", icon: "🧲", color: "#2563eb", desc: "Sets a custom mirror origin for the map. All mirroring axes (H, V, D) pivot around this point instead of the true map centre. Click any cell on the canvas to place the origin. Use the size dropdown on the card to choose a 1×1 or 2×2 centre zone. Useful for asymmetric or experimental Showdown layouts.", iconColor: null },
       tileCounter: { label: "Tile Counter", icon: "🧮", color: C.soft, desc: "Lists every tile used on the map with how many times it appears, highest first. A sensor folder counts as one tile (all its variants together). Empty cells are not counted; warn and space tiles are. Updates live while open.", iconColor: null },
-      mirrorSpawns: { label: "Mirror Spawns", icon: "🚩", color: C.pale, desc: "When a mirror reflects top-bottom (Vertical or Diagonal), team tiles swap with their partner so the map stays balanced: spawn 1 ↔ 2, respawn 3 ↔ 4, goal blue ↔ red. A left-right (Horizontal) mirror keeps the team. On by default.", iconColor: null },
+      mirrorSpawns: { label: "Mirror Spawns", icon: "🚩", color: C.pale, desc: "When a mirror reflects top-bottom (Vertical or Diagonal), team tiles swap with their partner so the map stays balanced: spawn 1 ↔ 2, respawn 5 ↔ 6, goal blue ↔ red. A left-right (Horizontal) mirror keeps the team. On by default.", iconColor: null },
       hotkeys: { label: "Hotkeys", icon: "⌨️", color: C.text, desc: "Keyboard shortcuts: E = Erase, W = Eyedropper, Z = Undo, X = Redo, Ctrl+Z = Undo, Ctrl+Y = Redo, Escape = Clear highlight.", iconColor: null },
       warn: { label: "Warn", icon: "⚠️", color: "#f97316", desc: "Places an invisible warning marker tile. Warning markers appear as semi-transparent ⚠️ overlays on the canvas but are not exported as tiles — useful for marking hazardous or incomplete areas.", iconColor: null },
       duplicate: { label: "Duplicate", icon: "💞", color: "#e879a0", desc: "Copies the highlighted region to a new position without moving the originals. Drag the highlighted area to preview the copy placement, then press Apply. Mirror-aware: if any mirror axis is active, the copy is extended to also cover mirror positions.", iconColor: "#e879a0" },
@@ -7189,6 +7263,7 @@ function App() {
       }
       const filePath = `Resources/${folderPath}/${fileName}`;
       const imageUrl = rawUrl(filePath);
+      const csAutoSymbol = MapSeed.autoSymbol(csCode.value && createTsFolderKey.trim() ? createTsFolderKey.trim() : createTsCodename.trim(), null, false);
 
       // 2. Tileset row first (the worker's ownership check looks it up)
       const tsResp = await workerFetch(`${WORKER_URL}/rest/v1/tilesets`, {
@@ -7220,6 +7295,7 @@ function App() {
           mirror_offset: false, bottom_render: false, priority: false,
           auto_shadow: false,
           size_multiplier: 1.0, offset_x: 0, offset_y: 0,
+          ...(csAutoSymbol ? { symbol: csAutoSymbol } : {}),
           ...(csCode.value ? { sensor_code: csCode.value } : {}),
           ...(csRoll.value != null ? { sensor_roll: csRoll.value } : {}),
         }),
@@ -7371,6 +7447,7 @@ function App() {
       const sibling = addCode.value && addTileFolderKey.trim()
         ? sortedRows(dbTilesByTsIdRef.current[addTileTsId]).find(r => r.folder_key === addTileFolderKey.trim() && r.sensor_code != null) : null;
       const groupCopy = sibling ? Object.fromEntries(SensorUI.GROUP_COLUMNS.filter(k => sibling[k] !== undefined).map(k => [k, sibling[k]])) : {};
+      const addAutoSymbol = groupCopy.symbol ? null : MapSeed.autoSymbol(addCode.value && addTileFolderKey.trim() ? addTileFolderKey.trim() : addTileCodename.trim(), null, false);
       const dir = `Resources/${tilesetFolderPath}`;
       const fileName = uniqueFileName(dir, baseName, takenRepoPaths(existing));
       const filePath = `${dir}/${fileName}`;
@@ -7392,6 +7469,7 @@ function App() {
           auto_shadow: false,
           size_multiplier: 1.0, offset_x: 0, offset_y: 0,
           ...groupCopy,
+          ...(addAutoSymbol ? { symbol: addAutoSymbol } : {}), // no symbol from the folder: the folder name / codename suggests one
           ...(addCode.value ? { sensor_code: addCode.value } : {}),
           ...(addRoll.value != null ? { sensor_roll: addRoll.value } : {}),
         }),
@@ -7589,8 +7667,8 @@ function App() {
               <span style={{ fontSize: 13, fontWeight: 700, color: C.accent }}>Map seed</span>
               <button data-seed-box-close onClick={() => setSeedBoxOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
             </div>
-            <textarea data-seed-input rows={3} value={seedText} onChange={e => setSeedText(e.target.value)} placeholder="paste a seed or share link…"
-              style={{ width: "100%", boxSizing: "border-box", resize: "vertical", background: "rgba(180,40,40,0.09)", border: `1px solid ${seedParse && !seedParse.ok ? C.danger : C.border}`, borderRadius: 6, color: C.text, fontFamily: "monospace", fontSize: 11, padding: "6px 8px", outline: "none", wordBreak: "break-all" }}
+            <textarea data-seed-input rows={8} value={seedText} onChange={e => setSeedText(e.target.value)} placeholder="paste a seed or share link…"
+              style={{ width: "100%", boxSizing: "border-box", resize: "vertical", minHeight: 120, whiteSpace: "pre-wrap", overflowWrap: "anywhere", background: "rgba(180,40,40,0.09)", border: `1px solid ${seedParse && !seedParse.ok ? C.danger : C.border}`, borderRadius: 6, color: C.text, fontFamily: "monospace", fontSize: 12, lineHeight: 1.4, padding: "6px 8px", outline: "none", wordBreak: "break-all" }}
               spellCheck={false} />
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
               <button data-seed-copy style={btn(true, C.accent, C.accentDim)} onClick={() => copySeed("seed")} title="Copy this map as a seed">Copy seed</button>
@@ -7612,9 +7690,9 @@ function App() {
                 {row("Magnet", magnetText, d.errorField === "magnet")}
                 {row("Mirror", d.mirror ? `${d.mirror} - ${MapSeed.CLASS_NAMES[d.mirror]}` : "-", d.errorField === "mirror")}
                 {row("Tileset", tsText, d.errorField === "tileset")}
-                {row("Palette", d.palette ? (d.palette.length === 0 ? "(empty map)" : (pv ? pv.resolved : d.palette.map(s => ({ symbol: s, candidates: [], source: null }))).map(x => (
-                  <span key={x.symbol} style={{ display: "inline-block", marginRight: 10 }}>
-                    <b style={{ fontFamily: "monospace" }}>{x.symbol}</b> {x.candidates.length === 0 ? <i style={{ color: pv && pv.loaded ? "#fbbf24" : C.muted }}>{pv && pv.loaded ? "no tile (blank)" : "…"}</i> : !x.ask ? x.candidates[0].name : <i>{x.objective ? "game-mode objective, you choose" : `${x.candidates.length} tiles, you choose`}</i>}
+                {row("Palette", d.palette ? (d.palette.length === 0 ? "(empty map)" : (pv ? pv.resolved : d.palette.map(s => ({ key: s, symbol: s, candidates: [], source: null }))).map(x => (
+                  <span key={x.key} style={{ display: "inline-block", marginRight: 10 }}>
+                    <b style={{ fontFamily: "monospace" }}>{x.key}</b> {x.candidates.length === 0 ? <i style={{ color: pv && pv.loaded ? "#fbbf24" : C.muted }}>{pv && pv.loaded ? "no tile (blank)" : "…"}</i> : x.pick ? x.pick.name : !x.ask ? x.candidates[0].name : <i>{x.badSelector ? `pick ${x.selector} is not available, you choose` : x.objective ? "game-mode objective, you choose" : `${x.candidates.length} tiles, you choose`}</i>}
                   </span>
                 ))) : "-", d.errorField === "palette")}
                 {row("Cells", d.regionSize == null ? "-" : d.ok ? `${d.cellCount} = ${d.size.w} x ${d.size.h} OK${d.mirror !== "a" ? ` (${d.regionSize} stored, the rest mirrored)` : ""}` : `${d.cellCount ?? 0} read, ${d.regionSize} expected`, d.errorField === "code")}
@@ -7633,7 +7711,7 @@ function App() {
                 <li><b>magnet</b>: <code>x</code> = default centre, otherwise <code>col.row</code> (0-based), plus <code>.2</code> (2x2), <code>.3</code> (2x1) or <code>.4</code> (1x2) when the magnet is not 1x1.</li>
                 <li><b>mirror</b>: the strongest symmetry the map really has: <code>h</code> left-right, <code>v</code> top-bottom, <code>d</code> 180-degree central, <code>4</code> all three, <code>a</code> none. A symmetric map only stores one half or quarter.</li>
                 <li><b>tileset</b>: the number of the tileset the symbols belong to. An unknown number falls back to the default tileset.</li>
-                <li><b>palette</b>: the tile symbols used on the map, most used first (case matters). Every tile has one character, never a comma or a slash; the dictionary below lists them all (the warn tile is <code>A</code>, the space tile <code>S</code>).</li>
+                <li><b>palette</b>: the tile symbols used on the map, most used first, then by symbol (case matters). Every tile has one character, never <code>,</code> <code>/</code> <code>.</code> or <code>?</code>; the dictionary below lists them all (the warn tile is <code>A</code>, the space tile <code>S</code>). When a symbol fits more than one tile, the seed also records which one the map uses: the symbol, a dot and one character <code>0-9 a-z A-Z</code> counting the tiles in the order the import question lists them (<code>M.1</code> = the first, <code>M.a</code> = the tenth). A pick that is missing or does not exist is asked again on import; older seeds without picks still import.</li>
                 <li><b>code</b>: the cells, as runs of the same tile, packed into letters and digits.</li>
               </ul>
               <p style={{ margin: 0 }}>Tiles without a symbol and local uploads cannot be shared: they become empty cells (the app tells you how many). Importing replaces the current map, size, magnet and mirroring in one undo step. If one symbol fits several tiles you are asked which one you mean.</p>
@@ -7648,7 +7726,7 @@ function App() {
       {seedModal && (() => {
         const { dec, r, choices, nonEmpty } = seedModal;
         const ambiguous = r.resolved.filter(x => x.ask);
-        const ready = ambiguous.every(x => choices[x.symbol]);
+        const ready = ambiguous.every(x => choices[x.key]);
         return (
           <div className="modal-backdrop" onClick={() => setSeedModal(null)}>
             <div className="modal-box" data-seed-import-modal style={{ maxWidth: 520, maxHeight: "85vh", overflowY: "auto" }} onClick={e => e.stopPropagation()}
@@ -7662,14 +7740,14 @@ function App() {
                 {nonEmpty && <> <b style={{ color: C.danger }}>This replaces your current map.</b> You can undo it.</>}
               </p>
               {ambiguous.map(x => (
-                <div key={x.symbol} data-seed-choose={x.symbol} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                  <span data-seed-choose-label style={{ fontSize: 11, color: C.muted }}>{x.objective ? <b style={{ color: C.text }}>Choose the game-mode objective for your map</b> : <>Symbol <b style={{ fontFamily: "monospace", color: C.text }}>{x.symbol}</b> matches {x.candidates.length} tiles. Which one?</>}</span>
+                <div key={x.key} data-seed-choose={x.key} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  <span data-seed-choose-label style={{ fontSize: 11, color: C.muted }}>{x.objective ? <b style={{ color: C.text }}>Choose the game-mode objective for your map</b> : <>Symbol <b style={{ fontFamily: "monospace", color: C.text }}>{x.symbol}</b> matches {x.candidates.length} tiles{x.badSelector ? <> (the seed's pick <b style={{ fontFamily: "monospace" }}>{x.selector}</b> is not one of them)</> : null}. Which one?</>}</span>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                     {x.candidates.map(cd => {
-                      const picked = choices[x.symbol] === cd.ref;
+                      const picked = choices[x.key] === cd.ref;
                       const src = cd.tile && (cd.tile.blobSrc ?? cd.tile.src);
                       return (
-                        <div key={cd.ref} data-seed-card={cd.ref} onClick={() => setSeedModal(m => ({ ...m, choices: { ...m.choices, [x.symbol]: cd.ref } }))}
+                        <div key={cd.ref} data-seed-card={cd.ref} onClick={() => setSeedModal(m => ({ ...m, choices: { ...m.choices, [x.key]: cd.ref } }))}
                           style={{ width: 84, cursor: "pointer", borderRadius: 8, border: `2px solid ${picked ? C.accent : C.border}`, background: picked ? C.accentDim : "rgba(255,255,255,0.03)", padding: 4, textAlign: "center" }}>
                           <div style={{ height: 56, display: "flex", alignItems: "center", justifyContent: "center" }}>
                             {src ? <img src={src} alt="" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated" }} /> : <span style={{ fontSize: 20 }}>⚠️</span>}

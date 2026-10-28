@@ -219,7 +219,7 @@ const test = async (name, fn) => {
   await test("a symbol that matches several tiles opens the chooser; the chosen tile is used; unknown symbols are counted", async () => {
     const { page, ctx } = await newPage();
     await ready(page);
-    const seed = encode(5, 3, [[0, 0, "8"], [1, 1, "8"], [2, 2, "?"], [0, 4, "M"]], 0);
+    const seed = encode(5, 3, [[0, 0, "8"], [1, 1, "8"], [2, 2, "~"], [0, 4, "M"]], 0);
     await importViaField(page, seed);
     await page.waitForSelector("[data-seed-import-modal]");
     const cards = page.locator("[data-seed-choose='8'] [data-seed-card]");
@@ -233,9 +233,38 @@ const test = async (name, fn) => {
     const sv = await saved(page);
     assert.strictEqual(symAt(sv, 0, 0), "ObjB");
     assert.strictEqual(symAt(sv, 1, 1), "ObjB");
-    assert.strictEqual(symAt(sv, 2, 2), null); // "?" matched nothing: blank
+    assert.strictEqual(symAt(sv, 2, 2), null); // "~" matched nothing: blank
     assert.strictEqual(symAt(sv, 0, 4), "Wall1");
-    assert.ok(/1 symbol \(\?\) matched no tile, 1 cell left blank/.test(await page.textContent("body")));
+    assert.ok(/1 symbol \(~\) matched no tile, 1 cell left blank/.test(await page.textContent("body")));
+    await ctx.close();
+  });
+
+  await test("selectors: a resolving pick imports silently, a bad pick asks only for that entry, an old seed without picks still asks; export writes the pick", async () => {
+    const { page, ctx } = await newPage();
+    await ready(page);
+    // "8.2" = the second candidate (ObjB); "M" has one candidate -> silent
+    await importViaField(page, encode(5, 3, [[0, 0, "8.2"], [0, 4, "M"]], 0)); await settle(page);
+    assert.strictEqual(await page.locator("[data-seed-import-modal]").count(), 0, "no chooser for a resolving selector");
+    let sv = await saved(page);
+    assert.strictEqual(symAt(sv, 0, 0), "ObjB"); assert.strictEqual(symAt(sv, 0, 4), "Wall1");
+    // mixed: "8.2" resolves, "8" would ask: separate entries, only the unselected one prompts
+    await importViaField(page, encode(5, 3, [[0, 0, "8.2"], [1, 1, "8.9"]], 0));
+    await page.waitForSelector("[data-seed-import-modal]");
+    assert.strictEqual(await page.locator("[data-seed-choose='8.2']").count(), 0);
+    assert.strictEqual(await page.locator("[data-seed-choose='8.9'] [data-seed-card]").count(), 8);
+    await page.click("[data-seed-confirm]"); await settle(page);
+    sv = await saved(page);
+    assert.strictEqual(symAt(sv, 0, 0), "ObjB"); assert.strictEqual(symAt(sv, 1, 1), "ObjA", "the unselected entry took the preselected lowest sortIndex");
+    // export: ObjA = candidate 1 and ObjB = candidate 2 of symbol 8 -> "8.1" and "8.2"; a single-candidate symbol (M) has no selector
+    await importViaField(page, encode(5, 3, [[0, 0, "8.2"], [1, 1, "8.1"], [0, 4, "M"]], 0));
+    await page.waitForSelector("[data-seed-import-modal]"); // only the replace confirmation: every entry resolved by its selector
+    assert.strictEqual(await page.locator("[data-seed-choose]").count(), 0);
+    await page.click("[data-seed-confirm]"); await settle(page);
+    await box(page); await page.click("[data-seed-copy]");
+    const out = await page.evaluate(() => navigator.clipboard.readText());
+    assert.strictEqual(out.split(",")[4], "8.18.2M", out);
+    const back = MapSeed.decode(out);
+    assert.ok(back.ok, back.error);
     await ctx.close();
   });
 

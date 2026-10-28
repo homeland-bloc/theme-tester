@@ -122,15 +122,17 @@ const FILES = ["R", "L", "B", "T", "BR", "TL", "BL", "TR"];
     });
   }
 
-  await test("team tiles unchanged: spawn 1 keeps its team on a left-right image and swaps to 2 when rows reflect; spawn 5 never swaps", async () => {
+  await test("team tiles unchanged: spawn 1 keeps its team on a left-right image and swaps to 2 when rows reflect; spawn 3 (Solo) never swaps and respawn 5 swaps to 6", async () => {
     const { page, ctx } = await newPage({ storage: mirrorStore("vhd") });
     await ready(page);
     await placeGlobal(page, "global_spawns", "Resources/Global/Spawns/1.png", 1, 1);
-    await placeGlobal(page, "global_spawns", "Resources/Global/Spawns/5.png", 2, 2);
+    await placeGlobal(page, "global_spawns", "Resources/Global/Spawns/3.png", 2, 2);
+    await placeGlobal(page, "global_spawns", "Resources/Global/Spawns/5.png", 3, 3);
     const m = await readMap(page);
     const S = n => `Resources/Global/Spawns/${n}.png`;
     assert.deepStrictEqual([m.at(1, 1).ref, m.at(1, 7).ref, m.at(7, 1).ref, m.at(7, 7).ref], [S(1), S(1), S(2), S(2)]);
-    assert.deepStrictEqual([m.at(2, 2).ref, m.at(2, 6).ref, m.at(6, 2).ref, m.at(6, 6).ref], [S(5), S(5), S(5), S(5)]);
+    assert.deepStrictEqual([m.at(2, 2).ref, m.at(2, 6).ref, m.at(6, 2).ref, m.at(6, 6).ref], [S(3), S(3), S(3), S(3)]);
+    assert.deepStrictEqual([m.at(3, 3).ref, m.at(3, 5).ref, m.at(5, 3).ref, m.at(5, 5).ref], [S(5), S(5), S(6), S(6)]);
     await ctx.close();
   });
 
