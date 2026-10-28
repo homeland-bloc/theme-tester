@@ -12,6 +12,7 @@ const TILES = { "ts-0": [
   row(U(3), "ts-0", "Spotlight", { sort_index: 3 }),
   row(U(4), "ts-0", "Fence_h", { folder_key: "Fence", sensor_code: "00011000", sort_index: 4 }),
   row(U(5), "ts-0", "Fence_v", { folder_key: "Fence", sensor_code: "01000010", sort_index: 5 }),
+  ...["00001011", "01111111", "01101011", "11111111"].map((c, i) => row(U(20 + i), "ts-0", "Pond_" + c, { folder_key: "Pond", sensor_code: c, sort_index: 20 + i, symbol: "W", rotatable: true })),
 ] };
 
 (async () => {
@@ -51,6 +52,29 @@ const TILES = { "ts-0": [
     await page.locator("input[value='Wall1_new']").fill("Crate_new");
     await page.locator("input[value='Crate_new']").blur();
     assert.strictEqual(await page.inputValue("[data-symbol]"), "Q", "typed symbol stays");
+    await ctx.close();
+  });
+
+  await test("simulator: every composed quadrant line has a 'show' button; tapping it highlights that quarter and it stays after the pointer leaves; tapping again clears", async () => {
+    const { page, ctx, logs } = await newPage();
+    await ready(page); await settle(page);
+    await page.click("[data-sensor-unfold='s:ts-0|Pond']");
+    const open = page.locator("[data-sensor-sim-open='s:ts-0|Pond']");
+    await open.first().click();
+    await page.waitForSelector("[data-testid='sim-grid']");
+    for (const b of ["N", "W", "E", "S"]) await page.click(`[data-bit='${b}']`); // a plus shape: not a base tile, so it is composed
+    await settle(page);
+    assert.strictEqual(await page.locator("[data-quad-show]").count(), 4);
+    await page.click("[data-quad-show='TR']");
+    assert.strictEqual(await page.locator("[data-quad-highlight='TR']").count(), 1);
+    await page.mouse.move(5, 5);
+    assert.strictEqual(await page.locator("[data-quad-highlight='TR']").count(), 1, "stays highlighted");
+    await page.click("[data-quad-show='BL']");
+    assert.strictEqual(await page.locator("[data-quad-highlight]").count(), 1);
+    assert.strictEqual(await page.locator("[data-quad-highlight='BL']").count(), 1);
+    await page.click("[data-quad-show='BL']");
+    await page.mouse.move(5, 5); // the hover highlight (desktop extra) ends with the pointer
+    assert.strictEqual(await page.locator("[data-quad-highlight]").count(), 0);
     await ctx.close();
   });
 

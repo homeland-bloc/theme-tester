@@ -2627,7 +2627,9 @@ function SensorWarningModal({ folder, onClose }) {
 function SensorSimulationPanel({ folder, candidates, requestComposed, reroll = 0, onReroll, onClose }) {
   const [bits, setBits] = useState(() => Array(8).fill(false));
   const seed = 0; // fixed preview position; "Roll again" changes the folder's reroll seed, the same one the map uses
-  const [hoverQ, setHoverQ] = useState(null); // quadrant (0 TL, 1 TR, 2 BR, 3 BL) hovered in the composed breakdown
+  const [hoverQ, setHoverQ] = useState(null); // quadrant (0 TL, 1 TR, 2 BR, 3 BL) hovered in the composed breakdown (desktop extra)
+  const [selQ, setSelQ] = useState(null);   // quadrant chosen with a line's "show" button: stays highlighted until another is chosen or it is tapped again
+  const shownQ = hoverQ != null ? hoverQ : selQ;
   const [pickedFallback, setPickedFallback] = useState(false); // the fallback row of an exact-mode folder was clicked
   const engine = useMemo(() => SensorUI.engineFolder(folder), [folder]);
   const code = bits.map(b => (b ? "1" : "0")).join("");
@@ -2675,7 +2677,7 @@ function SensorSimulationPanel({ folder, candidates, requestComposed, reroll = 0
           <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 150 }}>
             <div data-testid="sim-chosen" style={{ position: "relative", width: 96, height: 96, borderRadius: 8, background: C.panelDeep, border: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
               {vis && vis.src ? <img src={vis.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", transform: vis.css || undefined }} /> : <span style={{ fontSize: 22 }}>{res ? "…" : "⚠️"}</span>}
-              {hoverQ != null && <div data-quad-highlight={SensorEngine.QUAD_NAMES[hoverQ]} style={{ position: "absolute", width: "50%", height: "50%", left: hoverQ === 1 || hoverQ === 2 ? "50%" : 0, top: hoverQ >= 2 ? "50%" : 0, border: `2px solid ${SENSOR_YELLOW}`, background: "rgba(245,197,24,0.28)", boxSizing: "border-box", pointerEvents: "none" }} />}
+              {shownQ != null && <div data-quad-highlight={SensorEngine.QUAD_NAMES[shownQ]} style={{ position: "absolute", width: "50%", height: "50%", left: shownQ === 1 || shownQ === 2 ? "50%" : 0, top: shownQ >= 2 ? "50%" : 0, border: `2px solid ${SENSOR_YELLOW}`, background: "rgba(245,197,24,0.28)", boxSizing: "border-box", pointerEvents: "none" }} />}
             </div>
             <div style={{ fontSize: 11, color: C.text }}>
               <b>Chosen variant:</b>{" "}
@@ -2689,8 +2691,12 @@ function SensorSimulationPanel({ folder, candidates, requestComposed, reroll = 0
             {lines.length > 0 && (
               <div data-testid="sim-breakdown" style={{ display: "flex", flexDirection: "column", gap: 2, maxWidth: 260 }}>
                 {lines.map(l => (
-                  <div key={l.quadrant} data-quad-line={l.label} onMouseEnter={() => setHoverQ(l.quadrant)} onMouseLeave={() => setHoverQ(null)} onClick={() => setHoverQ(q => (q === l.quadrant ? null : l.quadrant))}
-                    style={{ fontSize: 10, fontFamily: "monospace", color: hoverQ === l.quadrant ? SENSOR_YELLOW : C.muted, cursor: "default", padding: "1px 3px", borderRadius: 3, background: hoverQ === l.quadrant ? "rgba(245,197,24,0.12)" : "transparent" }}>{l.text}</div>
+                  <div key={l.quadrant} data-quad-line={l.label} onMouseEnter={() => setHoverQ(l.quadrant)} onMouseLeave={() => setHoverQ(null)}
+                    style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, fontFamily: "monospace", color: shownQ === l.quadrant ? SENSOR_YELLOW : C.muted, cursor: "default", padding: "1px 3px", borderRadius: 3, background: shownQ === l.quadrant ? "rgba(245,197,24,0.12)" : "transparent" }}>
+                    <button data-quad-show={l.label} aria-pressed={selQ === l.quadrant} title={`Highlight the ${l.label} quarter on the preview`} onClick={() => setSelQ(q => (q === l.quadrant ? null : l.quadrant))}
+                      style={{ ...sensorBtnStyle(), padding: "0 6px", fontSize: 9, minHeight: 18, flexShrink: 0, ...(selQ === l.quadrant ? { background: "rgba(245,197,24,0.35)" } : {}) }}>show</button>
+                    <span>{l.text}</span>
+                  </div>
                 ))}
               </div>
             )}
