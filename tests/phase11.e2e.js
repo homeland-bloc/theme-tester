@@ -209,4 +209,51 @@ const TILES = { "ts-0": [
   });
 
   await h.finish();
+
+  // ── Hidden (unpublished) tileset on refresh ─────────────────────────────────────────────────────────────
+  // An admin sees every tileset, but only once the profile (role) has arrived: the list asked for earlier leaves hidden ones out. The profile answer is slow here.
+  const HID = [
+    { id: "ts-0", name: "Snowtel Gifts", seed_id: 0, is_published: true, owner_id: "u2", folder_path: "Snow", profiles: { username: "other" } },
+    { id: "ts-h", name: "Hidden Set", seed_id: 4, is_published: false, owner_id: "u2", folder_path: "Hid", bg_color_light: "#112233", bg_color_dark: "#223344", profiles: { username: "other" } },
+  ];
+  const HT = { "ts-0": [row(U(1), "ts-0", "Wall1", { symbol: "M", sort_index: 1 })], "ts-h": [row(U(60), "ts-h", "Wall1", { symbol: "M", sort_index: 1 }), row(U(61), "ts-h", "Lamp", { symbol: "D", sort_index: 2 })] };
+  const tsRequests = [];
+  const h2 = await H.start({ tilesets: HID, tiles: HT, role: "admin", onWorker: async (route, url, reply) => {
+    const m = route.request().method();
+    if (url.pathname === "/rest/v1/profiles" && m === "GET") { await new Promise(r => setTimeout(r, 1200)); reply(200, [{ id: "u1", username: "tester", role: "admin", theme: "auto" }]); return true; }
+    if (url.pathname === "/rest/v1/tilesets" && m === "GET") {
+      tsRequests.push(url.search);
+      const filtered = url.searchParams.has("or") || url.searchParams.has("is_published");
+      reply(200, filtered ? HID.filter(t => t.is_published) : HID); return true;
+    }
+    return false;
+  } });
+  const SAVED = { v: 2, palette: [`d:${U(61)}`], grid: Array.from({ length: 5 }, (_, r) => Array.from({ length: 5 }, (_, c) => (r === 2 && c === 2 ? 1 : null))) };
+  const store = (ts, colors) => ({ oph_active_ts: JSON.stringify(ts), oph_gridW: 5, oph_gridH: 5, oph_grid: SAVED, oph_colors: colors });
+  const lsGet = (page, k) => page.evaluate(k => localStorage.getItem(k), k);
+
+  await h2.test("REPRO + FIX: refreshing on a hidden tileset keeps it (and its background) although the first tileset list would not contain it", async () => {
+    const { page, ctx, logs } = await h2.newPage({ storage: store("Hidden Set", { bg1: "#112233", bg2: "#223344" }) });
+    await h2.ready(page); await h2.settle(page);
+    assert.strictEqual(JSON.parse(await lsGet(page, "oph_active_ts")), "Hidden Set", "still on the hidden tileset");
+    assert.ok((await page.textContent("[data-ts-toggle]")).includes("Hidden Set"));
+    assert.deepStrictEqual(JSON.parse(await lsGet(page, "oph_colors")), { bg1: "#112233", bg2: "#223344" });
+    assert.ok(tsRequests.length >= 1 && tsRequests.every(q => !q.includes("or=") && !q.includes("is_published")), "the list was only asked for once the role was known: " + tsRequests.join(" | "));
+    assert.deepStrictEqual(JSON.parse(await lsGet(page, "oph_grid")).palette, [`d:${U(61)}`], "the saved map is intact");
+    await ctx.close();
+  });
+
+  await h2.test("a saved tileset that is genuinely absent: fall back to the default tileset WITH its own background, the saved map is neither converted nor overwritten, and a notice says so", async () => {
+    const { page, ctx } = await h2.newPage({ storage: store("Gone Set", { bg1: "#aa0000", bg2: "#bb0000" }) });
+    const before = JSON.stringify(SAVED);
+    await h2.ready(page); await h2.settle(page);
+    assert.strictEqual(JSON.parse(await lsGet(page, "oph_active_ts")), "Snowtel Gifts");
+    const bg = JSON.parse(await lsGet(page, "oph_colors"));
+    assert.ok(bg.bg1 !== "#aa0000" && bg.bg2 !== "#bb0000", "the old tileset's colours are gone: " + JSON.stringify(bg));
+    assert.strictEqual(await lsGet(page, "oph_grid"), before, "the stored map is byte-for-byte the saved one");
+    assert.ok(/not available to you/.test(await page.innerText("body")));
+    await ctx.close();
+  });
+
+  await h2.finish();
 })();

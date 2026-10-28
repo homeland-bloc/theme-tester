@@ -2920,6 +2920,7 @@ function App() {
   const [currentUser, setCurrentUser] = useState(() => { try { return JSON.parse(localStorage.getItem('oph_user')); } catch { return null; } });
   const [authChecked, setAuthChecked] = useState(false); // true once Firebase auth state has been checked
   const [realProfile, setUserProfile] = useState(null); // { role, ... } fetched from Supabase: the REAL role
+  const [profileSettled, setProfileSettled] = useState(false); // the first profile request has finished (answered, failed, or there is nobody to ask for)
   // "Preview as user (UI only)": creators and admins can make the UI behave as a plain user. Persisted locally. It only changes what the UI
   // shows (userProfile below); requests, tokens and the real profile are never touched.
   const [previewAsUser, setPreviewAsUser] = useState(() => { try { return localStorage.getItem("oph_preview_as_user") === "1"; } catch { return false; } });
@@ -3229,6 +3230,7 @@ function App() {
   // Holds the decoded {palette, grid} between component init and tile-load resolution.
   // Must be declared before the grid useState so the init function can write to it.
   const pendingGridLoadRef = useRef(null);
+  const protectSavedMapRef = useRef(false); // true while the saved map must stay untouched in storage (its tileset was not available)
   const [grid,        setGridRaw]   = useState(() => {
     const gW = load(SK.gridW, GRID_W), gH = load(SK.gridH, GRID_H);
     const empty = Array.from({ length: gH }, () => Array(gW).fill(null));
@@ -3579,6 +3581,10 @@ function App() {
   // Save: v2 format, palette compacted for export only.
   useEffect(() => {
     if (pendingGridLoadRef.current) return; // load in progress — don't overwrite the saved palette
+    if (protectSavedMapRef.current) { // the saved tileset was not available: its map stays in storage until the first edit
+      if (!grid.some(row => row.some(c => c != null)) && grid.length === load(SK.gridH, GRID_H) && (grid[0] || []).length === load(SK.gridW, GRID_W)) return;
+      protectSavedMapRef.current = false;
+    }
     save(SK.grid, encodeForStorage(paletteRef.current, grid));
   }, [grid, palette]);
   useEffect(() => { save(SK.multipliers,  tileMultipliers); }, [tileMultipliers]);
@@ -4510,6 +4516,9 @@ function App() {
       setTilesLoading(false);
       return;
     }
+    // Hidden (unpublished) tilesets are only listed for their owner and admins, which depends on the signed-in session AND the profile role.
+    // Asking earlier returns a list without the user's own hidden tileset and the app would fall back to the default one (and save that choice).
+    if (currentUser?.firebaseToken && !profileSettled) return;
 
     (async () => {
       const isAdmin = realProfile?.role === 'admin'; // the request always uses the REAL role; preview filters the result below
@@ -4553,7 +4562,18 @@ function App() {
         const saved = load(SK.activeTileset, null);
         const published = tilesets.filter(ts => ts.is_published);
         const mostRecent = (published.find(ts => ts.seed_id === 0) ?? [...published].sort((a, b) => a.name.localeCompare(b.name))[0] ?? tilesets[0])?.name ?? null;
-        const name = (saved && tilesets.some(ts => ts.name === saved)) ? saved : mostRecent;
+        const savedMissing = !!saved && !tilesets.some(ts => ts.name === saved);
+        const name = savedMissing ? mostRecent : saved && tilesets.some(ts => ts.name === saved) ? saved : mostRecent;
+        if (savedMissing && name) {
+          // The saved tileset is genuinely not in the list (session, profile and list are all loaded by now): fall back, take the NEW tileset's own
+          // background (the saved colours belong to the old one), and leave the saved map alone: it is neither converted to the fallback tileset nor
+          // overwritten until the user edits the map.
+          protectSavedMapRef.current = !!pendingGridLoadRef.current;
+          pendingGridLoadRef.current = null;
+          const bgNew = tilesetBg(tilesets.find(ts => ts.name === name));
+          applyBgPreset(name, bgNew.bg1, bgNew.bg2);
+          setInfoNotice(`Your saved map uses the tileset "${saved}", which is not available to you (it may be hidden or removed). Showing "${name}". Your saved map was kept as it is.`);
+        }
         setActiveTileset(name);
 
         // Pre-fetch tiles for the active tileset before unblocking grid resolution,
@@ -4621,7 +4641,7 @@ function App() {
         setTilesLoading(false);
       }
     })();
-  }, [currentUser?.id, tsFetchTrigger, realProfile?.role, previewActive, isAuthenticated]);
+  }, [currentUser?.id, tsFetchTrigger, realProfile?.role, previewActive, isAuthenticated, profileSettled]);
 
   // On-demand tile loading: fetch tiles for the active tileset if not yet cached
   useEffect(() => {
@@ -4651,7 +4671,7 @@ function App() {
 
   // Fetch user profile (role) from Supabase when logged in
   useEffect(() => {
-    if (!currentUser?.firebaseToken || !currentUser?.id) { setUserProfile(null); return; }
+    if (!currentUser?.firebaseToken || !currentUser?.id) { setUserProfile(null); setProfileSettled(true); return; }
     (async () => {
       const token = await getValidToken();
       workerFetch(`${WORKER_URL}/rest/v1/profiles?id=eq.${currentUser.id}&select=id,username,avatar_hash,role,theme`, {
@@ -4659,6 +4679,7 @@ function App() {
       }).then(r => r.ok ? r.json() : []).then(rows => {
         const profile = rows[0] ?? null;
         setUserProfile(profile);
+        setProfileSettled(true);
         // Apply stored theme from DB (issue 14)
         if (profile?.theme && profile.theme !== 'auto') {
           setAutoTheme(false);
@@ -4666,7 +4687,7 @@ function App() {
         } else if (profile?.theme === 'auto') {
           setAutoTheme(true);
         }
-      }).catch(() => setUserProfile(null));
+      }).catch(() => { setUserProfile(null); setProfileSettled(true); });
     })();
   }, [currentUser]);
 
