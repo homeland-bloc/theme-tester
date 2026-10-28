@@ -345,6 +345,7 @@ const buildDbTile = (row, tsRow) => {
     dbTilesetId: row.tileset_id,
     codename: row.codename,
     src: row.image_url,
+    blobSrc: SESSION_IMAGES.get(row.image_url), // the editor's own just-uploaded bytes (undefined for everyone else's images)
     isDefault: true,
     isDb: true,
     tilesetName: tsRow.name,
@@ -454,8 +455,19 @@ const RAW_BASE = 'https://raw.githubusercontent.com/bicipikay/ophelia/main/';
 const FILE_NAME_RE = /^[A-Za-z0-9._+-]{1,100}$/;
 const FILE_EXTS = ['.png', '.jpg', '.jpeg', '.gif', '.webp'];
 
+// ?v= is strictly increasing within a page, so a path that is written twice in one session (replace, or delete and re-add under a reused
+// file name) never gets the same link twice and the browser never reuses a cached copy of the old file.
+let lastVersionStamp = 0;
+const nextVersionStamp = () => { lastVersionStamp = Math.max(Date.now(), lastVersionStamp + 1); return lastVersionStamp; };
 function rawUrl(filePath, bust = true) {
-  return RAW_BASE + filePath.split('/').map(encodeURIComponent).join('/') + (bust ? `?v=${Date.now()}` : '');
+  return RAW_BASE + filePath.split('/').map(encodeURIComponent).join('/') + (bust ? `?v=${nextVersionStamp()}` : '');
+}
+// Images this session uploaded: image_url (with its fresh ?v=) -> blob URL of the exact bytes that were uploaded. GitHub's CDN may keep serving
+// the previous file for the same path for about five minutes (raw.githubusercontent.com caches by path), so the editor who just uploaded sees the
+// new bytes at once from here; every other user may still see the old image until that cache expires (not fixable from the app).
+const SESSION_IMAGES = new Map();
+function keepUploadedImage(imageUrl, blob) {
+  try { const old = SESSION_IMAGES.get(imageUrl); if (old) URL.revokeObjectURL(old); SESSION_IMAGES.set(imageUrl, URL.createObjectURL(blob)); } catch {}
 }
 // Repo path (decoded, no query) for a raw URL in bicipikay/ophelia, else null (external).
 function repoPathFromUrl(url) {
@@ -885,6 +897,86 @@ function AddTileModal({ open, onClose, tsId, dbTilesets, file, onFileChange,
   );
 }
 
+// ── Tileset export (zip). Read-only: it only GETs images and never touches the tileset, its tiles or the database. The plan, names, zip writer
+//    and bake geometry are pure and live in sensor_ui.js (SensorUI.planTilesetExport, zipStore, bakeLayout); this is the fetch + canvas side.
+//    Images keep their native size (size multipliers are never applied). Per-tile failures are collected, the export carries on.
+async function exportTilesetZip({ tsName, rows, opts, fetchBytes, onProgress }) {
+  const plan = SensorUI.planTilesetExport(rows, tsName);
+  const cache = new Map();
+  const loadImg = url => new Promise((resolve, reject) => { const im = new Image(); im.onload = () => resolve(im); im.onerror = () => reject(new Error('the image could not be decoded')); im.src = url; });
+  const load = row => {
+    if (!cache.has(row.id)) cache.set(row.id, (async () => {
+      const bytes = await fetchBytes(row.image_url);
+      const url = URL.createObjectURL(new Blob([bytes]));
+      try { return { bytes, img: await loadImg(url) }; } finally { URL.revokeObjectURL(url); } // a decoded Image does not need its blob URL any more
+    })());
+    return cache.get(row.id);
+  };
+  const toPng = cv => new Promise((resolve, reject) => cv.toBlob(b => (b ? resolve(b) : reject(new Error('the canvas could not be exported (tainted or empty)'))), 'image/png'))
+    .then(b => b.arrayBuffer()).then(a => new Uint8Array(a));
+  const newCanvas = (w, h) => { const cv = document.createElement('canvas'); cv.width = w; cv.height = h; const ctx = cv.getContext('2d'); ctx.imageSmoothingEnabled = false; return [cv, ctx]; };
+  // Native-size canvas of a derived (spin / flip of one tile) or composed (four quadrants) variant, or a real tile's own image.
+  const baseOf = async item => {
+    if (item.kind === 'real') { const { img } = await load(item.row); return { src: img, w: img.naturalWidth, h: img.naturalHeight }; }
+    if (item.kind === 'derived') {
+      const { img } = await load(item.sourceRows[0]);
+      const t = SensorUI.imageOps(SensorUI.exportImageOps(item.ops), img.naturalWidth, img.naturalHeight);
+      const [cv, ctx] = newCanvas(t.width, t.height);
+      ctx.setTransform(...t.matrix); ctx.drawImage(img, 0, 0);
+      return { src: cv, w: cv.width, h: cv.height };
+    }
+    const imgs = new Map();
+    for (const r of item.sourceRows) imgs.set(String(r.id), (await load(r)).img);
+    const first = imgs.values().next().value, W = first.naturalWidth || 100, H = first.naturalHeight || 100;
+    const [cv, ctx] = newCanvas(W, H);
+    for (const q of SensorUI.composePlan(item.recipe, W, H)) {
+      ctx.save();
+      ctx.beginPath(); ctx.rect(q.x, q.y, q.w, q.h); ctx.clip();
+      ctx.translate(W / 2, H / 2); ctx.rotate(q.steps * Math.PI / 2); if (q.flip) ctx.scale(-1, 1);
+      ctx.drawImage(imgs.get(q.sourceTileRef), -W / 2, -H / 2, W, H);
+      ctx.restore();
+    }
+    return { src: cv, w: W, h: H };
+  };
+  const files = [], records = [], failures = [];
+  let done = 0;
+  for (const item of plan.items) {
+    try {
+      const o = SensorUI.rowOffset(item.row);
+      const bakeOffset = !!opts.offsets && SensorUI.hasOffset(item.row), bakeShadow = !!opts.shadow && !!(item.row && item.row.auto_shadow);
+      let data;
+      if (item.kind === 'real' && !bakeOffset && !bakeShadow) data = (await load(item.row)).bytes; // untouched: the original file, byte for byte
+      else {
+        const base = await baseOf(item);
+        if (!bakeOffset && !bakeShadow) data = await toPng(base.src);
+        else {
+          const L = SensorUI.bakeLayout({ w: base.w, h: base.h, ox: o.ox, oy: o.oy, bakeOffset, bakeShadow });
+          const [cv, ctx] = newCanvas(L.width, L.height);
+          if (L.shadow) { // a black copy of the tile at 20% opacity, 30% of a cell lower
+            const [sc, sctx] = newCanvas(base.w, base.h);
+            sctx.drawImage(base.src, 0, 0); sctx.globalCompositeOperation = 'source-in'; sctx.fillStyle = '#000'; sctx.fillRect(0, 0, base.w, base.h);
+            ctx.globalAlpha = SensorUI.SHADOW_ALPHA; ctx.drawImage(sc, L.shadow.x, L.shadow.y); ctx.globalAlpha = 1;
+          }
+          ctx.drawImage(base.src, L.image.x, L.image.y);
+          data = await toPng(cv);
+        }
+      }
+      files.push({ name: item.path, data });
+      records.push(SensorUI.exportRecord(item, { offsets: bakeOffset, shadow: bakeShadow }));
+    } catch (e) {
+      failures.push({ name: item.path, error: (e && e.message) || String(e) });
+    }
+    done++;
+    onProgress({ done, total: plan.items.length, failures: failures.slice() });
+  }
+  if (opts.json) {
+    const doc = { tileset: tsName, exportedAt: new Date().toISOString(), note: 'Images are at their native size; size multipliers are recorded in sizeMultiplier but never applied. Offsets are percent of a cell.',
+      options: { bakeOffsets: !!opts.offsets, bakeShadow: !!opts.shadow }, tiles: records, failed: failures };
+    files.push({ name: `${plan.dir}/tiles.json`, data: new TextEncoder().encode(JSON.stringify(doc, null, 2)) });
+  }
+  return { zip: SensorUI.zipStore(files), count: records.length, failures, total: plan.items.length, name: `${plan.dir}.zip` };
+}
+
 // ── TilesetGearModal — defined OUTSIDE App so its component identity is stable.
 //    When defined inside App, React sees a new function type every render and
 //    unmounts+remounts the modal (losing input focus on every keystroke).
@@ -912,6 +1004,8 @@ function TilesetGearModal({
   const [profilesList,          setProfilesList]          = React.useState([]);
   const [profilesLoading,       setProfilesLoading]       = React.useState(false);
   const [linkRefresh,           setLinkRefresh]           = React.useState(null); // null | { busy, ok, text }
+  const [backfill,              setBackfill]              = React.useState(null); // null | { busy, plan?, ok?, text? }
+  const [exp,                   setExp]                   = React.useState(null); // null | { busy, rows?, opts, done, total, failures, text?, ok? }
 
   const tsData = (open && tsId) ? dbTilesets.find(ts => ts.id === tsId) : null;
 
@@ -949,6 +1043,75 @@ function TilesetGearModal({
     }
   };
 
+  // Backfill symbols: preview first (read-only), then apply. Only EMPTY symbols are ever written (the PATCH itself also filters symbol=is.null),
+  // sensor folders in one multi-row PATCH per (tileset, folder), plain tiles one PATCH per symbol and chunk of ids.
+  const previewBackfill = async () => {
+    if (!tsData) return;
+    setBackfill({ busy: true, text: 'Reading tiles…' });
+    try {
+      const token = await getValidToken();
+      const r = await workerFetch(`${WORKER_URL}/rest/v1/tiles?tileset_id=eq.${tsData.id}&select=id,tileset_id,codename,folder_key,sensor_code,symbol,sort_index`, { headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' } });
+      if (!r.ok) throw new Error('could not read the tiles');
+      setBackfill({ plan: MapSeed.planBackfill(await r.json()) });
+    } catch (e) { setBackfill({ ok: false, text: 'Failed: ' + e.message }); }
+  };
+  const applyBackfill = async () => {
+    const plan = backfill?.plan;
+    if (!plan || !plan.set.length) return;
+    setBackfill({ plan, busy: true, text: 'Writing…' });
+    try {
+      const token = await getValidToken();
+      const hdr = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' };
+      const stamp = { last_updated_at: new Date().toISOString(), last_updated_by: currentUser.id };
+      const calls = [], plainBySymbol = new Map();
+      for (const u of plan.set) {
+        if (u.sensor) calls.push({ q: `tileset_id=eq.${encodeURIComponent(u.tilesetId)}&folder_key=eq.${encodeURIComponent(u.folder)}&symbol=is.null`, symbol: u.symbol });
+        else { if (!plainBySymbol.has(u.symbol)) plainBySymbol.set(u.symbol, []); plainBySymbol.get(u.symbol).push(...u.ids); }
+      }
+      for (const [symbol, ids] of plainBySymbol) for (let i = 0; i < ids.length; i += 40) calls.push({ q: `id=in.(${ids.slice(i, i + 40).join(',')})&symbol=is.null`, symbol });
+      let failed = 0;
+      for (const c of calls) {
+        const pr = await workerFetch(`${WORKER_URL}/rest/v1/tiles?${c.q}`, { method: 'PATCH', headers: hdr, body: JSON.stringify({ symbol: c.symbol, ...stamp }) });
+        if (!pr.ok) failed++;
+      }
+      if (onTsFetchTrigger) onTsFetchTrigger();
+      setBackfill({ ok: failed === 0, text: failed ? `${failed} of ${calls.length} updates failed` : `✓ ${plan.set.length} symbol${plan.set.length === 1 ? '' : 's'} set` });
+    } catch (e) { setBackfill({ ok: false, text: 'Failed: ' + e.message }); }
+  };
+
+  // Export tileset (zip): read-only. The rows come from the loaded cache or one GET; images are fetched one at a time.
+  const openExport = async () => {
+    if (!tsData) return;
+    setExp({ busy: true, text: 'Reading tiles…', opts: { offsets: false, shadow: false, json: true }, failures: [] });
+    try {
+      let rows = dbTilesByTsId?.[tsData.id];
+      if (!rows) {
+        const token = await getValidToken();
+        const r = await workerFetch(`${WORKER_URL}/rest/v1/tiles?tileset_id=eq.${tsData.id}&select=*`, { headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' } });
+        if (!r.ok) throw new Error('could not read the tiles');
+        rows = await r.json();
+      }
+      setExp({ rows, opts: { offsets: rows.some(SensorUI.hasOffset), shadow: rows.some(x => x.auto_shadow), json: true }, failures: [] });
+    } catch (e) { setExp({ ok: false, text: 'Failed: ' + e.message, failures: [] }); }
+  };
+  const runExport = async () => {
+    if (!exp?.rows || exp.busy) return;
+    const { rows, opts } = exp;
+    setExp(x => ({ ...x, busy: true, done: 0, total: 0, failures: [], text: 'Exporting…', ok: undefined }));
+    try {
+      const res = await exportTilesetZip({
+        tsName: tsData.name, rows, opts,
+        fetchBytes: async url => { const r = await fetch(url, { cache: 'no-store' }); if (!r.ok) throw new Error('download failed (' + r.status + ')'); return new Uint8Array(await r.arrayBuffer()); },
+        onProgress: p => setExp(x => ({ ...x, ...p })),
+      });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([res.zip], { type: 'application/zip' })); a.download = res.name;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+      setExp(x => ({ ...x, busy: false, ok: res.failures.length === 0, failures: res.failures, text: `${res.count} of ${res.total} files exported${res.failures.length ? `, ${res.failures.length} failed` : ''}` }));
+    } catch (e) { setExp(x => ({ ...x, busy: false, ok: false, text: 'Failed: ' + e.message })); }
+  };
+
   // Tile count for the delete button: from the loaded cache, else one id-only read (no cascade delete exists).
   const [fetchedTileCount, setFetchedTileCount] = React.useState(null);
   const cachedTileRows = tsId ? dbTilesByTsId?.[tsId] : undefined;
@@ -981,6 +1144,7 @@ function TilesetGearModal({
     setDeleteConfirm(false);
     setDeleteBusy(false);
     setDeleteError(null);
+    setExp(null); setBackfill(null);
     setBgSaveStatus(null);
     setTransferStatus(null);
     setTransferTargetId(null);
@@ -1307,6 +1471,45 @@ function TilesetGearModal({
               {linkRefresh && <span style={{ fontSize: 10, color: linkRefresh.busy ? C.muted : linkRefresh.ok ? '#4ade80' : C.danger }}>{linkRefresh.text}</span>}
             </div>
           )}
+          {/* Export tileset (zip) — read-only */}
+          <div data-export style={{ borderTop: `1px solid ${C.border}`, paddingTop: 8, display: "flex", flexDirection: "column", gap: 4 }}>
+            <button data-export-open disabled={!!exp?.busy} style={{ ...btn(false, C.accent, C.accentDim), justifyContent: "center", fontSize: 11, width: "100%" }}
+              title="Downloads every tile image (and every derived / composed sensor variant) in a .zip. Changes nothing." onClick={openExport}>📦 Export tileset (zip)</button>
+            {exp?.rows && (
+              <div data-export-options style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 11, color: C.text }}>
+                {[['offsets', 'Bake offsets into images (can change how sensor quadrants split)'], ['shadow', 'Bake auto-shadow'], ['json', 'Include tiles.json']].map(([k, label]) => (
+                  <label key={k} style={{ display: "flex", alignItems: "flex-start", gap: 6, cursor: "pointer" }}>
+                    <input type="checkbox" data-export-opt={k} checked={!!exp.opts[k]} disabled={!!exp.busy} onChange={e => setExp(x => ({ ...x, opts: { ...x.opts, [k]: e.target.checked } }))} style={{ marginTop: 2 }} />
+                    <span>{label}</span>
+                  </label>
+                ))}
+                <button data-export-run disabled={!!exp.busy} style={{ ...btn(true, C.accent, C.accentDim), justifyContent: "center", fontSize: 11 }} onClick={runExport}>{exp.busy ? 'Exporting…' : 'Build zip'}</button>
+              </div>
+            )}
+            {exp?.busy && exp.total > 0 && <span data-export-progress style={{ fontSize: 10, color: C.muted }}>{exp.done}/{exp.total}</span>}
+            {exp?.text && <span data-export-status style={{ fontSize: 10, color: exp.busy ? C.muted : exp.ok ? '#4ade80' : C.danger }}>{exp.text}</span>}
+            {exp?.failures?.length > 0 && <div data-export-failures style={{ fontSize: 10, color: '#fbbf24', maxHeight: 100, overflowY: "auto" }}>{exp.failures.map(f => <div key={f.name}>{f.name}: {f.error}</div>)}</div>}
+          </div>
+          {/* Backfill symbols from codenames — owners/admins; only empty symbols, never overwrites */}
+          {canManage && (
+            <div data-backfill style={{ borderTop: `1px solid ${C.border}`, paddingTop: 8, display: "flex", flexDirection: "column", gap: 4 }}>
+              <button data-backfill-symbols disabled={!!backfill?.busy}
+                title="Fills the empty symbols from the codenames (and sensor folder names). Symbols that are already set are never changed."
+                style={{ ...btn(false, '#fbbf24', 'rgba(251,191,36,0.1)'), justifyContent: "center", fontSize: 11, width: "100%" }}
+                onClick={previewBackfill}>
+                🔤 Backfill symbols
+              </button>
+              {backfill?.text && <span style={{ fontSize: 10, color: backfill.busy ? C.muted : backfill.ok ? '#4ade80' : C.danger }}>{backfill.text}</span>}
+              {backfill?.plan && (
+                <div data-backfill-preview style={{ fontSize: 11, color: C.text, display: "flex", flexDirection: "column", gap: 4 }}>
+                  <span data-backfill-summary>will set {backfill.plan.set.reduce((n, u) => n + u.ids.length, 0)}, cannot decide {backfill.plan.undecided.reduce((n, u) => n + u.ids.length, 0)}{backfill.plan.kept ? ` (${backfill.plan.kept} already have a symbol)` : ''}</span>
+                  {backfill.plan.set.length > 0 && <div style={{ fontSize: 10, color: C.muted, maxHeight: 90, overflowY: "auto" }}>{backfill.plan.set.map(u => `${u.folder ?? u.codenames[0]} → ${u.symbol}`).join(', ')}</div>}
+                  {backfill.plan.undecided.length > 0 && <div data-backfill-undecided style={{ fontSize: 10, color: '#fbbf24', maxHeight: 90, overflowY: "auto" }}>Cannot decide: {backfill.plan.undecided.map(u => u.folder ?? u.codenames[0]).join(', ')}</div>}
+                  <button data-backfill-apply disabled={!backfill.plan.set.length || !!backfill.busy} style={{ ...btn(true, C.accent, C.accentDim), justifyContent: "center", fontSize: 11, opacity: backfill.plan.set.length ? 1 : 0.45 }} onClick={applyBackfill}>Apply</button>
+                </div>
+              )}
+            </div>
+          )}
           {bulkOpen && canManage && (
             <BulkRenameModal tsData={tsData} dbTilesByTsId={dbTilesByTsId || {}} currentUser={currentUser}
               getValidToken={getValidToken} workerFetch={workerFetch}
@@ -1340,6 +1543,21 @@ function TilesetGearModal({
 }
 
 // ── Main App ───────────────────────────────────────────────────────────
+// Where a tile image sits in its cell. A tile with no size multiplier and no offset is a BASE GRID tile: its left edge is snapped to a whole pixel and its
+// size is the larger of the cell's snapped width and height, so neighbours share their edges (or overlap by under a pixel, hidden under the next tile in
+// paint order) instead of leaving a thin dark seam from two half-covered pixels at a fractional zoom. The vertical centre is chosen so a square image's top
+// edge is a whole pixel too. The tile is drawn through a transform (translateY(-50%)), and a transformed layer is not pixel-snapped by the browser, so
+// when the cell size is fractional it also overlaps its right and bottom neighbours by 1px (hidden under them: later in paint order), which leaves no pixel
+// half-covered by two tiles. Tiles with a multiplier or an offset keep their exact, unsnapped position.
+function tileBox(r, c, cellPx, mult, ox, oy) {
+  if (mult === 1 && ox === 0 && oy === 0) {
+    const left = Math.round(c * cellPx), top = Math.round((r + 1) * cellPx);
+    const w = Math.max(Math.round((c + 1) * cellPx) - left, Math.round((r + 2) * cellPx) - top) + (Number.isInteger(cellPx) ? 0 : 1);
+    return { left, top: top + w / 2, width: w };
+  }
+  return { left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult };
+}
+
 // ── Fit-to-viewport zoom ───────────────────────────────────────────────
 function calcFitZoom(gw, gh) {
   const gridW = gw || GRID_W, gridH = gh || GRID_H;
@@ -1451,6 +1669,7 @@ function InfoModalBody(props) {
   const [sensorCodeInput,   setSensorCodeInput]   = React.useState(t.sensorCode ?? '');
   const [sensorRollInput,   setSensorRollInput]   = React.useState(t.sensorRoll != null ? String(t.sensorRoll) : '1');
   const [symbolInput,       setSymbolInput]       = React.useState(t.symbol ?? '');
+  const [symbolTouched,     setSymbolTouched]     = React.useState(false); // the user typed in the symbol field: the codename autofill never runs
   const [sensorError,       setSensorError]       = React.useState(null);
     // Raw DB row for this tile (image_url, sensor_code ...). The file name is parsed from image_url before the '?'.
     const dbRow = t.isDb ? (dbTilesByTsId[t.tilesetId] ?? []).find(r => r.id === t.dbId) : null;
@@ -1470,6 +1689,7 @@ function InfoModalBody(props) {
     setSensorCodeInput(t.sensorCode ?? '');
     setSensorRollInput(t.sensorRoll != null ? String(t.sensorRoll) : '1');
     setSymbolInput(t.symbol ?? '');
+    setSymbolTouched(false);
     setFileNameInput(currentFileName);
   }, [t.dbId]);
   // Sensor fields: parsed values, edit state against the DB value, and whether this tile belongs to a sensor group
@@ -1622,12 +1842,14 @@ function InfoModalBody(props) {
         commitMessage: `[${currentUser.username}] Replace tile: ${filePath.slice('Resources/'.length)}`,
       });
       const newUrl = rawUrl(filePath);
+      keepUploadedImage(newUrl, file); // shown from the uploaded bytes at once (see SESSION_IMAGES)
       const patchResp = await workerFetch(`${WORKER_URL}/rest/v1/tiles?id=eq.${tile.dbId}`, {
         method: 'PATCH',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
         body: JSON.stringify({ image_url: newUrl, last_updated_at: new Date().toISOString(), last_updated_by: currentUser.id }), // newUrl carries a fresh ?v=
       });
       if (!patchResp.ok) throw new Error('DB patch failed');
+      setDbTilesByTsId(prev => (prev[tile.tilesetId] ? { ...prev, [tile.tilesetId]: prev[tile.tilesetId].map(row => (row.id === tile.dbId ? { ...row, image_url: newUrl } : row)) } : prev)); // the in-memory tile is rebuilt now, not after the refetch
       URL.revokeObjectURL(previewUrl);
       setReplaceImgPending(null);
       setTsFetchTrigger(n => n + 1);
@@ -1701,10 +1923,11 @@ function InfoModalBody(props) {
           sort_index: sortIndexInput !== '' ? parseInt(sortIndexInput, 10) : null,
           sensor_code: codeParsed.value,
           sensor_roll: rollParsed.value ?? 1,
-          symbol: symParsed.value,
+          symbol: symParsed.value ?? MapSeed.autoSymbol(inSensorGroup && folderKeyInput.trim() ? folderKeyInput.trim() : (codenameInput.trim() || t.codename), symbolInput, symbolTouched),
           last_updated_at: new Date().toISOString(),
           last_updated_by: currentUser.id,
         };
+        if (body.symbol && !symParsed.value) setSymbolInput(body.symbol);
         let moved = null;
         if (currentPath && fileNameInput !== currentFileName) {
           // Validate and refuse collisions before touching anything.
@@ -1883,16 +2106,6 @@ function InfoModalBody(props) {
         </label>
         <FlagDesc id="starred" />
 
-        {/* Duplicate tile (editors): a COPY with its own image file in this tileset (owner / admin), or a local upload (max 256px) */}
-        <div data-duplicate style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-            <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Duplicate tile</span>
-            {canEditDb && <button data-duplicate-tileset disabled={dupBusy} style={{ ...btn(false), fontSize: 11, opacity: dupBusy ? 0.5 : 1 }} onClick={dupToTileset} title="Adds a copy of this tile (with its own image file) to this tileset">This tileset</button>}
-            <button data-duplicate-local disabled={dupBusy} style={{ ...btn(false), fontSize: 11, opacity: dupBusy ? 0.5 : 1 }} onClick={dupToLocal} title="Adds a copy to your local uploads (kept in this browser, image scaled to 256px)">Local uploads</button>
-          </div>
-          {dupMsg && <span data-duplicate-msg style={{ fontSize: 11, color: dupMsg.ok ? "#4ade80" : C.danger, wordBreak: "break-word" }}>{dupMsg.text}</span>}
-        </div>
-
         {/* Codename — pre-filled from DB for DB tiles; editable for owners/admins */}
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>codename</span>
@@ -1900,7 +2113,11 @@ function InfoModalBody(props) {
             readOnly={t.isDb && !canEditDb}
             onChange={e => { if (!t.isDb) setCodenameInput(e.target.value); else if (canEditDb) setCodenameInput(e.target.value); }}
             onBlur={() => {
-              if (t.isDb) return;
+              if (t.isDb) { // empty, untouched symbol field: take the symbol the codename (or, in a sensor folder, the folder name) stands for
+                const auto = canEditDb ? MapSeed.autoSymbol(inSensorGroup && folderKeyInput.trim() ? folderKeyInput.trim() : codenameInput.trim(), symbolInput, symbolTouched) : null;
+                if (auto) setSymbolInput(auto);
+                return;
+              }
               if (codenameInput === '') {
                 setTileNames(prev => { const n = { ...prev }; delete n[t.ref]; return n; });
               } else {
@@ -2032,7 +2249,7 @@ function InfoModalBody(props) {
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>symbol{groupNote}</span>
                 <input data-symbol value={symbolInput} readOnly={!canEditDb} maxLength={2}
-                  onChange={e => { if (canEditDb) setSymbolInput([...e.target.value].slice(-1)[0] ?? ''); }}
+                  onChange={e => { if (canEditDb) { setSymbolTouched(true); setSymbolInput([...e.target.value].slice(-1)[0] ?? ''); } }}
                   placeholder={SensorUI.suggestSymbol(tiles.filter(x => x.tilesetId === t.tilesetId), MapSeed.tableSymbols()) ?? "-"}
                   style={{ width: 40, textAlign: "center", background: !canEditDb ? "transparent" : "rgba(180,40,40,0.09)", border: `1px solid ${!SensorUI.parseSymbolInput(symbolInput).ok ? C.danger : (symbolInput.trim() || null) === (t.symbol ?? null) ? "#4ade80" : "#f97316"}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none" }} />
                 <button data-symbol-dict-open onClick={openSymbolDict} title="Symbol dictionary" style={{ ...btn(false), padding: "2px 6px", fontSize: 12 }}>📖</button>
@@ -2223,7 +2440,7 @@ function InfoModalBody(props) {
               🔃 Spin / flip image
             </button>
             {spinFlipOpen && <SpinFlipImageModal tile={t} getValidToken={getValidToken} workerFetch={workerFetch} currentUser={currentUser} btn={btn}
-              onClose={() => setSpinFlipOpen(false)} onApplied={() => { setSpinFlipOpen(false); setTsFetchTrigger(n => n + 1); setInfoTile(null); }} />}
+              onClose={() => setSpinFlipOpen(false)} onApplied={newUrl => { setSpinFlipOpen(false); setDbTilesByTsId(prev => (prev[t.tilesetId] ? { ...prev, [t.tilesetId]: prev[t.tilesetId].map(row => (row.id === t.dbId ? { ...row, image_url: newUrl } : row)) } : prev)); setTsFetchTrigger(n => n + 1); setInfoTile(null); }} />}
           </>
         )}
 
@@ -2260,7 +2477,7 @@ function InfoModalBody(props) {
                 <div style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 10, padding: '20px 24px', minWidth: 280, maxWidth: 380, display: 'flex', flexDirection: 'column', gap: 14 }}>
                   <span style={{ fontWeight: 700, fontSize: 14, color: C.accentBright }}>Replace Image</span>
                   <div style={{ display: 'flex', gap: 12 }}>
-                    {[{ label: 'Current', src: replaceImgPending.tile.src }, { label: 'New', src: replaceImgPending.previewUrl }].map(({ label, src }) => (
+                    {[{ label: 'Current', src: replaceImgPending.tile.blobSrc ?? replaceImgPending.tile.src }, { label: 'New', src: replaceImgPending.previewUrl }].map(({ label, src }) => (
                       <div key={label} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
                         <span style={{ fontSize: 10, color: C.muted }}>{label}</span>
                         <div className="tile-img-checker" style={{ width: 32, height: 32 }}>
@@ -2356,6 +2573,17 @@ function InfoModalBody(props) {
         ) : t.isDefault ? (
           <p style={{ fontSize: 11, color: C.muted, textAlign: "center" }}>Default tile — cannot be deleted.</p>
         ) : null}
+
+        {/* Duplicate tile — at the bottom of the modal (editors): a COPY with its own image file in this tileset (owner / admin), or a local upload (max 256px) */}
+        <div data-duplicate style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Duplicate tile</span>
+            {canEditDb && <button data-duplicate-tileset disabled={dupBusy} style={{ ...btn(false), fontSize: 11, opacity: dupBusy ? 0.5 : 1 }} onClick={dupToTileset} title="Adds a copy of this tile (with its own image file) to this tileset">This tileset</button>}
+            <button data-duplicate-local disabled={dupBusy} style={{ ...btn(false), fontSize: 11, opacity: dupBusy ? 0.5 : 1 }} onClick={dupToLocal} title="Adds a copy to your local uploads (kept in this browser, image scaled to 256px)">Local uploads</button>
+          </div>
+          {dupMsg && <span data-duplicate-msg style={{ fontSize: 11, color: dupMsg.ok ? "#4ade80" : C.danger, wordBreak: "break-word" }}>{dupMsg.text}</span>}
+        </div>
+
       </div>
     </div>
   );
@@ -2406,7 +2634,7 @@ function TileThumb({ tile, light, onError, imgStyle }) {
   if (tile && tile.isSensor && tile.sensorFolder) {
     const prev = SensorUI.folderPreviewTiles(tile.sensorFolder);
     return (
-      <div data-folder-thumb style={{ width: "100%", height: "100%", display: "grid", gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr", gap: 1 }}>
+      <div data-folder-thumb style={{ width: "100%", height: "100%", display: "grid", gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr", gap: 0 }}>
         {[0, 1, 2, 3].map(i => (
           <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", background: C.panelDeep, minWidth: 0, minHeight: 0 }}>
             {prev[i] && <img src={prev[i].blobSrc ?? prev[i].src} alt="" className={light ? "tile-img-checker" : undefined} style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated" }} />}
@@ -2433,7 +2661,8 @@ function SpinFlipImageModal({ tile, getValidToken, workerFetch, currentUser, btn
     let dead = false, objUrl = null;
     (async () => {
       try {
-        const resp = await fetch(SensorUI.withFreshVersion(tile.src, Date.now()), { mode: "cors", cache: "no-store" });
+        // the editor's own last upload when there is one (the CDN may still hold the previous file), else the current file
+        const resp = await fetch(tile.blobSrc ? tile.blobSrc : SensorUI.withFreshVersion(tile.src, nextVersionStamp()), { mode: "cors", cache: "no-store" });
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         objUrl = URL.createObjectURL(await resp.blob());
         const im = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error("the image could not be decoded")); i.src = objUrl; });
@@ -2474,13 +2703,15 @@ function SpinFlipImageModal({ tile, getValidToken, workerFetch, currentUser, btn
         filePath, contentBase64: await fileToBase64(blob), overwrite: true,
         commitMessage: `[${currentUser.username}] Spin/flip tile image: ${filePath.slice("Resources/".length)}`,
       });
+      const newUrl = rawUrl(filePath);
+      keepUploadedImage(newUrl, blob);
       const patchResp = await workerFetch(`${WORKER_URL}/rest/v1/tiles?id=eq.${tile.dbId}`, {
         method: "PATCH",
         headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json", "Prefer": "return=minimal" },
-        body: JSON.stringify({ image_url: rawUrl(filePath), last_updated_at: new Date().toISOString(), last_updated_by: currentUser.id }),
+        body: JSON.stringify({ image_url: newUrl, last_updated_at: new Date().toISOString(), last_updated_by: currentUser.id }),
       });
       if (!patchResp.ok) throw new Error("The image was uploaded but the database update failed (press Apply again to retry the link update)");
-      onApplied();
+      onApplied(newUrl);
     } catch (e) {
       setError(/tainted|SecurityError/i.test(String(e && (e.name + e.message))) ? "The canvas is tainted by a cross-origin image, so the result cannot be read. Nothing was changed." : "Failed: " + e.message);
     } finally { setBusy(false); }
@@ -2563,7 +2794,9 @@ function SensorWarningModal({ folder, onClose }) {
 function SensorSimulationPanel({ folder, candidates, requestComposed, reroll = 0, onReroll, onClose }) {
   const [bits, setBits] = useState(() => Array(8).fill(false));
   const seed = 0; // fixed preview position; "Roll again" changes the folder's reroll seed, the same one the map uses
-  const [hoverQ, setHoverQ] = useState(null); // quadrant (0 TL, 1 TR, 2 BR, 3 BL) hovered in the composed breakdown
+  const [hoverQ, setHoverQ] = useState(null); // quadrant (0 TL, 1 TR, 2 BR, 3 BL) hovered in the composed breakdown (desktop extra)
+  const [selQ, setSelQ] = useState(null);   // quadrant chosen with a line's "show" button: stays highlighted until another is chosen or it is tapped again
+  const shownQ = hoverQ != null ? hoverQ : selQ;
   const [pickedFallback, setPickedFallback] = useState(false); // the fallback row of an exact-mode folder was clicked
   const engine = useMemo(() => SensorUI.engineFolder(folder), [folder]);
   const code = bits.map(b => (b ? "1" : "0")).join("");
@@ -2611,7 +2844,7 @@ function SensorSimulationPanel({ folder, candidates, requestComposed, reroll = 0
           <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 150 }}>
             <div data-testid="sim-chosen" style={{ position: "relative", width: 96, height: 96, borderRadius: 8, background: C.panelDeep, border: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
               {vis && vis.src ? <img src={vis.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", transform: vis.css || undefined }} /> : <span style={{ fontSize: 22 }}>{res ? "…" : "⚠️"}</span>}
-              {hoverQ != null && <div data-quad-highlight={SensorEngine.QUAD_NAMES[hoverQ]} style={{ position: "absolute", width: "50%", height: "50%", left: hoverQ === 1 || hoverQ === 2 ? "50%" : 0, top: hoverQ >= 2 ? "50%" : 0, border: `2px solid ${SENSOR_YELLOW}`, background: "rgba(245,197,24,0.28)", boxSizing: "border-box", pointerEvents: "none" }} />}
+              {shownQ != null && <div data-quad-highlight={SensorEngine.QUAD_NAMES[shownQ]} style={{ position: "absolute", width: "50%", height: "50%", left: shownQ === 1 || shownQ === 2 ? "50%" : 0, top: shownQ >= 2 ? "50%" : 0, border: `2px solid ${SENSOR_YELLOW}`, background: "rgba(245,197,24,0.28)", boxSizing: "border-box", pointerEvents: "none" }} />}
             </div>
             <div style={{ fontSize: 11, color: C.text }}>
               <b>Chosen variant:</b>{" "}
@@ -2625,8 +2858,12 @@ function SensorSimulationPanel({ folder, candidates, requestComposed, reroll = 0
             {lines.length > 0 && (
               <div data-testid="sim-breakdown" style={{ display: "flex", flexDirection: "column", gap: 2, maxWidth: 260 }}>
                 {lines.map(l => (
-                  <div key={l.quadrant} data-quad-line={l.label} onMouseEnter={() => setHoverQ(l.quadrant)} onMouseLeave={() => setHoverQ(null)} onClick={() => setHoverQ(q => (q === l.quadrant ? null : l.quadrant))}
-                    style={{ fontSize: 10, fontFamily: "monospace", color: hoverQ === l.quadrant ? SENSOR_YELLOW : C.muted, cursor: "default", padding: "1px 3px", borderRadius: 3, background: hoverQ === l.quadrant ? "rgba(245,197,24,0.12)" : "transparent" }}>{l.text}</div>
+                  <div key={l.quadrant} data-quad-line={l.label} onMouseEnter={() => setHoverQ(l.quadrant)} onMouseLeave={() => setHoverQ(null)}
+                    style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, fontFamily: "monospace", color: shownQ === l.quadrant ? SENSOR_YELLOW : C.muted, cursor: "default", padding: "1px 3px", borderRadius: 3, background: shownQ === l.quadrant ? "rgba(245,197,24,0.12)" : "transparent" }}>
+                    <button data-quad-show={l.label} aria-pressed={selQ === l.quadrant} title={`Highlight the ${l.label} quarter on the preview`} onClick={() => setSelQ(q => (q === l.quadrant ? null : l.quadrant))}
+                      style={{ ...sensorBtnStyle(), padding: "0 6px", fontSize: 9, minHeight: 18, flexShrink: 0, ...(selQ === l.quadrant ? { background: "rgba(245,197,24,0.35)" } : {}) }}>show</button>
+                    <span>{l.text}</span>
+                  </div>
                 ))}
               </div>
             )}
@@ -2699,6 +2936,7 @@ function App() {
   const [currentUser, setCurrentUser] = useState(() => { try { return JSON.parse(localStorage.getItem('oph_user')); } catch { return null; } });
   const [authChecked, setAuthChecked] = useState(false); // true once Firebase auth state has been checked
   const [realProfile, setUserProfile] = useState(null); // { role, ... } fetched from Supabase: the REAL role
+  const [profileSettled, setProfileSettled] = useState(false); // the first profile request has finished (answered, failed, or there is nobody to ask for)
   // "Preview as user (UI only)": creators and admins can make the UI behave as a plain user. Persisted locally. It only changes what the UI
   // shows (userProfile below); requests, tokens and the real profile are never touched.
   const [previewAsUser, setPreviewAsUser] = useState(() => { try { return localStorage.getItem("oph_preview_as_user") === "1"; } catch { return false; } });
@@ -3008,6 +3246,7 @@ function App() {
   // Holds the decoded {palette, grid} between component init and tile-load resolution.
   // Must be declared before the grid useState so the init function can write to it.
   const pendingGridLoadRef = useRef(null);
+  const protectSavedMapRef = useRef(false); // true while the saved map must stay untouched in storage (its tileset was not available)
   const [grid,        setGridRaw]   = useState(() => {
     const gW = load(SK.gridW, GRID_W), gH = load(SK.gridH, GRID_H);
     const empty = Array.from({ length: gH }, () => Array(gW).fill(null));
@@ -3358,6 +3597,10 @@ function App() {
   // Save: v2 format, palette compacted for export only.
   useEffect(() => {
     if (pendingGridLoadRef.current) return; // load in progress — don't overwrite the saved palette
+    if (protectSavedMapRef.current) { // the saved tileset was not available: its map stays in storage until the first edit
+      if (!grid.some(row => row.some(c => c != null)) && grid.length === load(SK.gridH, GRID_H) && (grid[0] || []).length === load(SK.gridW, GRID_W)) return;
+      protectSavedMapRef.current = false;
+    }
     save(SK.grid, encodeForStorage(paletteRef.current, grid));
   }, [grid, palette]);
   useEffect(() => { save(SK.multipliers,  tileMultipliers); }, [tileMultipliers]);
@@ -4289,6 +4532,9 @@ function App() {
       setTilesLoading(false);
       return;
     }
+    // Hidden (unpublished) tilesets are only listed for their owner and admins, which depends on the signed-in session AND the profile role.
+    // Asking earlier returns a list without the user's own hidden tileset and the app would fall back to the default one (and save that choice).
+    if (currentUser?.firebaseToken && !profileSettled) return;
 
     (async () => {
       const isAdmin = realProfile?.role === 'admin'; // the request always uses the REAL role; preview filters the result below
@@ -4332,7 +4578,18 @@ function App() {
         const saved = load(SK.activeTileset, null);
         const published = tilesets.filter(ts => ts.is_published);
         const mostRecent = (published.find(ts => ts.seed_id === 0) ?? [...published].sort((a, b) => a.name.localeCompare(b.name))[0] ?? tilesets[0])?.name ?? null;
-        const name = (saved && tilesets.some(ts => ts.name === saved)) ? saved : mostRecent;
+        const savedMissing = !!saved && !tilesets.some(ts => ts.name === saved);
+        const name = savedMissing ? mostRecent : saved && tilesets.some(ts => ts.name === saved) ? saved : mostRecent;
+        if (savedMissing && name) {
+          // The saved tileset is genuinely not in the list (session, profile and list are all loaded by now): fall back, take the NEW tileset's own
+          // background (the saved colours belong to the old one), and leave the saved map alone: it is neither converted to the fallback tileset nor
+          // overwritten until the user edits the map.
+          protectSavedMapRef.current = !!pendingGridLoadRef.current;
+          pendingGridLoadRef.current = null;
+          const bgNew = tilesetBg(tilesets.find(ts => ts.name === name));
+          applyBgPreset(name, bgNew.bg1, bgNew.bg2);
+          setInfoNotice(`Your saved map uses the tileset "${saved}", which is not available to you (it may be hidden or removed). Showing "${name}". Your saved map was kept as it is.`);
+        }
         setActiveTileset(name);
 
         // Pre-fetch tiles for the active tileset before unblocking grid resolution,
@@ -4400,7 +4657,7 @@ function App() {
         setTilesLoading(false);
       }
     })();
-  }, [currentUser?.id, tsFetchTrigger, realProfile?.role, previewActive, isAuthenticated]);
+  }, [currentUser?.id, tsFetchTrigger, realProfile?.role, previewActive, isAuthenticated, profileSettled]);
 
   // On-demand tile loading: fetch tiles for the active tileset if not yet cached
   useEffect(() => {
@@ -4430,7 +4687,7 @@ function App() {
 
   // Fetch user profile (role) from Supabase when logged in
   useEffect(() => {
-    if (!currentUser?.firebaseToken || !currentUser?.id) { setUserProfile(null); return; }
+    if (!currentUser?.firebaseToken || !currentUser?.id) { setUserProfile(null); setProfileSettled(true); return; }
     (async () => {
       const token = await getValidToken();
       workerFetch(`${WORKER_URL}/rest/v1/profiles?id=eq.${currentUser.id}&select=id,username,avatar_hash,role,theme`, {
@@ -4438,6 +4695,7 @@ function App() {
       }).then(r => r.ok ? r.json() : []).then(rows => {
         const profile = rows[0] ?? null;
         setUserProfile(profile);
+        setProfileSettled(true);
         // Apply stored theme from DB (issue 14)
         if (profile?.theme && profile.theme !== 'auto') {
           setAutoTheme(false);
@@ -4445,7 +4703,7 @@ function App() {
         } else if (profile?.theme === 'auto') {
           setAutoTheme(true);
         }
-      }).catch(() => setUserProfile(null));
+      }).catch(() => { setUserProfile(null); setProfileSettled(true); });
     })();
   }, [currentUser]);
 
@@ -6002,7 +6260,17 @@ function App() {
   const buildSeed = () => {
     const ts = dbTilesets.find(t => t.name === activeTileset);
     if (!ts || !Number.isInteger(ts.seed_id)) return { error: "Seeds need a loaded tileset with a seed_id." };
-    const sym = MapSeed.symbolizeGrid(grid, palette.refs, seedSymbolOf);
+    // Tie-pick selector: when a symbol had more than one candidate (the chooser's list: this tileset's tiles, then the global ones), the
+    // entry records which one the map uses (map_seed.js, "S.x"). Candidates are computed once per symbol.
+    const rows = dbTilesByTsIdRef.current[ts.id];
+    const tsIndex = rows ? MapSeed.indexBySymbol(seedTilesetEntries(ts, rows)) : new Map(), glIndex = MapSeed.indexBySymbol(seedGlobalEntries());
+    const candCache = new Map();
+    const selectorOf = (ref, symbol) => {
+      if (ref === WARN_REF || ref === SPACE_REF) return null;
+      if (!candCache.has(symbol)) candCache.set(symbol, MapSeed.resolveSymbols([symbol], tsIndex, glIndex)[0].candidates);
+      return MapSeed.selectorFor(candCache.get(symbol), ref);
+    };
+    const sym = MapSeed.symbolizeGrid(grid, palette.refs, seedSymbolOf, selectorOf);
     try {
       const magnet = MapSeed.magnetFromApp(gridW, gridH, customCenter, customCenterSize);
       return { enc: MapSeed.encode({ w: gridW, h: gridH, grid: sym.grid, magnet, tileset: ts.seed_id }), blanks: sym.blanks };
@@ -6068,7 +6336,7 @@ function App() {
   // the global tileset and the two special tiles can end up in the palette (never two tilesets).
   const applySeed = (dec, r, choices) => {
     const chosen = new Map();
-    r.resolved.forEach(x => chosen.set(x.symbol, !x.candidates.length ? null : !x.ask ? x.candidates[0].ref : (choices[x.symbol] ?? x.candidates[0].ref)));
+    r.resolved.forEach(x => chosen.set(x.key, !x.candidates.length ? null : x.pick ? x.pick.ref : !x.ask ? x.candidates[0].ref : (choices[x.key] ?? x.candidates[0].ref)));
     const { grid: g, refs, missing } = MapSeed.gridToRefs(dec.grid, chosen);
     const pal = { refs };
     const w = dec.size.w, h = dec.size.h;
@@ -6098,7 +6366,7 @@ function App() {
     setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set();
     setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set();
     applyZoom(calcFitZoom(w, h));
-    const unknown = r.resolved.filter(x => !x.candidates.length).map(x => x.symbol);
+    const unknown = r.resolved.filter(x => !x.candidates.length).map(x => x.key);
     const parts = [];
     if (r.fallback) parts.push(`tileset not found, showing ${r.target.name}`);
     if (unknown.length) parts.push(`${unknown.length} symbol${unknown.length > 1 ? "s" : ""} (${unknown.join(" ")}) matched no tile, ${missing} cell${missing === 1 ? "" : "s"} left blank`);
@@ -6117,7 +6385,7 @@ function App() {
     const nonEmpty = gridRef.current.some(row => row.some(c => c != null));
     if (!ambiguous.length && !nonEmpty) { applySeed(dec, r, {}); return; }
     // the lowest sortIndex is preselected, so Enter accepts
-    setSeedModal({ dec, r, choices: Object.fromEntries(ambiguous.map(x => [x.symbol, x.candidates[0].ref])), nonEmpty });
+    setSeedModal({ dec, r, choices: Object.fromEntries(ambiguous.map(x => [x.key, x.candidates[0].ref])), nonEmpty });
   };
   // Share link: read #seed=... once signed in, tilesets loaded and a saved map (if any) resolved; then clear the fragment.
   useEffect(() => {
@@ -6368,6 +6636,9 @@ function App() {
     border:    `1px solid ${active ? color : "rgba(255,255,255,0.1)"}`,
     transition: "all 0.12s", flexShrink: 0,
   });
+  // Tools panel buttons: on a phone the panel is narrow, so a button with two long words (Block Overwrite, Offset Centers ...) may wrap to two lines
+  // instead of running past the edge.
+  const toolBtn = (...a) => ({ ...btn(...a), ...(isMobile ? { flexShrink: 1, maxWidth: "100%", boxSizing: "border-box", lineHeight: 1.25, textAlign: "center" } : {}) });
 
   const inputStyle = {
     background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`,
@@ -6736,7 +7007,7 @@ function App() {
       convert: { label: "Convert", icon: "🔄", color: C.soft, desc: "Remaps tiles on the board from one tileset to another by matching tile names. Tiles with no equivalent in the target tileset are left as-is.", iconColor: null },
       magnet: { label: "Magnet", icon: "🧲", color: "#2563eb", desc: "Sets a custom mirror origin for the map. All mirroring axes (H, V, D) pivot around this point instead of the true map centre. Click any cell on the canvas to place the origin. Use the size dropdown on the card to choose a 1×1 or 2×2 centre zone. Useful for asymmetric or experimental Showdown layouts.", iconColor: null },
       tileCounter: { label: "Tile Counter", icon: "🧮", color: C.soft, desc: "Lists every tile used on the map with how many times it appears, highest first. A sensor folder counts as one tile (all its variants together). Empty cells are not counted; warn and space tiles are. Updates live while open.", iconColor: null },
-      mirrorSpawns: { label: "Mirror Spawns", icon: "🚩", color: C.pale, desc: "When a mirror reflects top-bottom (Vertical or Diagonal), team tiles swap with their partner so the map stays balanced: spawn 1 ↔ 2, respawn 3 ↔ 4, goal blue ↔ red. A left-right (Horizontal) mirror keeps the team. On by default.", iconColor: null },
+      mirrorSpawns: { label: "Mirror Spawns", icon: "🚩", color: C.pale, desc: "When a mirror reflects top-bottom (Vertical or Diagonal), team tiles swap with their partner so the map stays balanced: spawn 1 ↔ 2, respawn 5 ↔ 6, goal blue ↔ red. A left-right (Horizontal) mirror keeps the team. On by default.", iconColor: null },
       hotkeys: { label: "Hotkeys", icon: "⌨️", color: C.text, desc: "Keyboard shortcuts: E = Erase, W = Eyedropper, Z = Undo, X = Redo, Ctrl+Z = Undo, Ctrl+Y = Redo, Escape = Clear highlight.", iconColor: null },
       warn: { label: "Warn", icon: "⚠️", color: "#f97316", desc: "Places an invisible warning marker tile. Warning markers appear as semi-transparent ⚠️ overlays on the canvas but are not exported as tiles — useful for marking hazardous or incomplete areas.", iconColor: null },
       duplicate: { label: "Duplicate", icon: "💞", color: "#e879a0", desc: "Copies the highlighted region to a new position without moving the originals. Drag the highlighted area to preview the copy placement, then press Apply. Mirror-aware: if any mirror axis is active, the copy is extended to also cover mirror positions.", iconColor: "#e879a0" },
@@ -7189,6 +7460,7 @@ function App() {
       }
       const filePath = `Resources/${folderPath}/${fileName}`;
       const imageUrl = rawUrl(filePath);
+      const csAutoSymbol = MapSeed.autoSymbol(csCode.value && createTsFolderKey.trim() ? createTsFolderKey.trim() : createTsCodename.trim(), null, false);
 
       // 2. Tileset row first (the worker's ownership check looks it up)
       const tsResp = await workerFetch(`${WORKER_URL}/rest/v1/tilesets`, {
@@ -7220,6 +7492,7 @@ function App() {
           mirror_offset: false, bottom_render: false, priority: false,
           auto_shadow: false,
           size_multiplier: 1.0, offset_x: 0, offset_y: 0,
+          ...(csAutoSymbol ? { symbol: csAutoSymbol } : {}),
           ...(csCode.value ? { sensor_code: csCode.value } : {}),
           ...(csRoll.value != null ? { sensor_roll: csRoll.value } : {}),
         }),
@@ -7238,6 +7511,7 @@ function App() {
         filePath, contentBase64, overwrite: false,
         commitMessage: `[${currentUser.username}] New tileset: ${folderPath}`,
       });
+      keepUploadedImage(imageUrl, createTsFile);
 
       setTsFetchTrigger(n => n + 1);
       setCreateTsOpen(false);
@@ -7371,6 +7645,7 @@ function App() {
       const sibling = addCode.value && addTileFolderKey.trim()
         ? sortedRows(dbTilesByTsIdRef.current[addTileTsId]).find(r => r.folder_key === addTileFolderKey.trim() && r.sensor_code != null) : null;
       const groupCopy = sibling ? Object.fromEntries(SensorUI.GROUP_COLUMNS.filter(k => sibling[k] !== undefined).map(k => [k, sibling[k]])) : {};
+      const addAutoSymbol = groupCopy.symbol ? null : MapSeed.autoSymbol(addCode.value && addTileFolderKey.trim() ? addTileFolderKey.trim() : addTileCodename.trim(), null, false);
       const dir = `Resources/${tilesetFolderPath}`;
       const fileName = uniqueFileName(dir, baseName, takenRepoPaths(existing));
       const filePath = `${dir}/${fileName}`;
@@ -7392,6 +7667,7 @@ function App() {
           auto_shadow: false,
           size_multiplier: 1.0, offset_x: 0, offset_y: 0,
           ...groupCopy,
+          ...(addAutoSymbol ? { symbol: addAutoSymbol } : {}), // no symbol from the folder: the folder name / codename suggests one
           ...(addCode.value ? { sensor_code: addCode.value } : {}),
           ...(addRoll.value != null ? { sensor_roll: addRoll.value } : {}),
         }),
@@ -7413,6 +7689,7 @@ function App() {
         filePath, contentBase64, overwrite: false,
         commitMessage: `[${currentUser.username}] Add tile: ${tilesetFolderPath}/${fileName}`,
       });
+      keepUploadedImage(imageUrl, addTileFile); // a deleted tile re-added under a reused file name shows the new bytes at once (see SESSION_IMAGES)
 
       setTsFetchTrigger(n => n + 1);
       setAddTileOpen(false);
@@ -7589,8 +7866,8 @@ function App() {
               <span style={{ fontSize: 13, fontWeight: 700, color: C.accent }}>Map seed</span>
               <button data-seed-box-close onClick={() => setSeedBoxOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
             </div>
-            <textarea data-seed-input rows={3} value={seedText} onChange={e => setSeedText(e.target.value)} placeholder="paste a seed or share link…"
-              style={{ width: "100%", boxSizing: "border-box", resize: "vertical", background: "rgba(180,40,40,0.09)", border: `1px solid ${seedParse && !seedParse.ok ? C.danger : C.border}`, borderRadius: 6, color: C.text, fontFamily: "monospace", fontSize: 11, padding: "6px 8px", outline: "none", wordBreak: "break-all" }}
+            <textarea data-seed-input rows={8} value={seedText} onChange={e => setSeedText(e.target.value)} placeholder="paste a seed or share link…"
+              style={{ width: "100%", boxSizing: "border-box", resize: "vertical", minHeight: 120, whiteSpace: "pre-wrap", overflowWrap: "anywhere", background: "rgba(180,40,40,0.09)", border: `1px solid ${seedParse && !seedParse.ok ? C.danger : C.border}`, borderRadius: 6, color: C.text, fontFamily: "monospace", fontSize: 12, lineHeight: 1.4, padding: "6px 8px", outline: "none", wordBreak: "break-all" }}
               spellCheck={false} />
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
               <button data-seed-copy style={btn(true, C.accent, C.accentDim)} onClick={() => copySeed("seed")} title="Copy this map as a seed">Copy seed</button>
@@ -7612,9 +7889,9 @@ function App() {
                 {row("Magnet", magnetText, d.errorField === "magnet")}
                 {row("Mirror", d.mirror ? `${d.mirror} - ${MapSeed.CLASS_NAMES[d.mirror]}` : "-", d.errorField === "mirror")}
                 {row("Tileset", tsText, d.errorField === "tileset")}
-                {row("Palette", d.palette ? (d.palette.length === 0 ? "(empty map)" : (pv ? pv.resolved : d.palette.map(s => ({ symbol: s, candidates: [], source: null }))).map(x => (
-                  <span key={x.symbol} style={{ display: "inline-block", marginRight: 10 }}>
-                    <b style={{ fontFamily: "monospace" }}>{x.symbol}</b> {x.candidates.length === 0 ? <i style={{ color: pv && pv.loaded ? "#fbbf24" : C.muted }}>{pv && pv.loaded ? "no tile (blank)" : "…"}</i> : !x.ask ? x.candidates[0].name : <i>{x.objective ? "game-mode objective, you choose" : `${x.candidates.length} tiles, you choose`}</i>}
+                {row("Palette", d.palette ? (d.palette.length === 0 ? "(empty map)" : (pv ? pv.resolved : d.palette.map(s => ({ key: s, symbol: s, candidates: [], source: null }))).map(x => (
+                  <span key={x.key} style={{ display: "inline-block", marginRight: 10 }}>
+                    <b style={{ fontFamily: "monospace" }}>{x.key}</b> {x.candidates.length === 0 ? <i style={{ color: pv && pv.loaded ? "#fbbf24" : C.muted }}>{pv && pv.loaded ? "no tile (blank)" : "…"}</i> : x.pick ? x.pick.name : !x.ask ? x.candidates[0].name : <i>{x.badSelector ? `pick ${x.selector} is not available, you choose` : x.objective ? "game-mode objective, you choose" : `${x.candidates.length} tiles, you choose`}</i>}
                   </span>
                 ))) : "-", d.errorField === "palette")}
                 {row("Cells", d.regionSize == null ? "-" : d.ok ? `${d.cellCount} = ${d.size.w} x ${d.size.h} OK${d.mirror !== "a" ? ` (${d.regionSize} stored, the rest mirrored)` : ""}` : `${d.cellCount ?? 0} read, ${d.regionSize} expected`, d.errorField === "code")}
@@ -7633,7 +7910,7 @@ function App() {
                 <li><b>magnet</b>: <code>x</code> = default centre, otherwise <code>col.row</code> (0-based), plus <code>.2</code> (2x2), <code>.3</code> (2x1) or <code>.4</code> (1x2) when the magnet is not 1x1.</li>
                 <li><b>mirror</b>: the strongest symmetry the map really has: <code>h</code> left-right, <code>v</code> top-bottom, <code>d</code> 180-degree central, <code>4</code> all three, <code>a</code> none. A symmetric map only stores one half or quarter.</li>
                 <li><b>tileset</b>: the number of the tileset the symbols belong to. An unknown number falls back to the default tileset.</li>
-                <li><b>palette</b>: the tile symbols used on the map, most used first (case matters). Every tile has one character, never a comma or a slash; the dictionary below lists them all (the warn tile is <code>A</code>, the space tile <code>S</code>).</li>
+                <li><b>palette</b>: the tile symbols used on the map, most used first, then by symbol (case matters). Every tile has one character, never <code>,</code> <code>/</code> <code>.</code> or <code>?</code>; the dictionary below lists them all (the warn tile is <code>A</code>, the space tile <code>S</code>). When a symbol fits more than one tile, the seed also records which one the map uses: the symbol, a dot and one character <code>0-9 a-z A-Z</code> counting the tiles in the order the import question lists them (<code>M.1</code> = the first, <code>M.a</code> = the tenth). A pick that is missing or does not exist is asked again on import; older seeds without picks still import.</li>
                 <li><b>code</b>: the cells, as runs of the same tile, packed into letters and digits.</li>
               </ul>
               <p style={{ margin: 0 }}>Tiles without a symbol and local uploads cannot be shared: they become empty cells (the app tells you how many). Importing replaces the current map, size, magnet and mirroring in one undo step. If one symbol fits several tiles you are asked which one you mean.</p>
@@ -7648,7 +7925,7 @@ function App() {
       {seedModal && (() => {
         const { dec, r, choices, nonEmpty } = seedModal;
         const ambiguous = r.resolved.filter(x => x.ask);
-        const ready = ambiguous.every(x => choices[x.symbol]);
+        const ready = ambiguous.every(x => choices[x.key]);
         return (
           <div className="modal-backdrop" onClick={() => setSeedModal(null)}>
             <div className="modal-box" data-seed-import-modal style={{ maxWidth: 520, maxHeight: "85vh", overflowY: "auto" }} onClick={e => e.stopPropagation()}
@@ -7662,14 +7939,14 @@ function App() {
                 {nonEmpty && <> <b style={{ color: C.danger }}>This replaces your current map.</b> You can undo it.</>}
               </p>
               {ambiguous.map(x => (
-                <div key={x.symbol} data-seed-choose={x.symbol} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                  <span data-seed-choose-label style={{ fontSize: 11, color: C.muted }}>{x.objective ? <b style={{ color: C.text }}>Choose the game-mode objective for your map</b> : <>Symbol <b style={{ fontFamily: "monospace", color: C.text }}>{x.symbol}</b> matches {x.candidates.length} tiles. Which one?</>}</span>
+                <div key={x.key} data-seed-choose={x.key} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  <span data-seed-choose-label style={{ fontSize: 11, color: C.muted }}>{x.objective ? <b style={{ color: C.text }}>Choose the game-mode objective for your map</b> : <>Symbol <b style={{ fontFamily: "monospace", color: C.text }}>{x.symbol}</b> matches {x.candidates.length} tiles{x.badSelector ? <> (the seed's pick <b style={{ fontFamily: "monospace" }}>{x.selector}</b> is not one of them)</> : null}. Which one?</>}</span>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                     {x.candidates.map(cd => {
-                      const picked = choices[x.symbol] === cd.ref;
+                      const picked = choices[x.key] === cd.ref;
                       const src = cd.tile && (cd.tile.blobSrc ?? cd.tile.src);
                       return (
-                        <div key={cd.ref} data-seed-card={cd.ref} onClick={() => setSeedModal(m => ({ ...m, choices: { ...m.choices, [x.symbol]: cd.ref } }))}
+                        <div key={cd.ref} data-seed-card={cd.ref} onClick={() => setSeedModal(m => ({ ...m, choices: { ...m.choices, [x.key]: cd.ref } }))}
                           style={{ width: 84, cursor: "pointer", borderRadius: 8, border: `2px solid ${picked ? C.accent : C.border}`, background: picked ? C.accentDim : "rgba(255,255,255,0.03)", padding: 4, textAlign: "center" }}>
                           <div style={{ height: 56, display: "flex", alignItems: "center", justifyContent: "center" }}>
                             {src ? <img src={src} alt="" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", imageRendering: "pixelated" }} /> : <span style={{ fontSize: 20 }}>⚠️</span>}
@@ -8204,7 +8481,7 @@ function App() {
         {/* ── LEFT SIDEBAR: Tiles ──────────────────────────────────── */}
         <div style={{ display: "flex", flexDirection: "row", flexShrink: 0, alignSelf: "stretch" }}>
           {tilesOpen && (
-            <div style={{ width: isMobile ? 160 : 305, background: C.panelDeep, borderRight: `1px solid ${C.border}`, borderRadius: "8px 0 0 8px", display: "flex", flexDirection: "column", overflow: "hidden", maxHeight: "min(88vh, 700px)" }}>
+            <div style={{ width: isMobile ? 136 : 305, background: C.panelDeep, borderRight: `1px solid ${C.border}`, borderRadius: "8px 0 0 8px", display: "flex", flexDirection: "column", overflow: "hidden", maxHeight: "min(88vh, 700px)" }}>
               <SectionHeader
                 label={`Tiles (${tilesetTileCount + userTiles.length})`}
                 open={tilesOpen}
@@ -8292,6 +8569,8 @@ function App() {
                   // Desktop: 64px cards, 5px gaps. Mobile: 56px cards, 5px gaps, 2 per row.
                   const cardSz  = isMobile ? 56 : 64;
                   const cardGap = 5;
+                  // Mobile: two EQUAL, flexible columns (each card is half the row minus half the gap, square) so no space is left on the right however wide the panel is.
+                  const cardBox = isMobile ? { width: `calc((100% - ${cardGap}px) / 2)`, aspectRatio: "1 / 1" } : { width: cardSz, height: cardSz };
 
                   const renderFlatCard = (t, opts = {}) => {
                     const { onDelete } = opts;
@@ -8306,7 +8585,7 @@ function App() {
                           setHandMode(false); setMagnetMode(false); setEyedropperMode(false);
                           if (highlightMode) { setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }
                         }}
-                        style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: failed ? "not-allowed" : "pointer", border: `${active ? 3 : 2}px solid ${failed ? C.danger : active ? C.accentBright : C.border}`, boxShadow: active ? `0 0 0 1px ${C.accentBright}44` : "none", background: failed ? "rgba(248,113,113,0.08)" : active ? C.accentDim : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s, box-shadow 0.12s", opacity: failed ? 0.55 : 1, position: "relative", overflow: "visible" }}>
+                        style={{ flexShrink: 0, ...cardBox, borderRadius: 8, cursor: failed ? "not-allowed" : "pointer", border: `${active ? 3 : 2}px solid ${failed ? C.danger : active ? C.accentBright : C.border}`, boxShadow: active ? `0 0 0 1px ${C.accentBright}44` : "none", background: failed ? "rgba(248,113,113,0.08)" : active ? C.accentDim : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s, box-shadow 0.12s", opacity: failed ? 0.55 : 1, position: "relative", overflow: "visible" }}>
                         {/* Inner clipped area for image */}
                         <div style={{ position: "absolute", inset: 0, borderRadius: 6, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", background: C.panelDeep }}>
                           {failed ? <span style={{ fontSize: 20 }}>⚠️</span>
@@ -8343,11 +8622,11 @@ function App() {
                         onMouseDown={e => e.stopPropagation()}
                         onTouchStart={e => e.stopPropagation()}
                         title={`${label} (sensor folder: places the right variant automatically)`}
-                        style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: "pointer", position: "relative", overflow: "visible",
+                        style={{ flexShrink: 0, ...cardBox, borderRadius: 8, cursor: "pointer", position: "relative", overflow: "visible",
                           border: `${active ? 3 : 2}px solid ${active ? C.accentBright : C.border}`,
                           boxShadow: active ? `0 0 0 1px ${C.accentBright}44` : "none",
                           background: active ? C.accentDim : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s, box-shadow 0.12s" }}>
-                        <div style={{ position: "absolute", inset: 0, borderRadius: 6, overflow: "hidden", display: "grid", gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr", gap: 1 }}>
+                        <div style={{ position: "absolute", inset: 0, borderRadius: 6, overflow: "hidden", display: "grid", gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr", gap: 0 }}>
                           {preview.map(t => (
                             <div key={t.ref} style={{ display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", background: C.panelDeep }}>
                               <img src={t.blobSrc ?? t.src} alt="" className={tileCardLightBg ? "tile-img-checker" : undefined} style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated" }} />
@@ -8381,13 +8660,13 @@ function App() {
                         onClick={e => toggleFolder(key, e)}
                         onMouseDown={e => e.stopPropagation()}
                         onTouchStart={e => e.stopPropagation()}
-                        style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: "pointer",
+                        style={{ flexShrink: 0, ...cardBox, borderRadius: 8, cursor: "pointer",
                           border: `2px solid ${folderActive ? C.soft : isThisOpen ? C.accent : C.border}`,
                           background: folderActive ? "rgba(252,211,77,0.07)" : isThisOpen ? C.accentDim : C.panelDeep,
                           overflow: "hidden", position: "relative",
                           transition: "border 0.12s, background 0.12s" }}>
                         {/* 2×2 preview grid — fills full card, no label strip */}
-                        <div style={{ position: "absolute", inset: 0, display: "grid", gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr", gap: 1 }}>
+                        <div style={{ position: "absolute", inset: 0, display: "grid", gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr", gap: 0 }}>
                           {previewTiles.map(t => (
                             <div key={t.ref} style={{ display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", background: C.panelDeep }}>
                               <img src={t.blobSrc ?? t.src} alt="" className={tileCardLightBg ? "tile-img-checker" : undefined} style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated" }} />
@@ -8733,7 +9012,7 @@ function App() {
                                 {canManageSec && (
                                   <div
                                     onClick={() => { setAddTileTsId(tilesetId); setAddTileOpen(true); setAddTileFile(null); setAddTileCodename(''); setAddTileFolderKey(''); setAddTileSortIdx(''); setAddTileSensorCode(''); setAddTileSensorRoll(''); setAddTileError(''); }}
-                                    style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: "pointer", border: `2px dashed ${C.border}`, background: "rgba(255,255,255,0.03)", overflow: "hidden", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2 }}
+                                    style={{ flexShrink: 0, ...cardBox, borderRadius: 8, cursor: "pointer", border: `2px dashed ${C.border}`, background: "rgba(255,255,255,0.03)", overflow: "hidden", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2 }}
                                     title={`Add tile to ${name}`}>
                                     <span style={{ fontSize: 22, color: C.muted, lineHeight: 1, fontWeight: 300 }}>+</span>
                                     <span style={{ fontSize: 9, color: C.muted, textTransform: "uppercase", letterSpacing: 0.8, lineHeight: 1 }}>Add Tile</span>
@@ -8754,7 +9033,7 @@ function App() {
                           {!panelCollapsed.user && (<>
                             {userTiles.map(t => renderFlatCard(t))}
                             <div onClick={() => fileRef.current.click()}
-                              style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: "pointer", border: `2px dashed ${C.border}`, background: "rgba(255,255,255,0.03)", overflow: "hidden", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2 }}
+                              style={{ flexShrink: 0, ...cardBox, borderRadius: 8, cursor: "pointer", border: `2px dashed ${C.border}`, background: "rgba(255,255,255,0.03)", overflow: "hidden", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2 }}
                               title="Upload tiles">
                               <span style={{ fontSize: 22, color: C.muted, lineHeight: 1, fontWeight: 300 }}>+</span>
                               <span style={{ fontSize: 9, color: C.muted, textTransform: "uppercase", letterSpacing: 0.8, lineHeight: 1 }}>Upload</span>
@@ -8963,7 +9242,7 @@ function App() {
         </div>
 
         {/* ── CANVAS ───────────────────────────────────────────────── */}
-          <div ref={scrollRef}
+          <div ref={scrollRef} data-map-scroll
             style={{ flex: 1, minWidth: 0, height: "100%", overflow: "auto", background: C.bg, cursor: handMode ? "grab" : (dragTile || highlightDragOffset ? "grabbing" : eyedropperMode ? "cell" : highlightMode ? "copy" : "crosshair") }}
             onWheel={onWheel}
             onMouseDown={e => {
@@ -9009,7 +9288,9 @@ function App() {
               paintingRef.current = false;
             }}
           >
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minWidth: "100%", minHeight: "100%", padding: 60, boxSizing: "border-box" }}>
+            {/* width: max-content so the scrollable area is the map plus its 60px padding on EVERY side. With the old width (the viewport's) a map wider than the viewport
+                overflowed to the left of a centred flex row, where scrolling cannot reach (the left third was unreachable at high zoom). */}
+            <div data-map-content style={{ display: "flex", alignItems: "center", justifyContent: "center", width: "max-content", minWidth: "100%", minHeight: "100%", padding: 60, boxSizing: "border-box" }}>
               <div ref={canvasContainerRef} style={{ position: "relative", width: gW, height: (gridH + 2) * CELL * zoom, flexShrink: 0, isolation: "isolate", contain: "layout style paint" }}>
 
                 {/* Checkerboard — single CSS-gradient element, no inter-cell boundaries at fractional zoom */}
@@ -9049,7 +9330,7 @@ function App() {
                     const ox = (off.ox / 100) * cellPx;
                     const oy = (off.oy / 100) * cellPx;
                     const tileImg = <img key={`bot${r}-${c}`} src={imgSrc} alt="" draggable={false} decoding="async"
-                      style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%)${svCss}`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 1 }}
+                      style={{ position: "absolute", ...tileBox(r, c, cellPx, mult, ox, oy), height: "auto", transform: `translateY(-50%)${svCss}`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 1 }}
                     />;
                     if (!isAutoShadowTile(cellSizeTile(t, r, c))) return tileImg;
                     return [
@@ -9075,7 +9356,7 @@ function App() {
                     const ox = (off.ox / 100) * cellPx;
                     const oy = (off.oy / 100) * cellPx;
                     const tileImg = <img key={`t${r}-${c}`} src={imgSrc} alt="" draggable={false} decoding="async"
-                      style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%)${svCss}`, pointerEvents: "none", imageRendering: "pixelated", zIndex: r + 2 }}
+                      style={{ position: "absolute", ...tileBox(r, c, cellPx, mult, ox, oy), height: "auto", transform: `translateY(-50%)${svCss}`, pointerEvents: "none", imageRendering: "pixelated", zIndex: r + 2 }}
                     />;
                     if (!isAutoShadowTile(cellSizeTile(t, r, c))) return tileImg;
                     return [
@@ -9100,7 +9381,7 @@ function App() {
                     const ox = (off.ox / 100) * cellPx;
                     const oy = (off.oy / 100) * cellPx;
                     const tileImg = <img key={`prio${r}-${c}`} src={imgSrc} alt="" draggable={false} decoding="async"
-                      style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%)${svCss}`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 9999 }}
+                      style={{ position: "absolute", ...tileBox(r, c, cellPx, mult, ox, oy), height: "auto", transform: `translateY(-50%)${svCss}`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 9999 }}
                     />;
                     if (!isAutoShadowTile(cellSizeTile(t, r, c))) return tileImg;
                     return [
@@ -9428,7 +9709,7 @@ function App() {
             </div>
           )}
           {toolsOpen && (
-            <div style={{ width: isMobile ? 160 : 280, background: C.panelDeep, borderLeft: `1px solid ${C.border}`, borderRadius: "0 8px 8px 0", display: "flex", flexDirection: "column", overflow: "hidden", maxHeight: "min(88vh, 700px)" }}>
+            <div style={{ width: isMobile ? 140 : 280, background: C.panelDeep, borderLeft: `1px solid ${C.border}`, borderRadius: "0 8px 8px 0", display: "flex", flexDirection: "column", overflow: "hidden", maxHeight: "min(88vh, 700px)" }}>
               <SectionHeader label="Tools" open={toolsOpen} onToggle={() => setToolsOpen(o => !o)}
               />
               <div style={{ overflowY: "auto", flex: 1, padding: "8px 12px 10px", display: "flex", flexDirection: "column", gap: 7 }}>
@@ -9439,10 +9720,10 @@ function App() {
                     : { single: ['#c084fc','rgba(192,132,252,0.18)'], line: ['#818cf8','rgba(129,140,248,0.18)'], rect: ['#60a5fa','rgba(96,165,250,0.18)'], fill: [C.accent,C.accentDim] };
                   return (
                     <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}>
-                      <button style={btn(selectionMode === 'single', SC.single[0], SC.single[1])} onClick={() => setSelectionMode('single')} title="Freehand">✏️ Single</button>
-                      <button style={btn(selectionMode === 'line', SC.line[0], SC.line[1])} onClick={() => setSelectionMode('line')} title="Line draw">📏 Line</button>
-                      <button style={btn(selectionMode === 'rect', SC.rect[0], SC.rect[1])} onClick={() => setSelectionMode('rect')} title="Rectangle fill">⬜ Rectangle</button>
-                      <button style={btn(selectionMode === 'fill', SC.fill[0], SC.fill[1])} onClick={() => setSelectionMode('fill')} title="Flood fill selection">🪣 Fill</button>
+                      <button style={toolBtn(selectionMode === 'single', SC.single[0], SC.single[1])} onClick={() => setSelectionMode('single')} title="Freehand">✏️ Single</button>
+                      <button style={toolBtn(selectionMode === 'line', SC.line[0], SC.line[1])} onClick={() => setSelectionMode('line')} title="Line draw">📏 Line</button>
+                      <button style={toolBtn(selectionMode === 'rect', SC.rect[0], SC.rect[1])} onClick={() => setSelectionMode('rect')} title="Rectangle fill">⬜ Rectangle</button>
+                      <button style={toolBtn(selectionMode === 'fill', SC.fill[0], SC.fill[1])} onClick={() => setSelectionMode('fill')} title="Flood fill selection">🪣 Fill</button>
                     </div>
                   );
                 })()}
@@ -9451,9 +9732,9 @@ function App() {
                 {(() => { const mirrorLocked = highlightedCells.size > 0; return (
                 <div style={{ position: "relative" }}>
                   <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center", opacity: mirrorLocked ? 0.55 : 1, pointerEvents: mirrorLocked ? "none" : "auto", transition: "opacity 0.15s" }}>
-                    <button style={btn(mirrorV, C.pale, C.paleDim)} onClick={() => setMirrorV(v => !v)} title="Horizontal mirror (left ↔ right)">↔️ Horizontal</button>
-                    <button style={btn(mirrorH, C.soft, C.softDim)} onClick={() => setMirrorH(v => !v)} title="Vertical mirror (top ↔ bottom)">↕️ Vertical</button>
-                    <button style={btn(mirrorD, C.accentBright, C.accentDim)} onClick={() => setMirrorD(v => !v)} title="Diagonal mirror (180° rotation)">🌀 Diagonal</button>
+                    <button style={toolBtn(mirrorV, C.pale, C.paleDim)} onClick={() => setMirrorV(v => !v)} title="Horizontal mirror (left ↔ right)">↔️ Horizontal</button>
+                    <button style={toolBtn(mirrorH, C.soft, C.softDim)} onClick={() => setMirrorH(v => !v)} title="Vertical mirror (top ↔ bottom)">↕️ Vertical</button>
+                    <button style={toolBtn(mirrorD, C.accentBright, C.accentDim)} onClick={() => setMirrorD(v => !v)} title="Diagonal mirror (180° rotation)">🌀 Diagonal</button>
                   </div>
                   {mirrorLocked && (
                     <div style={{ fontSize: 9, color: C.muted, marginTop: 3, lineHeight: 1.4 }}>
@@ -9464,24 +9745,24 @@ function App() {
                 ); })()}
                 <div style={{ height: 1, background: C.border }} />
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
-                    <button style={btn(showGuides, gColor, gDim)} onClick={() => setShowGuides(v => !v)} title="Toggle mirror guide lines">🧭 Guides</button>
+                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0, maxWidth: "100%" }}>
+                    <button style={toolBtn(showGuides, gColor, gDim)} onClick={() => setShowGuides(v => !v)} title="Toggle mirror guide lines">🧭 Guides</button>
                     <span onClick={() => setInfoTool("guides")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
                   </div>
-                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
-                    <button data-mirror-spawns aria-pressed={mirrorSettings.mirrorSpawns} style={btn(mirrorSettings.mirrorSpawns, C.pale, C.paleDim)} onClick={() => setMirrorSettings(p => ({ ...p, mirrorSpawns: !p.mirrorSpawns }))} title="Team tiles (spawns, respawns, goals) swap with their partner on a top-bottom or diagonal mirror">🚩 Mirror Spawns</button>
+                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0, maxWidth: "100%" }}>
+                    <button data-mirror-spawns aria-pressed={mirrorSettings.mirrorSpawns} style={toolBtn(mirrorSettings.mirrorSpawns, C.pale, C.paleDim)} onClick={() => setMirrorSettings(p => ({ ...p, mirrorSpawns: !p.mirrorSpawns }))} title="Team tiles (spawns, respawns, goals) swap with their partner on a top-bottom or diagonal mirror">🚩 Mirror Spawns</button>
                     <span onClick={() => setInfoTool("mirrorSpawns")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
                   </div>
-                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
-                    <button style={btn(mirrorSettings.allowSwap, owColor, owDim)} onClick={() => setMirrorSettings(p => ({ ...p, allowSwap: !p.allowSwap }))} title="When enabled, painting over occupied cells replaces them instead of picking them up [O]">🧱 Block Overwrite</button>
+                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0, maxWidth: "100%" }}>
+                    <button style={toolBtn(mirrorSettings.allowSwap, owColor, owDim)} onClick={() => setMirrorSettings(p => ({ ...p, allowSwap: !p.allowSwap }))} title="When enabled, painting over occupied cells replaces them instead of picking them up [O]">🧱 Block Overwrite</button>
                     <span onClick={() => setInfoTool("overwrite")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
                   </div>
-                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
-                    <button style={btn(showOffsetCenters, ocColor, ocDim)} onClick={() => setShowOffsetCenters(v => !v)} title="Show a marker at the placement cell of tiles with non-zero offset">🎯 Offset Centers</button>
+                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0, maxWidth: "100%" }}>
+                    <button style={toolBtn(showOffsetCenters, ocColor, ocDim)} onClick={() => setShowOffsetCenters(v => !v)} title="Show a marker at the placement cell of tiles with non-zero offset">🎯 Offset Centers</button>
                     <span onClick={() => setInfoTool("offsetCenters")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
                   </div>
-                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
-                    <button style={btn(showOTG, C.danger, "rgba(239,68,68,0.18)")}
+                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0, maxWidth: "100%" }}>
+                    <button style={toolBtn(showOTG, C.danger, "rgba(239,68,68,0.18)")}
                       onClick={() => setShowOTG(v => !v)}
                       title="OTG detection">
                       🧩 OTG Check
@@ -9491,20 +9772,20 @@ function App() {
                 </div>
                 <div style={{ height: 1, background: C.border }} />
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
-                    <button style={btn(false, C.soft, C.softDim)} onClick={() => { setReplaceOpen(true); setReplaceStep(1); setReplaceA(null); setReplaceB(null); setReplaceMsg(""); }}>♻️ Replace</button>
+                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0, maxWidth: "100%" }}>
+                    <button style={toolBtn(false, C.soft, C.softDim)} onClick={() => { setReplaceOpen(true); setReplaceStep(1); setReplaceA(null); setReplaceB(null); setReplaceMsg(""); }}>♻️ Replace</button>
                     <span onClick={() => setInfoTool("replace")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
                   </div>
-                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
-                    <button style={btn(false, C.soft, C.softDim)} onClick={() => setConvertOpen(true)} title="Remap tileset tiles on the board">🔄 Convert</button>
+                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0, maxWidth: "100%" }}>
+                    <button style={toolBtn(false, C.soft, C.softDim)} onClick={() => setConvertOpen(true)} title="Remap tileset tiles on the board">🔄 Convert</button>
                     <span onClick={() => setInfoTool("convert")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>{starredTiles.includes("convert") ? "★" : "ⓘ"}</span>
                   </div>
-                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
-                    <button data-tile-counter-open style={btn(tileCounterOpen, C.soft, C.softDim)} onClick={() => setTileCounterOpen(o => !o)} title="Count the tiles used on the map">🧮 Tile Counter</button>
+                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0, maxWidth: "100%" }}>
+                    <button data-tile-counter-open style={toolBtn(tileCounterOpen, C.soft, C.softDim)} onClick={() => setTileCounterOpen(o => !o)} title="Count the tiles used on the map">🧮 Tile Counter</button>
                     <span onClick={() => setInfoTool("tileCounter")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%" }} title="Info">ⓘ</span>
                   </div>
-                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
-                    <button style={btn(false)} onClick={() => setHotkeysOpen(true)}>⌨️ Hotkeys</button>
+                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0, maxWidth: "100%" }}>
+                    <button style={toolBtn(false)} onClick={() => setHotkeysOpen(true)}>⌨️ Hotkeys</button>
                     <span onClick={() => setInfoTool("hotkeys")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
                   </div>
                 </div>

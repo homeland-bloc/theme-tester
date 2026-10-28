@@ -199,6 +199,44 @@
   };
   const computeRequiredBase = folder => missingSlots(folder).map(s => s.label);
 
+  // ── Cardinal-only composition (folders whose explicit codes carry no diagonal bit: fences, ropes, rails) ──
+  // A recipe is chosen as a WHOLE, best first by: (1) every quadrant's type matches (that is what slotOptions guarantees), (2) the fewest
+  // DISTINCT source tiles over the four quadrants, (3) more halves (top TL+TR, bottom BL+BR) drawn from one tile (a tile and its flip
+  // count as one tile, so a left/right pair may be a tile plus its mirror), (4) the fewest transforms, (5) the closest bits
+  // (cardinal difference, then diagonal difference, of the transformed source code against the target), (6) sortIndex, then ref.
+  // Returns the four { opt, key } picks, or null when some quadrant has no option.
+  const cardinalPicks = (norm, types, slots) => {
+    const opts = [0, 1, 2, 3].map(q => slots.get(slotKey(q, types[q])));
+    if (opts.some(o => !o || !o.length)) return null;
+    const tiles = Array.from(new Set(opts.flat().map(o => String(tileRef(o.tile))))).sort();
+    const keyOf = (combo, k) => {
+      const keys = combo.map(o => rankKey(o, norm));
+      const halves = (String(tileRef(combo[0].tile)) === String(tileRef(combo[1].tile)) ? 1 : 0) + (String(tileRef(combo[3].tile)) === String(tileRef(combo[2].tile)) ? 1 : 0);
+      const sum = i => keys.reduce((a, kk) => a + kk[i], 0);
+      return [k, -halves, combo.reduce((a, o) => a + transformCost(o), 0), sum(1), sum(2),
+        ...combo.flatMap((o, q) => [o.tile.sortIndex ?? 0, String(tileRef(o.tile)), q, o.sourceQuadrant, o.steps, o.flip ? 1 : 0])];
+    };
+    const subsets = function* (k, start = 0, acc = []) {
+      if (acc.length === k) { yield acc.slice(); return; }
+      for (let i = start; i < tiles.length; i++) { acc.push(tiles[i]); yield* subsets(k, i + 1, acc); acc.pop(); }
+    };
+    for (let k = 1; k <= 4; k++) {
+      let bestCombo = null, bestKey = null;
+      for (const sub of subsets(k)) {
+        const set = new Set(sub), per = opts.map(list => list.filter(o => set.has(String(tileRef(o.tile)))));
+        if (per.some(l => !l.length)) continue;
+        for (const a of per[0]) for (const b of per[1]) for (const c of per[2]) for (const d of per[3]) {
+          const combo = [a, b, c, d];
+          if (new Set(combo.map(o => String(tileRef(o.tile)))).size !== k) continue; // counted under its own (smaller) k
+          const key = keyOf(combo, k);
+          if (!bestCombo || cmpKey(key, bestKey) < 0) { bestCombo = combo; bestKey = key; }
+        }
+      }
+      if (bestCombo) return bestCombo.map(o => ({ opt: o, key: rankKey(o, norm) }));
+    }
+    return null;
+  };
+
   // Recipe for one code: 4 entries { quadrant, type, slot, sourceCode, sourceTileRef, sourceQuadrant, spinSteps, flip }.
   // The source tile is mirrored first when `flip`, then rotated clockwise by `spinSteps` quarter-turns about the image
   // centre; that puts source quadrant `sourceQuadrant` onto `quadrant`. Sources are ranked per quadrant (see rankKey); when one
@@ -213,6 +251,12 @@
     const norm = normaliseBits(code);
     const types = [0, 1, 2, 3].map(q => quadrantType(norm, q));
     const picks = [];
+    if (usesOnlyCardinals(folder, pools)) {
+      // Cardinal-only folders (fences, ropes, rails) pick WHOLE tiles instead of a best option per slot.
+      const chosen = cardinalPicks(norm, types, slots);
+      if (!chosen) return null;
+      chosen.forEach((p, q) => { picks[q] = p; });
+    } else {
     for (let q = 0; q < 4; q++) {
       const opts = slots.get(slotKey(q, types[q]));
       if (!opts) return null;
@@ -231,6 +275,7 @@
         if (!bestPair || cmpKey(key, bestPair.key) < 0) bestPair = { key, oa, ob };
       }
       if (bestPair) { picks[half[0]] = { opt: bestPair.oa, key: rankKey(bestPair.oa, norm) }; picks[half[1]] = { opt: bestPair.ob, key: rankKey(bestPair.ob, norm) }; }
+    }
     }
     const recipe = picks.map((p, q) => ({
       quadrant: q, quadrantName: QUAD_NAMES[q], type: types[q], slot: slotLabel(q, types[q]), sourceCode: p.opt.code,

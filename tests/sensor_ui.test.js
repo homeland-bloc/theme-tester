@@ -229,11 +229,10 @@ test("parseSymbolInput: empty, last code point, A and S reserved (6 and 7 are fr
   assert.strictEqual(U.parseSymbolInput("S").ok, false);
   assert.match(U.parseSymbolInput("A").error, /warn/);
   assert.match(U.parseSymbolInput("S").error, /space/);
-  for (const bad of [",", "/"]) { const r = U.parseSymbolInput(bad); assert.strictEqual(r.ok, false, bad); assert.match(r.error, /separator/); }
+  for (const bad of [",", "/", ".", "?"]) { const r = U.parseSymbolInput(bad); assert.strictEqual(r.ok, false, bad); assert.match(r.error, /separator/); }
   assert.strictEqual(U.parseSymbolInput("a,").ok, false, "the last typed character counts");
   assert.deepStrictEqual(U.parseSymbolInput(",b"), { ok: true, value: "b" });
-  assert.strictEqual(U.parseSymbolInput(".").ok, true);
-  assert.strictEqual(U.parseSymbolInput("6").ok, true);
+    assert.strictEqual(U.parseSymbolInput("6").ok, true);
   assert.strictEqual(U.parseSymbolInput("7").ok, true);
   assert.strictEqual(U.parseSymbolInput("8").ok, true);
   assert.deepStrictEqual(U.usedSymbols([{ symbol: "A" }, { symbol: null }, {}]), ["A"]);
@@ -345,6 +344,77 @@ test("deriveLayer: render and export read one seed map; same grid+seeds identica
   let changed = 0; for (const [k, v] of screen) if (other.get(k).ref !== v.ref) changed++;
   assert.ok(changed > 30, "different seed changes tied picks: " + changed);
   assert.strictEqual(U.rerollOf(seeds, "s:other|x"), 0);
+});
+
+// ── Tileset export ───────────────────────────────────────────────────────────────────────────────────────
+const cp = require("child_process"), fs = require("fs"), os = require("os"), path = require("path");
+test("zipStore: a valid store-only zip (python's zipfile reads it back byte for byte, names UTF-8, crc ok)", () => {
+  const files = [{ name: "Set/a.png", data: Uint8Array.from([1, 2, 3, 4, 5]) }, { name: "Set/Fence/Fence_00011000.png", data: new Uint8Array(0) }, { name: "Set/ü ñ.json", data: Uint8Array.from(Buffer.from('{"a":1}')) }];
+  const zip = U.zipStore(files);
+  assert.strictEqual(U.crc32(Uint8Array.from(Buffer.from("123456789"))), 0xcbf43926);
+  const tmp = path.join(os.tmpdir(), "oph_zip_test_" + process.pid + ".zip");
+  fs.writeFileSync(tmp, zip);
+  try {
+    const out = cp.execFileSync("python3", ["-I", "-c", "import sys,zipfile,json; z=zipfile.ZipFile(sys.argv[1]); assert z.testzip() is None; print(json.dumps([[i.filename,i.compress_type,z.read(i).hex()] for i in z.infolist()]))", tmp]).toString();
+    assert.deepStrictEqual(JSON.parse(out), files.map(f => [f.name, 0, Buffer.from(f.data).toString("hex")]));
+  } finally { fs.unlinkSync(tmp); }
+  assert.strictEqual(U.zipStore([]).length, 22, "an empty zip is just the end record");
+});
+test("export names: unsafe characters replaced, unique per folder case-insensitively, extension kept", () => {
+  assert.strictEqual(U.safeName('a/b:c*?"<>|'), "a_b_c______"); assert.strictEqual(U.safeName("  "), "tile"); assert.strictEqual(U.safeName(".hidden"), "_hidden");
+  const taken = new Set();
+  assert.deepStrictEqual([U.uniquePath(taken, "T", "Wall", ".png"), U.uniquePath(taken, "T", "wall", ".png"), U.uniquePath(taken, "T", "Wall", ".png"), U.uniquePath(taken, "", "Wall", ".png")], ["T/Wall.png", "T/wall_2.png", "T/Wall_3.png", "Wall.png"]);
+  assert.deepStrictEqual(["https://x/a/b.PNG?v=1", "x.jpeg", "noext", "a.webp?v=2"].map(U.extOfUrl), [".png", ".jpeg", ".png", ".webp"]);
+});
+test("bakeLayout: padding goes on the side OPPOSITE to each offset; no offset, no padding; canvas stays centred on the cell; sizes untouched", () => {
+  const L = o => U.bakeLayout({ w: 100, h: 100, ...o });
+  assert.deepStrictEqual([L({}).width, L({}).height, L({}).image], [100, 100, { x: 0, y: 0 }]);
+  assert.deepStrictEqual(L({ ox: 20, bakeOffset: true }).padding, { left: 40, right: 0, top: 0, bottom: 0 }, "offset right -> transparent space on the left");
+  assert.deepStrictEqual(L({ ox: -20, bakeOffset: true }).padding, { left: 0, right: 40, top: 0, bottom: 0 });
+  assert.deepStrictEqual(L({ oy: 10, bakeOffset: true }).padding, { left: 0, right: 0, top: 20, bottom: 0 }, "offset down -> space above");
+  assert.deepStrictEqual(L({ oy: -10, ox: 5, bakeOffset: true }).padding, { left: 10, right: 0, top: 0, bottom: 20 });
+  const b = L({ ox: 20, oy: -10, bakeOffset: true });
+  assert.deepStrictEqual([b.width, b.height], [140, 120]);
+  assert.deepStrictEqual([b.image.x + 50, b.image.y + 50], [b.width / 2 + 20, b.height / 2 - 10], "the image centre sits at cell centre + offset");
+  assert.strictEqual(L({ ox: 20, bakeOffset: false }).width, 100, "offset not baked: untouched");
+  const sh = L({ bakeShadow: true });
+  assert.deepStrictEqual([sh.width, sh.height], [100, 160]);
+  assert.deepStrictEqual([sh.image.y, sh.shadow.y - sh.image.y, sh.shadow.x - sh.image.x], [30, 30, 0], "shadow = copy 30% of a cell lower");
+  assert.ok(U.SHADOW_ALPHA === 0.2 && U.SHADOW_SHIFT === 0.3);
+  const both = L({ ox: 10, oy: 10, bakeOffset: true, bakeShadow: true });
+  assert.ok(both.width === 120 && both.height === 2 * Math.ceil(10 + 30 + 50), JSON.stringify(both));
+  assert.deepStrictEqual(U.rowOffset({ offset_x: "10", offset_y: 5 }), { ox: 10, oy: 5 }); assert.deepStrictEqual(U.rowOffset({ offset_x: 10, offset_y: null }), { ox: 0, oy: 0 });
+  assert.ok(U.hasOffset({ offset_x: 0, offset_y: 3 }) && !U.hasOffset({ offset_x: 0, offset_y: 0 }) && !U.hasOffset({}));
+});
+test("planTilesetExport: plain tiles by codename, sensor folders as <Folder>_<code>[_n] with real, derived and composed variants, tileset folder at the top, exact mode adds none", () => {
+  const row = (id, codename, extra = {}) => ({ id, codename, image_url: `https://i/${codename}.png?v=3`, folder_key: null, sensor_code: null, sensor_roll: 1, sort_index: 0, rotatable: false, flippable: false, ...extra });
+  const rows = [row("1", "Wall1"), row("2", "Wall1"), row("3", "Crate", { folder_key: "Props" }),
+    ...["00001011", "01111111", "01101011", "11111111"].map((c, i) => row("w" + i, "Pond_" + c, { folder_key: "Pond", sensor_code: c, sort_index: 10 + i, rotatable: true })),
+    row("w9", "Pond_dup", { folder_key: "Pond", sensor_code: "11111111", sort_index: 20, rotatable: true, image_url: "https://i/dup.jpg" }),
+    row("e1", "Bars_x", { folder_key: "Bars", sensor_code: "10100101", sort_index: 30 }), row("e2", "Bars_y", { folder_key: "Bars", sensor_code: "00000000", sort_index: 31 })];
+  const plan = U.planTilesetExport(rows, "My/Set");
+  assert.strictEqual(plan.dir, "My_Set");
+  const paths = plan.items.map(i => i.path);
+  assert.strictEqual(new Set(paths.map(p => p.toLowerCase())).size, paths.length, "all unique");
+  assert.deepStrictEqual(paths.filter(p => !p.includes("Pond/") && !p.includes("Bars/")), ["My_Set/Wall1.png", "My_Set/Wall1_2.png", "My_Set/Props/Crate.png"]);
+  const pond = plan.items.filter(i => i.folder === "Pond");
+  assert.deepStrictEqual(pond.filter(i => i.kind === "real").map(i => i.file), ["Pond_00001011.png", "Pond_01111111.png", "Pond_01101011.png", "Pond_11111111.png", "Pond_11111111.jpg"]);
+  const cand = S.buildCandidates(U.engineFolder(U.makeFolder({ scope: "x", folderKey: "Pond", label: "Pond", tiles: rows.filter(r => r.folder_key === "Pond").map(r => ({ ref: r.id, codename: r.codename, sensorCode: r.sensor_code, sensorRoll: 1, sortIndex: r.sort_index, dbRotatable: true, dbFlippable: false })) })));
+  const want = (st) => Object.values(cand).filter(c => c.status === st).reduce((n, c) => n + c.pool.length, 0);
+  assert.strictEqual(pond.filter(i => i.kind === "derived").length, want("derived"));
+  assert.strictEqual(pond.filter(i => i.kind === "composed").length, want("composed"));
+  assert.ok(want("composed") > 20 && want("derived") >= 9);
+  assert.ok(pond.filter(i => i.kind !== "real").every(i => i.path.endsWith(".png") && /^My_Set\/Pond\/Pond_[01]{8}(_\d+)?\.png$/.test(i.path)));
+  const dr = pond.find(i => i.kind === "derived");
+  assert.ok(dr.ops.length > 0 && dr.row && dr.sourceRows.length === 1 && dr.ops.every(o => o === "spin" || o === "flipH"));
+  const cm = pond.find(i => i.kind === "composed");
+  assert.strictEqual(cm.recipe.length, 4); assert.ok(cm.row && cm.sourceRows.every(Boolean));
+  assert.deepStrictEqual(U.exportImageOps(["spin", "flipH"]), ["rotR", "flipH"]);
+  // exact mode: only the real tiles
+  assert.deepStrictEqual(plan.items.filter(i => i.folder === "Bars").map(i => [i.kind, i.file]), [["real", "Bars_10100101.png"], ["real", "Bars_00000000.png"]]);
+  // metadata
+  const rec = U.exportRecord(plan.items.find(i => i.row && i.row.id === "3"), { offsets: true, shadow: false });
+  assert.deepStrictEqual([rec.codename, rec.folder, rec.file, rec.sizeApplied, rec.bakedOffsets, rec.bakedShadow, rec.sensorCode], ["Crate", "Props", "My_Set/Props/Crate.png", false, true, false, null]);
 });
 
 console.log(`${passed} passed`);

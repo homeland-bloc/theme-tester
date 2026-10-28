@@ -112,13 +112,13 @@
   const OFFICIAL_SYMBOLS = Object.freeze({
     M: "Wall1", X: "Wall2", Y: "Crate", C: "Barrel", F: "Bush", T: "Cactus", B: "Skull", N: "Fence", n: "Fence 5v5", W: "Water", a: "Rope",
   });
-  // Seeds separate their fields with "," (and old seeds with "/"), so neither can be a tile symbol; whitespace and control characters cannot either.
-  const BANNED_SYMBOLS = Object.freeze([",", "/"]);
+  // Seeds separate their fields with "," (and old seeds with "/"), "." starts a tie-pick selector and "?" is kept free, so none can be a tile symbol; whitespace and control characters cannot either.
+  const BANNED_SYMBOLS = Object.freeze([",", "/", ".", "?"]);
   const isBannedSymbol = ch => typeof ch === "string" && (BANNED_SYMBOLS.includes(ch) || /[\s\p{C}]/u.test(ch));
   const isReservedSymbol = ch => Object.prototype.hasOwnProperty.call(RESERVED_SYMBOLS, ch);
   const symbolForSpecial = ref => (ref === WARN_REF ? SYMBOL_WARN : ref === SPACE_REF ? SYMBOL_SPACE : null);
   const specialForSymbol = ch => (isReservedSymbol(ch) ? RESERVED_SYMBOLS[ch] : null);
-  const SUGGESTION_POOL = "DEIJRVghijklmopqst!#$%&*+-=?@^~<>".split("");
+  const SUGGESTION_POOL = "DEIJRVghijklmopqst!#$%&*+-=@^~<>".split("");
   // First free character for a tileset-exclusive tile: not reserved, not official, not in `used`, not in `alsoTaken` (the global
   // table's symbols, passed by the caller), never a digit. null when exhausted.
   const suggestSymbol = (used, alsoTaken) => {
