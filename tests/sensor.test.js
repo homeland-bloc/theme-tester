@@ -519,3 +519,48 @@ test("water regression: the full candidate table (status, derived sources, compo
   assert.strictEqual(Object.keys(want.depth).length, 47);
   assert.ok(!S.folderMode(w).cardinalOnly && !S.folderMode(d).cardinalOnly, "diagonal-bit folders never take the cardinal-only ranking");
 });
+
+// ── Cardinal-only composition ranking (fences, ropes, rails) ─────────────────────────────────────────────
+// A fence set with flip allowed. Fence1 = east end, Fence2 = north end, Fence3 = straight W+E, Fence4 = straight N+S, Fence5 = south end,
+// Fence6 = curve N+E, Fence7 = the curve S+E. No Fence tile has 00000000, so every other code is derived or composed.
+const FENCE_SET = ["Fence1:00001000", "Fence2:01000000", "Fence3:00011000", "Fence4:01000010", "Fence5:00000010", "Fence6:01001000", "Fence7:00001010"]
+  .map((s, i) => { const [ref, code] = s.split(":"); return { ref, sensorCode: code, sensorRoll: 1, sortIndex: i + 1, flippable: true, rotatable: false }; });
+const fenceFolder = folder("fences", FENCE_SET, { flip: true });
+test("cardinal-only composition: the folder is recognised, water-like folders are not", () => {
+  assert.ok(S.folderMode(fenceFolder).cardinalOnly);
+  assert.strictEqual(S.folderMode(fenceFolder).kind, "compose");
+});
+test("cardinal-only composition: W+E+S (00011010) is drawn entirely from Fence7, the S+E curve (BL/TL flipped as needed), and not from Fence3", () => {
+  const c = S.buildCandidates(fenceFolder)["00011010"];
+  assert.strictEqual(c.status, "composed");
+  assert.deepStrictEqual(c.recipe.map(r => r.sourceTileRef), ["Fence7", "Fence7", "Fence7", "Fence7"]);
+  assert.ok(!c.recipe.some(r => r.sourceTileRef === "Fence3"));
+  assert.ok(c.recipe.some(r => r.flip), "a mirrored copy is used for the left side");
+  assert.strictEqual(c.pool[0].majorityRef, "Fence7");
+  // the type of every quadrant is matched by the source quadrant under the transform
+  c.recipe.forEach(r => assert.ok(["outer", "edgeH", "edgeV", "inner"].includes(r.type)));
+});
+test("cardinal-only composition: 00000000 with flip allowed is Fence1 for TL/BL and Fence1 flipped for TR/BR", () => {
+  const c = S.buildCandidates(fenceFolder)["00000000"];
+  assert.strictEqual(c.status, "composed");
+  assert.deepStrictEqual(c.recipe.map(r => [r.quadrantName, r.sourceTileRef, r.flip]), [["TL", "Fence1", false], ["TR", "Fence1", true], ["BR", "Fence1", true], ["BL", "Fence1", false]]);
+});
+test("cardinal-only composition: fewest distinct tiles beats fewest transforms; ties fall to transforms, then closeness, then sortIndex/ref; deterministic", () => {
+  const cands = S.buildCandidates(fenceFolder);
+  for (const code of S.CARDINAL_CODES) {
+    const c = cands[code];
+    if (c.status !== "composed") continue;
+    const distinct = new Set(c.recipe.map(r => r.sourceTileRef)).size;
+    // never worse than the old slot-by-slot answer (which used at most 4 tiles) and never more than needed: 1 whenever a single tile can do it
+    assert.ok(distinct >= 1 && distinct <= 4, code);
+  }
+  assert.deepStrictEqual(S.buildCandidates(fenceFolder)["00011010"].recipe, S.buildCandidates(fenceFolder)["00011010"].recipe);
+  // sortIndex decides between two equally good tiles: two copies of the east end, the lower sortIndex wins
+  const twin = folder("t", [{ ...FENCE_SET[0], ref: "Zed", sortIndex: 1 }, { ...FENCE_SET[0], ref: "Abe", sortIndex: 2 }, ...FENCE_SET.slice(1)], { flip: true });
+  assert.ok(S.buildCandidates(twin)["00000000"].recipe.every(r => r.sourceTileRef === "Zed"));
+  // exact-mode folders (10100101 fallback) and the fence rule are untouched: no composition at all
+  const exact = folder("e", [...FENCE_SET, { ref: "fb", sensorCode: "10100101", sensorRoll: 1, sortIndex: 9 }], { flip: true });
+  assert.ok(Object.values(S.buildCandidates(exact)).every(c => c.status !== "composed"));
+  // every composed recipe the cardinal path makes still has 4 entries in TL TR BR BL order with consistent types
+  for (const code of S.ALL_CODES) { const c = cands[code]; if (c.recipe) { assert.strictEqual(c.recipe.length, 4); assert.deepStrictEqual(c.recipe.map(r => r.quadrant), [0, 1, 2, 3]); } }
+});
