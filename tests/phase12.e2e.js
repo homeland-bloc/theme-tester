@@ -130,5 +130,54 @@ const tallPng = tag => {
     await ctx.close();
   });
 
+  // Modals taller than the viewport scroll inside themselves and keep their primary button reachable.
+  const solidPng = (w, h) => {
+    const zlib = require("zlib"), crc = require("../sensor_ui.js").crc32;
+    const chunk = (t, d) => { const b = Buffer.alloc(12 + d.length); b.writeUInt32BE(d.length, 0); b.write(t, 4, "ascii"); d.copy(b, 8); b.writeUInt32BE(crc(Buffer.concat([Buffer.from(t), d])), 8 + d.length); return b; };
+    const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4); ihdr[8] = 8; ihdr[9] = 6;
+    const raw = Buffer.alloc((w * 4 + 1) * h); for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const o = y * (w * 4 + 1) + 1 + x * 4; raw[o] = 200; raw[o + 3] = 255; }
+    return Buffer.concat([Buffer.from("89504e470d0a1a0a", "hex"), chunk("IHDR", ihdr), chunk("IDAT", zlib.deflateSync(raw)), chunk("IEND", Buffer.alloc(0))]);
+  };
+  const TALL = solidPng(200, 1600);
+  const fillAndCheck = async (page, vp, submitText, fields) => {
+    const modal = page.locator(".modal-box").last();
+    await modal.locator("input[type=file]").setInputFiles({ name: "tall.png", mimeType: "image/png", buffer: TALL });
+    for (const [ph, v] of fields) await modal.locator(`input[placeholder='${ph}']`).fill(v);
+    await page.waitForTimeout(300);
+    const m = await modal.boundingBox();
+    assert.ok(m.y >= 0 && m.y + m.height <= vp.height + 0.5, `dialog fits the viewport: y ${m.y}, h ${m.height}, vh ${vp.height}`);
+    const img = await modal.locator("img").first().boundingBox();
+    assert.ok(img.height <= vp.height * 0.4 + 1, `preview height ${img.height}`);
+    const btn = modal.locator(`button:has-text('${submitText}')`).last();
+    // wheel scrolling inside the dialog works
+    await modal.hover(); await page.mouse.wheel(0, 3000); await page.waitForTimeout(150);
+    const bb = await btn.boundingBox();
+    assert.ok(bb && bb.y >= 0 && bb.y + bb.height <= vp.height, `${submitText} inside the viewport: ${JSON.stringify(bb)}`);
+    const hit = await btn.evaluate(el => { const r = el.getBoundingClientRect(), e = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2); return !!e && (e === el || el.contains(e)); });
+    assert.ok(hit, `${submitText} is not covered by anything`);
+    assert.ok(await btn.isEnabled(), `${submitText} is enabled once the form is filled`);
+  };
+  const h2 = await H.start({ tilesets: TILESETS, tiles: TILES, role: "creator" }); // creators see Create Tileset and Add Tile
+  for (const vp of [{ width: 1280, height: 720 }, { width: 1280, height: 500 }, { width: 390, height: 700 }]) {
+    await h2.test(`modals scroll at ${vp.width}x${vp.height}: Create Tileset and Add Tile keep their button reachable after a tall upload`, async () => {
+      const { page, ctx, logs } = await h2.newPage({ viewport: vp });
+      if (vp.width < 600) { await page.waitForTimeout(3000); await page.mouse.click(19, 415); await page.waitForSelector("[data-ts-toggle]"); } // mobile: the tile panel starts folded
+      else { await h2.ready(page); await h2.settle(page); }
+      await page.click("[data-ts-toggle]");
+      await page.locator("text=Create Tileset").first().click();
+      await page.waitForSelector("input[placeholder='My Tileset']");
+      await page.fill("input[placeholder='My Tileset']", "Tall Set");
+      await fillAndCheck(page, vp, "Create Tileset", [["e.g. MyTileset_Wall1", "Tall_1"]]);
+      await page.locator("button:has-text('Cancel')").last().click();
+      await page.waitForSelector("input[placeholder='My Tileset']", { state: "detached" });
+      await page.click("[title='Add tile to Snowtel Gifts']");
+      await page.waitForSelector("input[placeholder='e.g. MyTileset_Wall1']");
+      await fillAndCheck(page, vp, "Add Tile", [["e.g. MyTileset_Wall1", "Tall_2"]]);
+      assert.deepStrictEqual(clean(logs), []);
+      await ctx.close();
+    });
+  }
+
+  await h2.finish();
   await h.finish();
 })();

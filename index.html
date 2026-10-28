@@ -81,13 +81,20 @@
     .modal-backdrop {
       position: fixed; inset: 0; background: rgba(0,0,0,0.72);
       display: flex; align-items: center; justify-content: center;
-      z-index: 10000; padding: 20px;
+      z-index: 10000; padding: 12px; overscroll-behavior: contain;
     }
+    /* Every dialog fits the viewport and scrolls inside itself (wheel and touch); title / footer marked below stay reachable. */
     .modal-box {
       background: #2b1a0a; border: 1px solid rgba(251,146,60,0.18);
       border-radius: 14px; padding: 22px; max-width: 340px; width: 100%;
       display: flex; flex-direction: column; gap: 16px;
+      max-height: calc(100vh - 24px); max-height: calc(100dvh - 24px);
+      overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; box-sizing: border-box;
     }
+    .modal-box > * { flex-shrink: 0; }
+    .modal-box img { max-height: 40vh; } /* a large upload cannot push the buttons away (inline max-heights are smaller or equal) */
+    .modal-sticky-head { position: sticky; top: -22px; z-index: 2; margin: -22px -22px 0; padding: 22px 22px 8px; background: inherit; border-radius: 14px 14px 0 0; }
+    .modal-sticky-foot { position: sticky; bottom: -22px; z-index: 2; margin: 0 -22px -22px; padding: 10px 22px 22px; background: inherit; border-radius: 0 0 14px 14px; }
 
   </style>
   <!-- Synchronously apply saved theme's scrollbar colours before React hydrates -->
@@ -850,7 +857,7 @@ function AddTileModal({ open, onClose, tsId, dbTilesets, file, onFileChange,
   return (
     <div className="modal-backdrop" onClick={() => { if (!loading) onClose(); }}>
       <div className="modal-box" style={{ maxWidth: 340 }} onClick={e => e.stopPropagation()}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div className="modal-sticky-head" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Add Tile — {tsName}</span>
           <button onClick={() => { if (!loading) onClose(); }} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
         </div>
@@ -888,7 +895,7 @@ function AddTileModal({ open, onClose, tsId, dbTilesets, file, onFileChange,
           <SensorOptionalFields code={sensorCode} onCode={onSensorCodeChange} roll={sensorRoll} onRoll={onSensorRollChange} />
           {error && <span style={{ fontSize: 11, color: C.danger }}>{error}</span>}
         </div>
-        <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+        <div className="modal-sticky-foot" style={{ display: "flex", gap: 6, marginTop: 4 }}>
           <button style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 12px", borderRadius: 5, border: `1px solid ${C.border}`, background: C.panelDeep, color: C.text, cursor: "pointer", fontSize: 11, flex: 1, justifyContent: "center" }}
             disabled={loading} onClick={onClose}>Cancel</button>
           <button style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 12px", borderRadius: 5, border: `1px solid ${C.accentDim}`, background: C.accentDim, color: C.accent, cursor: "pointer", fontSize: 11, flex: 1, justifyContent: "center" }}
@@ -1654,7 +1661,7 @@ const SymbolDictionaryList = ({ registry, free = true }) => {
 function SymbolDictionaryModal({ registry, onClose }) {
   return (
     <div className="modal-backdrop" onClick={onClose} style={{ zIndex: 10001 }}>
-      <div className="modal-box" data-symbol-dict-modal style={{ maxWidth: 480, maxHeight: "85vh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
+      <div className="modal-box" data-symbol-dict-modal style={{ maxWidth: 480 }} onClick={e => e.stopPropagation()}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Symbol dictionary</span>
           <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
@@ -2103,7 +2110,7 @@ function InfoModalBody(props) {
 
   return (
     <div className="modal-backdrop" onClick={() => { setInfoTile(null); setDeleteConfirmId(null); }}>
-      <div ref={modalScrollRef} className="modal-box" style={{ minWidth: 360, maxWidth: 500, maxHeight: '90vh', overflowY: 'auto' }} onClick={e => e.stopPropagation()}>
+      <div ref={modalScrollRef} className="modal-box" style={{ minWidth: 360, maxWidth: 500 }} onClick={e => e.stopPropagation()}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Tile info</span>
           <button onClick={() => { setInfoTile(null); setDeleteConfirmId(null); }} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
@@ -2788,7 +2795,7 @@ function SensorWarningModal({ folder, onClose }) {
   );
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal-box" onClick={e => e.stopPropagation()} style={{ maxWidth: 420, maxHeight: "80vh", overflowY: "auto" }}>
+      <div className="modal-box" onClick={e => e.stopPropagation()} style={{ maxWidth: 420 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <span style={{ fontSize: 13, fontWeight: 700, color: SENSOR_YELLOW }}>⚖️ {folder.label}: {folder.warnings.length ? (folder.warnings.some(w => w.level === "warning") ? "symbol differs" : "variants differ") : "tiles without a sensor code"}</span>
           <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
@@ -2854,7 +2861,7 @@ function SensorSimulationPanel({ folder, candidates, requestComposed, topEdgeOf,
   const order = [0, 1, 2, 3, null, 4, 5, 6, 7];
   return (
     <div className="modal-backdrop" onClick={onClose} style={{ zIndex: 3000 }}>
-      <div className="modal-box" onClick={e => e.stopPropagation()} style={{ maxWidth: 560, maxHeight: "90vh", overflowY: "auto", gap: 12 }}>
+      <div className="modal-box" onClick={e => e.stopPropagation()} style={{ maxWidth: 560, gap: 12 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <span style={{ fontSize: 13, fontWeight: 700, color: SENSOR_YELLOW }}>✨ Sensor folder simulation: {folder.label}</span>
           <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
@@ -6712,7 +6719,7 @@ function App() {
     const total = entries.reduce((a, e) => a + e.count, 0);
     return (
       <div className="modal-backdrop" onClick={() => setTileCounterOpen(false)} style={{ background: "rgba(0,0,0,0.45)" }}>
-        <div className="modal-box" data-tile-counter style={{ maxWidth: 560, maxHeight: "80vh" }} onClick={e => e.stopPropagation()}>
+        <div className="modal-box" data-tile-counter style={{ maxWidth: 560 }} onClick={e => e.stopPropagation()}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>🧮 Tile Counter <span style={{ fontWeight: 400, color: C.muted, fontSize: 11 }}>({entries.length} tiles, {total} cells)</span></span>
             <button onClick={() => setTileCounterOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18 }}>×</button>
@@ -7380,7 +7387,7 @@ function App() {
 
     return (
       <div className="modal-backdrop" onClick={() => setTilesetSwitchPending(null)}>
-        <div className="modal-box" data-compat-modal style={{ maxWidth: 480, maxHeight: '80vh', display: 'flex', flexDirection: 'column' }} onClick={e => e.stopPropagation()}>
+        <div className="modal-box" data-compat-modal style={{ maxWidth: 480, display: 'flex', flexDirection: 'column' }} onClick={e => e.stopPropagation()}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
             <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Tileset Compatibility</span>
             <button onClick={() => setTilesetSwitchPending(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.muted, fontSize: 18 }}>×</button>
@@ -7602,7 +7609,7 @@ function App() {
   const createTilesetModal = !createTsOpen ? null : (
     <div className="modal-backdrop" onClick={() => { if (!createTsLoading) resetCreateTs(); }}>
       <div className="modal-box" style={{ maxWidth: 340 }} onClick={e => e.stopPropagation()}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div className="modal-sticky-head" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <span style={{ fontSize: 13, fontWeight: 700, color: C.accentBright }}>Create Tileset</span>
           <button onClick={() => { if (!createTsLoading) resetCreateTs(); }} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
         </div>
@@ -7663,7 +7670,7 @@ function App() {
           <SensorOptionalFields code={createTsSensorCode} onCode={setCreateTsSensorCode} roll={createTsSensorRoll} onRoll={setCreateTsSensorRoll} />
           {createTsError && <span style={{ fontSize: 11, color: C.danger }}>{createTsError}</span>}
         </div>
-        <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+        <div className="modal-sticky-foot" style={{ display: "flex", gap: 6, marginTop: 4 }}>
           <button style={{ ...btn(false), flex: 1, justifyContent: "center" }} disabled={createTsLoading} onClick={resetCreateTs}>Cancel</button>
           <button style={{ ...btn(true, C.accent, C.accentDim), flex: 1, justifyContent: "center" }}
             disabled={createTsLoading || !createTsName.trim() || !createTsFolderPath.trim() || !createTsCodename.trim() || !createTsFile || !SensorUI.parseCodeInput(createTsSensorCode).ok || !SensorUI.parseRollInput(createTsSensorRoll).ok}
@@ -7920,7 +7927,7 @@ function App() {
       )}
       {seedBoxOpen && (
         <div className="modal-backdrop" onClick={() => setSeedBoxOpen(false)}>
-          <div className="modal-box" data-seed-box style={{ maxWidth: 560, width: "100%", maxHeight: "88vh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
+          <div className="modal-box" data-seed-box style={{ maxWidth: 560, width: "100%" }} onClick={e => e.stopPropagation()}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
               <span style={{ fontSize: 13, fontWeight: 700, color: C.accent }}>Map seed</span>
               <button data-seed-box-close onClick={() => setSeedBoxOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
@@ -7987,7 +7994,7 @@ function App() {
         const ready = ambiguous.every(x => choices[x.key]);
         return (
           <div className="modal-backdrop" onClick={() => setSeedModal(null)}>
-            <div className="modal-box" data-seed-import-modal style={{ maxWidth: 520, maxHeight: "85vh", overflowY: "auto" }} onClick={e => e.stopPropagation()}
+            <div className="modal-box" data-seed-import-modal style={{ maxWidth: 520 }} onClick={e => e.stopPropagation()}
               onKeyDown={e => { if (e.key === "Enter" && ready) { e.preventDefault(); setSeedModal(null); applySeed(dec, r, choices); } else if (e.key === "Escape") setSeedModal(null); }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                 <span style={{ fontSize: 13, fontWeight: 700, color: C.accent }}>Import seed</span>
@@ -8038,7 +8045,7 @@ function App() {
         const off = !!rerollOff[variantsFolder];
         return (
           <div className="modal-backdrop" onClick={() => setVariantsFolder(null)}>
-            <div className="modal-box" data-variants-modal={variantsFolder} style={{ maxWidth: 460, maxHeight: "85vh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
+            <div className="modal-box" data-variants-modal={variantsFolder} style={{ maxWidth: 460 }} onClick={e => e.stopPropagation()}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                 <span style={{ fontSize: 13, fontWeight: 700, color: SENSOR_YELLOW }}>Choose variants: {sf.ui.label}</span>
                 <button onClick={() => setVariantsFolder(null)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
@@ -8121,7 +8128,7 @@ function App() {
       {/* ── Admin Dashboard modal (issue 3) ── */}
       {adminOpen && (
         <div className="modal-backdrop" onClick={() => setAdminOpen(false)}>
-          <div className="modal-box" style={{ maxWidth: 480, maxHeight: '85vh', overflowY: 'auto' }} onClick={e => e.stopPropagation()}>
+          <div className="modal-box" style={{ maxWidth: 480 }} onClick={e => e.stopPropagation()}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
               <span style={{ fontSize: 13, fontWeight: 700, color: "#fbbf24" }}>🛡 Admin Dashboard</span>
               <button onClick={() => setAdminOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 18, lineHeight: 1 }}>×</button>
