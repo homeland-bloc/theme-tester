@@ -208,6 +208,68 @@ const TILES = { "ts-0": [
     await ctx.close();
   });
 
+  // ── Map geometry: panning and seams ──────────────────────────────────────────────────────────────────────
+  const FLAT = U(70);
+  const flatRow = row(FLAT, "ts-0", "Flat", { sort_index: 90, image_url: "https://stub.invalid/img/Flat.png" });
+  TILES["ts-0"].push(flatRow);
+  const filled = (r0, r1, c0, c1) => Array.from({ length: 33 }, (_, r) => Array.from({ length: 21 }, (_, c) => (r >= r0 && r <= r1 && c >= c0 && c <= c1 ? 1 : null)));
+  const FLATMAP = { v: 2, palette: [`d:${FLAT}`], grid: filled(8, 17, 4, 14) };
+  const zoomText = page => page.evaluate(() => { const t = [...document.querySelectorAll("span")].find(e => /^\d+%$/.test(e.textContent.trim()) && e.title === "Click to reset zoom to fit"); return t ? parseInt(t.textContent, 10) : null; });
+  const zoomTo = async (page, pct) => {
+    for (let i = 0; i < 120 && (await zoomText(page)) !== pct; i++) { await page.keyboard.press((await zoomText(page)) < pct ? "+" : "-"); await page.waitForTimeout(30); }
+    assert.strictEqual(await zoomText(page), pct);
+    await page.waitForTimeout(150);
+  };
+
+  await test("REPRO + FIX: with both panels folded on a 390px phone at 300% zoom, every edge of the map can be scrolled into view (left and right, top and bottom)", async () => {
+    const { page, ctx } = await newPage({ viewport: { width: 390, height: 844 }, storage: { oph_gridW: 21, oph_gridH: 33, oph_grid: FLATMAP } });
+    await page.waitForSelector("[data-map-scroll]", { timeout: 30000 }); await settle(page);
+    await zoomTo(page, 300);
+    const edges = () => page.evaluate(() => {
+      const sc = document.querySelector("[data-map-scroll]"), box = sc.getBoundingClientRect();
+      const res = {};
+      for (const [name, sl, st, cell] of [["tl", 0, 0, "0,0"], ["br", 1e9, 1e9, "32,20"], ["tr", 1e9, 0, "0,20"], ["bl", 0, 1e9, "32,0"]]) {
+        sc.scrollLeft = sl; sc.scrollTop = st;
+        const r = document.querySelector(`[data-cell='${cell}']`).getBoundingClientRect();
+        res[name] = { left: r.left - box.left, right: box.right - r.right, top: r.top - box.top, bottom: box.bottom - r.bottom };
+      }
+      return { res, scrollW: sc.scrollWidth, clientW: sc.clientWidth };
+    });
+    const { res, scrollW, clientW } = await edges();
+    assert.ok(scrollW > clientW * 2, "the map is much wider than the screen: " + scrollW + " vs " + clientW);
+    assert.ok(res.tl.left >= -0.5 && res.tl.top >= -0.5, "top-left cell reachable: " + JSON.stringify(res.tl));
+    assert.ok(res.bl.left >= -0.5 && res.bl.bottom >= -0.5, "bottom-left cell reachable: " + JSON.stringify(res.bl));
+    assert.ok(res.tr.right >= -0.5 && res.tr.top >= -0.5, "top-right cell reachable: " + JSON.stringify(res.tr));
+    assert.ok(res.br.right >= -0.5 && res.br.bottom >= -0.5, "bottom-right cell reachable: " + JSON.stringify(res.br));
+    // symmetric: the same padding on the left as on the right
+    assert.ok(Math.abs(res.tl.left - res.tr.right) <= 1, `left ${res.tl.left} right ${res.tr.right}`);
+    await ctx.close();
+  });
+
+  await test("seams: no dark gap pixels between neighbouring tiles at any zoom (counted inside a 4x4 block of identical opaque tiles)", async () => {
+    const { page, ctx } = await newPage({ storage: { oph_gridW: 21, oph_gridH: 33, oph_grid: FLATMAP, oph_colors: { bg1: "#000000", bg2: "#000000" } } });
+    await page.route("**/stub.invalid/img/Flat.png", route => route.fulfill({ status: 200, contentType: "image/png", body: solidPng(32, 32), headers: { "access-control-allow-origin": "*" } }));
+    await ready(page); await settle(page);
+    const counts = {};
+    for (const pct of [100, 110, 150, 170, 230, 300]) {
+      await zoomTo(page, pct);
+      await page.evaluate(() => { const sc = document.querySelector("[data-map-scroll]"), c = document.querySelector("[data-cell='13,9']").getBoundingClientRect(), b = sc.getBoundingClientRect(); sc.scrollLeft += c.left - (b.left + b.width / 2) + 40; sc.scrollTop += c.top - (b.top + b.height / 2) + 40; });
+      await page.waitForTimeout(150);
+      const clip = await page.evaluate(() => { const a = document.querySelector("[data-cell='11,7']").getBoundingClientRect(), z = document.querySelector("[data-cell='14,10']").getBoundingClientRect(); return { x: Math.ceil(a.left), y: Math.ceil(a.top), width: Math.floor(z.right) - Math.ceil(a.left), height: Math.floor(z.bottom) - Math.ceil(a.top) }; });
+      const png = await page.screenshot({ clip });
+      counts[pct] = await page.evaluate(async b64 => {
+        const im = new Image(); await new Promise(r => { im.onload = r; im.src = "data:image/png;base64," + b64; });
+        const cv = document.createElement("canvas"); cv.width = im.width; cv.height = im.height; const ctx = cv.getContext("2d"); ctx.drawImage(im, 0, 0);
+        const d = ctx.getImageData(0, 0, im.width, im.height).data; let dark = 0;
+        for (let i = 0; i < d.length; i += 4) if (d[i] < 200) dark++; // the tiles are pure red (255,0,0); anything not red is the background showing through
+        return dark;
+      }, png.toString("base64"));
+    }
+    console.log("     dark gap pixels per zoom:", JSON.stringify(counts));
+    for (const [pct, n] of Object.entries(counts)) assert.strictEqual(n, 0, `${pct}%: ${n} dark pixels between tiles`);
+    await ctx.close();
+  });
+
   await h.finish();
 
   // ── Hidden (unpublished) tileset on refresh ─────────────────────────────────────────────────────────────

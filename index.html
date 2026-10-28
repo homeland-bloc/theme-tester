@@ -1543,6 +1543,21 @@ function TilesetGearModal({
 }
 
 // ── Main App ───────────────────────────────────────────────────────────
+// Where a tile image sits in its cell. A tile with no size multiplier and no offset is a BASE GRID tile: its left edge is snapped to a whole pixel and its
+// size is the larger of the cell's snapped width and height, so neighbours share their edges (or overlap by under a pixel, hidden under the next tile in
+// paint order) instead of leaving a thin dark seam from two half-covered pixels at a fractional zoom. The vertical centre is chosen so a square image's top
+// edge is a whole pixel too. The tile is drawn through a transform (translateY(-50%)), and a transformed layer is not pixel-snapped by the browser, so
+// when the cell size is fractional it also overlaps its right and bottom neighbours by 1px (hidden under them: later in paint order), which leaves no pixel
+// half-covered by two tiles. Tiles with a multiplier or an offset keep their exact, unsnapped position.
+function tileBox(r, c, cellPx, mult, ox, oy) {
+  if (mult === 1 && ox === 0 && oy === 0) {
+    const left = Math.round(c * cellPx), top = Math.round((r + 1) * cellPx);
+    const w = Math.max(Math.round((c + 1) * cellPx) - left, Math.round((r + 2) * cellPx) - top) + (Number.isInteger(cellPx) ? 0 : 1);
+    return { left, top: top + w / 2, width: w };
+  }
+  return { left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult };
+}
+
 // ── Fit-to-viewport zoom ───────────────────────────────────────────────
 function calcFitZoom(gw, gh) {
   const gridW = gw || GRID_W, gridH = gh || GRID_H;
@@ -9221,7 +9236,7 @@ function App() {
         </div>
 
         {/* ── CANVAS ───────────────────────────────────────────────── */}
-          <div ref={scrollRef}
+          <div ref={scrollRef} data-map-scroll
             style={{ flex: 1, minWidth: 0, height: "100%", overflow: "auto", background: C.bg, cursor: handMode ? "grab" : (dragTile || highlightDragOffset ? "grabbing" : eyedropperMode ? "cell" : highlightMode ? "copy" : "crosshair") }}
             onWheel={onWheel}
             onMouseDown={e => {
@@ -9267,7 +9282,9 @@ function App() {
               paintingRef.current = false;
             }}
           >
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minWidth: "100%", minHeight: "100%", padding: 60, boxSizing: "border-box" }}>
+            {/* width: max-content so the scrollable area is the map plus its 60px padding on EVERY side. With the old width (the viewport's) a map wider than the viewport
+                overflowed to the left of a centred flex row, where scrolling cannot reach (the left third was unreachable at high zoom). */}
+            <div data-map-content style={{ display: "flex", alignItems: "center", justifyContent: "center", width: "max-content", minWidth: "100%", minHeight: "100%", padding: 60, boxSizing: "border-box" }}>
               <div ref={canvasContainerRef} style={{ position: "relative", width: gW, height: (gridH + 2) * CELL * zoom, flexShrink: 0, isolation: "isolate", contain: "layout style paint" }}>
 
                 {/* Checkerboard — single CSS-gradient element, no inter-cell boundaries at fractional zoom */}
@@ -9307,7 +9324,7 @@ function App() {
                     const ox = (off.ox / 100) * cellPx;
                     const oy = (off.oy / 100) * cellPx;
                     const tileImg = <img key={`bot${r}-${c}`} src={imgSrc} alt="" draggable={false} decoding="async"
-                      style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%)${svCss}`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 1 }}
+                      style={{ position: "absolute", ...tileBox(r, c, cellPx, mult, ox, oy), height: "auto", transform: `translateY(-50%)${svCss}`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 1 }}
                     />;
                     if (!isAutoShadowTile(cellSizeTile(t, r, c))) return tileImg;
                     return [
@@ -9333,7 +9350,7 @@ function App() {
                     const ox = (off.ox / 100) * cellPx;
                     const oy = (off.oy / 100) * cellPx;
                     const tileImg = <img key={`t${r}-${c}`} src={imgSrc} alt="" draggable={false} decoding="async"
-                      style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%)${svCss}`, pointerEvents: "none", imageRendering: "pixelated", zIndex: r + 2 }}
+                      style={{ position: "absolute", ...tileBox(r, c, cellPx, mult, ox, oy), height: "auto", transform: `translateY(-50%)${svCss}`, pointerEvents: "none", imageRendering: "pixelated", zIndex: r + 2 }}
                     />;
                     if (!isAutoShadowTile(cellSizeTile(t, r, c))) return tileImg;
                     return [
@@ -9358,7 +9375,7 @@ function App() {
                     const ox = (off.ox / 100) * cellPx;
                     const oy = (off.oy / 100) * cellPx;
                     const tileImg = <img key={`prio${r}-${c}`} src={imgSrc} alt="" draggable={false} decoding="async"
-                      style={{ position: "absolute", left: (c + 0.5) * cellPx - (cellPx * mult) / 2 + ox, top: (r + 1 + 0.5) * cellPx + oy, width: cellPx * mult, height: "auto", transform: `translateY(-50%)${svCss}`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 9999 }}
+                      style={{ position: "absolute", ...tileBox(r, c, cellPx, mult, ox, oy), height: "auto", transform: `translateY(-50%)${svCss}`, pointerEvents: "none", imageRendering: "pixelated", zIndex: 9999 }}
                     />;
                     if (!isAutoShadowTile(cellSizeTile(t, r, c))) return tileImg;
                     return [
