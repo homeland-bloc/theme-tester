@@ -345,6 +345,7 @@ const buildDbTile = (row, tsRow) => {
     dbTilesetId: row.tileset_id,
     codename: row.codename,
     src: row.image_url,
+    blobSrc: SESSION_IMAGES.get(row.image_url), // the editor's own just-uploaded bytes (undefined for everyone else's images)
     isDefault: true,
     isDb: true,
     tilesetName: tsRow.name,
@@ -454,8 +455,19 @@ const RAW_BASE = 'https://raw.githubusercontent.com/bicipikay/ophelia/main/';
 const FILE_NAME_RE = /^[A-Za-z0-9._+-]{1,100}$/;
 const FILE_EXTS = ['.png', '.jpg', '.jpeg', '.gif', '.webp'];
 
+// ?v= is strictly increasing within a page, so a path that is written twice in one session (replace, or delete and re-add under a reused
+// file name) never gets the same link twice and the browser never reuses a cached copy of the old file.
+let lastVersionStamp = 0;
+const nextVersionStamp = () => { lastVersionStamp = Math.max(Date.now(), lastVersionStamp + 1); return lastVersionStamp; };
 function rawUrl(filePath, bust = true) {
-  return RAW_BASE + filePath.split('/').map(encodeURIComponent).join('/') + (bust ? `?v=${Date.now()}` : '');
+  return RAW_BASE + filePath.split('/').map(encodeURIComponent).join('/') + (bust ? `?v=${nextVersionStamp()}` : '');
+}
+// Images this session uploaded: image_url (with its fresh ?v=) -> blob URL of the exact bytes that were uploaded. GitHub's CDN may keep serving
+// the previous file for the same path for about five minutes (raw.githubusercontent.com caches by path), so the editor who just uploaded sees the
+// new bytes at once from here; every other user may still see the old image until that cache expires (not fixable from the app).
+const SESSION_IMAGES = new Map();
+function keepUploadedImage(imageUrl, blob) {
+  try { const old = SESSION_IMAGES.get(imageUrl); if (old) URL.revokeObjectURL(old); SESSION_IMAGES.set(imageUrl, URL.createObjectURL(blob)); } catch {}
 }
 // Repo path (decoded, no query) for a raw URL in bicipikay/ophelia, else null (external).
 function repoPathFromUrl(url) {
@@ -1815,12 +1827,14 @@ function InfoModalBody(props) {
         commitMessage: `[${currentUser.username}] Replace tile: ${filePath.slice('Resources/'.length)}`,
       });
       const newUrl = rawUrl(filePath);
+      keepUploadedImage(newUrl, file); // shown from the uploaded bytes at once (see SESSION_IMAGES)
       const patchResp = await workerFetch(`${WORKER_URL}/rest/v1/tiles?id=eq.${tile.dbId}`, {
         method: 'PATCH',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
         body: JSON.stringify({ image_url: newUrl, last_updated_at: new Date().toISOString(), last_updated_by: currentUser.id }), // newUrl carries a fresh ?v=
       });
       if (!patchResp.ok) throw new Error('DB patch failed');
+      setDbTilesByTsId(prev => (prev[tile.tilesetId] ? { ...prev, [tile.tilesetId]: prev[tile.tilesetId].map(row => (row.id === tile.dbId ? { ...row, image_url: newUrl } : row)) } : prev)); // the in-memory tile is rebuilt now, not after the refetch
       URL.revokeObjectURL(previewUrl);
       setReplaceImgPending(null);
       setTsFetchTrigger(n => n + 1);
@@ -2421,7 +2435,7 @@ function InfoModalBody(props) {
               🔃 Spin / flip image
             </button>
             {spinFlipOpen && <SpinFlipImageModal tile={t} getValidToken={getValidToken} workerFetch={workerFetch} currentUser={currentUser} btn={btn}
-              onClose={() => setSpinFlipOpen(false)} onApplied={() => { setSpinFlipOpen(false); setTsFetchTrigger(n => n + 1); setInfoTile(null); }} />}
+              onClose={() => setSpinFlipOpen(false)} onApplied={newUrl => { setSpinFlipOpen(false); setDbTilesByTsId(prev => (prev[t.tilesetId] ? { ...prev, [t.tilesetId]: prev[t.tilesetId].map(row => (row.id === t.dbId ? { ...row, image_url: newUrl } : row)) } : prev)); setTsFetchTrigger(n => n + 1); setInfoTile(null); }} />}
           </>
         )}
 
@@ -2458,7 +2472,7 @@ function InfoModalBody(props) {
                 <div style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 10, padding: '20px 24px', minWidth: 280, maxWidth: 380, display: 'flex', flexDirection: 'column', gap: 14 }}>
                   <span style={{ fontWeight: 700, fontSize: 14, color: C.accentBright }}>Replace Image</span>
                   <div style={{ display: 'flex', gap: 12 }}>
-                    {[{ label: 'Current', src: replaceImgPending.tile.src }, { label: 'New', src: replaceImgPending.previewUrl }].map(({ label, src }) => (
+                    {[{ label: 'Current', src: replaceImgPending.tile.blobSrc ?? replaceImgPending.tile.src }, { label: 'New', src: replaceImgPending.previewUrl }].map(({ label, src }) => (
                       <div key={label} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
                         <span style={{ fontSize: 10, color: C.muted }}>{label}</span>
                         <div className="tile-img-checker" style={{ width: 32, height: 32 }}>
@@ -2631,7 +2645,8 @@ function SpinFlipImageModal({ tile, getValidToken, workerFetch, currentUser, btn
     let dead = false, objUrl = null;
     (async () => {
       try {
-        const resp = await fetch(SensorUI.withFreshVersion(tile.src, Date.now()), { mode: "cors", cache: "no-store" });
+        // the editor's own last upload when there is one (the CDN may still hold the previous file), else the current file
+        const resp = await fetch(tile.blobSrc ? tile.blobSrc : SensorUI.withFreshVersion(tile.src, nextVersionStamp()), { mode: "cors", cache: "no-store" });
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         objUrl = URL.createObjectURL(await resp.blob());
         const im = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error("the image could not be decoded")); i.src = objUrl; });
@@ -2672,13 +2687,15 @@ function SpinFlipImageModal({ tile, getValidToken, workerFetch, currentUser, btn
         filePath, contentBase64: await fileToBase64(blob), overwrite: true,
         commitMessage: `[${currentUser.username}] Spin/flip tile image: ${filePath.slice("Resources/".length)}`,
       });
+      const newUrl = rawUrl(filePath);
+      keepUploadedImage(newUrl, blob);
       const patchResp = await workerFetch(`${WORKER_URL}/rest/v1/tiles?id=eq.${tile.dbId}`, {
         method: "PATCH",
         headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json", "Prefer": "return=minimal" },
-        body: JSON.stringify({ image_url: rawUrl(filePath), last_updated_at: new Date().toISOString(), last_updated_by: currentUser.id }),
+        body: JSON.stringify({ image_url: newUrl, last_updated_at: new Date().toISOString(), last_updated_by: currentUser.id }),
       });
       if (!patchResp.ok) throw new Error("The image was uploaded but the database update failed (press Apply again to retry the link update)");
-      onApplied();
+      onApplied(newUrl);
     } catch (e) {
       setError(/tainted|SecurityError/i.test(String(e && (e.name + e.message))) ? "The canvas is tainted by a cross-origin image, so the result cannot be read. Nothing was changed." : "Failed: " + e.message);
     } finally { setBusy(false); }
@@ -7454,6 +7471,7 @@ function App() {
         filePath, contentBase64, overwrite: false,
         commitMessage: `[${currentUser.username}] New tileset: ${folderPath}`,
       });
+      keepUploadedImage(imageUrl, createTsFile);
 
       setTsFetchTrigger(n => n + 1);
       setCreateTsOpen(false);
@@ -7631,6 +7649,7 @@ function App() {
         filePath, contentBase64, overwrite: false,
         commitMessage: `[${currentUser.username}] Add tile: ${tilesetFolderPath}/${fileName}`,
       });
+      keepUploadedImage(imageUrl, addTileFile); // a deleted tile re-added under a reused file name shows the new bytes at once (see SESSION_IMAGES)
 
       setTsFetchTrigger(n => n + 1);
       setAddTileOpen(false);

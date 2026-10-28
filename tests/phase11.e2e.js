@@ -8,6 +8,7 @@ const TILESETS = [
   { id: "ts-0", name: "Snowtel Gifts", seed_id: 0, is_published: true, owner_id: "u1", folder_path: "Snow", profiles: { username: "tester" } },
   { id: "ts-5", name: "Export Set", seed_id: 5, is_published: true, owner_id: "u1", folder_path: "Exp", profiles: { username: "tester" } },
 ];
+const RAWLAMP = "https://raw.githubusercontent.com/bicipikay/ophelia/main/Resources/Exp/Lamp.png?v=1";
 const U = n => `a0000000-0000-4000-8000-0000000000${String(n).padStart(2, "0")}`;
 const TILES = { "ts-0": [
   row(U(1), "ts-0", "Wall1", { sort_index: 1 }),
@@ -18,12 +19,21 @@ const TILES = { "ts-0": [
   ...["00001011", "01111111", "01101011", "11111111"].map((c, i) => row(U(20 + i), "ts-0", "Pond_" + c, { folder_key: "Pond", sensor_code: c, sort_index: 20 + i, symbol: "W", rotatable: true })),
 ], "ts-5": [
   row(U(40), "ts-5", "Plain", { sort_index: 1, symbol: "M" }),
-  row(U(41), "ts-5", "Lamp", { sort_index: 2, offset_x: 10, offset_y: 20, auto_shadow: true, size_multiplier: 2, symbol: "D" }),
+  row(U(41), "ts-5", "Lamp", { image_url: RAWLAMP, sort_index: 2, offset_x: 10, offset_y: 20, auto_shadow: true, size_multiplier: 2, symbol: "D" }),
   ...["00001011", "01111111", "01101011", "11111111"].map((c, i) => row(U(50 + i), "ts-5", "Pond_" + c, { folder_key: "Pond", sensor_code: c, sort_index: 20 + i, symbol: "W", rotatable: true })),
 ] };
 
 (async () => {
-  const h = await H.start({ tilesets: TILESETS, tiles: TILES, role: "user" });
+  const uploads = [];
+  const h = await H.start({ tilesets: TILESETS, tiles: TILES, role: "user", onWorker: async (route, url, reply) => {
+    if (url.pathname === "/github/upload") { uploads.push(JSON.parse(route.request().postData())); reply(200, { ok: true }); return true; }
+    if (url.pathname === "/rest/v1/tiles" && route.request().method() === "PATCH" && /^eq\./.test(url.searchParams.get("id") || "")) { // the stub database keeps what it is sent
+      const hit = Object.values(TILES).flat().find(r => r.id === url.searchParams.get("id").slice(3));
+      if (hit) Object.assign(hit, JSON.parse(route.request().postData()));
+      reply(204, ""); return true;
+    }
+    return false;
+  } });
   const { test, newPage, ready, settle, assert, requests } = h;
   const clean = logs => logs.filter(l => !/Failed to load resource|\[BABEL\]/.test(l));
 
@@ -109,7 +119,7 @@ const TILES = { "ts-0": [
 
   await test("Export tileset (zip): read-only, native-size images grouped by folder, derived + composed sensor variants as PNG, tiles.json, defaults follow the data", async () => {
     const { page, ctx, logs } = await newPage();
-    await page.route("**/stub.invalid/img/Lamp.png*", route => route.fulfill({ status: 200, contentType: "image/png", body: solidPng(10, 10), headers: { "access-control-allow-origin": "*" } }));
+    await page.route("**/raw.githubusercontent.com/**/Lamp.png*", route => route.fulfill({ status: 200, contentType: "image/png", body: solidPng(10, 10), headers: { "access-control-allow-origin": "*" } }));
     await ready(page); await settle(page);
     await openGear(page, "Export Set");
     const before = requests.length;
@@ -151,7 +161,7 @@ const TILES = { "ts-0": [
 
   await test("Export tileset (zip): a failing image is reported per tile and the export still completes; options can be switched off", async () => {
     const { page, ctx } = await newPage();
-    await page.route("**/stub.invalid/img/Lamp.png*", route => route.fulfill({ status: 404, body: "no" }));
+    await page.route("**/raw.githubusercontent.com/**/Lamp.png*", route => route.fulfill({ status: 404, body: "no" }));
     await ready(page); await settle(page);
     await openGear(page, "Export Set");
     await page.click("[data-export-open]");
@@ -163,6 +173,38 @@ const TILES = { "ts-0": [
     await page.waitForSelector("[data-export-failures]");
     assert.ok(/Export Set\/Lamp\.png: download failed \(404\)/.test(await page.textContent("[data-export-failures]")));
     assert.ok(!("Export Set/Lamp.png" in z) && "Export Set/Plain.png" in z && !("Export Set/tiles.json" in z));
+    await ctx.close();
+  });
+
+  await test("REPRO + FIX: after Replace Image the editor sees the uploaded bytes at once (blob), although the CDN still serves the old file; every replace gets a new ?v=", async () => {
+    const { page, ctx, logs } = await newPage();
+    const OLD = solidPng(4, 4), NEW = solidPng(6, 6);
+    await page.route("**/raw.githubusercontent.com/**", route => route.fulfill({ status: 200, contentType: "image/png", body: OLD, headers: { "access-control-allow-origin": "*" } })); // the stale CDN
+    await ready(page); await settle(page);
+    await page.click("[data-ts-toggle]"); await page.click('[data-ts-option="Export Set"]'); await settle(page);
+    const card = `[data-tile-card="d:${U(41)}"] img`;
+    await page.waitForSelector(card);
+    assert.ok((await page.getAttribute(card, "src")).startsWith("https://raw.githubusercontent.com/"), "before: the CDN url");
+    const stamps = [];
+    for (const png of [NEW, solidPng(8, 8)]) {
+      await page.click(`[data-tile-info="d:${U(41)}"]`);
+      await page.waitForSelector("#replace-img-input", { state: "attached" });
+      await page.setInputFiles("#replace-img-input", { name: "x.png", mimeType: "image/png", buffer: png });
+      const before = requests.length;
+      await page.getByText("Confirm Replace").click();
+      await page.waitForFunction(() => !document.body.innerText.includes("Confirm Replace") || /Failed to replace/.test(document.body.innerText));
+      const shown = await page.innerText("body");
+      assert.ok(!/Failed to replace/.test(shown), (/Failed to replace[^\n]*/.exec(shown) || [""])[0]);
+      await settle(page);
+      const patch = requests.slice(before).find(r => r.method === "PATCH" && /tiles\?id=/.test(r.path + r.query));
+      stamps.push(Number(/\?v=(\d+)/.exec(JSON.parse(patch.body).image_url)[1]));
+      const src = await page.getAttribute(card, "src");
+      assert.ok(src.startsWith("blob:"), "the tile shows the uploaded bytes, not the CDN copy: " + src);
+      const got = await page.evaluate(async u => { const b = new Uint8Array(await (await fetch(u)).arrayBuffer()); return Array.from(b.slice(16, 24)); }, src);
+      assert.deepStrictEqual(Buffer.from(got).readUInt32BE(0), png.readUInt32BE(16), "width in the IHDR is the uploaded image's");
+    }
+    assert.ok(stamps[1] > stamps[0] && stamps[0] > 1, "a new ?v= every time: " + stamps);
+    assert.strictEqual(uploads.length, 2);
     await ctx.close();
   });
 
