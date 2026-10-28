@@ -127,7 +127,7 @@ const test = async (name, fn) => {
     return { page, ctx, logs };
   };
   // The seed UI is the "Map seed" modal: ready() waits for the app and opens it; box() reopens it after an import closed it.
-  const box = async page => { if (!(await page.locator("[data-seed-box]").count())) { await page.click("[data-map-seed-open]"); await page.waitForSelector("[data-seed-box]"); } };
+  const box = async page => { if (!(await page.locator("[data-seed-box]").count())) { await page.locator("[data-map-seed-open]").evaluate(el => el.click()); await page.waitForSelector("[data-seed-box]"); } }; // DOM click: an error toast at the bottom centre can sit over the (now shorter) bottom panel
   const ready = async page => { await page.waitForSelector("[data-map-seed-open]", { timeout: 30000 }); await page.waitForTimeout(300); await box(page); };
   const saved = page => page.evaluate(() => ({ grid: JSON.parse(localStorage.getItem("oph_grid") || "null"), w: JSON.parse(localStorage.getItem("oph_gridW") || "null"), h: JSON.parse(localStorage.getItem("oph_gridH") || "null"), ts: JSON.parse(localStorage.getItem("oph_active_ts") || "null"), cc: JSON.parse(localStorage.getItem("oph_custom_center") || "null"), ccs: JSON.parse(localStorage.getItem("oph_custom_center_size") || "null"), mirror: JSON.parse(localStorage.getItem("oph_mirror") || "null") }));
   const settle = page => page.waitForTimeout(600);
