@@ -508,3 +508,14 @@ test("hasRerollableTies: shared-code pool, roll-0 excluded, rails tie, exact mod
   assert.strictEqual(S.hasRerollableTies(water), false); // explicit-only, composes: nothing for the hash to decide
   assert.strictEqual(S.hasRerollableTies(folder("empty", [])), false);
 });
+
+// ── Regression snapshot: folders with diagonal-bit codes (water) keep the original composition algorithm EXACTLY ──
+test("water regression: the full candidate table (status, derived sources, composed recipe: tile, quadrant, transform) of the 4-base water folder and the 8-tile depth fixture is unchanged for all 47 codes", () => {
+  const { water: w, depth: d, snapshot } = require("./fixtures/water_snapshot.js");
+  const want = require("./fixtures/water_recipes.json");
+  assert.deepStrictEqual(snapshot(w), want.water);
+  assert.deepStrictEqual(snapshot(d), want.depth);
+  assert.strictEqual(Object.keys(want.water).length, 47);
+  assert.strictEqual(Object.keys(want.depth).length, 47);
+  assert.ok(!S.folderMode(w).cardinalOnly && !S.folderMode(d).cardinalOnly, "diagonal-bit folders never take the cardinal-only ranking");
+});
