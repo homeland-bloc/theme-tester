@@ -386,7 +386,7 @@ test("bakeLayout: padding goes on the side OPPOSITE to each offset; no offset, n
   assert.deepStrictEqual(U.rowOffset({ offset_x: "10", offset_y: 5 }), { ox: 10, oy: 5 }); assert.deepStrictEqual(U.rowOffset({ offset_x: 10, offset_y: null }), { ox: 0, oy: 0 });
   assert.ok(U.hasOffset({ offset_x: 0, offset_y: 3 }) && !U.hasOffset({ offset_x: 0, offset_y: 0 }) && !U.hasOffset({}));
 });
-test("planTilesetExport: plain tiles by codename, sensor folders as <Folder>_<code>[_n] with real, derived and composed variants, tileset folder at the top, exact mode adds none", () => {
+test("planTilesetExport: plain tiles by codename, sensor folders as <code>[_n].png with real, derived and composed variants, tileset folder at the top, exact mode adds none", () => {
   const row = (id, codename, extra = {}) => ({ id, codename, image_url: `https://i/${codename}.png?v=3`, folder_key: null, sensor_code: null, sensor_roll: 1, sort_index: 0, rotatable: false, flippable: false, ...extra });
   const rows = [row("1", "Wall1"), row("2", "Wall1"), row("3", "Crate", { folder_key: "Props" }),
     ...["00001011", "01111111", "01101011", "11111111"].map((c, i) => row("w" + i, "Pond_" + c, { folder_key: "Pond", sensor_code: c, sort_index: 10 + i, rotatable: true })),
@@ -398,23 +398,25 @@ test("planTilesetExport: plain tiles by codename, sensor folders as <Folder>_<co
   assert.strictEqual(new Set(paths.map(p => p.toLowerCase())).size, paths.length, "all unique");
   assert.deepStrictEqual(paths.filter(p => !p.includes("Pond/") && !p.includes("Bars/")), ["My_Set/Wall1.png", "My_Set/Wall1_2.png", "My_Set/Props/Crate.png"]);
   const pond = plan.items.filter(i => i.folder === "Pond");
-  assert.deepStrictEqual(pond.filter(i => i.kind === "real").map(i => i.file), ["Pond_00001011.png", "Pond_01111111.png", "Pond_01101011.png", "Pond_11111111.png", "Pond_11111111.jpg"]);
+  assert.deepStrictEqual(pond.filter(i => i.kind === "real").map(i => i.file), ["00001011.png", "01111111.png", "01101011.png", "11111111.png", "11111111_2.jpg"]);
   const cand = S.buildCandidates(U.engineFolder(U.makeFolder({ scope: "x", folderKey: "Pond", label: "Pond", tiles: rows.filter(r => r.folder_key === "Pond").map(r => ({ ref: r.id, codename: r.codename, sensorCode: r.sensor_code, sensorRoll: 1, sortIndex: r.sort_index, dbRotatable: true, dbFlippable: false })) })));
   const want = (st) => Object.values(cand).filter(c => c.status === st).reduce((n, c) => n + c.pool.length, 0);
   assert.strictEqual(pond.filter(i => i.kind === "derived").length, want("derived"));
   assert.strictEqual(pond.filter(i => i.kind === "composed").length, want("composed"));
   assert.ok(want("composed") > 20 && want("derived") >= 9);
-  assert.ok(pond.filter(i => i.kind !== "real").every(i => i.path.endsWith(".png") && /^My_Set\/Pond\/Pond_[01]{8}(_\d+)?\.png$/.test(i.path)));
+  assert.ok(pond.filter(i => i.kind !== "real").every(i => i.path.endsWith(".png") && /^My_Set\/Pond\/[01]{8}(_\d+)?\.png$/.test(i.path)));
   const dr = pond.find(i => i.kind === "derived");
   assert.ok(dr.ops.length > 0 && dr.row && dr.sourceRows.length === 1 && dr.ops.every(o => o === "spin" || o === "flipH"));
   const cm = pond.find(i => i.kind === "composed");
   assert.strictEqual(cm.recipe.length, 4); assert.ok(cm.row && cm.sourceRows.every(Boolean));
   assert.deepStrictEqual(U.exportImageOps(["spin", "flipH"]), ["rotR", "flipH"]);
   // exact mode: only the real tiles
-  assert.deepStrictEqual(plan.items.filter(i => i.folder === "Bars").map(i => [i.kind, i.file]), [["real", "Bars_10100101.png"], ["real", "Bars_00000000.png"]]);
+  assert.deepStrictEqual(plan.items.filter(i => i.folder === "Bars").map(i => [i.kind, i.file]), [["real", "10100101.png"], ["real", "00000000.png"]]);
   // metadata
   const rec = U.exportRecord(plan.items.find(i => i.row && i.row.id === "3"), { offsets: true, shadow: false });
   assert.deepStrictEqual([rec.codename, rec.folder, rec.file, rec.sizeApplied, rec.bakedOffsets, rec.bakedShadow, rec.sensorCode], ["Crate", "Props", "My_Set/Props/Crate.png", false, true, false, null]);
+  const srec = U.exportRecord(plan.items.find(i => i.row && i.row.id === "w9"), { offsets: false, shadow: false });
+  assert.deepStrictEqual([srec.file, srec.sensorCode, srec.kind], ["My_Set/Pond/11111111_2.jpg", "11111111", "real"], "tiles.json names follow the zip names");
 });
 
 console.log(`${passed} passed`);

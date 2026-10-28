@@ -125,8 +125,9 @@ const TILES = { "ts-0": [
     const before = requests.length;
     await page.click("[data-export-open]");
     await page.waitForSelector("[data-export-options]");
-    // defaults: some tile has an offset and one uses auto-shadow -> both ON; tiles.json ON
-    assert.deepStrictEqual(await page.$$eval("[data-export-opt]", els => els.map(e => [e.dataset.exportOpt, e.checked])), [["offsets", true], ["shadow", true], ["json", true]]);
+    // defaults: some tile has an offset and one uses auto-shadow -> both ON; tiles.json OFF (phase 12)
+    assert.deepStrictEqual(await page.$$eval("[data-export-opt]", els => els.map(e => [e.dataset.exportOpt, e.checked])), [["offsets", true], ["shadow", true], ["json", false]]);
+    await page.check("[data-export-opt='json']");
     assert.ok(/can change how sensor quadrants split/.test(await page.textContent("[data-export-options]")));
     const dl = page.waitForEvent("download");
     await page.click("[data-export-run]");
@@ -137,7 +138,7 @@ const TILES = { "ts-0": [
     const names = Object.keys(z);
     assert.ok(names.every(n => n.startsWith("Export Set/")), names.join());
     assert.ok(names.includes("Export Set/Plain.png") && names.includes("Export Set/Lamp.png") && names.includes("Export Set/tiles.json"), names.join());
-    assert.ok(names.filter(n => n.startsWith("Export Set/Pond/Pond_")).length > 40, "47 codes: 4 real + derived + composed");
+    assert.ok(names.filter(n => /^Export Set\/Pond\/[01]{8}(_\d+)?\.png$/.test(n)).length > 40, "47 codes: 4 real + derived + composed");
     assert.ok(z["Export Set/Plain.png"][0] === 0, "stored, not compressed");
     const PNG_SIG = "89504e470d0a1a0a";
     for (const n of names.filter(n => n.endsWith(".png"))) assert.ok(z[n][1].startsWith(PNG_SIG), n);
@@ -146,7 +147,7 @@ const TILES = { "ts-0": [
     assert.notStrictEqual(z["Export Set/Lamp.png"][1], H.PNG.toString("hex"));
     // 10x10 tile, offset (10%, 20%) = (1px, 2px), shadow 3px lower: padding goes opposite, canvas stays centred on the cell -> 12 x 20
     assert.deepStrictEqual(dims(z["Export Set/Lamp.png"][1]), [12, 20]);
-    assert.deepStrictEqual(dims(z["Export Set/Pond/Pond_00001011.png"][1]), [1, 1], "native size, no multiplier");
+    assert.deepStrictEqual(dims(z["Export Set/Pond/00001011.png"][1]), [1, 1], "native size, no multiplier");
     const doc = JSON.parse(Buffer.from(z["Export Set/tiles.json"][1], "hex").toString());
     const lamp = doc.tiles.find(t => t.codename === "Lamp"), plain = doc.tiles.find(t => t.codename === "Plain");
     assert.deepStrictEqual([lamp.bakedOffsets, lamp.bakedShadow, lamp.offsetX, lamp.offsetY, lamp.sizeMultiplier, lamp.sizeApplied, lamp.symbol, lamp.file], [true, true, 10, 20, 2, false, "D", "Export Set/Lamp.png"]);

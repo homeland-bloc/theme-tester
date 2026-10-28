@@ -101,7 +101,7 @@ const TILES = {
   await test("Map seed: one button opens a modal with box, Copy seed, Copy share link, Import, Clear, format help, breakdown and blank warning", async () => {
     const { page, ctx, logs } = await newPage();
     await page.waitForSelector("[data-map-seed-open]");
-    assert.strictEqual(await page.locator("[data-seed-row] button").count(), 1, "the crowded row is a single button");
+    assert.strictEqual(await page.locator("[data-seed-row] button").count(), 2, "Map seed and View history share one row");
     assert.strictEqual(await page.locator("[data-seed-input]").count(), 0);
     await page.click("[data-map-seed-open]");
     for (const sel of ["[data-seed-input]", "[data-seed-copy]", "[data-seed-link]", "[data-seed-import]", "[data-seed-clear]", "[data-seed-help]"]) assert.ok(await page.locator(sel).isVisible(), sel);

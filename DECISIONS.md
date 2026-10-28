@@ -32,3 +32,4 @@
 - mirror_offset stays. Colour filters are local only with a rainbow badge. Import Map from Image is removed.
 - Old saved maps and numeric per-tile overrides are not migrated.
 - Testing is done live after the full update.
+- Tileset export (zip, phase 12): sensor tiles are <code>.png inside the folder named after the sensor folder (_2, _3 only for duplicate codes); plain tiles keep their codename. "Include tiles.json" defaults to off. Composed variants use the shared top-edge quadrant geometry (seam y = min(H, topEdge + W/2)).

@@ -1,0 +1,3669 @@
+{
+ "water": {
+  "pixels": {
+   "11010010": "083446c5e87bb0b751eb0665b44045028a63a6ee",
+   "11011000": "0c016d3109b345f7d07ceaffc9e5f1ba75e36e66",
+   "11011010": "475ae5f1dcb6e9280c52e3569be20221ceaf5ca7",
+   "11011011": "1a424c1e4a5e874f1a7572a7fc542977147580dc",
+   "11011110": "605e03fa1a6a389c614771f4aea8b9cfdd738155",
+   "11111010": "d984e1f552bff9ad902dcdb05c58aa49662cb7a8",
+   "00000000": "890ef4771a584a8e3fde1d88e6b5095f7f9d5a31",
+   "00000010": "f9372806e57ad4b03263672004daba036de331a0",
+   "00001000": "f6b757c94389e36a0c0e51be1780bae60025875f",
+   "00001010": "533d90e7a9054da770eceabe2f471786db01e1cd",
+   "00010000": "759a7a4b355239e79776f08d853271be5b394b66",
+   "00010010": "1026e8d5c58ef035cb1a4e2cbf664039bf85ddc1",
+   "00011000": "473abcff8adaf73f809183fd1a2b587a355ed80a",
+   "00011010": "a8c5858a086a5ab21ccfa6cf24094aa0987449b9",
+   "00011011": "f1ceb03668271229c4f96912f7ba91a7a7833588",
+   "00011110": "8309762b01cbc4280f1f4d002d984cf0ce063dfe",
+   "01000000": "8b349d14302536ba21d3c206360c7e3dda8ee087",
+   "01000010": "a8083f1a5c0369c56b804da0181a8b0fe421294e",
+   "01001000": "dddb37ebd57e76ad1998d80ea67fa80566a51825",
+   "01001010": "96d62d26eb160b593499c9ee5080a60d419e1ca9",
+   "01001011": "bb1f6041866375158df58c63c8883d9e36394ad0",
+   "01010000": "aaf6ffe3b52bd6d6f43438ec8ec8aed1cf461f5a",
+   "01010010": "1c3b979c9b97a3fd1cd38c0c0b93c4aa456a683b",
+   "01010110": "f5a56e17d462aaf64f48ef6acf635b7ec091eba6",
+   "01011000": "fe68a2905091c11636a309bec1ff72594e7dfc65",
+   "01011010": "58b6bd79b1a024cfb93b1a55e60b4d3e5f38482f",
+   "01011011": "662e8a40214243f5b3740aba380e3e0869cd8ff2",
+   "01011110": "05a63442d749459b46d70136fffcb0247335a10d",
+   "01011111": "9d86d907430de884f13b87bbd9d567d59c90d480",
+   "01101010": "352f951219a840b6ef2d9265f6e0123d7a9e717f",
+   "01111000": "8d8f690fec0846f3ab8c6c73153c9f2c377a04e6",
+   "01111010": "b21d35b69920ed6358f8366952b0504675cbf4c7",
+   "01111011": "d1f1f1a7e1243b7f4470de35944dfc0b6a3a6254",
+   "01111110": "4584b797576758b4389656daff4ad8169584bc95"
+  },
+  "recipes": {
+   "11010000": {
+    "status": "derived",
+    "pool": [
+     {
+      "ref": "w1",
+      "ops": [
+       "spin",
+       "spin"
+      ],
+      "from": "w1"
+     }
+    ],
+    "recipe": null
+   },
+   "11010010": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:11010010",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "interior",
+      "tile": "w4",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "11111111"
+     },
+     {
+      "quadrant": 1,
+      "type": "edgeV",
+      "tile": "w3",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 2,
+      "sourceCode": "01101011"
+     },
+     {
+      "quadrant": 2,
+      "type": "edgeV",
+      "tile": "w3",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 2,
+      "sourceCode": "01101011"
+     },
+     {
+      "quadrant": 3,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 3,
+      "sourceCode": "01111111"
+     }
+    ]
+   },
+   "11010110": {
+    "status": "derived",
+    "pool": [
+     {
+      "ref": "w3",
+      "ops": [
+       "spin",
+       "spin"
+      ],
+      "from": "w3"
+     }
+    ],
+    "recipe": null
+   },
+   "11011000": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:11011000",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "interior",
+      "tile": "w4",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "11111111"
+     },
+     {
+      "quadrant": 1,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 1,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 2,
+      "type": "edgeH",
+      "tile": "w3",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 3,
+      "sourceCode": "01101011"
+     },
+     {
+      "quadrant": 3,
+      "type": "edgeH",
+      "tile": "w3",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 3,
+      "sourceCode": "01101011"
+     }
+    ]
+   },
+   "11011010": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:11011010",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "interior",
+      "tile": "w4",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "11111111"
+     },
+     {
+      "quadrant": 1,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 1,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 2,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 2,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 3,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 3,
+      "sourceCode": "01111111"
+     }
+    ]
+   },
+   "11011011": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:11011011",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "interior",
+      "tile": "w4",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "11111111"
+     },
+     {
+      "quadrant": 1,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 1,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 2,
+      "type": "interior",
+      "tile": "w4",
+      "sourceQuadrant": 2,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "11111111"
+     },
+     {
+      "quadrant": 3,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 3,
+      "sourceCode": "01111111"
+     }
+    ]
+   },
+   "11011110": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:11011110",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "interior",
+      "tile": "w4",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "11111111"
+     },
+     {
+      "quadrant": 1,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 1,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 2,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 2,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 3,
+      "type": "interior",
+      "tile": "w4",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "11111111"
+     }
+    ]
+   },
+   "11011111": {
+    "status": "derived",
+    "pool": [
+     {
+      "ref": "w2",
+      "ops": [
+       "spin"
+      ],
+      "from": "w2"
+     }
+    ],
+    "recipe": null
+   },
+   "11111000": {
+    "status": "derived",
+    "pool": [
+     {
+      "ref": "w3",
+      "ops": [
+       "spin",
+       "spin",
+       "spin"
+      ],
+      "from": "w3"
+     }
+    ],
+    "recipe": null
+   },
+   "11111010": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:11111010",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "interior",
+      "tile": "w4",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "11111111"
+     },
+     {
+      "quadrant": 1,
+      "type": "interior",
+      "tile": "w4",
+      "sourceQuadrant": 1,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "11111111"
+     },
+     {
+      "quadrant": 2,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 2,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 3,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 3,
+      "sourceCode": "01111111"
+     }
+    ]
+   },
+   "11111011": {
+    "status": "derived",
+    "pool": [
+     {
+      "ref": "w2",
+      "ops": [
+       "spin",
+       "spin",
+       "spin"
+      ],
+      "from": "w2"
+     }
+    ],
+    "recipe": null
+   },
+   "11111110": {
+    "status": "derived",
+    "pool": [
+     {
+      "ref": "w2",
+      "ops": [
+       "spin",
+       "spin"
+      ],
+      "from": "w2"
+     }
+    ],
+    "recipe": null
+   },
+   "11111111": {
+    "status": "explicit",
+    "pool": [
+     {
+      "ref": "w4",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": null
+   },
+   "00000000": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:00000000",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "outer",
+      "tile": "w1",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "00001011"
+     },
+     {
+      "quadrant": 1,
+      "type": "outer",
+      "tile": "w1",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 1,
+      "sourceCode": "00001011"
+     },
+     {
+      "quadrant": 2,
+      "type": "outer",
+      "tile": "w1",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 2,
+      "sourceCode": "00001011"
+     },
+     {
+      "quadrant": 3,
+      "type": "outer",
+      "tile": "w1",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 3,
+      "sourceCode": "00001011"
+     }
+    ]
+   },
+   "00000010": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:00000010",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "outer",
+      "tile": "w1",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "00001011"
+     },
+     {
+      "quadrant": 1,
+      "type": "outer",
+      "tile": "w1",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 1,
+      "sourceCode": "00001011"
+     },
+     {
+      "quadrant": 2,
+      "type": "edgeV",
+      "tile": "w1",
+      "sourceQuadrant": 1,
+      "flip": false,
+      "spinSteps": 1,
+      "sourceCode": "00001011"
+     },
+     {
+      "quadrant": 3,
+      "type": "edgeV",
+      "tile": "w1",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "00001011"
+     }
+    ]
+   },
+   "00001000": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:00001000",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "outer",
+      "tile": "w1",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "00001011"
+     },
+     {
+      "quadrant": 1,
+      "type": "edgeH",
+      "tile": "w1",
+      "sourceQuadrant": 1,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "00001011"
+     },
+     {
+      "quadrant": 2,
+      "type": "edgeH",
+      "tile": "w1",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 3,
+      "sourceCode": "00001011"
+     },
+     {
+      "quadrant": 3,
+      "type": "outer",
+      "tile": "w1",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 3,
+      "sourceCode": "00001011"
+     }
+    ]
+   },
+   "00001010": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:00001010",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "outer",
+      "tile": "w1",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "00001011"
+     },
+     {
+      "quadrant": 1,
+      "type": "edgeH",
+      "tile": "w1",
+      "sourceQuadrant": 1,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "00001011"
+     },
+     {
+      "quadrant": 2,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 2,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 3,
+      "type": "edgeV",
+      "tile": "w1",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "00001011"
+     }
+    ]
+   },
+   "00001011": {
+    "status": "explicit",
+    "pool": [
+     {
+      "ref": "w1",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": null
+   },
+   "00010000": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:00010000",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "edgeH",
+      "tile": "w1",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 1,
+      "sourceCode": "00001011"
+     },
+     {
+      "quadrant": 1,
+      "type": "outer",
+      "tile": "w1",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 1,
+      "sourceCode": "00001011"
+     },
+     {
+      "quadrant": 2,
+      "type": "outer",
+      "tile": "w1",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 2,
+      "sourceCode": "00001011"
+     },
+     {
+      "quadrant": 3,
+      "type": "edgeH",
+      "tile": "w1",
+      "sourceQuadrant": 1,
+      "flip": false,
+      "spinSteps": 2,
+      "sourceCode": "00001011"
+     }
+    ]
+   },
+   "00010010": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:00010010",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "edgeH",
+      "tile": "w1",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 1,
+      "sourceCode": "00001011"
+     },
+     {
+      "quadrant": 1,
+      "type": "outer",
+      "tile": "w1",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 1,
+      "sourceCode": "00001011"
+     },
+     {
+      "quadrant": 2,
+      "type": "edgeV",
+      "tile": "w1",
+      "sourceQuadrant": 1,
+      "flip": false,
+      "spinSteps": 1,
+      "sourceCode": "00001011"
+     },
+     {
+      "quadrant": 3,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 3,
+      "sourceCode": "01111111"
+     }
+    ]
+   },
+   "00010110": {
+    "status": "derived",
+    "pool": [
+     {
+      "ref": "w1",
+      "ops": [
+       "spin"
+      ],
+      "from": "w1"
+     }
+    ],
+    "recipe": null
+   },
+   "00011000": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:00011000",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "edgeH",
+      "tile": "w3",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 1,
+      "sourceCode": "01101011"
+     },
+     {
+      "quadrant": 1,
+      "type": "edgeH",
+      "tile": "w1",
+      "sourceQuadrant": 1,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "00001011"
+     },
+     {
+      "quadrant": 2,
+      "type": "edgeH",
+      "tile": "w3",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 3,
+      "sourceCode": "01101011"
+     },
+     {
+      "quadrant": 3,
+      "type": "edgeH",
+      "tile": "w3",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 3,
+      "sourceCode": "01101011"
+     }
+    ]
+   },
+   "00011010": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:00011010",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "edgeH",
+      "tile": "w3",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 1,
+      "sourceCode": "01101011"
+     },
+     {
+      "quadrant": 1,
+      "type": "edgeH",
+      "tile": "w1",
+      "sourceQuadrant": 1,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "00001011"
+     },
+     {
+      "quadrant": 2,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 2,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 3,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 3,
+      "sourceCode": "01111111"
+     }
+    ]
+   },
+   "00011011": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:00011011",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "edgeH",
+      "tile": "w3",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 1,
+      "sourceCode": "01101011"
+     },
+     {
+      "quadrant": 1,
+      "type": "edgeH",
+      "tile": "w1",
+      "sourceQuadrant": 1,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "00001011"
+     },
+     {
+      "quadrant": 2,
+      "type": "interior",
+      "tile": "w1",
+      "sourceQuadrant": 2,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "00001011"
+     },
+     {
+      "quadrant": 3,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 3,
+      "sourceCode": "01111111"
+     }
+    ]
+   },
+   "00011110": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:00011110",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "edgeH",
+      "tile": "w3",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 1,
+      "sourceCode": "01101011"
+     },
+     {
+      "quadrant": 1,
+      "type": "edgeH",
+      "tile": "w1",
+      "sourceQuadrant": 1,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "00001011"
+     },
+     {
+      "quadrant": 2,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 2,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 3,
+      "type": "interior",
+      "tile": "w2",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     }
+    ]
+   },
+   "00011111": {
+    "status": "derived",
+    "pool": [
+     {
+      "ref": "w3",
+      "ops": [
+       "spin"
+      ],
+      "from": "w3"
+     }
+    ],
+    "recipe": null
+   },
+   "01000000": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:01000000",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "edgeV",
+      "tile": "w3",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01101011"
+     },
+     {
+      "quadrant": 1,
+      "type": "edgeV",
+      "tile": "w1",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 2,
+      "sourceCode": "00001011"
+     },
+     {
+      "quadrant": 2,
+      "type": "outer",
+      "tile": "w1",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 2,
+      "sourceCode": "00001011"
+     },
+     {
+      "quadrant": 3,
+      "type": "outer",
+      "tile": "w1",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 3,
+      "sourceCode": "00001011"
+     }
+    ]
+   },
+   "01000010": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:01000010",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "edgeV",
+      "tile": "w3",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01101011"
+     },
+     {
+      "quadrant": 1,
+      "type": "edgeV",
+      "tile": "w3",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 2,
+      "sourceCode": "01101011"
+     },
+     {
+      "quadrant": 2,
+      "type": "edgeV",
+      "tile": "w3",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 2,
+      "sourceCode": "01101011"
+     },
+     {
+      "quadrant": 3,
+      "type": "edgeV",
+      "tile": "w3",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01101011"
+     }
+    ]
+   },
+   "01001000": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:01001000",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "edgeV",
+      "tile": "w3",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01101011"
+     },
+     {
+      "quadrant": 1,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 1,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 2,
+      "type": "edgeH",
+      "tile": "w1",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 3,
+      "sourceCode": "00001011"
+     },
+     {
+      "quadrant": 3,
+      "type": "outer",
+      "tile": "w1",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 3,
+      "sourceCode": "00001011"
+     }
+    ]
+   },
+   "01001010": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:01001010",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "edgeV",
+      "tile": "w3",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01101011"
+     },
+     {
+      "quadrant": 1,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 1,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 2,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 2,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 3,
+      "type": "edgeV",
+      "tile": "w3",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01101011"
+     }
+    ]
+   },
+   "01001011": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:01001011",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "edgeV",
+      "tile": "w3",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01101011"
+     },
+     {
+      "quadrant": 1,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 1,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 2,
+      "type": "interior",
+      "tile": "w3",
+      "sourceQuadrant": 2,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01101011"
+     },
+     {
+      "quadrant": 3,
+      "type": "edgeV",
+      "tile": "w3",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01101011"
+     }
+    ]
+   },
+   "01010000": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:01010000",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 1,
+      "type": "edgeV",
+      "tile": "w1",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 2,
+      "sourceCode": "00001011"
+     },
+     {
+      "quadrant": 2,
+      "type": "outer",
+      "tile": "w1",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 2,
+      "sourceCode": "00001011"
+     },
+     {
+      "quadrant": 3,
+      "type": "edgeH",
+      "tile": "w1",
+      "sourceQuadrant": 1,
+      "flip": false,
+      "spinSteps": 2,
+      "sourceCode": "00001011"
+     }
+    ]
+   },
+   "01010010": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:01010010",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 1,
+      "type": "edgeV",
+      "tile": "w3",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 2,
+      "sourceCode": "01101011"
+     },
+     {
+      "quadrant": 2,
+      "type": "edgeV",
+      "tile": "w3",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 2,
+      "sourceCode": "01101011"
+     },
+     {
+      "quadrant": 3,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 3,
+      "sourceCode": "01111111"
+     }
+    ]
+   },
+   "01010110": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:01010110",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 1,
+      "type": "edgeV",
+      "tile": "w3",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 2,
+      "sourceCode": "01101011"
+     },
+     {
+      "quadrant": 2,
+      "type": "edgeV",
+      "tile": "w3",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 2,
+      "sourceCode": "01101011"
+     },
+     {
+      "quadrant": 3,
+      "type": "interior",
+      "tile": "w2",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     }
+    ]
+   },
+   "01011000": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:01011000",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 1,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 1,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 2,
+      "type": "edgeH",
+      "tile": "w3",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 3,
+      "sourceCode": "01101011"
+     },
+     {
+      "quadrant": 3,
+      "type": "edgeH",
+      "tile": "w3",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 3,
+      "sourceCode": "01101011"
+     }
+    ]
+   },
+   "01011010": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:01011010",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 1,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 1,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 2,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 2,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 3,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 3,
+      "sourceCode": "01111111"
+     }
+    ]
+   },
+   "01011011": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:01011011",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 1,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 1,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 2,
+      "type": "interior",
+      "tile": "w2",
+      "sourceQuadrant": 2,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 3,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 3,
+      "sourceCode": "01111111"
+     }
+    ]
+   },
+   "01011110": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:01011110",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 1,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 1,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 2,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 2,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 3,
+      "type": "interior",
+      "tile": "w2",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     }
+    ]
+   },
+   "01011111": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:01011111",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 1,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 1,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 2,
+      "type": "interior",
+      "tile": "w2",
+      "sourceQuadrant": 2,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 3,
+      "type": "interior",
+      "tile": "w2",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     }
+    ]
+   },
+   "01101000": {
+    "status": "derived",
+    "pool": [
+     {
+      "ref": "w1",
+      "ops": [
+       "spin",
+       "spin",
+       "spin"
+      ],
+      "from": "w1"
+     }
+    ],
+    "recipe": null
+   },
+   "01101010": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:01101010",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "edgeV",
+      "tile": "w3",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01101011"
+     },
+     {
+      "quadrant": 1,
+      "type": "interior",
+      "tile": "w3",
+      "sourceQuadrant": 1,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01101011"
+     },
+     {
+      "quadrant": 2,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 2,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 3,
+      "type": "edgeV",
+      "tile": "w3",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01101011"
+     }
+    ]
+   },
+   "01101011": {
+    "status": "explicit",
+    "pool": [
+     {
+      "ref": "w3",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": null
+   },
+   "01111000": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:01111000",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 1,
+      "type": "interior",
+      "tile": "w2",
+      "sourceQuadrant": 1,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 2,
+      "type": "edgeH",
+      "tile": "w3",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 3,
+      "sourceCode": "01101011"
+     },
+     {
+      "quadrant": 3,
+      "type": "edgeH",
+      "tile": "w3",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 3,
+      "sourceCode": "01101011"
+     }
+    ]
+   },
+   "01111010": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:01111010",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 1,
+      "type": "interior",
+      "tile": "w2",
+      "sourceQuadrant": 1,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 2,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 2,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 3,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 3,
+      "sourceCode": "01111111"
+     }
+    ]
+   },
+   "01111011": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:01111011",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 1,
+      "type": "interior",
+      "tile": "w2",
+      "sourceQuadrant": 1,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 2,
+      "type": "interior",
+      "tile": "w2",
+      "sourceQuadrant": 2,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 3,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 3,
+      "sourceCode": "01111111"
+     }
+    ]
+   },
+   "01111110": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:01111110",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 1,
+      "type": "interior",
+      "tile": "w2",
+      "sourceQuadrant": 1,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 2,
+      "type": "inner",
+      "tile": "w2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 2,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 3,
+      "type": "interior",
+      "tile": "w2",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     }
+    ]
+   },
+   "01111111": {
+    "status": "explicit",
+    "pool": [
+     {
+      "ref": "w2",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": null
+   }
+  }
+ },
+ "depth": {
+  "pixels": {
+   "11010010": "2caaf2567a5a7f2700d2f521c098db15bcb3a275",
+   "11011000": "86ea1a55f816881d40e790641971562226c74fda",
+   "11011010": "e323cffbad22bbc3011ba96858237074e88b12eb",
+   "11011011": "b856ab4b47bb5cf69d75a1a2ad79dd6fc18ab582",
+   "11011110": "e5c9a24b115cb8cfa4e5d15d536bf2ed683d8481",
+   "11111010": "95c537c06eed3dd0ca172091c5296de66f8736a8",
+   "00000000": "47e6f64956755d7f5956d2754e5acc454411b256",
+   "00000010": "67fbc9e3affc32b5414b2ba1bf324b5fd4373529",
+   "00001000": "35615d8e907879b339f51f6b63b7ca820651b077",
+   "00001010": "150939b6892b85775e191811fc5254a099b8719a",
+   "00010000": "bbf330c0daba0152dfb026a65a663cb602b92964",
+   "00010010": "afa687bcf19d34b0a5e2cc6c93cca938c7a021f4",
+   "00011000": "21da165596ecf34544dc43b14977f592afe429df",
+   "00011010": "a3a551c846b0704ac72aa6639ca9c538e77ce683",
+   "00011011": "9eb9b50faffacbfa55c5b730eaf831c79ff11027",
+   "00011110": "4b8d4d81735deda502d06bee15c82d5d0b2905e4",
+   "01000000": "bb67d869e283762cfedd6ad4a8669debed7cfb88",
+   "01000010": "0d296ac54843b29b0fd90f6a9f5eba156739052f",
+   "01001000": "87d50a7a5172ab0d3fba9584ad4697d6da771e11",
+   "01001010": "badfb4492bb4cab0a2bad8b066a13a97c7ccb152",
+   "01001011": "36ca4a7f84c0cdea78df9db16fdaa2b14b7b594d",
+   "01010000": "50571b8c17d19616a95449993ddfe44672dd929f",
+   "01010010": "8d9f96fb2e400d0eaaca5c79125adfd05f72d82a",
+   "01010110": "0c20611331cda390a2a4de6bdb7ba05cdc88c704",
+   "01011000": "eb5b7417bc2626913f2f85677bf3c36d23876e1a",
+   "01011010": "4a008795ce8e5771009162d1014e14cf121ae743",
+   "01011011": "b2137afd39ea540625a1dfc9f9e06aae4a281798",
+   "01011110": "c7c31cfa984bcdefb4752f7ad26ab6ebc9a3a6a5",
+   "01011111": "c7d9182f7055e01984b52b392e8abf1066dcf463",
+   "01101010": "cb7b68ce86ac4b65642a6ce6d3e42320eb76e98f",
+   "01111000": "6945b440d631709d6602a174c23201637439a352",
+   "01111010": "1c4695ade14f8278bf57aec350ccd2e6bd535720",
+   "01111011": "362b88614ccb1f7aefbb3f44f37c3005f0f19589",
+   "01111110": "270f5977e153558d378824a4381066c47c4ee399"
+  },
+  "recipes": {
+   "11010000": {
+    "status": "derived",
+    "pool": [
+     {
+      "ref": "d4",
+      "ops": [
+       "flipH"
+      ],
+      "from": "d4"
+     }
+    ],
+    "recipe": null
+   },
+   "11010010": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:11010010",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "interior",
+      "tile": "d6",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "11111011"
+     },
+     {
+      "quadrant": 1,
+      "type": "edgeV",
+      "tile": "d1",
+      "sourceQuadrant": 0,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "01101011"
+     },
+     {
+      "quadrant": 2,
+      "type": "edgeV",
+      "tile": "d1",
+      "sourceQuadrant": 3,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "01101011"
+     },
+     {
+      "quadrant": 3,
+      "type": "inner",
+      "tile": "d6",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "11111011"
+     }
+    ]
+   },
+   "11010110": {
+    "status": "derived",
+    "pool": [
+     {
+      "ref": "d1",
+      "ops": [
+       "flipH"
+      ],
+      "from": "d1"
+     }
+    ],
+    "recipe": null
+   },
+   "11011000": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:11011000",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "interior",
+      "tile": "d5",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "11111000"
+     },
+     {
+      "quadrant": 1,
+      "type": "inner",
+      "tile": "d3",
+      "sourceQuadrant": 0,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 2,
+      "type": "edgeH",
+      "tile": "d5",
+      "sourceQuadrant": 2,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "11111000"
+     },
+     {
+      "quadrant": 3,
+      "type": "edgeH",
+      "tile": "d5",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "11111000"
+     }
+    ]
+   },
+   "11011010": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:11011010",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "interior",
+      "tile": "d6",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "11111011"
+     },
+     {
+      "quadrant": 1,
+      "type": "inner",
+      "tile": "d3",
+      "sourceQuadrant": 0,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 2,
+      "type": "inner",
+      "tile": "d6",
+      "sourceQuadrant": 3,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "11111011"
+     },
+     {
+      "quadrant": 3,
+      "type": "inner",
+      "tile": "d6",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "11111011"
+     }
+    ]
+   },
+   "11011011": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:11011011",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "interior",
+      "tile": "d6",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "11111011"
+     },
+     {
+      "quadrant": 1,
+      "type": "inner",
+      "tile": "d3",
+      "sourceQuadrant": 0,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 2,
+      "type": "interior",
+      "tile": "d6",
+      "sourceQuadrant": 2,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "11111011"
+     },
+     {
+      "quadrant": 3,
+      "type": "inner",
+      "tile": "d6",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "11111011"
+     }
+    ]
+   },
+   "11011110": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:11011110",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "interior",
+      "tile": "d7",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "11111111"
+     },
+     {
+      "quadrant": 1,
+      "type": "inner",
+      "tile": "d3",
+      "sourceQuadrant": 0,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 2,
+      "type": "inner",
+      "tile": "d6",
+      "sourceQuadrant": 3,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "11111011"
+     },
+     {
+      "quadrant": 3,
+      "type": "interior",
+      "tile": "d7",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "11111111"
+     }
+    ]
+   },
+   "11011111": {
+    "status": "derived",
+    "pool": [
+     {
+      "ref": "d3",
+      "ops": [
+       "flipH"
+      ],
+      "from": "d3"
+     }
+    ],
+    "recipe": null
+   },
+   "11111000": {
+    "status": "explicit",
+    "pool": [
+     {
+      "ref": "d5",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": null
+   },
+   "11111010": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:11111010",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "interior",
+      "tile": "d6",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "11111011"
+     },
+     {
+      "quadrant": 1,
+      "type": "interior",
+      "tile": "d6",
+      "sourceQuadrant": 1,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "11111011"
+     },
+     {
+      "quadrant": 2,
+      "type": "inner",
+      "tile": "d6",
+      "sourceQuadrant": 3,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "11111011"
+     },
+     {
+      "quadrant": 3,
+      "type": "inner",
+      "tile": "d6",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "11111011"
+     }
+    ]
+   },
+   "11111011": {
+    "status": "explicit",
+    "pool": [
+     {
+      "ref": "d6",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": null
+   },
+   "11111110": {
+    "status": "derived",
+    "pool": [
+     {
+      "ref": "d6",
+      "ops": [
+       "flipH"
+      ],
+      "from": "d6"
+     }
+    ],
+    "recipe": null
+   },
+   "11111111": {
+    "status": "explicit",
+    "pool": [
+     {
+      "ref": "d7",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": null
+   },
+   "00000000": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:00000000",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "outer",
+      "tile": "d0",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "00001011"
+     },
+     {
+      "quadrant": 1,
+      "type": "outer",
+      "tile": "d0",
+      "sourceQuadrant": 0,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "00001011"
+     },
+     {
+      "quadrant": 2,
+      "type": "outer",
+      "tile": "d4",
+      "sourceQuadrant": 3,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "01101000"
+     },
+     {
+      "quadrant": 3,
+      "type": "outer",
+      "tile": "d4",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01101000"
+     }
+    ]
+   },
+   "00000010": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:00000010",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "outer",
+      "tile": "d0",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "00001011"
+     },
+     {
+      "quadrant": 1,
+      "type": "outer",
+      "tile": "d0",
+      "sourceQuadrant": 0,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "00001011"
+     },
+     {
+      "quadrant": 2,
+      "type": "edgeV",
+      "tile": "d0",
+      "sourceQuadrant": 3,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "00001011"
+     },
+     {
+      "quadrant": 3,
+      "type": "edgeV",
+      "tile": "d0",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "00001011"
+     }
+    ]
+   },
+   "00001000": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:00001000",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "outer",
+      "tile": "d0",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "00001011"
+     },
+     {
+      "quadrant": 1,
+      "type": "edgeH",
+      "tile": "d0",
+      "sourceQuadrant": 1,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "00001011"
+     },
+     {
+      "quadrant": 2,
+      "type": "edgeH",
+      "tile": "d4",
+      "sourceQuadrant": 2,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01101000"
+     },
+     {
+      "quadrant": 3,
+      "type": "outer",
+      "tile": "d4",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01101000"
+     }
+    ]
+   },
+   "00001010": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:00001010",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "outer",
+      "tile": "d0",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "00001011"
+     },
+     {
+      "quadrant": 1,
+      "type": "edgeH",
+      "tile": "d0",
+      "sourceQuadrant": 1,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "00001011"
+     },
+     {
+      "quadrant": 2,
+      "type": "inner",
+      "tile": "d6",
+      "sourceQuadrant": 3,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "11111011"
+     },
+     {
+      "quadrant": 3,
+      "type": "edgeV",
+      "tile": "d0",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "00001011"
+     }
+    ]
+   },
+   "00001011": {
+    "status": "explicit",
+    "pool": [
+     {
+      "ref": "d0",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": null
+   },
+   "00010000": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:00010000",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "edgeH",
+      "tile": "d2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "00011111"
+     },
+     {
+      "quadrant": 1,
+      "type": "outer",
+      "tile": "d0",
+      "sourceQuadrant": 0,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "00001011"
+     },
+     {
+      "quadrant": 2,
+      "type": "outer",
+      "tile": "d4",
+      "sourceQuadrant": 3,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "01101000"
+     },
+     {
+      "quadrant": 3,
+      "type": "edgeH",
+      "tile": "d5",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "11111000"
+     }
+    ]
+   },
+   "00010010": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:00010010",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "edgeH",
+      "tile": "d2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "00011111"
+     },
+     {
+      "quadrant": 1,
+      "type": "outer",
+      "tile": "d0",
+      "sourceQuadrant": 0,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "00001011"
+     },
+     {
+      "quadrant": 2,
+      "type": "edgeV",
+      "tile": "d0",
+      "sourceQuadrant": 3,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "00001011"
+     },
+     {
+      "quadrant": 3,
+      "type": "inner",
+      "tile": "d6",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "11111011"
+     }
+    ]
+   },
+   "00010110": {
+    "status": "derived",
+    "pool": [
+     {
+      "ref": "d0",
+      "ops": [
+       "flipH"
+      ],
+      "from": "d0"
+     }
+    ],
+    "recipe": null
+   },
+   "00011000": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:00011000",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "edgeH",
+      "tile": "d2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "00011111"
+     },
+     {
+      "quadrant": 1,
+      "type": "edgeH",
+      "tile": "d2",
+      "sourceQuadrant": 1,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "00011111"
+     },
+     {
+      "quadrant": 2,
+      "type": "edgeH",
+      "tile": "d5",
+      "sourceQuadrant": 2,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "11111000"
+     },
+     {
+      "quadrant": 3,
+      "type": "edgeH",
+      "tile": "d5",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "11111000"
+     }
+    ]
+   },
+   "00011010": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:00011010",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "edgeH",
+      "tile": "d2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "00011111"
+     },
+     {
+      "quadrant": 1,
+      "type": "edgeH",
+      "tile": "d2",
+      "sourceQuadrant": 1,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "00011111"
+     },
+     {
+      "quadrant": 2,
+      "type": "inner",
+      "tile": "d6",
+      "sourceQuadrant": 3,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "11111011"
+     },
+     {
+      "quadrant": 3,
+      "type": "inner",
+      "tile": "d6",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "11111011"
+     }
+    ]
+   },
+   "00011011": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:00011011",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "edgeH",
+      "tile": "d2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "00011111"
+     },
+     {
+      "quadrant": 1,
+      "type": "edgeH",
+      "tile": "d2",
+      "sourceQuadrant": 1,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "00011111"
+     },
+     {
+      "quadrant": 2,
+      "type": "interior",
+      "tile": "d2",
+      "sourceQuadrant": 2,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "00011111"
+     },
+     {
+      "quadrant": 3,
+      "type": "inner",
+      "tile": "d6",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "11111011"
+     }
+    ]
+   },
+   "00011110": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:00011110",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "edgeH",
+      "tile": "d2",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "00011111"
+     },
+     {
+      "quadrant": 1,
+      "type": "edgeH",
+      "tile": "d2",
+      "sourceQuadrant": 1,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "00011111"
+     },
+     {
+      "quadrant": 2,
+      "type": "inner",
+      "tile": "d6",
+      "sourceQuadrant": 3,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "11111011"
+     },
+     {
+      "quadrant": 3,
+      "type": "interior",
+      "tile": "d2",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "00011111"
+     }
+    ]
+   },
+   "00011111": {
+    "status": "explicit",
+    "pool": [
+     {
+      "ref": "d2",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": null
+   },
+   "01000000": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:01000000",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "edgeV",
+      "tile": "d4",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01101000"
+     },
+     {
+      "quadrant": 1,
+      "type": "edgeV",
+      "tile": "d4",
+      "sourceQuadrant": 0,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "01101000"
+     },
+     {
+      "quadrant": 2,
+      "type": "outer",
+      "tile": "d4",
+      "sourceQuadrant": 3,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "01101000"
+     },
+     {
+      "quadrant": 3,
+      "type": "outer",
+      "tile": "d4",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01101000"
+     }
+    ]
+   },
+   "01000010": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:01000010",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "edgeV",
+      "tile": "d1",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01101011"
+     },
+     {
+      "quadrant": 1,
+      "type": "edgeV",
+      "tile": "d1",
+      "sourceQuadrant": 0,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "01101011"
+     },
+     {
+      "quadrant": 2,
+      "type": "edgeV",
+      "tile": "d1",
+      "sourceQuadrant": 3,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "01101011"
+     },
+     {
+      "quadrant": 3,
+      "type": "edgeV",
+      "tile": "d1",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01101011"
+     }
+    ]
+   },
+   "01001000": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:01001000",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "edgeV",
+      "tile": "d4",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01101000"
+     },
+     {
+      "quadrant": 1,
+      "type": "inner",
+      "tile": "d3",
+      "sourceQuadrant": 0,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 2,
+      "type": "edgeH",
+      "tile": "d4",
+      "sourceQuadrant": 2,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01101000"
+     },
+     {
+      "quadrant": 3,
+      "type": "outer",
+      "tile": "d4",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01101000"
+     }
+    ]
+   },
+   "01001010": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:01001010",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "edgeV",
+      "tile": "d1",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01101011"
+     },
+     {
+      "quadrant": 1,
+      "type": "inner",
+      "tile": "d3",
+      "sourceQuadrant": 0,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 2,
+      "type": "inner",
+      "tile": "d6",
+      "sourceQuadrant": 3,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "11111011"
+     },
+     {
+      "quadrant": 3,
+      "type": "edgeV",
+      "tile": "d1",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01101011"
+     }
+    ]
+   },
+   "01001011": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:01001011",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "edgeV",
+      "tile": "d1",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01101011"
+     },
+     {
+      "quadrant": 1,
+      "type": "inner",
+      "tile": "d3",
+      "sourceQuadrant": 0,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 2,
+      "type": "interior",
+      "tile": "d1",
+      "sourceQuadrant": 2,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01101011"
+     },
+     {
+      "quadrant": 3,
+      "type": "edgeV",
+      "tile": "d1",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01101011"
+     }
+    ]
+   },
+   "01010000": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:01010000",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "inner",
+      "tile": "d3",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 1,
+      "type": "edgeV",
+      "tile": "d4",
+      "sourceQuadrant": 0,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "01101000"
+     },
+     {
+      "quadrant": 2,
+      "type": "outer",
+      "tile": "d4",
+      "sourceQuadrant": 3,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "01101000"
+     },
+     {
+      "quadrant": 3,
+      "type": "edgeH",
+      "tile": "d5",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "11111000"
+     }
+    ]
+   },
+   "01010010": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:01010010",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "inner",
+      "tile": "d3",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 1,
+      "type": "edgeV",
+      "tile": "d1",
+      "sourceQuadrant": 0,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "01101011"
+     },
+     {
+      "quadrant": 2,
+      "type": "edgeV",
+      "tile": "d1",
+      "sourceQuadrant": 3,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "01101011"
+     },
+     {
+      "quadrant": 3,
+      "type": "inner",
+      "tile": "d6",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "11111011"
+     }
+    ]
+   },
+   "01010110": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:01010110",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "inner",
+      "tile": "d3",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 1,
+      "type": "edgeV",
+      "tile": "d1",
+      "sourceQuadrant": 0,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "01101011"
+     },
+     {
+      "quadrant": 2,
+      "type": "edgeV",
+      "tile": "d1",
+      "sourceQuadrant": 3,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "01101011"
+     },
+     {
+      "quadrant": 3,
+      "type": "interior",
+      "tile": "d3",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     }
+    ]
+   },
+   "01011000": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:01011000",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "inner",
+      "tile": "d3",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 1,
+      "type": "inner",
+      "tile": "d3",
+      "sourceQuadrant": 0,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 2,
+      "type": "edgeH",
+      "tile": "d5",
+      "sourceQuadrant": 2,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "11111000"
+     },
+     {
+      "quadrant": 3,
+      "type": "edgeH",
+      "tile": "d5",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "11111000"
+     }
+    ]
+   },
+   "01011010": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:01011010",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "inner",
+      "tile": "d3",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 1,
+      "type": "inner",
+      "tile": "d3",
+      "sourceQuadrant": 0,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 2,
+      "type": "inner",
+      "tile": "d6",
+      "sourceQuadrant": 3,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "11111011"
+     },
+     {
+      "quadrant": 3,
+      "type": "inner",
+      "tile": "d6",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "11111011"
+     }
+    ]
+   },
+   "01011011": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:01011011",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "inner",
+      "tile": "d3",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 1,
+      "type": "inner",
+      "tile": "d3",
+      "sourceQuadrant": 0,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 2,
+      "type": "interior",
+      "tile": "d3",
+      "sourceQuadrant": 2,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 3,
+      "type": "inner",
+      "tile": "d6",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "11111011"
+     }
+    ]
+   },
+   "01011110": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:01011110",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "inner",
+      "tile": "d3",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 1,
+      "type": "inner",
+      "tile": "d3",
+      "sourceQuadrant": 0,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 2,
+      "type": "inner",
+      "tile": "d6",
+      "sourceQuadrant": 3,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "11111011"
+     },
+     {
+      "quadrant": 3,
+      "type": "interior",
+      "tile": "d3",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     }
+    ]
+   },
+   "01011111": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:01011111",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "inner",
+      "tile": "d3",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 1,
+      "type": "inner",
+      "tile": "d3",
+      "sourceQuadrant": 0,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 2,
+      "type": "interior",
+      "tile": "d3",
+      "sourceQuadrant": 2,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 3,
+      "type": "interior",
+      "tile": "d3",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     }
+    ]
+   },
+   "01101000": {
+    "status": "explicit",
+    "pool": [
+     {
+      "ref": "d4",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": null
+   },
+   "01101010": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:01101010",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "edgeV",
+      "tile": "d1",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01101011"
+     },
+     {
+      "quadrant": 1,
+      "type": "interior",
+      "tile": "d1",
+      "sourceQuadrant": 1,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01101011"
+     },
+     {
+      "quadrant": 2,
+      "type": "inner",
+      "tile": "d6",
+      "sourceQuadrant": 3,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "11111011"
+     },
+     {
+      "quadrant": 3,
+      "type": "edgeV",
+      "tile": "d1",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01101011"
+     }
+    ]
+   },
+   "01101011": {
+    "status": "explicit",
+    "pool": [
+     {
+      "ref": "d1",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": null
+   },
+   "01111000": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:01111000",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "inner",
+      "tile": "d3",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 1,
+      "type": "interior",
+      "tile": "d5",
+      "sourceQuadrant": 1,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "11111000"
+     },
+     {
+      "quadrant": 2,
+      "type": "edgeH",
+      "tile": "d5",
+      "sourceQuadrant": 2,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "11111000"
+     },
+     {
+      "quadrant": 3,
+      "type": "edgeH",
+      "tile": "d5",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "11111000"
+     }
+    ]
+   },
+   "01111010": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:01111010",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "inner",
+      "tile": "d3",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 1,
+      "type": "interior",
+      "tile": "d3",
+      "sourceQuadrant": 1,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 2,
+      "type": "inner",
+      "tile": "d6",
+      "sourceQuadrant": 3,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "11111011"
+     },
+     {
+      "quadrant": 3,
+      "type": "inner",
+      "tile": "d6",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "11111011"
+     }
+    ]
+   },
+   "01111011": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:01111011",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "inner",
+      "tile": "d3",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 1,
+      "type": "interior",
+      "tile": "d3",
+      "sourceQuadrant": 1,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 2,
+      "type": "interior",
+      "tile": "d3",
+      "sourceQuadrant": 2,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 3,
+      "type": "inner",
+      "tile": "d6",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "11111011"
+     }
+    ]
+   },
+   "01111110": {
+    "status": "composed",
+    "pool": [
+     {
+      "ref": "composed:01111110",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": [
+     {
+      "quadrant": 0,
+      "type": "inner",
+      "tile": "d3",
+      "sourceQuadrant": 0,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 1,
+      "type": "interior",
+      "tile": "d3",
+      "sourceQuadrant": 1,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     },
+     {
+      "quadrant": 2,
+      "type": "inner",
+      "tile": "d6",
+      "sourceQuadrant": 3,
+      "flip": true,
+      "spinSteps": 0,
+      "sourceCode": "11111011"
+     },
+     {
+      "quadrant": 3,
+      "type": "interior",
+      "tile": "d3",
+      "sourceQuadrant": 3,
+      "flip": false,
+      "spinSteps": 0,
+      "sourceCode": "01111111"
+     }
+    ]
+   },
+   "01111111": {
+    "status": "explicit",
+    "pool": [
+     {
+      "ref": "d3",
+      "ops": [],
+      "from": null
+     }
+    ],
+    "recipe": null
+   }
+  }
+ }
+}

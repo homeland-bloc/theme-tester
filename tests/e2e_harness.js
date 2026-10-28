@@ -42,7 +42,7 @@ const startServer = () => new Promise(resolve => {
 });
 
 
-const start = async ({ tilesets, tiles, role = "user", onWorker } = {}) => {
+const start = async ({ tilesets, tiles, role = "user", onWorker, image } = {}) => {
   let passed = 0, failed = 0;
   const unexpected = [], requests = [];
   const srv = await startServer();
@@ -66,7 +66,7 @@ const start = async ({ tilesets, tiles, role = "user", onWorker } = {}) => {
       if (VENDOR_FILES[key]) return route.fulfill({ status: 200, contentType: "text/javascript", body: fs.readFileSync(VENDOR_FILES[key]) });
       if (url.host === "www.gstatic.com" && url.pathname.includes("firebase")) return reply(200, url.pathname.includes("app-compat") ? FIREBASE_STUB : "", "text/javascript");
       if (url.host === "fonts.googleapis.com" || url.host === "fonts.gstatic.com") return reply(200, "", "text/css");
-      if (url.host === "stub.invalid") return reply(200, PNG, "image/png");
+      if (url.host === "stub.invalid") return reply(200, (image && image(url)) || PNG, "image/png"); // image(url) -> Buffer lets a test serve its own pixels
       if (url.host === "discord.com" && url.pathname === "/oauth2/authorize") return route.fulfill({ status: 302, headers: { location: ORIGIN + "/auth/callback.html?code=stub-code" + (url.searchParams.get("state") ? "&state=" + encodeURIComponent(url.searchParams.get("state")) : "") } });
       if (url.host === WORKER) {
         const q = url.searchParams;
