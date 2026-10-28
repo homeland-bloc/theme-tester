@@ -270,6 +270,35 @@ const TILES = { "ts-0": [
     await ctx.close();
   });
 
+  await test("mobile panels: the Tiles panel is thinner (under 160px) with exactly two EQUAL columns and nothing stray on the right; Tools buttons stay inside the panel and may wrap", async () => {
+    const { page, ctx } = await newPage({ viewport: { width: 390, height: 844 } });
+    await page.waitForSelector("[data-map-scroll]", { timeout: 30000 }); await settle(page);
+    await page.click("button[title='Expand tiles']"); await settle(page);
+    const t = await page.evaluate(() => {
+      const cards = [...document.querySelectorAll("[data-tile-card], [data-folder-card], [data-sensor-card]")].filter(e => { const r = e.getBoundingClientRect(); return r.width > 20 && r.left < 200; });
+      const rects = cards.map(e => e.getBoundingClientRect());
+      const first = rects.filter(r => Math.abs(r.top - rects[0].top) < 2);
+      const scroller = cards[0].closest("div[style*='overflow-y: auto'], div[style*='overflow-y:auto']") || cards[0].parentElement;
+      const sb = scroller.getBoundingClientRect(), panel = cards[0].closest("div[style*='max-height']") ? cards[0].closest("div[style*='max-height']").getBoundingClientRect() : sb;
+      return { n: cards.length, perRow: first.length, widths: first.map(r => Math.round(r.width * 10) / 10), gapRight: Math.round((sb.right - Math.max(...first.map(r => r.right))) * 10) / 10, gapLeft: Math.round((Math.min(...first.map(r => r.left)) - sb.left) * 10) / 10, panelW: panel.width };
+    });
+    assert.ok(t.n >= 4, JSON.stringify(t));
+    assert.strictEqual(t.perRow, 2, "two tiles per row: " + JSON.stringify(t));
+    assert.ok(Math.abs(t.widths[0] - t.widths[1]) < 0.6, "equal columns: " + JSON.stringify(t));
+    assert.ok(Math.abs(t.gapRight - t.gapLeft) <= 1.5, "same space on both sides, none stray on the right: " + JSON.stringify(t));
+    assert.ok(t.panelW < 160, "slightly thinner than the old 160px: " + t.panelW);
+    await page.click("button[title='Collapse tiles']"); await page.click("button[title='Expand tools']"); await settle(page);
+    const tools = await page.evaluate(() => {
+      const panel = document.querySelector("button[title^='Horizontal mirror']").closest("div[style*='max-height']"), pr = panel.getBoundingClientRect();
+      const over = [...panel.querySelectorAll("button")].filter(b => b.getBoundingClientRect().right > pr.right + 1 && b.getBoundingClientRect().width > 0).map(b => b.textContent.trim());
+      const wrapped = [...panel.querySelectorAll("button")].filter(b => b.getBoundingClientRect().height > 30 && b.getBoundingClientRect().width > 0).map(b => b.textContent.trim());
+      return { panelW: pr.width, over, wrapped };
+    });
+    assert.ok(tools.panelW < 160, JSON.stringify(tools));
+    assert.deepStrictEqual(tools.over, [], "no button runs past the panel: " + JSON.stringify(tools));
+    await ctx.close();
+  });
+
   await h.finish();
 
   // ── Hidden (unpublished) tileset on refresh ─────────────────────────────────────────────────────────────

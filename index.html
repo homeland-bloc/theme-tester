@@ -2106,16 +2106,6 @@ function InfoModalBody(props) {
         </label>
         <FlagDesc id="starred" />
 
-        {/* Duplicate tile (editors): a COPY with its own image file in this tileset (owner / admin), or a local upload (max 256px) */}
-        <div data-duplicate style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-            <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Duplicate tile</span>
-            {canEditDb && <button data-duplicate-tileset disabled={dupBusy} style={{ ...btn(false), fontSize: 11, opacity: dupBusy ? 0.5 : 1 }} onClick={dupToTileset} title="Adds a copy of this tile (with its own image file) to this tileset">This tileset</button>}
-            <button data-duplicate-local disabled={dupBusy} style={{ ...btn(false), fontSize: 11, opacity: dupBusy ? 0.5 : 1 }} onClick={dupToLocal} title="Adds a copy to your local uploads (kept in this browser, image scaled to 256px)">Local uploads</button>
-          </div>
-          {dupMsg && <span data-duplicate-msg style={{ fontSize: 11, color: dupMsg.ok ? "#4ade80" : C.danger, wordBreak: "break-word" }}>{dupMsg.text}</span>}
-        </div>
-
         {/* Codename — pre-filled from DB for DB tiles; editable for owners/admins */}
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>codename</span>
@@ -2583,6 +2573,17 @@ function InfoModalBody(props) {
         ) : t.isDefault ? (
           <p style={{ fontSize: 11, color: C.muted, textAlign: "center" }}>Default tile — cannot be deleted.</p>
         ) : null}
+
+        {/* Duplicate tile — at the bottom of the modal (editors): a COPY with its own image file in this tileset (owner / admin), or a local upload (max 256px) */}
+        <div data-duplicate style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Duplicate tile</span>
+            {canEditDb && <button data-duplicate-tileset disabled={dupBusy} style={{ ...btn(false), fontSize: 11, opacity: dupBusy ? 0.5 : 1 }} onClick={dupToTileset} title="Adds a copy of this tile (with its own image file) to this tileset">This tileset</button>}
+            <button data-duplicate-local disabled={dupBusy} style={{ ...btn(false), fontSize: 11, opacity: dupBusy ? 0.5 : 1 }} onClick={dupToLocal} title="Adds a copy to your local uploads (kept in this browser, image scaled to 256px)">Local uploads</button>
+          </div>
+          {dupMsg && <span data-duplicate-msg style={{ fontSize: 11, color: dupMsg.ok ? "#4ade80" : C.danger, wordBreak: "break-word" }}>{dupMsg.text}</span>}
+        </div>
+
       </div>
     </div>
   );
@@ -2633,7 +2634,7 @@ function TileThumb({ tile, light, onError, imgStyle }) {
   if (tile && tile.isSensor && tile.sensorFolder) {
     const prev = SensorUI.folderPreviewTiles(tile.sensorFolder);
     return (
-      <div data-folder-thumb style={{ width: "100%", height: "100%", display: "grid", gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr", gap: 1 }}>
+      <div data-folder-thumb style={{ width: "100%", height: "100%", display: "grid", gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr", gap: 0 }}>
         {[0, 1, 2, 3].map(i => (
           <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", background: C.panelDeep, minWidth: 0, minHeight: 0 }}>
             {prev[i] && <img src={prev[i].blobSrc ?? prev[i].src} alt="" className={light ? "tile-img-checker" : undefined} style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated" }} />}
@@ -6635,6 +6636,9 @@ function App() {
     border:    `1px solid ${active ? color : "rgba(255,255,255,0.1)"}`,
     transition: "all 0.12s", flexShrink: 0,
   });
+  // Tools panel buttons: on a phone the panel is narrow, so a button with two long words (Block Overwrite, Offset Centers ...) may wrap to two lines
+  // instead of running past the edge.
+  const toolBtn = (...a) => ({ ...btn(...a), ...(isMobile ? { flexShrink: 1, maxWidth: "100%", boxSizing: "border-box", lineHeight: 1.25, textAlign: "center" } : {}) });
 
   const inputStyle = {
     background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`,
@@ -8477,7 +8481,7 @@ function App() {
         {/* ── LEFT SIDEBAR: Tiles ──────────────────────────────────── */}
         <div style={{ display: "flex", flexDirection: "row", flexShrink: 0, alignSelf: "stretch" }}>
           {tilesOpen && (
-            <div style={{ width: isMobile ? 160 : 305, background: C.panelDeep, borderRight: `1px solid ${C.border}`, borderRadius: "8px 0 0 8px", display: "flex", flexDirection: "column", overflow: "hidden", maxHeight: "min(88vh, 700px)" }}>
+            <div style={{ width: isMobile ? 136 : 305, background: C.panelDeep, borderRight: `1px solid ${C.border}`, borderRadius: "8px 0 0 8px", display: "flex", flexDirection: "column", overflow: "hidden", maxHeight: "min(88vh, 700px)" }}>
               <SectionHeader
                 label={`Tiles (${tilesetTileCount + userTiles.length})`}
                 open={tilesOpen}
@@ -8565,6 +8569,8 @@ function App() {
                   // Desktop: 64px cards, 5px gaps. Mobile: 56px cards, 5px gaps, 2 per row.
                   const cardSz  = isMobile ? 56 : 64;
                   const cardGap = 5;
+                  // Mobile: two EQUAL, flexible columns (each card is half the row minus half the gap, square) so no space is left on the right however wide the panel is.
+                  const cardBox = isMobile ? { width: `calc((100% - ${cardGap}px) / 2)`, aspectRatio: "1 / 1" } : { width: cardSz, height: cardSz };
 
                   const renderFlatCard = (t, opts = {}) => {
                     const { onDelete } = opts;
@@ -8579,7 +8585,7 @@ function App() {
                           setHandMode(false); setMagnetMode(false); setEyedropperMode(false);
                           if (highlightMode) { setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }
                         }}
-                        style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: failed ? "not-allowed" : "pointer", border: `${active ? 3 : 2}px solid ${failed ? C.danger : active ? C.accentBright : C.border}`, boxShadow: active ? `0 0 0 1px ${C.accentBright}44` : "none", background: failed ? "rgba(248,113,113,0.08)" : active ? C.accentDim : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s, box-shadow 0.12s", opacity: failed ? 0.55 : 1, position: "relative", overflow: "visible" }}>
+                        style={{ flexShrink: 0, ...cardBox, borderRadius: 8, cursor: failed ? "not-allowed" : "pointer", border: `${active ? 3 : 2}px solid ${failed ? C.danger : active ? C.accentBright : C.border}`, boxShadow: active ? `0 0 0 1px ${C.accentBright}44` : "none", background: failed ? "rgba(248,113,113,0.08)" : active ? C.accentDim : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s, box-shadow 0.12s", opacity: failed ? 0.55 : 1, position: "relative", overflow: "visible" }}>
                         {/* Inner clipped area for image */}
                         <div style={{ position: "absolute", inset: 0, borderRadius: 6, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", background: C.panelDeep }}>
                           {failed ? <span style={{ fontSize: 20 }}>⚠️</span>
@@ -8616,11 +8622,11 @@ function App() {
                         onMouseDown={e => e.stopPropagation()}
                         onTouchStart={e => e.stopPropagation()}
                         title={`${label} (sensor folder: places the right variant automatically)`}
-                        style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: "pointer", position: "relative", overflow: "visible",
+                        style={{ flexShrink: 0, ...cardBox, borderRadius: 8, cursor: "pointer", position: "relative", overflow: "visible",
                           border: `${active ? 3 : 2}px solid ${active ? C.accentBright : C.border}`,
                           boxShadow: active ? `0 0 0 1px ${C.accentBright}44` : "none",
                           background: active ? C.accentDim : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s, box-shadow 0.12s" }}>
-                        <div style={{ position: "absolute", inset: 0, borderRadius: 6, overflow: "hidden", display: "grid", gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr", gap: 1 }}>
+                        <div style={{ position: "absolute", inset: 0, borderRadius: 6, overflow: "hidden", display: "grid", gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr", gap: 0 }}>
                           {preview.map(t => (
                             <div key={t.ref} style={{ display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", background: C.panelDeep }}>
                               <img src={t.blobSrc ?? t.src} alt="" className={tileCardLightBg ? "tile-img-checker" : undefined} style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated" }} />
@@ -8654,13 +8660,13 @@ function App() {
                         onClick={e => toggleFolder(key, e)}
                         onMouseDown={e => e.stopPropagation()}
                         onTouchStart={e => e.stopPropagation()}
-                        style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: "pointer",
+                        style={{ flexShrink: 0, ...cardBox, borderRadius: 8, cursor: "pointer",
                           border: `2px solid ${folderActive ? C.soft : isThisOpen ? C.accent : C.border}`,
                           background: folderActive ? "rgba(252,211,77,0.07)" : isThisOpen ? C.accentDim : C.panelDeep,
                           overflow: "hidden", position: "relative",
                           transition: "border 0.12s, background 0.12s" }}>
                         {/* 2×2 preview grid — fills full card, no label strip */}
-                        <div style={{ position: "absolute", inset: 0, display: "grid", gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr", gap: 1 }}>
+                        <div style={{ position: "absolute", inset: 0, display: "grid", gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr", gap: 0 }}>
                           {previewTiles.map(t => (
                             <div key={t.ref} style={{ display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", background: C.panelDeep }}>
                               <img src={t.blobSrc ?? t.src} alt="" className={tileCardLightBg ? "tile-img-checker" : undefined} style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated" }} />
@@ -9006,7 +9012,7 @@ function App() {
                                 {canManageSec && (
                                   <div
                                     onClick={() => { setAddTileTsId(tilesetId); setAddTileOpen(true); setAddTileFile(null); setAddTileCodename(''); setAddTileFolderKey(''); setAddTileSortIdx(''); setAddTileSensorCode(''); setAddTileSensorRoll(''); setAddTileError(''); }}
-                                    style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: "pointer", border: `2px dashed ${C.border}`, background: "rgba(255,255,255,0.03)", overflow: "hidden", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2 }}
+                                    style={{ flexShrink: 0, ...cardBox, borderRadius: 8, cursor: "pointer", border: `2px dashed ${C.border}`, background: "rgba(255,255,255,0.03)", overflow: "hidden", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2 }}
                                     title={`Add tile to ${name}`}>
                                     <span style={{ fontSize: 22, color: C.muted, lineHeight: 1, fontWeight: 300 }}>+</span>
                                     <span style={{ fontSize: 9, color: C.muted, textTransform: "uppercase", letterSpacing: 0.8, lineHeight: 1 }}>Add Tile</span>
@@ -9027,7 +9033,7 @@ function App() {
                           {!panelCollapsed.user && (<>
                             {userTiles.map(t => renderFlatCard(t))}
                             <div onClick={() => fileRef.current.click()}
-                              style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: "pointer", border: `2px dashed ${C.border}`, background: "rgba(255,255,255,0.03)", overflow: "hidden", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2 }}
+                              style={{ flexShrink: 0, ...cardBox, borderRadius: 8, cursor: "pointer", border: `2px dashed ${C.border}`, background: "rgba(255,255,255,0.03)", overflow: "hidden", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2 }}
                               title="Upload tiles">
                               <span style={{ fontSize: 22, color: C.muted, lineHeight: 1, fontWeight: 300 }}>+</span>
                               <span style={{ fontSize: 9, color: C.muted, textTransform: "uppercase", letterSpacing: 0.8, lineHeight: 1 }}>Upload</span>
@@ -9703,7 +9709,7 @@ function App() {
             </div>
           )}
           {toolsOpen && (
-            <div style={{ width: isMobile ? 160 : 280, background: C.panelDeep, borderLeft: `1px solid ${C.border}`, borderRadius: "0 8px 8px 0", display: "flex", flexDirection: "column", overflow: "hidden", maxHeight: "min(88vh, 700px)" }}>
+            <div style={{ width: isMobile ? 140 : 280, background: C.panelDeep, borderLeft: `1px solid ${C.border}`, borderRadius: "0 8px 8px 0", display: "flex", flexDirection: "column", overflow: "hidden", maxHeight: "min(88vh, 700px)" }}>
               <SectionHeader label="Tools" open={toolsOpen} onToggle={() => setToolsOpen(o => !o)}
               />
               <div style={{ overflowY: "auto", flex: 1, padding: "8px 12px 10px", display: "flex", flexDirection: "column", gap: 7 }}>
@@ -9714,10 +9720,10 @@ function App() {
                     : { single: ['#c084fc','rgba(192,132,252,0.18)'], line: ['#818cf8','rgba(129,140,248,0.18)'], rect: ['#60a5fa','rgba(96,165,250,0.18)'], fill: [C.accent,C.accentDim] };
                   return (
                     <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}>
-                      <button style={btn(selectionMode === 'single', SC.single[0], SC.single[1])} onClick={() => setSelectionMode('single')} title="Freehand">✏️ Single</button>
-                      <button style={btn(selectionMode === 'line', SC.line[0], SC.line[1])} onClick={() => setSelectionMode('line')} title="Line draw">📏 Line</button>
-                      <button style={btn(selectionMode === 'rect', SC.rect[0], SC.rect[1])} onClick={() => setSelectionMode('rect')} title="Rectangle fill">⬜ Rectangle</button>
-                      <button style={btn(selectionMode === 'fill', SC.fill[0], SC.fill[1])} onClick={() => setSelectionMode('fill')} title="Flood fill selection">🪣 Fill</button>
+                      <button style={toolBtn(selectionMode === 'single', SC.single[0], SC.single[1])} onClick={() => setSelectionMode('single')} title="Freehand">✏️ Single</button>
+                      <button style={toolBtn(selectionMode === 'line', SC.line[0], SC.line[1])} onClick={() => setSelectionMode('line')} title="Line draw">📏 Line</button>
+                      <button style={toolBtn(selectionMode === 'rect', SC.rect[0], SC.rect[1])} onClick={() => setSelectionMode('rect')} title="Rectangle fill">⬜ Rectangle</button>
+                      <button style={toolBtn(selectionMode === 'fill', SC.fill[0], SC.fill[1])} onClick={() => setSelectionMode('fill')} title="Flood fill selection">🪣 Fill</button>
                     </div>
                   );
                 })()}
@@ -9726,9 +9732,9 @@ function App() {
                 {(() => { const mirrorLocked = highlightedCells.size > 0; return (
                 <div style={{ position: "relative" }}>
                   <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center", opacity: mirrorLocked ? 0.55 : 1, pointerEvents: mirrorLocked ? "none" : "auto", transition: "opacity 0.15s" }}>
-                    <button style={btn(mirrorV, C.pale, C.paleDim)} onClick={() => setMirrorV(v => !v)} title="Horizontal mirror (left ↔ right)">↔️ Horizontal</button>
-                    <button style={btn(mirrorH, C.soft, C.softDim)} onClick={() => setMirrorH(v => !v)} title="Vertical mirror (top ↔ bottom)">↕️ Vertical</button>
-                    <button style={btn(mirrorD, C.accentBright, C.accentDim)} onClick={() => setMirrorD(v => !v)} title="Diagonal mirror (180° rotation)">🌀 Diagonal</button>
+                    <button style={toolBtn(mirrorV, C.pale, C.paleDim)} onClick={() => setMirrorV(v => !v)} title="Horizontal mirror (left ↔ right)">↔️ Horizontal</button>
+                    <button style={toolBtn(mirrorH, C.soft, C.softDim)} onClick={() => setMirrorH(v => !v)} title="Vertical mirror (top ↔ bottom)">↕️ Vertical</button>
+                    <button style={toolBtn(mirrorD, C.accentBright, C.accentDim)} onClick={() => setMirrorD(v => !v)} title="Diagonal mirror (180° rotation)">🌀 Diagonal</button>
                   </div>
                   {mirrorLocked && (
                     <div style={{ fontSize: 9, color: C.muted, marginTop: 3, lineHeight: 1.4 }}>
@@ -9739,24 +9745,24 @@ function App() {
                 ); })()}
                 <div style={{ height: 1, background: C.border }} />
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
-                    <button style={btn(showGuides, gColor, gDim)} onClick={() => setShowGuides(v => !v)} title="Toggle mirror guide lines">🧭 Guides</button>
+                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0, maxWidth: "100%" }}>
+                    <button style={toolBtn(showGuides, gColor, gDim)} onClick={() => setShowGuides(v => !v)} title="Toggle mirror guide lines">🧭 Guides</button>
                     <span onClick={() => setInfoTool("guides")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
                   </div>
-                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
-                    <button data-mirror-spawns aria-pressed={mirrorSettings.mirrorSpawns} style={btn(mirrorSettings.mirrorSpawns, C.pale, C.paleDim)} onClick={() => setMirrorSettings(p => ({ ...p, mirrorSpawns: !p.mirrorSpawns }))} title="Team tiles (spawns, respawns, goals) swap with their partner on a top-bottom or diagonal mirror">🚩 Mirror Spawns</button>
+                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0, maxWidth: "100%" }}>
+                    <button data-mirror-spawns aria-pressed={mirrorSettings.mirrorSpawns} style={toolBtn(mirrorSettings.mirrorSpawns, C.pale, C.paleDim)} onClick={() => setMirrorSettings(p => ({ ...p, mirrorSpawns: !p.mirrorSpawns }))} title="Team tiles (spawns, respawns, goals) swap with their partner on a top-bottom or diagonal mirror">🚩 Mirror Spawns</button>
                     <span onClick={() => setInfoTool("mirrorSpawns")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
                   </div>
-                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
-                    <button style={btn(mirrorSettings.allowSwap, owColor, owDim)} onClick={() => setMirrorSettings(p => ({ ...p, allowSwap: !p.allowSwap }))} title="When enabled, painting over occupied cells replaces them instead of picking them up [O]">🧱 Block Overwrite</button>
+                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0, maxWidth: "100%" }}>
+                    <button style={toolBtn(mirrorSettings.allowSwap, owColor, owDim)} onClick={() => setMirrorSettings(p => ({ ...p, allowSwap: !p.allowSwap }))} title="When enabled, painting over occupied cells replaces them instead of picking them up [O]">🧱 Block Overwrite</button>
                     <span onClick={() => setInfoTool("overwrite")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
                   </div>
-                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
-                    <button style={btn(showOffsetCenters, ocColor, ocDim)} onClick={() => setShowOffsetCenters(v => !v)} title="Show a marker at the placement cell of tiles with non-zero offset">🎯 Offset Centers</button>
+                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0, maxWidth: "100%" }}>
+                    <button style={toolBtn(showOffsetCenters, ocColor, ocDim)} onClick={() => setShowOffsetCenters(v => !v)} title="Show a marker at the placement cell of tiles with non-zero offset">🎯 Offset Centers</button>
                     <span onClick={() => setInfoTool("offsetCenters")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
                   </div>
-                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
-                    <button style={btn(showOTG, C.danger, "rgba(239,68,68,0.18)")}
+                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0, maxWidth: "100%" }}>
+                    <button style={toolBtn(showOTG, C.danger, "rgba(239,68,68,0.18)")}
                       onClick={() => setShowOTG(v => !v)}
                       title="OTG detection">
                       🧩 OTG Check
@@ -9766,20 +9772,20 @@ function App() {
                 </div>
                 <div style={{ height: 1, background: C.border }} />
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
-                    <button style={btn(false, C.soft, C.softDim)} onClick={() => { setReplaceOpen(true); setReplaceStep(1); setReplaceA(null); setReplaceB(null); setReplaceMsg(""); }}>♻️ Replace</button>
+                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0, maxWidth: "100%" }}>
+                    <button style={toolBtn(false, C.soft, C.softDim)} onClick={() => { setReplaceOpen(true); setReplaceStep(1); setReplaceA(null); setReplaceB(null); setReplaceMsg(""); }}>♻️ Replace</button>
                     <span onClick={() => setInfoTool("replace")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
                   </div>
-                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
-                    <button style={btn(false, C.soft, C.softDim)} onClick={() => setConvertOpen(true)} title="Remap tileset tiles on the board">🔄 Convert</button>
+                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0, maxWidth: "100%" }}>
+                    <button style={toolBtn(false, C.soft, C.softDim)} onClick={() => setConvertOpen(true)} title="Remap tileset tiles on the board">🔄 Convert</button>
                     <span onClick={() => setInfoTool("convert")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>{starredTiles.includes("convert") ? "★" : "ⓘ"}</span>
                   </div>
-                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
-                    <button data-tile-counter-open style={btn(tileCounterOpen, C.soft, C.softDim)} onClick={() => setTileCounterOpen(o => !o)} title="Count the tiles used on the map">🧮 Tile Counter</button>
+                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0, maxWidth: "100%" }}>
+                    <button data-tile-counter-open style={toolBtn(tileCounterOpen, C.soft, C.softDim)} onClick={() => setTileCounterOpen(o => !o)} title="Count the tiles used on the map">🧮 Tile Counter</button>
                     <span onClick={() => setInfoTool("tileCounter")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%" }} title="Info">ⓘ</span>
                   </div>
-                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
-                    <button style={btn(false)} onClick={() => setHotkeysOpen(true)}>⌨️ Hotkeys</button>
+                  <div style={{ position: "relative", display: "inline-block", flexShrink: 0, maxWidth: "100%" }}>
+                    <button style={toolBtn(false)} onClick={() => setHotkeysOpen(true)}>⌨️ Hotkeys</button>
                     <span onClick={() => setInfoTool("hotkeys")} style={{ position: "absolute", top: -6, right: -6, width: 13, height: 13, fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.75)", lineHeight: "13px", textAlign: "center", zIndex: 6, background: "rgba(0,0,0,0.7)", borderRadius: "50%", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))", pointerEvents: "auto" }}>ⓘ</span>
                   </div>
                 </div>
