@@ -885,6 +885,86 @@ function AddTileModal({ open, onClose, tsId, dbTilesets, file, onFileChange,
   );
 }
 
+// ── Tileset export (zip). Read-only: it only GETs images and never touches the tileset, its tiles or the database. The plan, names, zip writer
+//    and bake geometry are pure and live in sensor_ui.js (SensorUI.planTilesetExport, zipStore, bakeLayout); this is the fetch + canvas side.
+//    Images keep their native size (size multipliers are never applied). Per-tile failures are collected, the export carries on.
+async function exportTilesetZip({ tsName, rows, opts, fetchBytes, onProgress }) {
+  const plan = SensorUI.planTilesetExport(rows, tsName);
+  const cache = new Map();
+  const loadImg = url => new Promise((resolve, reject) => { const im = new Image(); im.onload = () => resolve(im); im.onerror = () => reject(new Error('the image could not be decoded')); im.src = url; });
+  const load = row => {
+    if (!cache.has(row.id)) cache.set(row.id, (async () => {
+      const bytes = await fetchBytes(row.image_url);
+      const url = URL.createObjectURL(new Blob([bytes]));
+      try { return { bytes, img: await loadImg(url) }; } finally { URL.revokeObjectURL(url); } // a decoded Image does not need its blob URL any more
+    })());
+    return cache.get(row.id);
+  };
+  const toPng = cv => new Promise((resolve, reject) => cv.toBlob(b => (b ? resolve(b) : reject(new Error('the canvas could not be exported (tainted or empty)'))), 'image/png'))
+    .then(b => b.arrayBuffer()).then(a => new Uint8Array(a));
+  const newCanvas = (w, h) => { const cv = document.createElement('canvas'); cv.width = w; cv.height = h; const ctx = cv.getContext('2d'); ctx.imageSmoothingEnabled = false; return [cv, ctx]; };
+  // Native-size canvas of a derived (spin / flip of one tile) or composed (four quadrants) variant, or a real tile's own image.
+  const baseOf = async item => {
+    if (item.kind === 'real') { const { img } = await load(item.row); return { src: img, w: img.naturalWidth, h: img.naturalHeight }; }
+    if (item.kind === 'derived') {
+      const { img } = await load(item.sourceRows[0]);
+      const t = SensorUI.imageOps(SensorUI.exportImageOps(item.ops), img.naturalWidth, img.naturalHeight);
+      const [cv, ctx] = newCanvas(t.width, t.height);
+      ctx.setTransform(...t.matrix); ctx.drawImage(img, 0, 0);
+      return { src: cv, w: cv.width, h: cv.height };
+    }
+    const imgs = new Map();
+    for (const r of item.sourceRows) imgs.set(String(r.id), (await load(r)).img);
+    const first = imgs.values().next().value, W = first.naturalWidth || 100, H = first.naturalHeight || 100;
+    const [cv, ctx] = newCanvas(W, H);
+    for (const q of SensorUI.composePlan(item.recipe, W, H)) {
+      ctx.save();
+      ctx.beginPath(); ctx.rect(q.x, q.y, q.w, q.h); ctx.clip();
+      ctx.translate(W / 2, H / 2); ctx.rotate(q.steps * Math.PI / 2); if (q.flip) ctx.scale(-1, 1);
+      ctx.drawImage(imgs.get(q.sourceTileRef), -W / 2, -H / 2, W, H);
+      ctx.restore();
+    }
+    return { src: cv, w: W, h: H };
+  };
+  const files = [], records = [], failures = [];
+  let done = 0;
+  for (const item of plan.items) {
+    try {
+      const o = SensorUI.rowOffset(item.row);
+      const bakeOffset = !!opts.offsets && SensorUI.hasOffset(item.row), bakeShadow = !!opts.shadow && !!(item.row && item.row.auto_shadow);
+      let data;
+      if (item.kind === 'real' && !bakeOffset && !bakeShadow) data = (await load(item.row)).bytes; // untouched: the original file, byte for byte
+      else {
+        const base = await baseOf(item);
+        if (!bakeOffset && !bakeShadow) data = await toPng(base.src);
+        else {
+          const L = SensorUI.bakeLayout({ w: base.w, h: base.h, ox: o.ox, oy: o.oy, bakeOffset, bakeShadow });
+          const [cv, ctx] = newCanvas(L.width, L.height);
+          if (L.shadow) { // a black copy of the tile at 20% opacity, 30% of a cell lower
+            const [sc, sctx] = newCanvas(base.w, base.h);
+            sctx.drawImage(base.src, 0, 0); sctx.globalCompositeOperation = 'source-in'; sctx.fillStyle = '#000'; sctx.fillRect(0, 0, base.w, base.h);
+            ctx.globalAlpha = SensorUI.SHADOW_ALPHA; ctx.drawImage(sc, L.shadow.x, L.shadow.y); ctx.globalAlpha = 1;
+          }
+          ctx.drawImage(base.src, L.image.x, L.image.y);
+          data = await toPng(cv);
+        }
+      }
+      files.push({ name: item.path, data });
+      records.push(SensorUI.exportRecord(item, { offsets: bakeOffset, shadow: bakeShadow }));
+    } catch (e) {
+      failures.push({ name: item.path, error: (e && e.message) || String(e) });
+    }
+    done++;
+    onProgress({ done, total: plan.items.length, failures: failures.slice() });
+  }
+  if (opts.json) {
+    const doc = { tileset: tsName, exportedAt: new Date().toISOString(), note: 'Images are at their native size; size multipliers are recorded in sizeMultiplier but never applied. Offsets are percent of a cell.',
+      options: { bakeOffsets: !!opts.offsets, bakeShadow: !!opts.shadow }, tiles: records, failed: failures };
+    files.push({ name: `${plan.dir}/tiles.json`, data: new TextEncoder().encode(JSON.stringify(doc, null, 2)) });
+  }
+  return { zip: SensorUI.zipStore(files), count: records.length, failures, total: plan.items.length, name: `${plan.dir}.zip` };
+}
+
 // ── TilesetGearModal — defined OUTSIDE App so its component identity is stable.
 //    When defined inside App, React sees a new function type every render and
 //    unmounts+remounts the modal (losing input focus on every keystroke).
@@ -913,6 +993,7 @@ function TilesetGearModal({
   const [profilesLoading,       setProfilesLoading]       = React.useState(false);
   const [linkRefresh,           setLinkRefresh]           = React.useState(null); // null | { busy, ok, text }
   const [backfill,              setBackfill]              = React.useState(null); // null | { busy, plan?, ok?, text? }
+  const [exp,                   setExp]                   = React.useState(null); // null | { busy, rows?, opts, done, total, failures, text?, ok? }
 
   const tsData = (open && tsId) ? dbTilesets.find(ts => ts.id === tsId) : null;
 
@@ -986,6 +1067,39 @@ function TilesetGearModal({
     } catch (e) { setBackfill({ ok: false, text: 'Failed: ' + e.message }); }
   };
 
+  // Export tileset (zip): read-only. The rows come from the loaded cache or one GET; images are fetched one at a time.
+  const openExport = async () => {
+    if (!tsData) return;
+    setExp({ busy: true, text: 'Reading tiles…', opts: { offsets: false, shadow: false, json: true }, failures: [] });
+    try {
+      let rows = dbTilesByTsId?.[tsData.id];
+      if (!rows) {
+        const token = await getValidToken();
+        const r = await workerFetch(`${WORKER_URL}/rest/v1/tiles?tileset_id=eq.${tsData.id}&select=*`, { headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' } });
+        if (!r.ok) throw new Error('could not read the tiles');
+        rows = await r.json();
+      }
+      setExp({ rows, opts: { offsets: rows.some(SensorUI.hasOffset), shadow: rows.some(x => x.auto_shadow), json: true }, failures: [] });
+    } catch (e) { setExp({ ok: false, text: 'Failed: ' + e.message, failures: [] }); }
+  };
+  const runExport = async () => {
+    if (!exp?.rows || exp.busy) return;
+    const { rows, opts } = exp;
+    setExp(x => ({ ...x, busy: true, done: 0, total: 0, failures: [], text: 'Exporting…', ok: undefined }));
+    try {
+      const res = await exportTilesetZip({
+        tsName: tsData.name, rows, opts,
+        fetchBytes: async url => { const r = await fetch(url, { cache: 'no-store' }); if (!r.ok) throw new Error('download failed (' + r.status + ')'); return new Uint8Array(await r.arrayBuffer()); },
+        onProgress: p => setExp(x => ({ ...x, ...p })),
+      });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([res.zip], { type: 'application/zip' })); a.download = res.name;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+      setExp(x => ({ ...x, busy: false, ok: res.failures.length === 0, failures: res.failures, text: `${res.count} of ${res.total} files exported${res.failures.length ? `, ${res.failures.length} failed` : ''}` }));
+    } catch (e) { setExp(x => ({ ...x, busy: false, ok: false, text: 'Failed: ' + e.message })); }
+  };
+
   // Tile count for the delete button: from the loaded cache, else one id-only read (no cascade delete exists).
   const [fetchedTileCount, setFetchedTileCount] = React.useState(null);
   const cachedTileRows = tsId ? dbTilesByTsId?.[tsId] : undefined;
@@ -1018,6 +1132,7 @@ function TilesetGearModal({
     setDeleteConfirm(false);
     setDeleteBusy(false);
     setDeleteError(null);
+    setExp(null); setBackfill(null);
     setBgSaveStatus(null);
     setTransferStatus(null);
     setTransferTargetId(null);
@@ -1344,6 +1459,25 @@ function TilesetGearModal({
               {linkRefresh && <span style={{ fontSize: 10, color: linkRefresh.busy ? C.muted : linkRefresh.ok ? '#4ade80' : C.danger }}>{linkRefresh.text}</span>}
             </div>
           )}
+          {/* Export tileset (zip) — read-only */}
+          <div data-export style={{ borderTop: `1px solid ${C.border}`, paddingTop: 8, display: "flex", flexDirection: "column", gap: 4 }}>
+            <button data-export-open disabled={!!exp?.busy} style={{ ...btn(false, C.accent, C.accentDim), justifyContent: "center", fontSize: 11, width: "100%" }}
+              title="Downloads every tile image (and every derived / composed sensor variant) in a .zip. Changes nothing." onClick={openExport}>📦 Export tileset (zip)</button>
+            {exp?.rows && (
+              <div data-export-options style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 11, color: C.text }}>
+                {[['offsets', 'Bake offsets into images (can change how sensor quadrants split)'], ['shadow', 'Bake auto-shadow'], ['json', 'Include tiles.json']].map(([k, label]) => (
+                  <label key={k} style={{ display: "flex", alignItems: "flex-start", gap: 6, cursor: "pointer" }}>
+                    <input type="checkbox" data-export-opt={k} checked={!!exp.opts[k]} disabled={!!exp.busy} onChange={e => setExp(x => ({ ...x, opts: { ...x.opts, [k]: e.target.checked } }))} style={{ marginTop: 2 }} />
+                    <span>{label}</span>
+                  </label>
+                ))}
+                <button data-export-run disabled={!!exp.busy} style={{ ...btn(true, C.accent, C.accentDim), justifyContent: "center", fontSize: 11 }} onClick={runExport}>{exp.busy ? 'Exporting…' : 'Build zip'}</button>
+              </div>
+            )}
+            {exp?.busy && exp.total > 0 && <span data-export-progress style={{ fontSize: 10, color: C.muted }}>{exp.done}/{exp.total}</span>}
+            {exp?.text && <span data-export-status style={{ fontSize: 10, color: exp.busy ? C.muted : exp.ok ? '#4ade80' : C.danger }}>{exp.text}</span>}
+            {exp?.failures?.length > 0 && <div data-export-failures style={{ fontSize: 10, color: '#fbbf24', maxHeight: 100, overflowY: "auto" }}>{exp.failures.map(f => <div key={f.name}>{f.name}: {f.error}</div>)}</div>}
+          </div>
           {/* Backfill symbols from codenames — owners/admins; only empty symbols, never overwrites */}
           {canManage && (
             <div data-backfill style={{ borderTop: `1px solid ${C.border}`, paddingTop: 8, display: "flex", flexDirection: "column", gap: 4 }}>

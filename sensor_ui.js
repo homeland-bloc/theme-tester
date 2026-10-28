@@ -407,6 +407,123 @@
     return (activeFolderKeys instanceof Set ? activeFolderKeys : new Set(activeFolderKeys || [])).has(p.folderKey) ? sensorRef(activeTsId, p.folderKey) : null;
   };
 
+  // ── Tileset export (zip) ──────────────────────────────────────────────────────────────────────────────
+  // Pure parts of "Export tileset (zip)": a store-only zip writer, file naming, the plan of what to export and the offset / shadow bake
+  // geometry. The canvas and fetch side lives in index.html. Nothing here reads or writes the database.
+  const CRC_TABLE = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+  const crc32 = bytes => { let c = 0xffffffff; for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xff] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
+  const utf8 = str => (typeof TextEncoder !== "undefined" ? new TextEncoder().encode(str) : Uint8Array.from(Buffer.from(str, "utf8")));
+  // files: [{ name ("/" separated, no leading slash), data: Uint8Array }] -> Uint8Array holding a valid .zip (method 0 = stored, UTF-8 names).
+  const zipStore = files => {
+    const DOS_TIME = 0, DOS_DATE = (1 << 5) | 1 | ((2024 - 1980) << 9); // 2024-01-01 00:00: the export is reproducible
+    const parts = [], central = [];
+    let offset = 0;
+    const u16 = n => [n & 0xff, (n >>> 8) & 0xff], u32 = n => [n & 0xff, (n >>> 8) & 0xff, (n >>> 16) & 0xff, (n >>> 24) & 0xff];
+    for (const f of files) {
+      const name = utf8(f.name), data = f.data, crc = crc32(data);
+      if (data.length >= 0xffffffff || offset >= 0xffffffff || files.length >= 0xffff) throw new Error("zip too large for this writer");
+      const local = Uint8Array.from([0x50, 0x4b, 0x03, 0x04, ...u16(20), ...u16(0x0800), ...u16(0), ...u16(DOS_TIME), ...u16(DOS_DATE), ...u32(crc), ...u32(data.length), ...u32(data.length), ...u16(name.length), ...u16(0)]);
+      parts.push(local, name, data);
+      central.push(Uint8Array.from([0x50, 0x4b, 0x01, 0x02, ...u16(20), ...u16(20), ...u16(0x0800), ...u16(0), ...u16(DOS_TIME), ...u16(DOS_DATE), ...u32(crc), ...u32(data.length), ...u32(data.length), ...u16(name.length), ...u16(0), ...u16(0), ...u16(0), ...u16(0), ...u32(0), ...u32(offset)]), name);
+      offset += local.length + name.length + data.length;
+    }
+    const cdSize = central.reduce((n, a) => n + a.length, 0);
+    const end = Uint8Array.from([0x50, 0x4b, 0x05, 0x06, ...u16(0), ...u16(0), ...u16(files.length), ...u16(files.length), ...u32(cdSize), ...u32(offset), ...u16(0)]);
+    const all = [...parts, ...central, end], out = new Uint8Array(all.reduce((n, a) => n + a.length, 0));
+    let at = 0;
+    for (const a of all) { out.set(a, at); at += a.length; }
+    return out;
+  };
+  // A file / folder name that is safe in a zip on every platform.
+  const safeName = (s, fallback = "tile") => (String(s == null ? "" : s).replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_").replace(/^\.+/, "_").trim() || fallback);
+  // name.ext unique among `taken` (case-insensitive Set of full lower-cased paths): name_2.ext, name_3.ext ... The result is added to `taken`.
+  const uniquePath = (taken, dir, base, ext) => {
+    let n = 1, path;
+    do { path = `${dir ? dir + "/" : ""}${base}${n > 1 ? "_" + n : ""}${ext}`; n++; } while (taken.has(path.toLowerCase()));
+    taken.add(path.toLowerCase());
+    return path;
+  };
+  const extOfUrl = url => { const m = /\.([a-z0-9]{2,5})$/i.exec(String(url == null ? "" : url).split("?")[0]); return m ? "." + m[1].toLowerCase() : ".png"; };
+  // DB offsets: both components set -> numbers, otherwise 0,0 (the app's rule for DB tiles). Percent of a cell.
+  const rowOffset = row => (row && row.offset_x != null && row.offset_y != null ? { ox: Number(row.offset_x) || 0, oy: Number(row.offset_y) || 0 } : { ox: 0, oy: 0 });
+  const SHADOW_ALPHA = 0.2, SHADOW_SHIFT = 0.3; // the app's auto shadow: a black copy at 20% opacity, 30% of a cell down
+  // Geometry of a baked image. The cell is the image's own size (multiplier 1 is NOT changed or applied); offsets are percent of the cell and the image is
+  // centred on the cell. The canvas stays centred on the cell, so the transparent padding goes on the side OPPOSITE to each offset
+  // (offset right -> padding on the left). -> { width, height, image: { x, y }, shadow: { x, y } | null, padding: { left, right, top, bottom } }
+  const bakeLayout = ({ w, h, ox = 0, oy = 0, bakeOffset = false, bakeShadow = false }) => {
+    const dx = bakeOffset ? Math.round((ox / 100) * w) : 0, dy = bakeOffset ? Math.round((oy / 100) * h) : 0;
+    const sy = bakeShadow ? Math.round(SHADOW_SHIFT * h) : 0;
+    // extents of the content relative to the cell centre
+    const left = Math.min(dx - w / 2, bakeShadow ? dx - w / 2 : Infinity), right = Math.max(dx + w / 2, bakeShadow ? dx + w / 2 : -Infinity);
+    const top = Math.min(dy - h / 2, bakeShadow ? dy + sy - h / 2 : Infinity), bottom = Math.max(dy + h / 2, bakeShadow ? dy + sy + h / 2 : -Infinity);
+    const hx = Math.ceil(Math.max(-left, right)), hy = Math.ceil(Math.max(-top, bottom));
+    const width = 2 * hx, height = 2 * hy;
+    const image = { x: hx + dx - w / 2, y: hy + dy - h / 2 };
+    return { width, height, image, shadow: bakeShadow ? { x: image.x, y: image.y + sy } : null,
+      padding: { left: image.x, right: width - image.x - w, top: Math.min(image.y, bakeShadow ? image.y + sy : image.y), bottom: height - image.y - h - (bakeShadow ? sy : 0) } };
+  };
+  const hasOffset = row => { const o = rowOffset(row); return o.ox !== 0 || o.oy !== 0; };
+  // rows: DB tile rows { id, codename, image_url, folder_key, sensor_code, sensor_roll, sort_index, symbol, offset_x, offset_y, size_multiplier, rotatable, flippable, ... }.
+  // -> { dir, items: [{ kind: "real"|"derived"|"composed", path, file, folder, code, row (metadata source), sourceRows: [row], ops, recipe, roll }] }
+  // Every row is exported as itself ("real"); a sensor folder additionally gets every derived (spin / flip) and composed variant the engine builds for it,
+  // named <Folder>_<code>[_n] like the real ones. Plain tiles keep their codename. Exact-mode folders add nothing derived or composed.
+  const planTilesetExport = (rows, tilesetName) => {
+    const dir = safeName(tilesetName, "tileset");
+    const list = (rows || []).slice().sort((a, b) => ((a.sort_index ?? 0) - (b.sort_index ?? 0)) || String(a.id).localeCompare(String(b.id)));
+    const taken = new Set(), items = [];
+    const sensorKeys = new Set(list.filter(r => r.folder_key && Sensor.isCode(r.sensor_code)).map(r => r.folder_key));
+    const dirOf = r => (r.folder_key ? `${dir}/${safeName(r.folder_key)}` : dir);
+    const folderRows = new Map();
+    for (const r of list) {
+      if (r.folder_key && sensorKeys.has(r.folder_key) && Sensor.isCode(r.sensor_code)) {
+        if (!folderRows.has(r.folder_key)) folderRows.set(r.folder_key, []);
+        folderRows.get(r.folder_key).push(r);
+        continue;
+      }
+      const d = dirOf(r), path = uniquePath(taken, d, safeName(r.codename, "tile"), extOfUrl(r.image_url));
+      items.push({ kind: "real", path, file: path.slice(d.length + 1), folder: r.folder_key || null, code: r.sensor_code ?? null, row: r, sourceRows: [r], ops: [], recipe: null, roll: r.sensor_roll ?? null });
+    }
+    for (const [key, group] of folderRows) {
+      const d = `${dir}/${safeName(key)}`, base = safeName(key, "folder");
+      for (const r of group) {
+        const path = uniquePath(taken, d, `${base}_${r.sensor_code}`, extOfUrl(r.image_url));
+        items.push({ kind: "real", path, file: path.slice(d.length + 1), folder: key, code: r.sensor_code, row: r, sourceRows: [r], ops: [], recipe: null, roll: r.sensor_roll ?? null });
+      }
+      const byId = new Map(group.map(r => [String(r.id), r]));
+      const tiles = group.map(r => ({ ref: r.id, codename: r.codename, sensorCode: r.sensor_code, sensorRoll: r.sensor_roll ?? 1, sortIndex: r.sort_index ?? 0, symbol: r.symbol ?? null, dbRotatable: r.rotatable, dbFlippable: r.flippable, src: r.image_url }));
+      const folder = makeFolder({ scope: "export", folderKey: key, label: key, tiles });
+      if (!folder) continue;
+      const cands = Sensor.buildCandidates(engineFolder(folder));
+      for (const code of Sensor.ALL_CODES) {
+        const c = cands[code];
+        if (c.status === "derived") {
+          for (const e of c.pool) {
+            const src = byId.get(String(e.derivedFrom.ref)), path = uniquePath(taken, d, `${base}_${code}`, ".png");
+            items.push({ kind: "derived", path, file: path.slice(d.length + 1), folder: key, code, row: src, sourceRows: [src], ops: e.ops.slice(), recipe: null, roll: e.roll });
+          }
+        } else if (c.status === "composed") {
+          const rec = c.recipe, major = byId.get(String(rec.majorityRef)), path = uniquePath(taken, d, `${base}_${code}`, ".png");
+          const refs = Array.from(new Set(rec.map(q => String(q.sourceTileRef))));
+          items.push({ kind: "composed", path, file: path.slice(d.length + 1), folder: key, code, row: major, sourceRows: refs.map(x => byId.get(x)), ops: [], recipe: rec.map(q => ({ quadrant: q.quadrant, sourceTileRef: String(q.sourceTileRef), spinSteps: q.spinSteps, flip: !!q.flip })), roll: 1 });
+        }
+      }
+    }
+    return { dir, items };
+  };
+  // Image ops of a derived entry as imageOps() names: engine "spin" = clockwise 90 (rotR), "flipH" = mirror (flipH).
+  const exportImageOps = ops => (ops || []).map(o => (o === "spin" ? "rotR" : "flipH"));
+  // One tiles.json record. Sizes are recorded, never applied.
+  const exportRecord = (item, bake) => {
+    const r = item.row || {}, o = rowOffset(r);
+    return {
+      codename: item.kind === "real" ? (r.codename ?? null) : `${item.folder}_${item.code}`, folder: item.folder, file: item.path, kind: item.kind,
+      sensorCode: item.code, sensorRoll: item.roll, symbol: r.symbol ?? null, offsetX: o.ox, offsetY: o.oy, sizeMultiplier: r.size_multiplier ?? null, sizeApplied: false,
+      flags: { rotatable: !!r.rotatable, flippable: !!r.flippable, otgPassable: !!r.otg_passable, mirrorOffset: !!r.mirror_offset, bottomRender: !!r.bottom_render, priority: !!r.priority, autoShadow: !!r.auto_shadow },
+      bakedOffsets: !!(bake && bake.offsets), bakedShadow: !!(bake && bake.shadow),
+      sourceCodenames: item.kind === "real" ? undefined : (item.sourceRows || []).map(x => x && x.codename),
+    };
+  };
+
   return {
     SCOPE_GLOBAL, GROUP_COLUMNS, DIVERGENCE_FIELDS, DIVERGENCE_NOTE,
     sensorRef, parseSensorRef, isSensorRef,
@@ -417,5 +534,6 @@
     variantOwners, hideSensorVariants, canonicalRef, canonicalRefs, folderPreviewTiles,
     deriveLayer, rerollOf, opsToCss, opsLabel, composePlan, composeKey, transformLabel, recipeLines, FALLBACK_LABEL,
     planSensorSwitch, resolveLoadedSensorRef, groupRows, targetIndex, resolveAcross, planSwitchResolved, orderEntries, DUPLICATE_COLUMNS, duplicateCodename, nextSortIndex, duplicateRowBody, LOCAL_UPLOAD_MAX_PX, localCopySize,
+    crc32, zipStore, safeName, uniquePath, extOfUrl, rowOffset, hasOffset, SHADOW_ALPHA, SHADOW_SHIFT, bakeLayout, planTilesetExport, exportImageOps, exportRecord,
   };
 });
