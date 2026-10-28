@@ -271,6 +271,12 @@
     const sx = w / 2, sy = Number.isFinite(topEdge) ? Math.min(h, Math.max(0, topEdge) + w / 2) : h / 2;
     return { sx, sy, rects: [{ x: 0, y: 0, w: sx, h: sy }, { x: sx, y: 0, w: w - sx, h: sy }, { x: sx, y: sy, w: w - sx, h: h - sy }, { x: 0, y: sy, w: sx, h: h - sy }] }; // TL TR BR BL
   };
+  // The simulator's quadrant overlay: the real region of quadrant q over a w x h image shown contained (centred, uniformly scaled) in a
+  // box x box preview. -> { left, top, width, height } in preview px.
+  const highlightRect = (q, w, h, topEdge, box) => {
+    const k = Math.min(box / w, box / h), r = quadrantGeometry(w, h, topEdge).rects[q];
+    return { left: (box - w * k) / 2 + r.x * k, top: (box - h * k) / 2 + r.y * k, width: r.w * k, height: r.h * k };
+  };
   // Highest row with alpha > 0 in RGBA pixels (w x h), or null when the image is fully transparent.
   const topEdgeOfPixels = (w, h, px) => {
     for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (px[(y * w + x) * 4 + 3] > 0) return y;
@@ -488,7 +494,7 @@
   // rows: DB tile rows { id, codename, image_url, folder_key, sensor_code, sensor_roll, sort_index, symbol, offset_x, offset_y, size_multiplier, rotatable, flippable, ... }.
   // -> { dir, items: [{ kind: "real"|"derived"|"composed", path, file, folder, code, row (metadata source), sourceRows: [row], ops, recipe, roll }] }
   // Every row is exported as itself ("real"); a sensor folder additionally gets every derived (spin / flip) and composed variant the engine builds for it,
-  // named <Folder>_<code>[_n] like the real ones. Plain tiles keep their codename. Exact-mode folders add nothing derived or composed.
+  // named <code>[_n].png like the real ones (they sit in a folder named after the sensor folder; _2, _3 only for duplicate codes). Plain tiles keep their codename. Exact-mode folders add nothing derived or composed.
   const planTilesetExport = (rows, tilesetName) => {
     const dir = safeName(tilesetName, "tileset");
     const list = (rows || []).slice().sort((a, b) => ((a.sort_index ?? 0) - (b.sort_index ?? 0)) || String(a.id).localeCompare(String(b.id)));
@@ -506,9 +512,11 @@
       items.push({ kind: "real", path, file: path.slice(d.length + 1), folder: r.folder_key || null, code: r.sensor_code ?? null, row: r, sourceRows: [r], ops: [], recipe: null, roll: r.sensor_roll ?? null });
     }
     for (const [key, group] of folderRows) {
-      const d = `${dir}/${safeName(key)}`, base = safeName(key, "folder");
+      const d = `${dir}/${safeName(key)}`, seen = new Map();
+      // <code>.<ext>; the n-th tile of one code (whatever its extension) is <code>_n.<ext>
+      const named = (code, ext) => { const n = (seen.get(code) || 0) + 1; seen.set(code, n); return uniquePath(taken, d, n > 1 ? `${code}_${n}` : code, ext); };
       for (const r of group) {
-        const path = uniquePath(taken, d, `${base}_${r.sensor_code}`, extOfUrl(r.image_url));
+        const path = named(safeName(r.sensor_code, "code"), extOfUrl(r.image_url));
         items.push({ kind: "real", path, file: path.slice(d.length + 1), folder: key, code: r.sensor_code, row: r, sourceRows: [r], ops: [], recipe: null, roll: r.sensor_roll ?? null });
       }
       const byId = new Map(group.map(r => [String(r.id), r]));
@@ -520,11 +528,11 @@
         const c = cands[code];
         if (c.status === "derived") {
           for (const e of c.pool) {
-            const src = byId.get(String(e.derivedFrom.ref)), path = uniquePath(taken, d, `${base}_${code}`, ".png");
+            const src = byId.get(String(e.derivedFrom.ref)), path = named(code, ".png");
             items.push({ kind: "derived", path, file: path.slice(d.length + 1), folder: key, code, row: src, sourceRows: [src], ops: e.ops.slice(), recipe: null, roll: e.roll });
           }
         } else if (c.status === "composed") {
-          const rec = c.recipe, major = byId.get(String(rec.majorityRef)), path = uniquePath(taken, d, `${base}_${code}`, ".png");
+          const rec = c.recipe, major = byId.get(String(rec.majorityRef)), path = named(code, ".png");
           const refs = Array.from(new Set(rec.map(q => String(q.sourceTileRef))));
           items.push({ kind: "composed", path, file: path.slice(d.length + 1), folder: key, code, row: major, sourceRows: refs.map(x => byId.get(x)), ops: [], recipe: rec.map(q => ({ quadrant: q.quadrant, sourceTileRef: String(q.sourceTileRef), spinSteps: q.spinSteps, flip: !!q.flip })), roll: 1 });
         }
@@ -554,7 +562,7 @@
     globalFolderFiles, globalFileName,
     preloadImages, progressLabel, imageOps, withFreshVersion,
     variantOwners, hideSensorVariants, canonicalRef, canonicalRefs, folderPreviewTiles,
-    deriveLayer, rerollOf, opsToCss, opsLabel, composePlan, quadrantGeometry, topEdgeOfPixels, folderTopEdge, topEdgeKey, composeKey, transformLabel, recipeLines, FALLBACK_LABEL,
+    deriveLayer, rerollOf, opsToCss, opsLabel, composePlan, quadrantGeometry, highlightRect, topEdgeOfPixels, folderTopEdge, topEdgeKey, composeKey, transformLabel, recipeLines, FALLBACK_LABEL,
     planSensorSwitch, resolveLoadedSensorRef, groupRows, targetIndex, resolveAcross, planSwitchResolved, orderEntries, DUPLICATE_COLUMNS, duplicateCodename, nextSortIndex, duplicateRowBody, LOCAL_UPLOAD_MAX_PX, localCopySize,
     crc32, zipStore, safeName, uniquePath, extOfUrl, rowOffset, hasOffset, SHADOW_ALPHA, SHADOW_SHIFT, bakeLayout, planTilesetExport, exportImageOps, exportRecord,
   };

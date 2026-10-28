@@ -897,6 +897,15 @@ function AddTileModal({ open, onClose, tsId, dbTilesets, file, onFileChange,
   );
 }
 
+// Highest pixel row with a visible (alpha > 0) pixel of a decoded image. Throws when the canvas is tainted.
+function imageTopEdge(img) {
+  const w = img.naturalWidth, h = img.naturalHeight, cv = document.createElement('canvas');
+  cv.width = w; cv.height = h;
+  const ctx = cv.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(img, 0, 0);
+  return SensorUI.topEdgeOfPixels(w, h, ctx.getImageData(0, 0, w, h).data);
+}
+
 // ── Tileset export (zip). Read-only: it only GETs images and never touches the tileset, its tiles or the database. The plan, names, zip writer
 //    and bake geometry are pure and live in sensor_ui.js (SensorUI.planTilesetExport, zipStore, bakeLayout); this is the fetch + canvas side.
 //    Images keep their native size (size multipliers are never applied). Per-tile failures are collected, the export carries on.
@@ -915,6 +924,19 @@ async function exportTilesetZip({ tsName, rows, opts, fetchBytes, onProgress }) 
   const toPng = cv => new Promise((resolve, reject) => cv.toBlob(b => (b ? resolve(b) : reject(new Error('the canvas could not be exported (tainted or empty)'))), 'image/png'))
     .then(b => b.arrayBuffer()).then(a => new Uint8Array(a));
   const newCanvas = (w, h) => { const cv = document.createElement('canvas'); cv.width = w; cv.height = h; const ctx = cv.getContext('2d'); ctx.imageSmoothingEnabled = false; return [cv, ctx]; };
+  // Shared top edge of a sensor folder (highest visible row over all its tiles), once per folder; null (centred layout, with a warning) when it cannot be read.
+  const edges = new Map();
+  const edgeOf = folderKey => {
+    if (!edges.has(folderKey)) edges.set(folderKey, (async () => {
+      try {
+        const rowsOf = plan.items.filter(i => i.kind === 'real' && i.folder === folderKey && i.code != null).map(i => i.row);
+        const found = [];
+        for (const r of rowsOf) found.push(imageTopEdge((await load(r)).img));
+        return SensorUI.folderTopEdge(found);
+      } catch (e) { console.warn(`[sensor] top edge of ${folderKey} unavailable, composed variants use the centred layout:`, e); return null; }
+    })());
+    return edges.get(folderKey);
+  };
   // Native-size canvas of a derived (spin / flip of one tile) or composed (four quadrants) variant, or a real tile's own image.
   const baseOf = async item => {
     if (item.kind === 'real') { const { img } = await load(item.row); return { src: img, w: img.naturalWidth, h: img.naturalHeight }; }
@@ -928,12 +950,15 @@ async function exportTilesetZip({ tsName, rows, opts, fetchBytes, onProgress }) 
     const imgs = new Map();
     for (const r of item.sourceRows) imgs.set(String(r.id), (await load(r)).img);
     const first = imgs.values().next().value, W = first.naturalWidth || 100, H = first.naturalHeight || 100;
+    const topEdge = await edgeOf(item.folder);
     const [cv, ctx] = newCanvas(W, H);
-    for (const q of SensorUI.composePlan(item.recipe, W, H)) {
+    const sizeOf = ref => { const im = imgs.get(ref); return im && { w: im.naturalWidth || W, h: im.naturalHeight || H }; };
+    for (const q of SensorUI.composePlan(item.recipe, W, H, topEdge, sizeOf)) {
+      const im = imgs.get(q.sourceTileRef);
       ctx.save();
       ctx.beginPath(); ctx.rect(q.x, q.y, q.w, q.h); ctx.clip();
-      ctx.translate(W / 2, H / 2); ctx.rotate(q.steps * Math.PI / 2); if (q.flip) ctx.scale(-1, 1);
-      ctx.drawImage(imgs.get(q.sourceTileRef), -W / 2, -H / 2, W, H);
+      ctx.translate(q.tx, q.ty); ctx.rotate(q.steps * Math.PI / 2); if (q.flip) ctx.scale(-1, 1);
+      ctx.drawImage(im, -q.sx, -q.sy, im.naturalWidth || W, im.naturalHeight || H);
       ctx.restore();
     }
     return { src: cv, w: W, h: H };
@@ -1082,7 +1107,7 @@ function TilesetGearModal({
   // Export tileset (zip): read-only. The rows come from the loaded cache or one GET; images are fetched one at a time.
   const openExport = async () => {
     if (!tsData) return;
-    setExp({ busy: true, text: 'Reading tiles…', opts: { offsets: false, shadow: false, json: true }, failures: [] });
+    setExp({ busy: true, text: 'Reading tiles…', opts: { offsets: false, shadow: false, json: false }, failures: [] });
     try {
       let rows = dbTilesByTsId?.[tsData.id];
       if (!rows) {
@@ -1091,7 +1116,7 @@ function TilesetGearModal({
         if (!r.ok) throw new Error('could not read the tiles');
         rows = await r.json();
       }
-      setExp({ rows, opts: { offsets: rows.some(SensorUI.hasOffset), shadow: rows.some(x => x.auto_shadow), json: true }, failures: [] });
+      setExp({ rows, opts: { offsets: rows.some(SensorUI.hasOffset), shadow: rows.some(x => x.auto_shadow), json: false }, failures: [] });
     } catch (e) { setExp({ ok: false, text: 'Failed: ' + e.message, failures: [] }); }
   };
   const runExport = async () => {
@@ -2791,12 +2816,14 @@ function SensorWarningModal({ folder, onClose }) {
 }
 
 // Simulator: 3x3 grid, centre fixed, eight neighbours toggleable. Shows what sensor.resolve() returns. Edits nothing.
-function SensorSimulationPanel({ folder, candidates, requestComposed, reroll = 0, onReroll, onClose }) {
+function SensorSimulationPanel({ folder, candidates, requestComposed, topEdgeOf, reroll = 0, onReroll, onClose }) {
   const [bits, setBits] = useState(() => Array(8).fill(false));
   const seed = 0; // fixed preview position; "Roll again" changes the folder's reroll seed, the same one the map uses
   const [hoverQ, setHoverQ] = useState(null); // quadrant (0 TL, 1 TR, 2 BR, 3 BL) hovered in the composed breakdown (desktop extra)
   const [selQ, setSelQ] = useState(null);   // quadrant chosen with a line's "show" button: stays highlighted until another is chosen or it is tapped again
   const shownQ = hoverQ != null ? hoverQ : selQ;
+  const [natSize, setNatSize] = useState(null); // natural size of the previewed image (the overlay needs the real quadrant regions)
+  const topEdge = topEdgeOf ? topEdgeOf(folder.ref) : null; // undefined while it is being read: the centred layout until then
   const [pickedFallback, setPickedFallback] = useState(false); // the fallback row of an exact-mode folder was clicked
   const engine = useMemo(() => SensorUI.engineFolder(folder), [folder]);
   const code = bits.map(b => (b ? "1" : "0")).join("");
@@ -2843,8 +2870,8 @@ function SensorSimulationPanel({ folder, candidates, requestComposed, reroll = 0
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 150 }}>
             <div data-testid="sim-chosen" style={{ position: "relative", width: 96, height: 96, borderRadius: 8, background: C.panelDeep, border: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
-              {vis && vis.src ? <img src={vis.src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", transform: vis.css || undefined }} /> : <span style={{ fontSize: 22 }}>{res ? "…" : "⚠️"}</span>}
-              {shownQ != null && <div data-quad-highlight={SensorEngine.QUAD_NAMES[shownQ]} style={{ position: "absolute", width: "50%", height: "50%", left: shownQ === 1 || shownQ === 2 ? "50%" : 0, top: shownQ >= 2 ? "50%" : 0, border: `2px solid ${SENSOR_YELLOW}`, background: "rgba(245,197,24,0.28)", boxSizing: "border-box", pointerEvents: "none" }} />}
+              {vis && vis.src ? <img src={vis.src} alt="" onLoad={e => setNatSize({ w: e.target.naturalWidth, h: e.target.naturalHeight })} style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated", transform: vis.css || undefined }} /> : <span style={{ fontSize: 22 }}>{res ? "…" : "⚠️"}</span>}
+              {shownQ != null && <div data-quad-highlight={SensorEngine.QUAD_NAMES[shownQ]} style={{ position: "absolute", ...(natSize ? SensorUI.highlightRect(shownQ, natSize.w, natSize.h, topEdge ?? null, 94) : { width: "50%", height: "50%", left: shownQ === 1 || shownQ === 2 ? "50%" : 0, top: shownQ >= 2 ? "50%" : 0 }), border: `2px solid ${SENSOR_YELLOW}`, background: "rgba(245,197,24,0.28)", boxSizing: "border-box", pointerEvents: "none" }} />}
             </div>
             <div style={{ fontSize: 11, color: C.text }}>
               <b>Chosen variant:</b>{" "}
@@ -4254,7 +4281,28 @@ function App() {
   });
   // Base tiles are looked up in the folder itself (not tilesByRef, which trails the folder list by a render after a tileset switch).
   const tileImageUrl = (folderRef, ref) => { const t = sensorFolders.get(folderRef)?.ui.tiles.find(x => x.ref === ref); return t ? (t.blobSrc ?? t.src) : null; };
-  const composedKeyFor = (folderRef, code, recipe) => `${SensorUI.composeKey(folderRef, code)}|${recipe.map(e => tileImageUrl(folderRef, e.sourceTileRef)).join(",")}`;
+  // Shared top edge of a sensor folder (highest visible pixel row over all its tiles), cached by the folder's image URLs (?v= included).
+  // folderGeometry: { key, topEdge } | pending/failed -> topEdge null (the old centred layout; failures log a warning).
+  const topEdgeRef = useRef(new Map()); // key -> Promise<number | null>
+  const topEdgeValue = useRef(new Map()); // key -> number | null once known
+  const folderUrls = folderRef => (sensorFolders.get(folderRef)?.ui.tiles || []).map(t => t.blobSrc ?? t.src).filter(Boolean);
+  const folderTopEdgeKey = folderRef => SensorUI.topEdgeKey(folderRef, folderUrls(folderRef));
+  const requestTopEdge = folderRef => {
+    const urls = folderUrls(folderRef), key = SensorUI.topEdgeKey(folderRef, urls), cache = topEdgeRef.current;
+    if (!cache.has(key)) {
+      cache.set(key, (async () => {
+        try {
+          const found = [];
+          for (const u of urls) found.push(imageTopEdge(await loadTileImage(u)));
+          return SensorUI.folderTopEdge(found);
+        } catch (err) { console.warn(`[sensor] top edge of ${folderRef} unavailable, using the centred quadrant layout:`, err); return null; }
+      })().then(v => { topEdgeValue.current.set(key, v); setComposedTick(n => n + 1); return v; }));
+    }
+    return cache.get(key);
+  };
+  // Synchronous view for the simulator overlay: the known top edge, or undefined while it is being read.
+  const knownTopEdge = folderRef => { const key = folderTopEdgeKey(folderRef); if (!topEdgeValue.current.has(key)) requestTopEdge(folderRef); return topEdgeValue.current.get(key); };
+  const composedKeyFor = (folderRef, code, recipe) => `${SensorUI.composeKey(folderRef, code)}|${recipe.map(e => tileImageUrl(folderRef, e.sourceTileRef)).join(",")}|${folderTopEdgeKey(folderRef)}`;
   const composeVariant = async (folderRef, recipe) => {
     const imgs = new Map();
     for (const e of recipe) {
@@ -4265,15 +4313,18 @@ function App() {
     }
     const first = imgs.values().next().value;
     const W = first.naturalWidth || 100, H = first.naturalHeight || 100;
+    const topEdge = await requestTopEdge(folderRef);
     const cv = document.createElement("canvas");
     cv.width = W; cv.height = H;
     const ctx = cv.getContext("2d");
     ctx.imageSmoothingEnabled = false;
-    for (const p of SensorUI.composePlan(recipe, W, H)) {
+    const sizeOf = ref => { const im = imgs.get(ref); return im && { w: im.naturalWidth || W, h: im.naturalHeight || H }; };
+    for (const p of SensorUI.composePlan(recipe, W, H, topEdge, sizeOf)) {
+      const im = imgs.get(p.sourceTileRef);
       ctx.save();
       ctx.beginPath(); ctx.rect(p.x, p.y, p.w, p.h); ctx.clip();
-      ctx.translate(W / 2, H / 2); ctx.rotate(p.steps * Math.PI / 2); if (p.flip) ctx.scale(-1, 1);
-      ctx.drawImage(imgs.get(p.sourceTileRef), -W / 2, -H / 2, W, H);
+      ctx.translate(p.tx, p.ty); ctx.rotate(p.steps * Math.PI / 2); if (p.flip) ctx.scale(-1, 1);
+      ctx.drawImage(im, -p.sx, -p.sy, im.naturalWidth || W, im.naturalHeight || H);
       ctx.restore();
     }
     const blob = await new Promise((resolve, reject) => cv.toBlob(b => (b ? resolve(b) : reject(new Error("toBlob returned null"))), "image/png"));
@@ -7818,7 +7869,7 @@ function App() {
       <FailedTileModal />
       {sensorWarnFolder && <SensorWarningModal folder={sensorWarnFolder} onClose={() => setSensorWarnFolder(null)} />}
       {sensorSimFolder && sensorFolders.get(sensorSimFolder) && (
-        <SensorSimulationPanel folder={sensorFolders.get(sensorSimFolder).ui} candidates={sensorFolders.get(sensorSimFolder).candidates} requestComposed={requestComposed} reroll={rerollSeedMap.get(sensorSimFolder) ?? 0} onReroll={() => rerollFolder(sensorSimFolder)} onClose={() => setSensorSimFolder(null)} />
+        <SensorSimulationPanel folder={sensorFolders.get(sensorSimFolder).ui} candidates={sensorFolders.get(sensorSimFolder).candidates} requestComposed={requestComposed} topEdgeOf={knownTopEdge} reroll={rerollSeedMap.get(sensorSimFolder) ?? 0} onReroll={() => rerollFolder(sensorSimFolder)} onClose={() => setSensorSimFolder(null)} />
       )}
       <ToolInfoModal />
       <MemoryModal />

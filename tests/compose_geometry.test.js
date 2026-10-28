@@ -104,4 +104,13 @@ test("sources of a different height share the folder's top edge: each source use
   const squat = U.composePlan(same({}), 100, 60, 30, () => ({ w: 100, h: 60 }));
   assert.deepStrictEqual([squat[0].h, squat[2].h], [60, 0]);
 });
+test("highlightRect: the real region over the contained preview (tall: seam at 30 + 50), not a centred square", () => {
+  // 100x240, margin 30 -> shown at scale 94/240 and centred horizontally
+  const k = 94 / 240, left0 = (94 - 100 * k) / 2;
+  const tl = U.highlightRect(0, 100, 240, 30, 94), br = U.highlightRect(2, 100, 240, 30, 94);
+  assert.ok(Math.abs(tl.left - left0) < 1e-9 && tl.top === 0 && Math.abs(tl.width - 50 * k) < 1e-9 && Math.abs(tl.height - 80 * k) < 1e-9);
+  assert.ok(Math.abs(br.top - 80 * k) < 1e-9 && Math.abs(br.top + br.height - 94) < 1e-9, "BR reaches the bottom");
+  const sq = U.highlightRect(1, 100, 100, null, 94); // square, centred layout = the old 50% quarter
+  assert.deepStrictEqual([sq.left, sq.top, sq.width, sq.height], [47, 0, 47, 47]);
+});
 console.log(`${passed} tests`);
